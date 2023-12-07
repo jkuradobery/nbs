@@ -5,7 +5,7 @@ namespace NKikimr::NSchemeShard {
 NOperationQueue::EStartStatus TSchemeShard::StartBorrowedCompaction(const TShardIdx& shardIdx) {
     UpdateBorrowedCompactionQueueMetrics();
 
-    auto ctx = ActorContext();
+    auto ctx = TActivationContext::ActorContextFor(SelfId());
 
     auto it = ShardInfos.find(shardIdx);
     if (it == ShardInfos.end()) {
@@ -44,7 +44,7 @@ void TSchemeShard::OnBorrowedCompactionTimeout(const TShardIdx& shardIdx) {
 
     RunningBorrowedCompactions.erase(shardIdx);
 
-    auto ctx = ActorContext();
+    auto ctx = TActivationContext::ActorContextFor(SelfId());
 
     auto it = ShardInfos.find(shardIdx);
     if (it == ShardInfos.end()) {
@@ -93,7 +93,7 @@ void TSchemeShard::EnqueueBorrowedCompaction(const TShardIdx& shardIdx) {
     if (!BorrowedCompactionQueue)
         return;
 
-    auto ctx = ActorContext();
+    auto ctx = TActivationContext::ActorContextFor(SelfId());
 
     LOG_TRACE_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
         "borrowed compaction enqueue shard# " << shardIdx << " at schemeshard " << TabletID());

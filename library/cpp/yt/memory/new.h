@@ -1,6 +1,7 @@
 #pragma once
 
 #include "intrusive_ptr.h"
+#include "ref_tracked.h"
 
 #include <library/cpp/yt/misc/source_location.h>
 
@@ -28,7 +29,7 @@ namespace NYT {
  *         TFoo();
  *     };
  *
- *     using TFooPtr = TIntrusivePtr<TFoo>;
+ *     typedef TIntrusivePtr<TFoo> TFooPtr;
  *
  *     void RegisterObject(TFooPtr foo)
  *     {
@@ -92,9 +93,9 @@ TIntrusivePtr<T> NewWithExtraSpace(size_t extraSpaceSize, As&&... args);
 template <class T, class... As, class = typename THasAllocator<T>::TTrue>
 TIntrusivePtr<T> NewWithExtraSpace(typename T::TAllocator* allocator, size_t extraSpaceSize, As&&... args);
 
-//! Allocates a new instance of |T| with a custom #deleter.
+//! Allocates a new instance of |T| with user deleter.
 template <class T, class TDeleter, class... As>
-TIntrusivePtr<T> NewWithDeleter(TDeleter deleter, As&&... args);
+TIntrusivePtr<T> NewWithDelete(const TDeleter& deleter, As&&... args);
 
 //! Allocates a new instance of |T|.
 //! The allocation is additionally marked with #location.

@@ -1,15 +1,13 @@
 #include "yql_s3_provider_impl.h"
 #include "yql_s3_dq_integration.h"
 
-#include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
-#include <ydb/library/yql/providers/common/config/yql_configuration_transformer.h>
 #include <ydb/library/yql/providers/common/config/yql_setting.h>
-#include <ydb/library/yql/providers/common/provider/yql_data_provider_impl.h>
+#include <ydb/library/yql/providers/common/config/yql_configuration_transformer.h>
+#include <ydb/library/yql/providers/s3/expr_nodes/yql_s3_expr_nodes.h>
 #include <ydb/library/yql/providers/common/provider/yql_provider.h>
 #include <ydb/library/yql/providers/common/provider/yql_provider_names.h>
-#include <ydb/library/yql/providers/common/structured_token/yql_token_builder.h>
-#include <ydb/library/yql/providers/s3/expr_nodes/yql_s3_expr_nodes.h>
-#include <ydb/library/yql/providers/s3/proto/credentials.pb.h>
+#include <ydb/library/yql/providers/common/provider/yql_data_provider_impl.h>
+#include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 
 #include <ydb/library/yql/utils/log/log.h>
 
@@ -29,30 +27,6 @@ public:
         , TypeAnnotationTransformer_(CreateS3DataSourceTypeAnnotationTransformer(State_))
         , DqIntegration_(CreateS3DqIntegration(State_))
     {}
-
-    void AddCluster(const TString& name, const THashMap<TString, TString>& properties) override {
-        State_->Configuration->AddValidCluster(name);
-        auto& settings = State_->Configuration->Clusters[name];
-        settings.Url = properties.Value("location", "");
-        if (!settings.Url.EndsWith("/")) {
-            settings.Url += "/";
-        }
-        auto authMethod = properties.Value("authMethod", "");
-        if (authMethod == "SERVICE_ACCOUNT") {
-            State_->Configuration->Tokens[name] = ComposeStructuredTokenJsonForServiceAccountWithSecret(properties.Value("serviceAccountId", ""), properties.Value("serviceAccountIdSignatureReference", ""), properties.Value("serviceAccountIdSignature", ""));
-            return;
-        }
-
-        if (authMethod == "AWS") {
-            NS3::TAwsParams params;
-            params.SetAwsAccessKey(properties.Value("awsAccessKeyId", ""));
-            params.SetAwsRegion(properties.Value("awsRegion", ""));
-            State_->Configuration->Tokens[name] = ComposeStructuredTokenJsonForBasicAuthWithSecret(params.SerializeAsString(), properties.Value("awsSecretAccessKeyReference", ""), properties.Value("awsSecretAccessKey", ""));
-            return;
-        }
-
-        State_->Configuration->Tokens[name] = ComposeStructuredTokenJsonForServiceAccount(properties.Value("serviceAccountId", ""), properties.Value("serviceAccountIdSignature", ""), properties.Value("authToken", ""));
-    }
 
     TStringBuf GetName() const override {
         return S3ProviderName;
@@ -105,22 +79,13 @@ public:
         return node;
     }
 
-    bool CanPullResult(const TExprNode& node, TSyncMap& syncList, bool& canRef) override {
+    bool CanPullResult(const TExprNode&, TSyncMap& syncList, bool& canRef) override {
         Y_UNUSED(syncList);
         canRef = false;
-        if (node.IsCallable(TCoRight::CallableName())) {
-            const auto input = node.Child(0);
-            if (input->IsCallable(TS3ReadObject::CallableName())) {
-                return true;
-            }
-        }
         return false;
     }
 
-    bool CanExecute(const TExprNode& node) override {
-        if (node.IsCallable(TS3ReadObject::CallableName())) {
-            return true;
-        }
+    bool CanExecute(const TExprNode&) override {
         return false;
     }
 

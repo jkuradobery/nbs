@@ -1,7 +1,7 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     ydb/core/base
     ydb/core/protos
 )

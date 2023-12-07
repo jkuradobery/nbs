@@ -8,12 +8,10 @@ SRCS(
     debug_info.h
     future_action.cpp
     future_action.h
-    hash.cpp
     hash.h
+    hash.cpp
     md5_stream.cpp
     md5_stream.h
-    method_index.cpp
-    method_index.h
     multi_resource_lock.cpp
     multi_resource_lock.h
     parse_double.cpp
@@ -25,10 +23,6 @@ SRCS(
     resetable_setting.h
     retry.cpp
     retry.h
-    rope_over_buffer.cpp
-    rope_over_buffer.h
-    sort.cpp
-    sort.h
     swap_bytes.cpp
     swap_bytes.h
     url_builder.cpp
@@ -40,13 +34,11 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/util
     library/cpp/digest/md5
     library/cpp/messagebus
     library/cpp/string_utils/quote
     library/cpp/threading/future
     library/cpp/deprecated/atomic
-    contrib/libs/miniselect
 )
 
 END()
@@ -54,15 +46,10 @@ END()
 RECURSE(
     actor_log
     actors
-    actor_system
     backtrace
-    bindings
     failure_injector
     fetch
     log
-    simd
-    sys
-    test_http_server
     threading
 )
 

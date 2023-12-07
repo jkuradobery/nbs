@@ -1,5 +1,4 @@
 #include "actors.h"
-#include "common.h"
 
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/kqp/common/kqp.h>
@@ -40,6 +39,8 @@ struct TQueryInfo {
 TQueryInfo GenerateUpsert(size_t n, const TString& table) {
     TStringStream str;
 
+    NYdb::TParamsBuilder paramsBuilder;
+
     str << Sprintf(R"__(
         --!syntax_v1
 
@@ -59,9 +60,8 @@ TQueryInfo GenerateUpsert(size_t n, const TString& table) {
             VALUES ( $key, $field0, $field1, $field2, $field3, $field4, $field5, $field6, $field7, $field8, $field9 );
     )__", table.c_str());
 
-    NYdb::TParamsBuilder paramsBuilder;
-
     paramsBuilder.AddParam("$key").Utf8(GetKey(n)).Build();
+
     for (size_t i = 0; i < 10; ++i) {
         TString name = "$field" + ToString(i);
         paramsBuilder.AddParam(name).String(Value).Build();
@@ -122,7 +122,7 @@ public:
 private:
     void CreateSession(const TActorContext& ctx) {
         auto kqpProxy = NKqp::MakeKqpProxyID(ctx.SelfID.NodeId());
-        LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActor# " << Id
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActor# " << Id
             << " sends event for session creation to proxy: " << kqpProxy.ToString());
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvCreateSessionRequest>();
@@ -135,7 +135,7 @@ private:
             return;
 
         auto kqpProxy = NKqp::MakeKqpProxyID(ctx.SelfID.NodeId());
-        LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActor# " << Id
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActor# " << Id
             << " sends session close query to proxy: " << kqpProxy);
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvCloseSessionRequest>();
@@ -373,7 +373,7 @@ private:
             return;
         }
 
-        LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "kqp# " << Id << " finished: " << ev->Get()->ToString());
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "kqp# " << Id << " finished: " << ev->Get()->ToString());
 
         Errors += record.GetReport().GetOperationsError();
         Oks += record.GetReport().GetOperationsOK();
@@ -407,13 +407,13 @@ private:
     }
 
     void HandlePoison(const TActorContext& ctx) {
-        LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActorMultiSession# " << Id
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActorMultiSession# " << Id
             << " tablet recieved PoisonPill, going to die");
         Stop(ctx);
     }
 
     void StopWithError(const TActorContext& ctx, const TString& reason) {
-        LOG_ERROR_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActorMultiSession# " << Id
+        LOG_WARN_S(ctx, NKikimrServices::DS_LOAD_TEST, "TKqpUpsertActorMultiSession# " << Id
             << " stopped with error: " << reason);
 
         ctx.Send(Parent, new TEvDataShardLoad::TEvTestLoadFinished(Id.SubTag, reason));

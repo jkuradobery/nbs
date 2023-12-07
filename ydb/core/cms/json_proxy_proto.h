@@ -6,17 +6,15 @@
 #include <ydb/core/mon/mon.h>
 
 #include <google/protobuf/util/json_util.h>
-
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/json/json_value.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
 
 #include <util/generic/serialized_enum.h>
-
 #include <iostream>
 
 namespace NKikimr::NCms {
@@ -26,7 +24,8 @@ private:
     using TBase = TActorBootstrapped<TJsonProxyProto>;
 
 public:
-    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+    static constexpr NKikimrServices::TActivity::EType ActorActivityType()
+    {
         return NKikimrServices::TActivity::CMS_SERVICE_PROXY;
     }
 
@@ -35,7 +34,8 @@ public:
     {
     }
 
-    void Bootstrap(const TActorContext &ctx) {
+    void Bootstrap(const TActorContext &ctx)
+    {
         LOG_DEBUG_S(ctx, NKikimrServices::CMS,
                     "TJsonProxyProto::Bootstrap url=" << RequestEvent->Get()->Request.GetPathInfo());
         ProcessRequest(ctx);
@@ -43,7 +43,9 @@ public:
     }
 
 protected:
-    void ProcessRequest(const TActorContext &ctx) {
+
+    void ProcessRequest(const TActorContext &ctx)
+    {
         const TCgiParameters &cgi = RequestEvent->Get()->Request.GetParams();
 
         if (cgi.Has("enum")) {
@@ -84,7 +86,8 @@ protected:
                                           NMon::IEvHttpInfoRes::EContentType::Custom));
     }
 
-    void ReplyWithLogComponents(NLog::TSettings *settings, const TActorContext &ctx) {
+    void ReplyWithLogComponents(NLog::TSettings *settings, const TActorContext &ctx)
+    {
         NJson::TJsonValue json;
 
         if (settings) {
@@ -104,13 +107,17 @@ protected:
         Reply(WriteJson(json), ctx);
     }
 
-    void ReplyWithEnumDescription(const ::google::protobuf::EnumDescriptor &descriptor, const TActorContext &ctx) {
+    void ReplyWithEnumDescription(const ::google::protobuf::EnumDescriptor &descriptor,
+                                  const TActorContext &ctx)
+    {
         ::google::protobuf::EnumDescriptorProto result;
         descriptor.CopyTo(&result);
         Reply(result, ctx);
     }
 
-    void ReplyWithTypeDescription(const ::google::protobuf::Descriptor &descriptor, const TActorContext &ctx) {
+    void ReplyWithTypeDescription(const ::google::protobuf::Descriptor &descriptor,
+                                  const TActorContext &ctx)
+    {
         ::google::protobuf::DescriptorProto result;
         descriptor.CopyTo(&result);
 
@@ -119,7 +126,7 @@ protected:
         // Add custom field options to json.
         NJson::TJsonValue val;
         auto ok = ReadJsonTree(json, &val);
-        Y_ABORT_UNLESS(ok);
+        Y_VERIFY(ok);
 
         AddCustomFieldOptions(descriptor, val);
         json = WriteJson(val);
@@ -127,7 +134,9 @@ protected:
         Reply(json, ctx);
     }
 
-    void AddCustomFieldOptions(const ::google::protobuf::Descriptor &descriptor, NJson::TJsonValue &val) {
+    void AddCustomFieldOptions(const ::google::protobuf::Descriptor &descriptor,
+                               NJson::TJsonValue &val)
+    {
         if (!val.IsMap() || !val.Has("field"))
             return;
 
@@ -144,7 +153,7 @@ protected:
             auto &opts = field["options"];
 
             auto *fieldDesc = descriptor.FindFieldByNumber(num);
-            Y_ABORT_UNLESS(fieldDesc);
+            Y_VERIFY(fieldDesc);
 
             auto &optsMsg = fieldDesc->options();
             auto *reflection = optsMsg.GetReflection();
@@ -166,18 +175,21 @@ protected:
     }
 
 
-    TString ProtoToJson(const google::protobuf::Message &resp) {
+    TString ProtoToJson(const google::protobuf::Message &resp)
+    {
         auto config = NProtobufJson::TProto2JsonConfig()
             .SetFormatOutput(false)
             .SetEnumMode(NProtobufJson::TProto2JsonConfig::EnumName);
         return NProtobufJson::Proto2Json(resp, config);
     }
 
-    void Reply(const google::protobuf::Message &resp, const TActorContext &ctx) {
+    void Reply(const google::protobuf::Message &resp, const TActorContext &ctx)
+    {
         Reply(ProtoToJson(resp), ctx);
     }
 
-    void Reply(const TString &json, const TActorContext &ctx) {
+    void Reply(const TString &json, const TActorContext &ctx)
+    {
         LOG_TRACE_S(ctx, NKikimrServices::CMS,
                     "TJsonProxyProto reply with json '" << json << "'");
 

@@ -1,7 +1,7 @@
 #include <ydb/core/testlib/actors/test_runtime.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/events.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <util/thread/factory.h>
 
@@ -26,6 +26,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
 
             STFUNC(StateFunc)
             {
+                Y_UNUSED(ctx);
                 UNIT_ASSERT_EQUAL_C(ev->Sender, Sender, "sender check");
                 UNIT_ASSERT_EQUAL_C(ev->Type, TEvents::TSystem::Wakeup, "ev. type check");
             }
@@ -52,7 +53,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             STFUNC(StateFunc)
             {
                 UNIT_ASSERT_EQUAL_C(ev->Type, TEvents::TSystem::PoisonPill, "ev. type check");
-                PassAway();
+                Die(ctx);
             }
         };
 
@@ -74,12 +75,14 @@ Y_UNIT_TEST_SUITE(TActorTest) {
 
             STFUNC(OldStateFunc)
             {
+                Y_UNUSED(ctx);
                 UNIT_ASSERT_EQUAL_C(ev->Type, TEvents::THelloWorld::Ping, "ev. type check");
                 Become(&TMyActor::NewStateFunc);
             }
 
             STFUNC(NewStateFunc)
             {
+                Y_UNUSED(ctx);
                 UNIT_ASSERT_EQUAL_C(ev->Type, TEvents::THelloWorld::Pong, "ev. type check");
                 StateChanged = true;
             }
@@ -113,7 +116,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
 
             STFUNC(StateFunc)
             {
-                Send(ev->Sender, new TEvents::TEvPong());
+                ctx.Send(ev->Sender, new TEvents::TEvPong());
             }
         };
 
@@ -146,7 +149,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             STFUNC(StateFunc)
             {
                 Y_UNUSED(ev);
-                Schedule(TDuration::Seconds(1), new TEvents::TEvWakeup);
+                ctx.Schedule(TDuration::Seconds(1), new TEvents::TEvWakeup);
             }
         };
 
@@ -177,6 +180,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
 
             STFUNC(StateFunc)
             {
+                Y_UNUSED(ctx);
                 Y_UNUSED(ev);
             }
         };
@@ -191,8 +195,8 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             STFUNC(StateFunc)
             {
                 Y_UNUSED(ev);
-                ChildId = RegisterWithSameMailbox(new TChildActor());
-                Send(ChildId, new TEvents::TEvPing());
+                ChildId = ctx.RegisterWithSameMailbox(new TChildActor());
+                ctx.Send(ChildId, new TEvents::TEvPing());
             }
 
             TActorId GetChildId() const {
@@ -240,11 +244,11 @@ Y_UNIT_TEST_SUITE(TActorTest) {
 
             STFUNC(StateFunc)
             {
-                Y_ABORT_UNLESS(SyncMutex);
+                Y_VERIFY(SyncMutex);
 
                 auto sender = ev->Sender;
-                auto selfID = SelfId();
-                auto actorSystem = TlsActivationContext->ExecutorThread.ActorSystem;
+                auto selfID = ctx.SelfID;
+                auto actorSystem = ctx.ExecutorThread.ActorSystem;
                 TMutex *syncMutex = SyncMutex;
 
                 SystemThreadFactory()->Run([=](){
@@ -304,12 +308,12 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             {
                 switch (ev->GetTypeRewrite()) {
                 case TEvents::THelloWorld::Ping:
-                    Schedule(TDuration::MilliSeconds(1000), new TEvents::TEvWakeup);
+                    ctx.Schedule(TDuration::MilliSeconds(1000), new TEvents::TEvWakeup);
                     Sender = ev->Sender;
                     break;
                 case TEvents::TSystem::Wakeup:
-                    CurrentTime = TActivationContext::Now();
-                    Send(Sender, new TEvents::TEvPong());
+                    CurrentTime = ctx.Now();
+                    ctx.Send(Sender, new TEvents::TEvPong());
                 };
             }
 
@@ -370,9 +374,10 @@ Y_UNIT_TEST_SUITE(TActorTest) {
 
             STFUNC(StateFunc)
             {
+                Y_UNUSED(ctx);
                 switch (ev->GetTypeRewrite()) {
                 case EvCounter:
-                    ui32 eventCounter = ev->CastAsLocal<TEvCounter>()->Counter;
+                    ui32 eventCounter = reinterpret_cast<TEvCounter*>(ev->GetBase())->Counter;
                     UNIT_ASSERT_EQUAL_C(ExpectedCounter, eventCounter, "check counter");
                     ExpectedCounter = eventCounter + 1;
                     break;
@@ -401,7 +406,8 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             STFUNC(StateFunc)
             {
                 Y_UNUSED(ev);
-                ActorSystem = TlsActivationContext->ExecutorThread.ActorSystem;
+                SelfId = ctx.SelfID;
+                ActorSystem = ctx.ExecutorThread.ActorSystem;
                 Thread.Reset(new TThread(&TProducerActor::ThreadProc, this));
                 Thread->Start();
             }
@@ -410,7 +416,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
                 TProducerActor* actor = (TProducerActor*)(param);
                 for (ui32 i = 0; i < actor->Count; ++i) {
                     for (const auto& recip : actor->Recipents) {
-                        actor->ActorSystem->Send(new IEventHandle(recip, actor->SelfId(), new TEvCounter(i)));
+                        actor->ActorSystem->Send(new IEventHandle(recip, actor->SelfId, new TEvCounter(i)));
                         if ((i % (1 + rand() % 100)) == 0) {
                             Sleep(TDuration::MilliSeconds(1 + rand() % 10));
                         }
@@ -425,6 +431,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             const TVector<TActorId> Recipents;
             TAutoPtr<TThread> Thread;
             TActorSystem* ActorSystem = nullptr;
+            TActorId SelfId;
         };
 
         TTestActorRuntime runtime;
@@ -446,7 +453,8 @@ Y_UNIT_TEST_SUITE(TActorTest) {
             auto producerActor = new TProducerActor(count, consumerIds);
             TActorId producerId = runtime.Register(producerActor);
             runtime.Send(new IEventHandle(producerId, sender, new TEvents::TEvPing));
-            runtime.SetObserverFunc([](TAutoPtr<IEventHandle>& event) {
+            runtime.SetObserverFunc([](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
+                Y_UNUSED(runtime);
                 Y_UNUSED(event);
                 return TTestActorRuntime::EEventAction::PROCESS;
             });
@@ -484,7 +492,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
                     HFunc(TEvents::TEvPing, Handle);
                     HFunc(TEvents::TEvPong, Handle);
                     default:
-                        Y_ABORT("unexpected event");
+                        Y_FAIL("unexpected event");
                 }
             }
 
@@ -563,7 +571,7 @@ Y_UNIT_TEST_SUITE(TActorTest) {
                 switch (ev->GetTypeRewrite()) {
                     HFunc(TEvents::TEvWakeup, Handle);
                     default:
-                        Y_ABORT("unexpected event");
+                        Y_FAIL("unexpected event");
                 }
             }
         };

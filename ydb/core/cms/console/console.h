@@ -1,7 +1,7 @@
 #pragma once
 #include "defs.h"
 
-#include <ydb/library/yaml_config/yaml_config.h>
+#include <ydb/core/cms/console/yaml_config/yaml_config.h>
 
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/protos/console.pb.h>
@@ -55,7 +55,6 @@ struct TEvConsole {
         EvReplaceYamlConfigRequest,
         EvGetAllMetadataRequest,
         EvGetNodeLabelsRequest,
-        EvIsYamlReadOnlyRequest,
 
         // responses
         EvCreateTenantResponse = EvCreateTenantRequest + 1024,
@@ -100,8 +99,6 @@ struct TEvConsole {
         EvUnauthorized,
         EvDisabled,
         EvGenericError,
-
-        EvIsYamlReadOnlyResponse,
 
         EvEnd
     };
@@ -197,12 +194,6 @@ struct TEvConsole {
 
     struct TEvGetAllConfigsRequest : public TEventShortDebugPB<TEvGetAllConfigsRequest, NKikimrConsole::TGetAllConfigsRequest, EvGetAllConfigsRequest> {
         using TResponse = TEvGetAllConfigsResponse;
-    };
-
-    struct TEvIsYamlReadOnlyResponse : public TEventShortDebugPB<TEvIsYamlReadOnlyResponse, NKikimrConsole::TIsYamlReadOnlyResponse, EvIsYamlReadOnlyResponse> {};
-
-    struct TEvIsYamlReadOnlyRequest : public TEventShortDebugPB<TEvIsYamlReadOnlyRequest, NKikimrConsole::TIsYamlReadOnlyRequest, EvIsYamlReadOnlyRequest> {
-        using TResponse = TEvIsYamlReadOnlyResponse;
     };
 
     struct TEvGetAllMetadataResponse : public TEventShortDebugPB<TEvGetAllMetadataResponse, NKikimrConsole::TGetAllMetadataResponse, EvGetAllMetadataResponse> {};

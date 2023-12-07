@@ -1,6 +1,5 @@
 #include "restore_import_data.h"
 
-#include <ydb/public/lib/ydb_cli/common/retry_func.h>
 #include <ydb/public/lib/ydb_cli/dump/util/util.h>
 #include <library/cpp/string_utils/quote/quote.h>
 #include <library/cpp/bucket_quoter/bucket_quoter.h>
@@ -456,7 +455,7 @@ public:
         }
 
         auto handle = Pop();
-        do {
+        while (result.size() + handle.mapped().size() < maxSize) {
             result << handle.mapped() << "\n";
 
             if (Empty()) {
@@ -464,7 +463,7 @@ public:
             }
 
             handle = Pop();
-        } while (result.size() + handle.mapped().size() < maxSize);
+        }
 
         Add(std::move(handle.key()), std::move(handle.mapped()));
         return result;
@@ -802,15 +801,15 @@ class TDataWriter: public NPrivate::IDataWriter {
 
                 case EStatus::OVERLOADED:
                 case EStatus::CLIENT_RESOURCE_EXHAUSTED:
-                    NConsoleClient::ExponentialBackoff(retrySleep);
+                    ExponentialBackoff(retrySleep);
                     break;
 
                 case EStatus::UNAVAILABLE:
-                    NConsoleClient::ExponentialBackoff(retrySleep);
+                    ExponentialBackoff(retrySleep);
                     break;
 
                 case EStatus::TRANSPORT_UNAVAILABLE:
-                    NConsoleClient::ExponentialBackoff(retrySleep);
+                    ExponentialBackoff(retrySleep);
                     break;
 
                 default:

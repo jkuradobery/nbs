@@ -17,7 +17,7 @@ public:
         : TBaseComputation(data)
     {}
 
-    NUdf::TUnboxedValuePod DoCalculate(TComputationContext&, const NUdf::TUnboxedValuePod& value) const {
+    NUdf::TUnboxedValuePod DoCalculate(TComputationContext& compCtx, const NUdf::TUnboxedValuePod& value) const {
         if (IsOptional && !value)
             return NUdf::TUnboxedValuePod();
 
@@ -32,7 +32,7 @@ public:
         const auto mask = ConstantInt::get(value->getType(), APInt(128, 2, two));
         const auto result = BinaryOperator::CreateOr(BinaryOperator::CreateAnd(value, mask, "and", block), size, "or", block);
         if constexpr (IsOptional)
-            return SelectInst::Create(IsExists(value, block), result, GetEmpty(ctx.Codegen.GetContext()), "select", block);
+            return SelectInst::Create(IsExists(value, block), result, GetEmpty(ctx.Codegen->GetContext()), "select", block);
         return result;
     }
 #endif
@@ -46,7 +46,7 @@ public:
         : TBaseComputation(data)
     {}
 
-    NUdf::TUnboxedValuePod DoCalculate(TComputationContext&, const NUdf::TUnboxedValuePod& value) const {
+    NUdf::TUnboxedValuePod DoCalculate(TComputationContext& compCtx, const NUdf::TUnboxedValuePod& value) const {
         if (IsOptional && !value)
             return NUdf::TUnboxedValuePod();
 

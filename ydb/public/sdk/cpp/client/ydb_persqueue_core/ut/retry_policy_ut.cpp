@@ -15,7 +15,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
     Y_UNIT_TEST(TWriteSession_TestPolicy) {
         TYdbPqWriterTestHelper helper(TEST_CASE_NAME);
         helper.Write(true);
-        helper.Policy->Initialize(); // Thus ignoring possible early retries on "cluster initializing"
+        helper.Policy->Initialized(); // Thus ignoring possible early retries on "cluster initializing"
         auto doBreakDown = [&] () {
             helper.Policy->ExpectBreakDown();
             NThreading::TPromise<void> retriesPromise = NThreading::NewPromise();
@@ -53,7 +53,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
     Y_UNIT_TEST(TWriteSession_TestBrokenPolicy) {
         TYdbPqWriterTestHelper helper(TEST_CASE_NAME);
         helper.Write();
-        helper.Policy->Initialize();
+        helper.Policy->Initialized();
         helper.Policy->ExpectFatalBreakDown();
         helper.EventLoop->AllowStop();
         auto f1 = helper.Write(false);
@@ -73,12 +73,11 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
         setup1->Start();
         auto retryPolicy = std::make_shared<TYdbPqTestRetryPolicy>();
         auto settings = setup1->GetWriteSessionSettings();
-        settings.ClusterDiscoveryMode(EClusterDiscoveryMode::On);
         settings.PreferredCluster("dc2");
         settings.AllowFallbackToOtherClusters(false);
         settings.RetryPolicy(retryPolicy);
 
-        retryPolicy->Initialize();
+        retryPolicy->Initialized();
         retryPolicy->ExpectBreakDown();
 
         auto& client = setup1->GetPersQueueClient();
@@ -117,7 +116,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
         auto helper = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, TString(), setup1);
         helper->Write(true);
         auto retryPolicy = helper->Policy;
-        retryPolicy->Initialize();
+        retryPolicy->Initialized();
 
         auto waitForReconnect = [&](bool enable) {
             Cerr << "=== Expect breakdown\n";
@@ -152,114 +151,84 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
     }
 
     Y_UNIT_TEST(TWriteSession_SeqNoShift) {
-        auto setup1 = std::make_shared<TPersQueueYdbSdkTestSetup>(TEST_CASE_NAME, false, TTestServer::LOGGED_SERVICES, NActors::NLog::PRI_TRACE);
-        SDKTestSetup setup2("SeqNoShift_Dc2", false, TTestServer::LOGGED_SERVICES, NActors::NLog::PRI_TRACE);
+        auto setup1 = std::make_shared<TPersQueueYdbSdkTestSetup>(TEST_CASE_NAME, false);
+        SDKTestSetup setup2("SeqNoShift_Dc2", false);
         setup2.SetSingleDataCenter("dc2");
         setup2.AddDataCenter("dc1", *setup1, true);
-        setup2.Start(true, false);
+        setup2.Start();
         setup1->AddDataCenter("dc2", setup2, true);
-        setup1->Start(true, false);
-
-        TString sourceId1 = SDKTestSetup::GetTestMessageGroupId() + "1";
-        TString sourceId2 = SDKTestSetup::GetTestMessageGroupId() + "2";
-        auto writer1 = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, "dc1", setup1, sourceId1 , true);
-        auto writer2 = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, "dc1", setup1, sourceId2, true);
+        setup1->Start();
+        TString tmpSrcId = "tmp-src-seqno-shift";
+        auto helper = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, "dc1", setup1, TString(), true);
+        auto helper2 = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, "dc1", setup1, tmpSrcId, true);
 
         auto settings = setup1->GetWriteSessionSettings();
         auto& client = setup1->GetPersQueueClient();
-
         //! Fill data in dc1 1 with SeqNo = 1..10 for 2 different SrcId
-        Cerr << "===Write 10 messages into every writer\n";
         for (auto i = 0; i != 10; i++) {
-            writer1->Write(true); // 1
-            writer2->Write(true); // 1
+            helper->Write(true); // 1
+            helper2->Write(true); // 1
         }
-        Cerr << "===Messages were written\n";
-
         Cerr << "===Disable dc1\n";
         //! Leave only dc2 available
-        writer1->Policy->ExpectBreakDown();
-        writer2->Policy->ExpectBreakDown();
         setup1->DisableDataCenter("dc1");
-        writer1->Policy->WaitForRetriesSync(1);
-        writer2->Policy->WaitForRetriesSync(1);
+        helper->Policy->ExpectBreakDown();
+        helper->Policy->WaitForRetriesSync(1);
 
-        Cerr << "===Recreate writers\n";
-
-        //! Re-create writers, kill previous sessions. New sessions will connect to dc2.
-        writer1 = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, TString(), setup1, sourceId1, true);
-        writer2 = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, TString(), setup1, sourceId2, true);
+        //! Re-create helpers, kill previous sessions. New sessions will connect to dc2.
+        helper = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, TString(), setup1, TString(), true);
+        helper2 = MakeHolder<TYdbPqWriterTestHelper>("", nullptr, TString(), setup1, tmpSrcId, true);
 
         //! Write some data and await confirmation - just to ensure sessions are started.
-        Cerr << "===Write one message into every writer\n";
-        writer1->Write(true);
-        writer2->Write(true);
-        Cerr << "===Messages were written\n";
+        helper->Write(true);
+        helper2->Write(true);
 
+        helper->Policy->ExpectBreakDown();
+        Cerr << "Disable dc2\n";
         //! Leave no available DCs
-        writer1->Policy->ExpectBreakDown();
-        writer2->Policy->ExpectBreakDown();
-        writer1->Policy->Initialize();
-        writer2->Policy->Initialize();
-
-        Cerr << "===Disable dc2\n";
         setup1->DisableDataCenter("dc2");
-        Cerr << "===Wait for retries after initial dc2 shutdown\n";
-        writer1->Policy->WaitForRetriesSync(1);
-        writer2->Policy->WaitForRetriesSync(1);
+        Cerr << "Wait for retries after initial dc2 shutdown\n";
+        helper->Policy->WaitForRetriesSync(1);
 
         //! Put some data inflight. It cannot be written now, but SeqNo will be assigned.
-        Cerr << "===Write four async message into every writer\n";
-        for (auto i = 0; i != 3; i++) {
-            writer1->Write(false);
-            writer2->Write(false);
+        for (auto i = 0; i != 4; i++) {
+            helper->Write(false);
+            helper2->Write(false);
         }
-        auto f1 = writer1->Write(false);
-        auto f2 = writer2->Write(false);
-
+        auto f = helper->Write(false);
+        auto f2 = helper2->Write(false);
         //! Enable DC1. Now writers gonna write collected data to DC1 having LastSeqNo = 10
         //! (because of data written in the very beginning), and inflight data has SeqNo assigned = 2..5,
         //! so the SeqNo shift takes place.
-        Cerr << "===Enable dc2\n";
         setup1->EnableDataCenter("dc1");
 
-        Cerr << "===Wait for writes to complete\n";
-        f1.Wait();
+        Cerr << "Wait for writes to complete\n";
+
+        f.Wait();
         f2.Wait();
-        Cerr << "===Messages were written\n";
-
         //! Writer1 is not used any more.
-        writer1->EventLoop->AllowStop();
-        writer1 = nullptr;
+        helper->EventLoop->AllowStop();
+        helper = nullptr;
 
-        Cerr << "===Writer 1 closed\n";
-        writer2->Policy->ExpectBreakDown();
-        writer2->Policy->Initialize();
-
+        helper2->Policy->Initialized();
+        helper2->Policy->ExpectBreakDown();
         //! For the second writer, do switchback to dc2.
-        Cerr << "===Disable dc1\n";
         setup1->DisableDataCenter("dc1");
-        Cerr << "===Wait for retries after dc1 shutdown\n";
-        writer2->Policy->WaitForRetriesSync(1);
-
+        helper2->Policy->WaitForRetriesSync(1);
         //! Put some data inflight again;
-        Cerr << "===Write four async messages into writer2\n";
-        for (auto i = 0; i != 3; i++) {
-            writer2->Write(false);
+        for (auto i = 0; i != 4; i++) {
+            helper2->Write(false);
         }
-        f2 = writer2->Write(false);
-
-        Cerr << "===Enable dc2\n";
+        f = helper2->Write(false);
+        Cerr << "Enable dc2\n";
         setup1->EnableDataCenter("dc2");
 
-        f2.Wait();
-        Cerr << "===Messages were written\n";
+        f.Wait();
 
-        writer2->EventLoop->AllowStop();
-        writer2->Policy->ExpectBreakDown();
-        writer2 = nullptr;
+        helper2->EventLoop->AllowStop();
+        helper2->Policy->ExpectBreakDown();
 
-        Cerr << "===Enable dc1\n";
+        Cerr << "Enable dc1\n";
         setup1->EnableDataCenter("dc1");
         auto CheckSeqNo = [&] (const TString& dcName, ui64 expectedSeqNo) {
             settings.PreferredCluster(dcName);
@@ -273,19 +242,19 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
 
         //!check SeqNo in both DC. For writer1 We expect 14 messages in DC1
         //! (10 written initially + 4 written after reconnect) and 1 message in DC2 (only initial message).
-        settings.MessageGroupId(sourceId1);
-        Cerr << "===Check SeqNo writer1, dc2\n";
+        Cerr << "Check SeqNo writer1, dc2\n";
         CheckSeqNo("dc2", 1);
-        Cerr << "===Check SeqNo writer1, dc1\n";
+        Cerr << "Check SeqNo writer1, dc1\n";
         CheckSeqNo("dc1", 14);
 
         //! Check SeqNo for writer 2; Expect to have 6 messages on DC2 with MaxSeqNo = 6;
-        settings.MessageGroupId(sourceId2);
-        Cerr << "===Check SeqNo writer2 dc1\n";
+        helper2 = nullptr;
+        settings.MessageGroupId(tmpSrcId);
+        Cerr << "Check SeqNo writer2 dc2\n";
+        //!DC2 has no shift in SeqNo since 5 messages were written to dc 1.
+        CheckSeqNo("dc2", 15);
+        Cerr << "Check SeqNo writer2 dc1\n";
         CheckSeqNo("dc1", 14);
-        //! DC2 has no shift in SeqNo since 5 messages were written to dc 1.
-        Cerr << "===Check SeqNo writer2 dc2\n";
-        CheckSeqNo("dc2", 9);
 
 
         auto readSession = client.CreateReadSession(setup1->GetReadSessionSettings());
@@ -303,7 +272,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
         };
         THashMap<TString, ui64> MsgCountByClusterSrc2 = {
                 {"dc1", 14},
-                {"dc2", 5}
+                {"dc2", 6}
         };
         ui32 clustersPendingSrc1 = 2;
         ui32 clustersPendingSrc2 = 2;
@@ -318,7 +287,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
                         for (auto& message: event.GetMessages()) {
                             TString sourceId = message.GetMessageGroupId();
                             ui32 seqNo = message.GetSeqNo();
-                            if (sourceId == sourceId1) {
+                            if (sourceId == setup1->GetTestMessageGroupId()) {
                                 UNIT_ASSERT_VALUES_EQUAL(seqNo, seqNoByClusterSrc1[clusterName] + 1);
                                 seqNoByClusterSrc1[clusterName]++;
                                 auto& msgRemaining = MsgCountByClusterSrc1[clusterName];
@@ -327,7 +296,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
                                 if (!msgRemaining)
                                     clustersPendingSrc1--;
                             } else {
-                                UNIT_ASSERT_VALUES_EQUAL(sourceId, sourceId2);
+                                UNIT_ASSERT_VALUES_EQUAL(sourceId, tmpSrcId);
                                 auto& prevSeqNo = SeqNoByClusterSrc2[clusterName];
                                 if (clusterName == "dc1") {
                                     UNIT_ASSERT_VALUES_EQUAL(seqNo, prevSeqNo + 1);
@@ -337,7 +306,7 @@ Y_UNIT_TEST_SUITE(RetryPolicy) {
                                     if (prevSeqNo == 0) {
                                         UNIT_ASSERT_VALUES_EQUAL(seqNo, 1);
                                     } else if (prevSeqNo == 1) {
-                                        UNIT_ASSERT_VALUES_EQUAL(seqNo, 6);
+                                        UNIT_ASSERT_VALUES_EQUAL(seqNo, 11);
                                     } else {
                                         UNIT_ASSERT_VALUES_EQUAL(seqNo, prevSeqNo + 1);
                                     }

@@ -35,7 +35,7 @@ namespace NYson {
                         break;
 
                     default:
-                        Y_ABORT("unreachable");
+                        Y_FAIL("unreachable");
                 }
 
                 while (!(TBase::IsFinished() && TBase::IsEmpty())) {
@@ -219,7 +219,7 @@ namespace NYson {
                         ch = TBase::template SkipSpaceAndGetChar<AllowFinish>();
                     } else if (ch != endSymbol) {
                         ythrow TYsonException() << "Expected '" << KeyedItemSeparatorSymbol
-                                                << "' or '\\0' ' but '" << ch << "' found";
+                                                << "' or '" << endSymbol << "' but '" << ch << "' found";
                     }
                 }
             }
@@ -247,7 +247,7 @@ namespace NYson {
                     return true;
                 } else if (ch != endSymbol) {
                     ythrow TYsonException() << "Expected '" << ListItemSeparatorSymbol
-                                            << "' or '\\0' but '" << ch << "' found";
+                                            << "' or '" << endSymbol << "' but '" << ch << "' found";
                 }
                 return false;
             }

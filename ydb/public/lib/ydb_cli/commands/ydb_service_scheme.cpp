@@ -1,10 +1,10 @@
 #include "ydb_service_scheme.h"
 
 #include <ydb/public/lib/json_value/ydb_json_value.h>
-#include <ydb/public/lib/ydb_cli/common/pretty_table.h>
+#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
+#include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/public/lib/ydb_cli/common/print_utils.h>
 #include <ydb/public/lib/ydb_cli/common/scheme_printers.h>
-#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 
 #include <util/string/join.h>
 
@@ -54,14 +54,6 @@ TCommandRemoveDirectory::TCommandRemoveDirectory()
 
 void TCommandRemoveDirectory::Config(TConfig& config) {
     TYdbOperationCommand::Config(config);
-    config.Opts->AddLongOption('r', "recursive", "Remove directory and its content recursively. Prompt once by default")
-        .StoreTrue(&Recursive);
-    config.Opts->AddLongOption('f', "force", "Never prompt")
-        .NoArgument().StoreValue(&Prompt, ERecursiveRemovePrompt::Never);
-    config.Opts->AddCharOption('i', "Prompt before every removal")
-        .NoArgument().StoreValue(&Prompt, ERecursiveRemovePrompt::Always);
-    config.Opts->AddCharOption('I', "Prompt once")
-        .NoArgument().StoreValue(&Prompt, ERecursiveRemovePrompt::Once);
 
     config.SetFreeArgsNum(1);
     SetFreeArgTitle(0, "<path>", "Path to remove");
@@ -73,24 +65,13 @@ void TCommandRemoveDirectory::Parse(TConfig& config) {
 }
 
 int TCommandRemoveDirectory::Run(TConfig& config) {
-    TDriver driver = CreateDriver(config);
-    NScheme::TSchemeClient schemeClient(driver);
-    const auto settings = FillSettings(NScheme::TRemoveDirectorySettings());
-
-    if (Recursive) {
-        NTable::TTableClient tableClient(driver);
-        NTopic::TTopicClient topicClient(driver);
-        const auto prompt = Prompt.GetOrElse(ERecursiveRemovePrompt::Once);
-        ThrowOnError(RemoveDirectoryRecursive(schemeClient, tableClient, topicClient, Path, prompt, settings));
-    } else {
-        if (Prompt) {
-            if (!NConsoleClient::Prompt(*Prompt, Path, NScheme::ESchemeEntryType::Directory)) {
-                return EXIT_SUCCESS;
-            }
-        }
-        ThrowOnError(schemeClient.RemoveDirectory(Path, settings).GetValueSync());
-    }
-
+    NScheme::TSchemeClient client(CreateDriver(config));
+    ThrowOnError(
+        client.RemoveDirectory(
+            Path,
+            FillSettings(NScheme::TRemoveDirectorySettings())
+        ).GetValueSync()
+    );
     return EXIT_SUCCESS;
 }
 
@@ -111,17 +92,25 @@ namespace {
             Cout << "none" << Endl;
         }
     }
-}
 
-void PrintAllPermissions(
-    const TString& owner,
-    const TVector<NScheme::TPermissions>& permissions,
-    const TVector<NScheme::TPermissions>& effectivePermissions
-) {
-    Cout << "Owner: " << owner << Endl << Endl << "Permissions: " << Endl;
-    PrintPermissions(permissions);
-    Cout << Endl << "Effective permissions: " << Endl;
-    PrintPermissions(effectivePermissions);
+    void PrintAllPermissions(
+        const TString& owner,
+        const TVector<NScheme::TPermissions>& permissions,
+        const TVector<NScheme::TPermissions>& effectivePermissions
+    ) {
+        Cout << "Owner: " << owner << Endl << Endl << "Permissions: " << Endl;
+        PrintPermissions(permissions);
+        Cout << Endl << "Effective permissions: " << Endl;
+        PrintPermissions(effectivePermissions);
+    }
+
+    void PrintEntryVerbose(const NScheme::TSchemeEntry& entry, bool permissions) {
+        Cout << "<" << EntryTypeToString(entry.Type) << "> " << entry.Name << Endl;
+        if (permissions) {
+            Cout << Endl;
+            PrintAllPermissions(entry.Owner, entry.Permissions, entry.EffectivePermissions);
+        }
+    }
 }
 
 TCommandDescribe::TCommandDescribe()
@@ -136,8 +125,8 @@ void TCommandDescribe::Config(TConfig& config) {
     // Table options
     config.Opts->AddLongOption("partition-boundaries", "[Table] Show partition key boundaries").StoreTrue(&ShowKeyShardBoundaries)
         .AddLongName("shard-boundaries");
-    config.Opts->AddLongOption("stats", "[Table|Topic] Show table/topic statistics").StoreTrue(&ShowStats);
-    config.Opts->AddLongOption("partition-stats", "[Table|Topic] Show partition statistics").StoreTrue(&ShowPartitionStats);
+    config.Opts->AddLongOption("stats", "[Table] Show table statistics").StoreTrue(&ShowTableStats);
+    config.Opts->AddLongOption("partition-stats", "[Table] Show partition statistics").StoreTrue(&ShowPartitionStats);
 
     AddDeprecatedJsonOption(config, "(Deprecated, will be removed soon. Use --format option instead) [Table] Output in json format");
     AddFormats(config, { EOutputFormat::Pretty, EOutputFormat::ProtoJsonBase64 });
@@ -166,7 +155,6 @@ int TCommandDescribe::Run(TConfig& config) {
 
 int TCommandDescribe::PrintPathResponse(TDriver& driver, const NScheme::TDescribePathResult& result) {
     NScheme::TSchemeEntry entry = result.GetEntry();
-    Cout << "<" << EntryTypeToString(entry.Type) << "> " << entry.Name << Endl;
     switch (entry.Type) {
     case NScheme::ESchemeEntryType::Table:
         return DescribeTable(driver);
@@ -175,20 +163,10 @@ int TCommandDescribe::PrintPathResponse(TDriver& driver, const NScheme::TDescrib
     case NScheme::ESchemeEntryType::PqGroup:
     case NScheme::ESchemeEntryType::Topic:
         return DescribeTopic(driver);
-    case NScheme::ESchemeEntryType::CoordinationNode:
-        return DescribeCoordinationNode(driver);
     default:
-        return DescribeEntryDefault(entry);
+        WarnAboutTableOptions();
+        PrintEntryVerbose(entry, ShowPermissions);
     }
-    return EXIT_SUCCESS;
-}
-
-int TCommandDescribe::DescribeEntryDefault(NScheme::TSchemeEntry entry) {
-    if (ShowPermissions) {
-        Cout << Endl;
-        PrintAllPermissions(entry.Owner, entry.Permissions, entry.EffectivePermissions);
-    }
-    WarnAboutTableOptions();
     return EXIT_SUCCESS;
 }
 
@@ -216,56 +194,6 @@ namespace {
     }
 }
 
-namespace {
-
-    void PrintStatistics(const NTopic::TTopicDescription& topicDescription) {
-        Cout << Endl << "Topic stats:" << Endl;
-        auto& topicStats = topicDescription.GetTopicStats();
-        Cout << "Approximate size of topic: " << PrettySize(topicStats.GetStoreSizeBytes()) << Endl;
-        Cout << "Max partitions write time lag: " << FormatDuration(topicStats.GetMaxWriteTimeLag()) << Endl;
-        Cout << "Min partitions last write time: " << FormatTime(topicStats.GetMinLastWriteTime()) << Endl;
-        Cout << "Written size per minute: " << PrettySize(topicStats.GetBytesWrittenPerMinute()) << Endl;
-        Cout << "Written size per hour: " << PrettySize(topicStats.GetBytesWrittenPerHour()) << Endl;
-        Cout << "Written size per day: " << PrettySize(topicStats.GetBytesWrittenPerDay()) << Endl;
-
-    }
-
-    void PrintPartitionStatistics(const NTopic::TTopicDescription& topicDescription) {
-        Cout << Endl << "Topic partitions stats:" << Endl;
-
-        TVector<TString> columnNames = { "#" };
-        columnNames.push_back("Active");
-        columnNames.push_back("Start offset");
-        columnNames.push_back("End offset");
-        columnNames.push_back("Size");
-        columnNames.push_back("Last write time");
-        columnNames.push_back("Max write time lag");
-        columnNames.push_back("Written size per minute");
-        columnNames.push_back("Written size per hour");
-        columnNames.push_back("Written size per day");
-
-        TPrettyTable table(columnNames);
-        for (const auto& part : topicDescription.GetPartitions()) {
-            auto& row = table.AddRow();
-            row.Column(0, part.GetPartitionId());
-            row.Column(1, part.GetActive());
-            const auto& partStats = part.GetPartitionStats();
-            if (partStats) {
-                row.Column(2, partStats->GetStartOffset());
-                row.Column(3, partStats->GetEndOffset());
-                row.Column(4, PrettySize(partStats->GetStoreSizeBytes()));
-                row.Column(5, FormatTime(partStats->GetLastWriteTime()));
-                row.Column(6, FormatDuration(partStats->GetMaxWriteTimeLag()));
-                row.Column(7, PrettySize(partStats->GetBytesWrittenPerMinute()));
-                row.Column(8, PrettySize(partStats->GetBytesWrittenPerHour()));
-                row.Column(9, PrettySize(partStats->GetBytesWrittenPerDay()));
-            }
-        }
-        Cout << table;
-    }
-
-}
-
 int TCommandDescribe::PrintTopicResponsePretty(const NYdb::NTopic::TTopicDescription& description) {
     Cout << Endl << "RetentionPeriod: " << description.GetRetentionPeriod().Hours() << " hours";
     if (description.GetRetentionStorageMb().Defined()) {
@@ -278,16 +206,7 @@ int TCommandDescribe::PrintTopicResponsePretty(const NYdb::NTopic::TTopicDescrip
         Cout << Endl << "SupportedCodecs: " << FormatCodecs(description.GetSupportedCodecs()) << Endl;
     }
     PrintTopicConsumers(description.GetConsumers());
-
-    PrintPermissionsIfNeeded(description);
-
-    if (ShowStats) {
-        PrintStatistics(description);
-    }
-    if (ShowPartitionStats){
-        PrintPartitionStatistics(description);
-    }
-
+    Cout << Endl;
     return EXIT_SUCCESS;
 }
 
@@ -331,10 +250,7 @@ int TCommandDescribe::PrintTopicResponse(const NYdb::NTopic::TDescribeTopicResul
 
 int TCommandDescribe::DescribeTopic(TDriver& driver) {
     NYdb::NTopic::TTopicClient topicClient(driver);
-    NYdb::NTopic::TDescribeTopicSettings settings;
-    settings.IncludeStats(ShowStats || ShowPartitionStats);
-
-    auto describeResult = topicClient.DescribeTopic(Path, settings).GetValueSync();
+    auto describeResult = topicClient.DescribeTopic(Path).GetValueSync();
     ThrowOnError(describeResult);
     return PrintTopicResponse(describeResult);
 }
@@ -348,7 +264,7 @@ int TCommandDescribe::DescribeTable(TDriver& driver) {
         FillSettings(
             NTable::TDescribeTableSettings()
             .WithKeyShardBoundary(ShowKeyShardBoundaries)
-            .WithTableStatistics(ShowStats || ShowPartitionStats)
+            .WithTableStatistics(ShowTableStats || ShowPartitionStats)
             .WithPartitionStatistics(ShowPartitionStats)
         )
     ).GetValueSync();
@@ -364,65 +280,11 @@ int TCommandDescribe::DescribeColumnTable(TDriver& driver) {
         Path,
         FillSettings(
             NTable::TDescribeTableSettings()
-            .WithTableStatistics(ShowStats)
+            .WithTableStatistics(ShowTableStats)
         )
     ).GetValueSync();
     ThrowOnError(result);
     return PrintTableResponse(result);
-}
-
-int TCommandDescribe::PrintCoordinationNodeResponse(const NYdb::NCoordination::TDescribeNodeResult& result) const {
-    switch (OutputFormat) {
-    case EOutputFormat::Default:
-    case EOutputFormat::Pretty:
-        return PrintCoordinationNodeResponsePretty(result.GetResult());
-    case EOutputFormat::Json:
-        Cerr << "Warning! Option --json is deprecated and will be removed soon. "
-            << "Use \"--format proto-json-base64\" option instead." << Endl;
-        [[fallthrough]];
-    case EOutputFormat::ProtoJsonBase64:
-        return PrintCoordinationNodeResponseProtoJsonBase64(result.GetResult());
-    default:
-        throw TMisuseException() << "This command doesn't support " << OutputFormat << " output format";
-    }
-    return EXIT_SUCCESS;
-}
-
-int TCommandDescribe::PrintCoordinationNodeResponsePretty(const NYdb::NCoordination::TNodeDescription& result) const {
-    Cout << Endl << "AttachConsistencyMode: " << result.GetAttachConsistencyMode() << Endl;
-    Cout << "ReadConsistencyMode: " << result.GetReadConsistencyMode() << Endl;
-    if (result.GetSessionGracePeriod().Defined()) {
-        Cout << "SessionGracePeriod: " << result.GetSessionGracePeriod() << Endl;
-    }
-    if (result.GetSelfCheckPeriod().Defined()) {
-        Cout << "SelfCheckPeriod: " << result.GetSelfCheckPeriod() << Endl;
-    }
-    Cout << "RatelimiterCountersMode: " << result.GetRateLimiterCountersMode() << Endl;
-    return EXIT_SUCCESS;
-}
-
-int TCommandDescribe::PrintCoordinationNodeResponseProtoJsonBase64(const NYdb::NCoordination::TNodeDescription& result) const {
-    TString json;
-    google::protobuf::util::JsonPrintOptions jsonOpts;
-    jsonOpts.preserve_proto_field_names = true;
-    auto convertStatus = google::protobuf::util::MessageToJsonString(
-        NYdb::TProtoAccessor::GetProto(result),
-        &json,
-        jsonOpts
-    );
-    if (convertStatus.ok()) {
-        Cout << json << Endl;
-        return EXIT_SUCCESS;
-    }
-    Cerr << "Error occurred while converting result proto to json: " << TString(convertStatus.message().ToString()) << Endl;
-    return EXIT_FAILURE;
-}
-
-int TCommandDescribe::DescribeCoordinationNode(const TDriver& driver) {
-    NCoordination::TClient client(driver);
-    NCoordination::TDescribeNodeResult description = client.DescribeNode(Path).GetValueSync();
-
-    return PrintCoordinationNodeResponse(description);
 }
 
 namespace {
@@ -430,7 +292,6 @@ namespace {
         if (!tableDescription.GetTableColumns().size()) {
             return;
         }
-        Cerr << Endl;
         TPrettyTable table({ "Name", "Type", "Family", "Key" }, TPrettyTableConfig().WithoutRowDelimiters());
 
         const TVector<TString>& keyColumns = tableDescription.GetPrimaryKeyColumns();
@@ -579,7 +440,6 @@ namespace {
         if (!settings) {
             return;
         }
-
         Cout << Endl << "Ttl settings ";
         switch (settings->GetMode()) {
         case NTable::TTtlSettings::EMode::DateTypeColumn:
@@ -604,10 +464,6 @@ namespace {
             Cout << "(unknown):" << Endl
                 << colors.RedColor() << "Unknown ttl settings mode. Please update your version of YDB cli"
                 << colors.OldColor() << Endl;
-        }
-
-        if (settings->GetRunInterval()) {
-            Cout << "Run interval: " << settings->GetRunInterval() << Endl;
         }
     }
 
@@ -663,8 +519,6 @@ namespace {
         Cout << "Last modified: " << FormatTime(tableDescription.GetModificationTime()) << Endl;
         Cout << "Created: " << FormatTime(tableDescription.GetCreationTime()) << Endl;
     }
-
-
 
     void PrintPartitionInfo(const NTable::TTableDescription& tableDescription, bool showBoundaries, bool showStats) {
         const TVector<NTable::TKeyRange>& ranges = tableDescription.GetKeyRanges();
@@ -786,8 +640,17 @@ void TCommandDescribe::PrintResponsePretty(const NTable::TTableDescription& tabl
             << (tableDescription.GetKeyBloomFilter().GetRef() ? "true" : "false") << Endl;
     }
     PrintReadReplicasSettings(tableDescription);
-    PrintPermissionsIfNeeded(tableDescription);
-    if (ShowStats) {
+    if (ShowPermissions) {
+        if (tableDescription.GetColumns().size()) {
+            Cout << Endl;
+        }
+        PrintAllPermissions(
+            tableDescription.GetOwner(),
+            tableDescription.GetPermissions(),
+            tableDescription.GetEffectivePermissions()
+        );
+    }
+    if (ShowTableStats) {
         PrintStatistics(tableDescription);
     }
     if (ShowKeyShardBoundaries || ShowPartitionStats) {
@@ -814,12 +677,12 @@ int TCommandDescribe::PrintResponseProtoJsonBase64(const NTable::TTableDescripti
 }
 
 void TCommandDescribe::WarnAboutTableOptions() {
-    if (ShowKeyShardBoundaries || ShowStats || ShowPartitionStats || OutputFormat != EOutputFormat::Default) {
+    if (ShowKeyShardBoundaries || ShowTableStats || ShowPartitionStats || OutputFormat != EOutputFormat::Default) {
         TVector<TString> options;
         if (ShowKeyShardBoundaries) {
             options.emplace_back("\"partition-boundaries\"(\"shard-boundaries\")");
         }
-        if (ShowStats) {
+        if (ShowTableStats) {
             options.emplace_back("\"stats\"");
         }
         if (ShowPartitionStats) {
@@ -912,7 +775,6 @@ TCommandPermissions::TCommandPermissions()
     AddCommand(std::make_unique<TCommandPermissionSet>());
     AddCommand(std::make_unique<TCommandChangeOwner>());
     AddCommand(std::make_unique<TCommandPermissionClear>());
-    AddCommand(std::make_unique<TCommandPermissionList>());
 }
 
 TCommandPermissionGrant::TCommandPermissionGrant()
@@ -1100,36 +962,6 @@ int TCommandPermissionClear::Run(TConfig& config) {
             )
         ).GetValueSync()
     );
-    return EXIT_SUCCESS;
-}
-
-TCommandPermissionList::TCommandPermissionList()
-    : TYdbOperationCommand("list", std::initializer_list<TString>(), "List permissions")
-{}
-
-void TCommandPermissionList::Config(TConfig& config) {
-    TYdbOperationCommand::Config(config);
-
-    config.SetFreeArgsNum(1);
-    SetFreeArgTitle(0, "<path>", "Path to list permissions for");
-}
-
-void TCommandPermissionList::Parse(TConfig& config) {
-    TClientCommand::Parse(config);
-    ParsePath(config, 0);
-}
-
-int TCommandPermissionList::Run(TConfig& config) {
-    TDriver driver = CreateDriver(config);
-    NScheme::TSchemeClient client(driver);
-    NScheme::TDescribePathResult result = client.DescribePath(
-        Path,
-        FillSettings(NScheme::TDescribePathSettings())
-    ).GetValueSync();
-    ThrowOnError(result);
-    NScheme::TSchemeEntry entry = result.GetEntry();
-    Cout << Endl;
-    PrintAllPermissions(entry.Owner, entry.Permissions, entry.EffectivePermissions);
     return EXIT_SUCCESS;
 }
 

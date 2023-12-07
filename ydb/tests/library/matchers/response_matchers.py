@@ -7,7 +7,7 @@ from six import iteritems
 from hamcrest.core.base_matcher import BaseMatcher
 from hamcrest.core.helpers.wrap_matcher import wrap_matcher
 
-from contrib.ydb.tests.library.common.msgbus_types import MessageBusStatus
+from ydb.tests.library.common.msgbus_types import MessageBusStatus
 
 
 class FakeProtobuf(object):

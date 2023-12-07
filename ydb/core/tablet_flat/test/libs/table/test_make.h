@@ -21,7 +21,6 @@ namespace NTest {
         struct IBand {
             virtual ~IBand() = default;
             virtual void Add(const TRow&) noexcept = 0;
-            virtual void Ver(TRowVersion rowVersion = TRowVersion::Min()) = 0;
         };
 
         struct TPart : IBand {
@@ -35,11 +34,6 @@ namespace NTest {
             void Add(const TRow &row) noexcept override
             {
                 Cook.Add(row);
-            }
-
-            void Ver(TRowVersion rowVersion) override
-            {
-                Cook.Ver(rowVersion);
             }
 
             const TEpoch Epoch;
@@ -56,11 +50,6 @@ namespace NTest {
             void Add(const TRow &row) noexcept override
             {
                 Cooker.Add(row, ERowOp::Upsert);
-            }
-
-            void Ver(TRowVersion) override
-            {
-                Y_ABORT("unsupported");
             }
 
             TCooker Cooker;
@@ -88,9 +77,8 @@ namespace NTest {
             return cook.Add(Saved.begin(), Saved.end()).Finish();
         }
 
-        TAutoPtr<TSubset> Mixed(ui32 frozen, ui32 flatten, THash hash, float history = 0)
+        TAutoPtr<TSubset> Mixed(ui32 frozen, ui32 flatten, THash hash)
         {
-            TMersenne<ui64> rnd(0);
             TDeque<TAutoPtr<IBand>> bands;
 
             for (auto it: xrange(flatten)) {
@@ -102,22 +90,8 @@ namespace NTest {
                 bands.emplace_back(new TMem(Scheme, TEpoch::FromIndex(bands.size()), it));
 
             if (const auto slots = bands.size()) {
-                for (auto &row: Saved) {
-                    auto &band = bands[hash(row) % slots];
-                    if (history) {
-                        for (ui64 txId = 10; txId; txId--) {
-                            band->Ver({0, txId});
-                            // FIXME: change row data?
-                            band->Add(row);
-                            if (rnd.GenRandReal4() > history) {
-                                // each row will have from 1 to 10 versions
-                                break;
-                            }
-                        }
-                    } else {
-                        band->Add(row);
-                    }
-                }
+                for (auto &row: Saved)
+                    bands[hash(row) % slots]->Add(row);
             }
 
             TAutoPtr<TSubset> subset = new TSubset(TEpoch::FromIndex(bands.size()), Scheme);
@@ -126,7 +100,7 @@ namespace NTest {
                 if (auto *mem = dynamic_cast<TMem*>(one.Get())) {
                     auto table = mem->Cooker.Unwrap();
 
-                    Y_ABORT_UNLESS(table->GetRowCount(), "Got empty IBand");
+                    Y_VERIFY(table->GetRowCount(), "Got empty IBand");
 
                     subset->Frozen.emplace_back(std::move(table), table->Immediate());
                 } else if (auto *part_ = dynamic_cast<TPart*>(one.Get())) {
@@ -139,7 +113,7 @@ namespace NTest {
                     subset->Flatten.push_back(
                                 { eggs.At(0), nullptr, eggs.At(0)->Slices });
                 } else {
-                    Y_ABORT("Unknown IBand writer type, internal error");
+                    Y_FAIL("Unknown IBand writer type, internal error");
                 }
             }
 

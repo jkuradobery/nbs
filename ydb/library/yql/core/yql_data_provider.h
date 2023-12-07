@@ -75,7 +75,6 @@ public:
 };
 
 class IDqIntegration;
-class IDqOptimization;
 
 class IOptimizationContext;
 
@@ -87,8 +86,7 @@ public:
 
     enum class EResultFormat {
         Yson,
-        Custom,
-        Skiff
+        Custom
     };
 
     // settings for result data provider
@@ -106,7 +104,6 @@ public:
     virtual IGraphTransformer& GetConfigurationTransformer() = 0;
     virtual TExprNode::TPtr GetClusterInfo(const TString& cluster, TExprContext& ctx) = 0;
     virtual const THashMap<TString, TString>* GetClusterTokens() = 0;
-    virtual void AddCluster(const TString& name, const THashMap<TString, TString>& properties) = 0;
 
     //-- discovery & rewrite
     virtual IGraphTransformer& GetIODiscoveryTransformer() = 0;
@@ -128,7 +125,6 @@ public:
     //-- optimizations
     virtual TExprNode::TPtr RewriteIO(const TExprNode::TPtr& node, TExprContext& ctx) = 0;
     virtual IGraphTransformer& GetRecaptureOptProposalTransformer() = 0;
-    virtual IGraphTransformer& GetStatisticsProposalTransformer() = 0;
     virtual IGraphTransformer& GetLogicalOptProposalTransformer() = 0;
     virtual IGraphTransformer& GetPhysicalOptProposalTransformer() = 0;
     virtual IGraphTransformer& GetPhysicalFinalizingTransformer() = 0;
@@ -140,8 +136,6 @@ public:
 
     // This function is used in core optimizers to check either the node can be used as input multiple times or not
     virtual bool IsPersistent(const TExprNode& node) = 0;
-    virtual bool IsRead(const TExprNode& node) = 0;
-    virtual bool IsWrite(const TExprNode& node) = 0;
 
     // Right! or worlds are written to syncList
     virtual bool CanBuildResult(const TExprNode& node, TSyncMap& syncList) = 0;
@@ -176,7 +170,6 @@ public:
 
     // DQ
     virtual IDqIntegration* GetDqIntegration() = 0;
-    virtual IDqOptimization* GetDqOptimization() = 0;
 };
 
 struct IPipelineConfigurator;

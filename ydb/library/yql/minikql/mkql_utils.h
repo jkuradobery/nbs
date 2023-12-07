@@ -1,7 +1,6 @@
 #pragma once
 
 #include <util/generic/strbuf.h>
-#include <util/generic/string.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -15,12 +14,12 @@ public:
     }
 
     inline static TStatus Error(const TStringBuf& error) {
-        Y_DEBUG_ABORT_UNLESS(!error.empty());
+        Y_VERIFY_DEBUG(!error.empty());
         return TStatus(TString(error));
     }
 
     inline static TStatus Error(TString&& error) {
-        Y_DEBUG_ABORT_UNLESS(!error.empty());
+        Y_VERIFY_DEBUG(!error.empty());
         return TStatus(std::move(error));
     }
 

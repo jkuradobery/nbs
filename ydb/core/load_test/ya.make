@@ -12,23 +12,13 @@ PEERDIR(
     ydb/core/control
     ydb/core/keyvalue
     ydb/core/kqp/common
-    ydb/core/kqp/rm_service
-    ydb/core/tx/columnshard
-    ydb/core/tx/datashard
     ydb/library/workload
     ydb/public/lib/base
     ydb/public/lib/operation_id
     ydb/public/sdk/cpp/client/ydb_proto
-    ydb/services/kesus
-    ydb/services/metadata
-    ydb/services/persqueue_cluster_discovery
-    ydb/services/ydb
 )
 
 SRCS(
-    aggregated_result.cpp
-    archive.cpp
-    config_examples.cpp
     keyvalue_write.cpp
     kqp.cpp
     memory.cpp
@@ -38,23 +28,16 @@ SRCS(
     service_actor.cpp
     group_write.cpp
     vdisk_write.cpp
-    yql_single_query.cpp
-
     ycsb/actors.h
     ycsb/bulk_mkql_upsert.cpp
-    ycsb/common.h
-    ycsb/common.cpp
     ycsb/defs.h
     ycsb/info_collector.h
     ycsb/info_collector.cpp
-    ycsb/kqp_select.cpp
     ycsb/kqp_upsert.cpp
     ycsb/test_load_actor.cpp
     ycsb/test_load_actor.h
     ycsb/test_load_read_iterator.cpp
 )
-
-GENERATE_ENUM_SERIALIZATION(percentile.h)
 
 END()
 

@@ -2,7 +2,7 @@
 #include <ydb/core/grpc_services/base/base.h>
 
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
@@ -47,10 +47,10 @@ private:
         this->Become(&TDerived::StateResolvePath);
     }
 
-    void StateResolvePath(TAutoPtr<IEventHandle>& ev) {
+    void StateResolvePath(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -97,10 +97,10 @@ private:
         this->Become(&TDerived::StateWork);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -158,12 +158,12 @@ public:
     using TBaseDescribe<TDescribePathRPC, TEvDescribePathRequest, Ydb::Scheme::DescribePathResult>::TBaseDescribe;
 };
 
-void DoListDirectoryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TListDirectoryRPC(p.release()));
+void DoListDirectoryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TListDirectoryRPC(p.release()));
 }
 
-void DoDescribePathRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribePathRPC(p.release()));
+void DoDescribePathRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDescribePathRPC(p.release()));
 }
 
 } // namespace NKikimr

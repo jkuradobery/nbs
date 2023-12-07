@@ -1,7 +1,7 @@
 #include "service_scheme.h"
 
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
@@ -100,8 +100,8 @@ private:
     }
 };
 
-void DoModifyPermissionsRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TModifyPermissionsRPC(p.release()));
+void DoModifyPermissionsRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TModifyPermissionsRPC(p.release()));
 }
 
 template<>

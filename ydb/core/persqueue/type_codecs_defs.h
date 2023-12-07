@@ -1,8 +1,8 @@
 #pragma once
 
 #include <ydb/core/scheme/scheme_type_id.h>
+#include <ydb/core/util/blob_data_stream.h>
 
-#include <util/generic/buffer.h>
 #include <util/generic/hash.h>
 #include <util/generic/ptr.h>
 #include <util/generic/singleton.h>
@@ -182,7 +182,7 @@ public:
 
     virtual TCodecSig Signature() const = 0;
 
-    virtual TAutoPtr<IChunkCoder> MakeChunk(TBuffer&) const = 0;
+    virtual TAutoPtr<IChunkCoder> MakeChunk(TFlatBlobDataOutputStream*) const = 0;
     virtual IChunkDecoder::TPtr ReadChunk(const TDataRef&) const = 0;
 
     /// Read the chunk using 'this' codec (if the codec signature matches),
@@ -191,7 +191,7 @@ public:
 };
 
 /***************************************************************************//**
- * TDataRef can either share the data (TString, TBuffer) or keep a reference (TStringBuf).
+ * TDataRef can either share the data (TString) or keep a reference (TStringBuf).
  * It uses short string optimization (SSO) to store small data (<= 16b).
  * TODO: Move to ydb/core/util
  ******************************************************************************/
@@ -217,17 +217,12 @@ public:
         : TDataRef(data.data(), data.size())
     { }
 
-    TDataRef(const TBuffer& data)
-        : TDataRef(data.data(), data.size())
-    {
-    }
-    
-     /// Copy and take ownership of a small piece of data (<= 16b).
+    /// Copy and take ownership of a small piece of data (<= 16b).
     TDataRef(const char* data, size_t size, bool)
         : ShortSize_(size)
         , IsNull_(0)
     {
-        Y_DEBUG_ABORT_UNLESS(size <= INTRUSIVE_SIZE);
+        Y_VERIFY_DEBUG(size <= INTRUSIVE_SIZE);
         if (size) {
             ::memcpy(IntrusiveData_, data, size);
         }
@@ -330,13 +325,13 @@ public:
     template <bool IsNullable>
     const ICodec* GetDefaultCodec() const {
         const ICodec* codec = IsNullable ? DefaultNullable : DefaultNonNullable;
-        Y_ABORT_UNLESS(codec, "No default codec.");
+        Y_VERIFY(codec, "No default codec.");
         return codec;
     }
 
     const ICodec* GetCodec(TCodecSig sig) const {
         auto iter = Codecs.find(sig);
-        Y_ABORT_UNLESS(iter != Codecs.end(), "Unregistered codec (%u).", ui16(sig));
+        Y_VERIFY(iter != Codecs.end(), "Unregistered codec (%u).", ui16(sig));
         return iter->second;
     }
 
@@ -348,20 +343,20 @@ public:
     const ICodec* AddCodec() {
         auto codec = Singleton<TCodec>();
         auto inserted = Codecs.insert(std::make_pair(TCodec::Sig(), codec));
-        Y_ABORT_UNLESS(inserted.second, "Codec signature collision (%u).", ui16(TCodec::Sig()));
+        Y_VERIFY(inserted.second, "Codec signature collision (%u).", ui16(TCodec::Sig()));
         return codec;
     }
 
     const ICodec* AddAlias(TCodecSig from, TCodecSig to, bool force = false) {
         auto iter = Codecs.find(to);
-        Y_ABORT_UNLESS(iter != Codecs.end(), "Aliasing an unregistered codec (%u -> %u).", ui16(from), ui16(to));
+        Y_VERIFY(iter != Codecs.end(), "Aliasing an unregistered codec (%u -> %u).", ui16(from), ui16(to));
         return AddAlias(from, iter->second, force);
     }
 
     const ICodec* AddAlias(TCodecSig from, const ICodec* to, bool force = false) {
-        Y_ABORT_UNLESS(to, "Aliasing an unregistered codec (%u -> nullptr).", ui16(from));
+        Y_VERIFY(to, "Aliasing an unregistered codec (%u -> nullptr).", ui16(from));
         auto& alias = Codecs[from];
-        Y_ABORT_UNLESS(force || !alias, "Codec signature collision (%u).", ui16(from));
+        Y_VERIFY(force || !alias, "Codec signature collision (%u).", ui16(from));
         alias = to;
 
         // Cache the default codecs.
@@ -385,10 +380,10 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 inline IChunkDecoder::TPtr IChunkDecoder::ReadChunk(const TDataRef& data, const TTypeCodecs* codecs) {
-    Y_DEBUG_ABORT_UNLESS(data.Size() >= sizeof(TCodecSig));
+    Y_VERIFY_DEBUG(data.Size() >= sizeof(TCodecSig));
     const TCodecSig sig = ReadUnaligned<TCodecSig>(data.Data());
     auto codec = codecs->GetCodec(sig);
-    Y_ABORT_UNLESS(codec, "Unregistered codec (%u).", ui16(sig));
+    Y_VERIFY(codec, "Unregistered codec (%u).", ui16(sig));
     return codec->ReadChunk(data);
 }
 

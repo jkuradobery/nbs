@@ -16,7 +16,8 @@ public:
 
     TTxType GetTxType() const override { return TXTYPE_GET_LOG_TAIL; }
 
-    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override {
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
+    {
         auto &req = Request->Get()->Record;
 
         LOG_DEBUG_S(ctx, NKikimrServices::CMS,
@@ -45,7 +46,8 @@ public:
         return true;
     }
 
-    void Complete(const TActorContext &ctx) override {
+    void Complete(const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxGetLogTail Complete");
 
         ctx.Send(Request->Sender, Response.Release());
@@ -56,7 +58,8 @@ private:
     THolder<TEvCms::TEvGetLogTailResponse> Response;
 };
 
-ITransaction *TCms::CreateTxGetLogTail(TEvCms::TEvGetLogTailRequest::TPtr &ev) {
+ITransaction *TCms::CreateTxGetLogTail(TEvCms::TEvGetLogTailRequest::TPtr &ev)
+{
     return new TTxGetLogTail(this, ev);
 }
 

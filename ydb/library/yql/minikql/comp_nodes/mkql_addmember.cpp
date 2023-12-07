@@ -14,36 +14,36 @@ public:
     TAddMemberWrapper(TComputationMutables& mutables, IComputationNode* structObj, IComputationNode* member, ui32 index,
         std::vector<EValueRepresentation>&& representations)
         : TBaseComputation(mutables, EValueRepresentation::Boxed)
-        , StructObj_(structObj)
-        , Member_(member)
-        , Index_(index)
-        , Representations_(std::move(representations))
-        , Cache_(mutables)
+        , StructObj(structObj)
+        , Member(member)
+        , Index(index)
+        , Representations(std::move(representations))
+        , Cache(mutables)
     {}
 
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
-        const auto& baseStruct = StructObj_->GetValue(ctx);
+        const auto& baseStruct = StructObj->GetValue(ctx);
 
         NUdf::TUnboxedValue* itemsPtr = nullptr;
-        const auto result = Cache_.NewArray(ctx, Representations_.size() + 1U, itemsPtr);
+        const auto result = Cache.NewArray(ctx, Representations.size() + 1U, itemsPtr);
         if (const auto ptr = baseStruct.GetElements()) {
-            for (ui32 i = 0; i < Index_; ++i) {
+            for (ui32 i = 0; i < Index; ++i) {
                 *itemsPtr++ = ptr[i];
             }
 
-            *itemsPtr++ = Member_->GetValue(ctx);
+            *itemsPtr++ = Member->GetValue(ctx);
 
-            for (ui32 i = Index_; i < Representations_.size(); ++i) {
+            for (ui32 i = Index; i < Representations.size(); ++i) {
                 *itemsPtr++ = ptr[i];
             }
         } else {
-            for (ui32 i = 0; i < Index_; ++i) {
+            for (ui32 i = 0; i < Index; ++i) {
                 *itemsPtr++ = baseStruct.GetElement(i);
             }
 
-            *itemsPtr++ = Member_->GetValue(ctx);
+            *itemsPtr++ = Member->GetValue(ctx);
 
-            for (ui32 i = Index_; i < Representations_.size(); ++i) {
+            for (ui32 i = Index; i < Representations.size(); ++i) {
                 *itemsPtr++ = baseStruct.GetElement(i);
             }
         }
@@ -53,29 +53,28 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        if (Representations_.size() > CodegenArraysFallbackLimit)
+        if (Representations.size() > CodegenArraysFallbackLimit)
             return TBaseComputation::DoGenerateGetValue(ctx, block);
 
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
-        const auto newSize = Representations_.size() + 1U;
+        const auto newSize = Representations.size() + 1U;
 
         const auto valType = Type::getInt128Ty(context);
         const auto ptrType = PointerType::getUnqual(valType);
         const auto idxType = Type::getInt32Ty(context);
         const auto type = ArrayType::get(valType, newSize);
-        const auto itmsType = PointerType::getUnqual(type);
         const auto itms = *Stateless || ctx.AlwaysInline ?
-            new AllocaInst(itmsType, 0U, "itms", &ctx.Func->getEntryBlock().back()):
-            new AllocaInst(itmsType, 0U, "itms", block);
-        const auto result = Cache_.GenNewArray(newSize, itms, ctx, block);
-        const auto itemsPtr = new LoadInst(itmsType, itms, "items", block);
+            new AllocaInst(PointerType::getUnqual(type), 0U, "itms", &ctx.Func->getEntryBlock().back()):
+            new AllocaInst(PointerType::getUnqual(type), 0U, "itms", block);
+        const auto result = Cache.GenNewArray(newSize, itms, ctx, block);
+        const auto itemsPtr = new LoadInst(itms, "items", block);
 
-        const auto array = GetNodeValue(StructObj_, ctx, block);
+        const auto array = GetNodeValue(StructObj, ctx, block);
         const auto zero = ConstantInt::get(idxType, 0);
 
-        const auto itemPtr = GetElementPtrInst::CreateInBounds(type, itemsPtr, {zero, ConstantInt::get(idxType, Index_)}, "item", block);
-        GetNodeValue(itemPtr, Member_, ctx, block);
+        const auto itemPtr = GetElementPtrInst::CreateInBounds(itemsPtr, {zero, ConstantInt::get(idxType, Index)}, "item", block);
+        GetNodeValue(itemPtr, Member, ctx, block);
 
         const auto elements = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(ptrType, array, ctx.Codegen, block);
 
@@ -88,67 +87,71 @@ public:
         BranchInst::Create(slow, fast, null, block);
         {
             block = fast;
-            for (ui32 i = 0; i < Index_; ++i) {
+            for (ui32 i = 0; i < Index; ++i) {
                 const auto index = ConstantInt::get(idxType, i);
-                const auto srcPtr = GetElementPtrInst::CreateInBounds(valType, elements, {index}, "src", block);
-                const auto dstPtr = GetElementPtrInst::CreateInBounds(type, itemsPtr, {zero, index}, "dst", block);
-                const auto item = new LoadInst(valType, srcPtr, "item", block);
+                const auto srcPtr = GetElementPtrInst::CreateInBounds(elements, {index}, "src", block);
+                const auto dstPtr = GetElementPtrInst::CreateInBounds(itemsPtr, {zero, index}, "dst", block);
+                const auto item = new LoadInst(srcPtr, "item", block);
                 new StoreInst(item, dstPtr, block);
-                ValueAddRef(Representations_[i], dstPtr, ctx, block);
+                ValueAddRef(Representations[i], dstPtr, ctx, block);
             }
 
-            for (ui32 i = Index_ + 1U; i < newSize; ++i) {
+            for (ui32 i = Index + 1U; i < newSize; ++i) {
                 const auto oldIndex = ConstantInt::get(idxType, --i);
                 const auto newIndex = ConstantInt::get(idxType, ++i);
-                const auto srcPtr = GetElementPtrInst::CreateInBounds(valType, elements, {oldIndex}, "src", block);
-                const auto dstPtr = GetElementPtrInst::CreateInBounds(type, itemsPtr, {zero, newIndex}, "dst", block);
-                const auto item = new LoadInst(valType, srcPtr, "item", block);
+                const auto srcPtr = GetElementPtrInst::CreateInBounds(elements, {oldIndex}, "src", block);
+                const auto dstPtr = GetElementPtrInst::CreateInBounds(itemsPtr, {zero, newIndex}, "dst", block);
+                const auto item = new LoadInst(srcPtr, "item", block);
                 new StoreInst(item, dstPtr, block);
-                ValueAddRef(Representations_[i - 1U], dstPtr, ctx, block);
+                ValueAddRef(Representations[i - 1U], dstPtr, ctx, block);
             }
             BranchInst::Create(done, block);
         }
         {
             block = slow;
-            for (ui32 i = 0; i < Index_; ++i) {
+            for (ui32 i = 0; i < Index; ++i) {
                 const auto index = ConstantInt::get(idxType, i);
-                const auto itemPtr = GetElementPtrInst::CreateInBounds(type, itemsPtr, {zero, index}, "item", block);
+                const auto itemPtr = GetElementPtrInst::CreateInBounds(itemsPtr, {zero, index}, "item", block);
                 CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(itemPtr, array, ctx.Codegen, block, index);
             }
 
-            for (ui32 i = Index_ + 1U; i < newSize; ++i) {
+            for (ui32 i = Index + 1U; i < newSize; ++i) {
                 const auto oldIndex = ConstantInt::get(idxType, --i);
                 const auto newIndex = ConstantInt::get(idxType, ++i);
-                const auto itemPtr = GetElementPtrInst::CreateInBounds(type, itemsPtr, {zero, newIndex}, "item", block);
+                const auto itemPtr = GetElementPtrInst::CreateInBounds(itemsPtr, {zero, newIndex}, "item", block);
                 CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(itemPtr, array, ctx.Codegen, block, oldIndex);
             }
             BranchInst::Create(done, block);
         }
         block = done;
-        if (StructObj_->IsTemporaryValue())
+        if (StructObj->IsTemporaryValue())
             CleanupBoxed(array, ctx, block);
         return result;
     }
 #endif
 private:
     void RegisterDependencies() const final {
-        DependsOn(StructObj_);
-        DependsOn(Member_);
+        DependsOn(StructObj);
+        DependsOn(Member);
     }
 
-    IComputationNode* const StructObj_;
-    IComputationNode* const Member_;
-    const ui32 Index_;
-    const std::vector<EValueRepresentation> Representations_;
+    IComputationNode* const StructObj;
+    IComputationNode* const Member;
+    const ui32 Index;
+    const std::vector<EValueRepresentation> Representations;
 
-    const TContainerCacheOnContext Cache_;
+    const TContainerCacheOnContext Cache;
 };
 
 }
 
-IComputationNode* AddMember(const TComputationNodeFactoryContext& ctx, TRuntimeNode structData, TRuntimeNode memberData, TRuntimeNode indexData) {
-    const auto structType = AS_TYPE(TStructType, structData);
-    const ui32 index = AS_VALUE(TDataLiteral, indexData)->AsValue().Get<ui32>();
+IComputationNode* WrapAddMember(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
+    MKQL_ENSURE(callable.GetInputsCount() == 3, "Expected 3 args");
+
+    const auto structType = AS_TYPE(TStructType, callable.GetInput(0));
+    const auto indexData = AS_VALUE(TDataLiteral, callable.GetInput(2));
+
+    const ui32 index = indexData->AsValue().Get<ui32>();
     MKQL_ENSURE(index <= structType->GetMembersCount(), "Bad member index");
 
     std::vector<EValueRepresentation> representations;
@@ -157,8 +160,8 @@ IComputationNode* AddMember(const TComputationNodeFactoryContext& ctx, TRuntimeN
         representations.emplace_back(GetValueRepresentation(structType->GetMemberType(i)));
     }
 
-    const auto structObj = LocateNode(ctx.NodeLocator, *structData.GetNode());
-    const auto member = LocateNode(ctx.NodeLocator, *memberData.GetNode());
+    const auto structObj = LocateNode(ctx.NodeLocator, callable, 0);
+    const auto member = LocateNode(ctx.NodeLocator, callable, 1);
     return new TAddMemberWrapper(ctx.Mutables, structObj, member, index, std::move(representations));
 }
 

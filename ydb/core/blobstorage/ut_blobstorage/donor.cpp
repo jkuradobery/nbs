@@ -278,7 +278,7 @@ Y_UNIT_TEST_SUITE(Donor) {
 
         env.Runtime->FilterFunction = [&](ui32 nodeId, std::unique_ptr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvBlobStorage::EvDropDonor) {
-                env.Runtime->Send(IEventHandle::ForwardOnNondelivery(std::move(ev), TEvents::TEvUndelivered::Disconnected).release(), nodeId);
+                env.Runtime->Send(ev->ForwardOnNondelivery(TEvents::TEvUndelivered::Disconnected).Release(), nodeId);
                 return false;
             }
             return true;
@@ -311,7 +311,7 @@ Y_UNIT_TEST_SUITE(Donor) {
                     Cerr << slot.DonorsSize() << " donors: " << printDonorList(slot) << Endl;
                     for (const auto& donor : slot.GetDonors()) {
                         const auto& vslotId = donor.GetVSlotId();
-                        UNIT_ASSERT_C(pdisks.emplace(vslotId.GetNodeId(), vslotId.GetPDiskId()).second,
+                        UNIT_ASSERT_C(pdisks.emplace(vslotId.GetNodeId(), vslotId.GetPDiskId()).second, 
                                 slot.DonorsSize() << " donors: " << printDonorList(slot));
                     }
                     break;

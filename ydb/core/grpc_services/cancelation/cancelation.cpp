@@ -4,7 +4,7 @@
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/grpc_services/cancelation/cancelation_event.h>
 
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actorsystem.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -13,7 +13,7 @@ void PassSubscription(const TEvSubscribeGrpcCancel* ev, IRequestCtxMtSafe* reque
     NActors::TActorSystem* as)
 {
     auto subscriber = ActorIdFromProto(ev->Record.GetSubscriber());
-    requestCtx->SetFinishAction([subscriber, as]() {
+    requestCtx->SetClientLostAction([subscriber, as]() {
         as->Send(subscriber, new TEvClientLost);
     });
 }

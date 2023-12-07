@@ -410,7 +410,7 @@ TRuntimeNode CreateMapJoin(TProgramBuilder& pb, size_t vecSize, TCallable* list 
             return pb.NewTuple({pb.Nth(item, 1U)});
     });
 
-    const auto resultType = pb.NewFlowType(pb.NewMultiType({
+    const auto resultType = pb.NewFlowType(pb.NewTupleType({
         pb.NewDataType(NUdf::TDataType<char*>::Id),
         pb.NewDataType(NUdf::TDataType<char*>::Id),
     }));
@@ -435,9 +435,9 @@ Y_UNIT_TEST_SUITE(ComputationGraphDataRace) {
     template<class T>
     void ParallelProgTest(T f, bool useLLVM, ui64 testResult, size_t vecSize = 10'000) {
         TTimer t("total: ");
-        const ui32 cacheSizeInBytes = 104857600; // 100 MiB
+        const ui32 cacheSize = 10;
         const ui32 inFlight = 7;
-        TComputationPatternLRUCache cache({cacheSizeInBytes, cacheSizeInBytes});
+        TComputationPatternLRUCache cache(cacheSize);
 
         auto functionRegistry = CreateFunctionRegistry(CreateBuiltinRegistry())->Clone();
         auto entry = std::make_shared<TPatternCacheEntry>();
@@ -572,7 +572,7 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
     Y_UNIT_TEST(Smoke) {
         const ui32 cacheSize = 10'000'000;
         const ui32 cacheItems = 10;
-        TComputationPatternLRUCache cache({cacheSize, cacheSize});
+        TComputationPatternLRUCache cache(cacheSize);
 
         auto functionRegistry = CreateFunctionRegistry(CreateBuiltinRegistry())->Clone();
 
@@ -616,7 +616,7 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
 
             auto graph = entry->Pattern->Clone(opts.ToComputationOptions(*randomProvider, *timeProvider, &graphAlloc.Ref()));
             auto value = graph->GetValue();
-            UNIT_ASSERT_EQUAL(NYql::NUdf::TStringRef("qwerty"), value.AsStringRef());
+            UNIT_ASSERT_EQUAL(value.AsStringRef(), NYql::NUdf::TStringRef("qwerty"));
         }
     }
 
@@ -807,7 +807,7 @@ Y_UNIT_TEST_SUITE(ComputationPatternCache) {
 
         {
             auto data = genData();
-            static auto predicate = [](ui64 a) {
+            auto predicate = [](ui64 a) {
                 return a % 128 == 0;
             };
             Y_DO_NOT_OPTIMIZE_AWAY(predicate);

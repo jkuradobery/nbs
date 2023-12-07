@@ -4,14 +4,14 @@
 #include "events.h"
 #include "local_rate_limiter_allocator.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/public/lib/value/value.h>
 #include <ydb/core/ymq/actor/infly.h>
 #include <ydb/core/ymq/actor/message_delay_stats.h>
 #include <ydb/core/ymq/base/counters.h>
 
-#include <ydb/library/actors/core/actorid.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actorid.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 
 #include <util/generic/hash_multi_map.h>
@@ -33,17 +33,7 @@ class TQueueLeader : public TActorBootstrapped<TQueueLeader> {
     struct TLoadBatch;
 
 public:
-    TQueueLeader(
-        TString userName,
-        TString queueName,
-        TString folderId,
-        TString rootUrl,
-        TIntrusivePtr<TQueueCounters> counters,
-        TIntrusivePtr<TUserCounters> userCounters,
-        const TActorId& schemeCache,
-        const TIntrusivePtr<TSqsEvents::TQuoterResourcesForActions>& quoterResourcesForUser,
-        bool useCPUOptimization
-    );
+    TQueueLeader(TString userName, TString queueName, TString folderId, TString rootUrl, TIntrusivePtr<TQueueCounters> counters, TIntrusivePtr<TUserCounters> userCounters, const TActorId& schemeCache, const TIntrusivePtr<TSqsEvents::TQuoterResourcesForActions>& quoterResourcesForUser);
 
     void Bootstrap();
 
@@ -57,11 +47,8 @@ private:
 
     void PassAway() override;
     void HandleWakeup(TEvWakeup::TPtr& ev);
-    void HandleState(const TSqsEvents::TEvExecuted::TRecord& ev);
     void HandleGetConfigurationWhileIniting(TSqsEvents::TEvGetConfiguration::TPtr& ev);
     void HandleGetConfigurationWhileWorking(TSqsEvents::TEvGetConfiguration::TPtr& ev);
-    void HandleActionCounterChanged(TSqsEvents::TEvActionCounterChanged::TPtr& ev);
-    void HandleLocalCounterChanged(TSqsEvents::TEvLocalCounterChanged::TPtr& ev);
     void HandleExecuteWhileIniting(TSqsEvents::TEvExecute::TPtr& ev);
     void HandleExecuteWhileWorking(TSqsEvents::TEvExecute::TPtr& ev);
     void HandleExecuted(TSqsEvents::TEvExecuted::TPtr& ev);
@@ -81,19 +68,13 @@ private:
     void HandleGetRuntimeQueueAttributesWhileIniting(TSqsEvents::TEvGetRuntimeQueueAttributes::TPtr& ev);
     void HandleGetRuntimeQueueAttributesWhileWorking(TSqsEvents::TEvGetRuntimeQueueAttributes::TPtr& ev);
     void HandleDeadLetterQueueNotification(TSqsEvents::TEvDeadLetterQueueNotification::TPtr& ev);
-    void HandleForceReloadState(TSqsEvents::TEvForceReloadState::TPtr& ev);
-    void HandleReloadStateRequest(TSqsEvents::TEvReloadStateRequest::TPtr& ev);
 
-    void CheckStillDLQ();
-    void ForceReloadState();
     void BecomeWorking();
     void RequestConfiguration();
-    void UpdateStateRequest();
     void StartGatheringMetrics();
     void RequestMessagesCountMetrics(ui64 shard);
     void RequestOldestTimestampMetrics(ui64 shard);
     void ReceiveMessagesCountMetrics(ui64 shard, const TSqsEvents::TEvExecuted::TRecord& reply);
-    void PlanningRetentionWakeup();
     void ReceiveOldestTimestampMetrics(ui64 shard, const TSqsEvents::TEvExecuted::TRecord& reply);
     void ReportMessagesCountMetricsIfReady();
     void ReportOldestTimestampMetricsIfReady();
@@ -106,7 +87,7 @@ private:
     void RemoveCachedRequest(size_t shard, size_t idx);
     void CreateBackgroundActors();
     void AnswerGetConfiguration(TSqsEvents::TEvGetConfiguration::TPtr& req);
-    void AnswerFailed(TSqsEvents::TEvGetConfiguration::TPtr& ev, bool queueRemoved = false);
+    void AnswerFailed(TSqsEvents::TEvGetConfiguration::TPtr& ev);
     void AskQueueAttributes();
     void OnQueueAttributes(const TSqsEvents::TEvExecuted::TRecord& ev);
     void MarkInflyReloading(ui64 shard, i64 invalidatedCount, const TString& invalidationReason);
@@ -125,7 +106,6 @@ private:
     void ProcessGetRuntimeQueueAttributes(ui64 shard);
     void FailGetRuntimeQueueAttributesForShard(ui64 shard);
     void FailRequestsDuringStartProblems();
-    void SendReloadStateRequestToDLQ();
 
     // send
     void ProcessSendMessageBatch(TSendMessageBatchRequestProcessing& reqInfo);
@@ -148,7 +128,7 @@ private:
     void WaitAddMessagesToInflyOrTryAnotherShard(TReceiveMessageBatchRequestProcessing& reqInfo);
     void Reply(TReceiveMessageBatchRequestProcessing& reqInfo);
     // batching
-    void OnLoadStdMessagesBatchSuccess(const NKikimr::NClient::TValue& value, ui64 shard, TShardInfo& shardInfo, TIntrusivePtr<TLoadBatch> batch);
+    void OnLoadStdMessagesBatchSuccess(const NKikimr::NClient::TValue& value, TShardInfo& shardInfo, TIntrusivePtr<TLoadBatch> batch);
     void OnLoadStdMessagesBatchExecuted(ui64 shard, ui64 batchId, const bool usedDLQ, const TSqsEvents::TEvExecuted::TRecord& reply);
 
     // delete
@@ -164,9 +144,6 @@ private:
     TQueuePath GetQueuePath() {
         return TQueuePath(Cfg().GetRoot(), UserName_, QueueName_, QueueVersion_);
     }
-    void SetInflyMessagesCount(ui64 shard, const NKikimr::NClient::TValue& value);
-    void SetMessagesCount(ui64 shard, const NKikimr::NClient::TValue& value);
-    void SetMessagesCount(ui64 shard, ui64 value);
 
     void ScheduleMetricsRequest();
 
@@ -399,7 +376,6 @@ private:
         ui64 MessagesCount = 0;
         ui64 InflyMessagesCount = 0;
         ui64 OldestMessageTimestampMs = Max();
-        ui64 OldestMessageOffset = 0;
         ui64 LastSuccessfulOldestMessageTimestampValueMs = 0; // for query optimization - more accurate range
 
         bool MessagesCountIsRequesting = false;
@@ -421,7 +397,7 @@ private:
             Failed, // waiting for scheduled retry
         };
         EInflyLoadState InflyLoadState = EInflyLoadState::New;
-        bool LoadInflyRequestInProcess = false;
+        size_t LoadInflyRequests = 0;
         size_t ActiveMessageRequests = 0;
         ui64 ReadOffset = 0;
         bool AddingMessagesToInfly = false;
@@ -441,12 +417,6 @@ private:
     };
     std::vector<TShardInfo> Shards_;
     TMessageDelayStatistics DelayStatistics_;
-    TInstant RetentionWakeupPlannedAt_;
-    bool AskQueueAttributesInProcess_ = false;
-    TInstant UpdateStateRequestStartedAt;
-    THashSet<ui32> ReloadStateRequestedFromNodes;
-
-    bool UseCPUOptimization = false;
 
     // background actors
     TActorId DeduplicationCleanupActor_;

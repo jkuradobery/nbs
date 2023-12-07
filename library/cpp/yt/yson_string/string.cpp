@@ -71,13 +71,23 @@ TYsonString::TYsonString()
 TYsonString::TYsonString(const TYsonStringBuf& ysonStringBuf)
 {
     if (ysonStringBuf) {
+        struct TCapturedYsonStringPayload
+            : public TSharedRangeHolder
+            , public TWithExtraSpace<TCapturedYsonStringPayload>
+        {
+            char* GetData()
+            {
+                return static_cast<char*>(GetExtraSpacePtr());
+            }
+        };
+
         auto data = ysonStringBuf.AsStringBuf();
-        auto holder = NDetail::TYsonStringHolder::Allocate(data.length());
-        ::memcpy(holder->GetData(), data.data(), data.length());
-        Begin_ = holder->GetData();
+        auto payload = NewWithExtraSpace<TCapturedYsonStringPayload>(data.length());
+        ::memcpy(payload->GetData(), data.data(), data.length());
+        Payload_ = payload;
+        Begin_ = payload->GetData();
         Size_ = data.Size();
         Type_ = ysonStringBuf.GetType();
-        Payload_ = std::move(holder);
     } else {
         Begin_ = nullptr;
         Size_ = 0;
@@ -171,28 +181,6 @@ TSharedRef TYsonString::ToSharedRef() const
 size_t TYsonString::ComputeHash() const
 {
     return THash<TStringBuf>()(TStringBuf(Begin_, Begin_ + Size_));
-}
-
-void TYsonString::Save(IOutputStream* s) const
-{
-    EYsonType type = Type_;
-    if (*this) {
-        ::SaveMany(s, type, ToSharedRef());
-    } else {
-        ::SaveMany(s, type, TString());
-    }
-}
-
-void TYsonString::Load(IInputStream* s)
-{
-    EYsonType type;
-    TString data;
-    ::LoadMany(s, type, data);
-    if (data) {
-        *this = TYsonString(data, type);
-    } else {
-        *this = TYsonString();
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

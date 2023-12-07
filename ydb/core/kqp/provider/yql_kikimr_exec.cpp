@@ -9,23 +9,7 @@
 #include <ydb/library/yql/core/type_ann/type_ann_expr.h>
 #include <ydb/library/yql/core/type_ann/type_ann_core.h>
 #include <ydb/library/yql/core/peephole_opt/yql_opt_peephole_physical.h>
-#include <ydb/library/yql/providers/common/mkql/yql_provider_mkql.h>
-#include <ydb/library/yql/providers/common/mkql/yql_type_mkql.h>
 #include <ydb/library/yql/providers/result/expr_nodes/yql_res_expr_nodes.h>
-
-#include <ydb/library/ydb_issue/proto/issue_id.pb.h>
-#include <ydb/library/yql/public/issue/yql_issue.h>
-
-#include <ydb/core/ydb_convert/ydb_convert.h>
-
-#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
-#include <ydb/public/api/protos/ydb_topic.pb.h>
-
-#include <ydb/library/yql/dq/tasks/dq_task_program.h>
-
-#include <ydb/library/yql/minikql/mkql_program_builder.h>
-
-#include <ydb/core/kqp/provider/yql_kikimr_results.h>
 
 namespace NYql {
 namespace {
@@ -61,42 +45,6 @@ namespace {
         astNode.Ptr()->SetTypeAnn(ctx.MakeType<TUnitExprType>());
 
         exec.Ptr()->ChildRef(TKiExecDataQuery::idx_Ast) = astNode.Ptr();
-    }
-
-    TModifyPermissionsSettings ParsePermissionsSettings(TKiModifyPermissions modifyPermissions) {
-        TModifyPermissionsSettings permissionsSettings;
-
-        TString action = modifyPermissions.Action().StringValue();
-        if (action == "grant") {
-            permissionsSettings.Action = TModifyPermissionsSettings::EAction::Grant;
-        } else if (action == "revoke") {
-            permissionsSettings.Action = TModifyPermissionsSettings::EAction::Revoke;
-        }
-
-        for (auto atom : modifyPermissions.Permissions()) {
-            const TString permission = atom.Cast<TCoAtom>().StringValue();
-            if (permission == "all_privileges") {
-                if (permissionsSettings.Action == TModifyPermissionsSettings::EAction::Grant) {
-                    permissionsSettings.Permissions.insert("ydb.generic.full");
-                } else if (permissionsSettings.Action == TModifyPermissionsSettings::EAction::Revoke) {
-                    permissionsSettings.Permissions.clear();
-                    permissionsSettings.IsPermissionsClear = true;
-                    break;
-                }
-                continue;
-            }
-            permissionsSettings.Permissions.insert(NKikimr::ConvertShortYdbPermissionNameToFullYdbPermissionName(permission));
-        }
-
-        THashSet<TString> pathesMap;
-        for (auto atom : modifyPermissions.Pathes()) {
-            permissionsSettings.Pathes.insert(atom.Cast<TCoAtom>().StringValue());
-        }
-
-        for (auto atom : modifyPermissions.Roles()) {
-            permissionsSettings.Roles.insert(atom.Cast<TCoAtom>().StringValue());
-        }
-        return permissionsSettings;
     }
 
     TCreateUserSettings ParseCreateUserSettings(TKiCreateUser createUser) {
@@ -222,47 +170,6 @@ namespace {
         return out;
     }
 
-    TCreateExternalTableSettings ParseCreateExternalTableSettings(TKiCreateTable create, const TTableSettings& settings) {
-        TCreateExternalTableSettings out;
-        out.ExternalTable = TString(create.Table());
-
-        for (auto item : create.Columns()) {
-            auto columnTuple = item.Cast<TExprList>();
-            auto nameNode = columnTuple.Item(0).Cast<TCoAtom>();
-            auto typeNode = columnTuple.Item(1);
-
-            auto columnName = TString(nameNode.Value());
-            auto columnType = typeNode.Ref().GetTypeAnn();
-            YQL_ENSURE(columnType && columnType->GetKind() == ETypeAnnotationKind::Type);
-
-            auto type = columnType->Cast<TTypeExprType>()->GetType();
-            auto notNull = type->GetKind() != ETypeAnnotationKind::Optional;
-            auto actualType = RemoveAllOptionals(type);
-
-            TKikimrColumnMetadata columnMeta;
-            columnMeta.Name = columnName;
-            columnMeta.Type = FormatType(actualType);
-            columnMeta.NotNull = notNull;
-
-            out.ColumnOrder.push_back(columnName);
-            out.Columns.insert(std::make_pair(columnName, columnMeta));
-        }
-        if (settings.DataSourcePath) {
-            out.DataSourcePath = *settings.DataSourcePath;
-        }
-        if (settings.Location) {
-            out.Location = *settings.Location;
-        }
-        out.SourceTypeParameters = settings.ExternalSourceParameters;
-        return out;
-    }
-
-    TDropExternalTableSettings ParseDropExternalTableSettings(TKiDropTable drop) {
-        return TDropExternalTableSettings{
-            .ExternalTable = TString(drop.Table())
-        };
-    }
-
     TAlterTableStoreSettings ParseAlterTableStoreSettings(TKiAlterTable alter) {
         return TAlterTableStoreSettings{
             .TableStore = TString(alter.Table())
@@ -279,182 +186,6 @@ namespace {
         return TAlterColumnTableSettings{
             .Table = TString(alter.Table())
         };
-    }
-
-    [[nodiscard]] TString AddConsumerToTopicRequest(
-            Ydb::Topic::Consumer* protoConsumer, const TCoTopicConsumer& consumer
-    ) {
-        protoConsumer->set_name(consumer.Name().StringValue());
-        auto settings = consumer.Settings().Cast<TCoNameValueTupleList>();
-        for (const auto& setting : settings) {
-            auto name = setting.Name().Value();
-            if (name == "important") {
-                protoConsumer->set_important(FromString<bool>(
-                        setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()
-                ));
-            } else if (name == "setReadFromTs") {
-                ui64 tsValue = 0;
-                if(setting.Value().Maybe<TCoDatetime>()) {
-                    tsValue = FromString<ui64>(setting.Value().Cast<TCoDatetime>().Literal().Value());
-                } else if (setting.Value().Maybe<TCoTimestamp>()) {
-                    tsValue = static_cast<ui64>(
-                            FromString<ui64>(setting.Value().Cast<TCoTimestamp>().Literal().Value()) / 1'000'000
-                    );
-                } else {
-                    try {
-                        tsValue = FromString<ui64>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value());
-                    } catch (const yexception& e) {
-                        return TStringBuilder() <<  "Failed to parse read_from setting value for consumer"
-                                                << consumer.Name().StringValue()
-                                                << ". Datetime(), Timestamp or integer value is supported";
-                    }
-                }
-                protoConsumer->mutable_read_from()->set_seconds(tsValue);
-
-            } else if (name == "setSupportedCodecs") {
-                auto codecs = GetTopicCodecsFromString(
-                        TString(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-
-                auto* protoCodecs = protoConsumer->mutable_supported_codecs();
-                for (auto codec : codecs) {
-                    protoCodecs->add_codecs(codec);
-                }
-            }
-        }
-        return {};
-    }
-
-    [[nodiscard]] TString AddAlterConsumerToTopicRequest(
-            Ydb::Topic::AlterConsumer* protoConsumer, const TCoTopicConsumer& consumer
-    ) {
-        protoConsumer->set_name(consumer.Name().StringValue());
-        auto settings = consumer.Settings().Cast<TCoNameValueTupleList>();
-        for (const auto& setting : settings) {
-            //ToDo[RESET]: Add reset when supported
-            auto name = setting.Name().Value();
-            if (name == "important") {
-                protoConsumer->set_set_important(FromString<bool>(
-                        setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()
-                ));
-            } else if (name == "setReadFromTs") {
-                ui64 tsValue = 0;
-                if(setting.Value().Maybe<TCoDatetime>()) {
-                    tsValue = FromString<ui64>(setting.Value().Cast<TCoDatetime>().Literal().Value());
-                } else if (setting.Value().Maybe<TCoTimestamp>()) {
-                    tsValue = static_cast<ui64>(
-                            FromString<ui64>(setting.Value().Cast<TCoTimestamp>().Literal().Value()) / 1'000'000
-                    );
-                } else {
-                    try {
-                        tsValue = FromString<ui64>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value());
-                    } catch (const yexception& e) {
-                        return TStringBuilder() <<  "Failed to parse read_from setting value for consumer"
-                                                << consumer.Name().StringValue()
-                                                << ". Datetime(), Timestamp or integer value is supported";
-                    }
-                }
-                protoConsumer->mutable_set_read_from()->set_seconds(tsValue);
-            } else if (name == "setSupportedCodecs") {
-                auto codecs = GetTopicCodecsFromString(
-                        TString(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-                auto* protoCodecs = protoConsumer->mutable_set_supported_codecs();
-                for (auto codec : codecs) {
-                    protoCodecs->add_codecs(codec);
-                }
-            }
-        }
-        return {};
-    }
-
-    void AddTopicSettingsToRequest(Ydb::Topic::CreateTopicRequest* request, const TCoNameValueTupleList& topicSettings) {
-        for (const auto& setting : topicSettings) {
-            auto name = setting.Name().Value();
-            if (name == "setMinPartitions") {
-                request->mutable_partitioning_settings()->set_min_active_partitions(
-                        FromString<ui32>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            } else if (name == "setPartitionsLimit") {
-                request->mutable_partitioning_settings()->set_partition_count_limit(
-                        FromString<ui32>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            } else if (name == "setRetentionPeriod") {
-                auto microValue = FromString<ui64>(setting.Value().Cast<TCoInterval>().Literal().Value());
-                request->mutable_retention_period()->set_seconds(
-                        static_cast<ui64>(microValue / 1'000'000)
-                );
-            } else if (name == "setPartitionWriteSpeed") {
-                request->set_partition_write_speed_bytes_per_second(
-                        FromString<ui64>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            } else if (name == "setPartitionWriteBurstSpeed") {
-                request->set_partition_write_burst_bytes(
-                        FromString<ui64>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            }  else if (name == "setMeteringMode") {
-                Ydb::Topic::MeteringMode meteringMode;
-                auto result = GetTopicMeteringModeFromString(
-                        TString(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()),
-                        meteringMode
-                );
-                YQL_ENSURE(result);
-                request->set_metering_mode(meteringMode);
-            } else if (name == "setSupportedCodecs") {
-                auto codecs = GetTopicCodecsFromString(
-                        TString(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-                auto* protoCodecs = request->mutable_supported_codecs();
-                for (auto codec : codecs) {
-                    protoCodecs->add_codecs(codec);
-                }
-            }
-        }
-    }
-
-    void AddAlterTopicSettingsToRequest(Ydb::Topic::AlterTopicRequest* request, const TCoNameValueTupleList& topicSettings) {
-    //ToDo [RESET]: Add reset options once supported.
-        for (const auto& setting : topicSettings) {
-            auto name = setting.Name().Value();
-            if (name == "setMinPartitions") {
-                request->mutable_alter_partitioning_settings()->set_set_min_active_partitions(
-                        FromString<ui32>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            } else if (name == "setPartitionsLimit") {
-                request->mutable_alter_partitioning_settings()->set_set_partition_count_limit(
-                        FromString<ui32>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            } else if (name == "setRetentionPeriod") {
-                auto microValue = FromString<ui64>(setting.Value().Cast<TCoInterval>().Literal().Value());
-                request->mutable_set_retention_period()->set_seconds(
-                        static_cast<ui64>(microValue / 1'000'000)
-                );
-            } else if (name == "setPartitionWriteSpeed") {
-                request->set_set_partition_write_speed_bytes_per_second(
-                        FromString<ui64>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            } else if (name == "setPartitionWriteBurstSpeed") {
-                request->set_set_partition_write_burst_bytes(
-                        FromString<ui64>(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-            }  else if (name == "setMeteringMode") {
-                Ydb::Topic::MeteringMode meteringMode;
-                auto result = GetTopicMeteringModeFromString(
-                        TString(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()),
-                        meteringMode
-                );
-                YQL_ENSURE(result);
-                request->set_set_metering_mode(meteringMode);
-            } else if (name == "setSupportedCodecs") {
-                auto codecs = GetTopicCodecsFromString(
-                        TString(setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value())
-                );
-                auto* protoCodecs = request->mutable_set_supported_codecs();
-                for (auto codec : codecs) {
-                    protoCodecs->add_codecs(codec);
-                }
-            }
-        }
     }
 }
 
@@ -502,88 +233,11 @@ private:
 };
 
 class TKiSourceCallableExecutionTransformer : public TAsyncCallbackTransformer<TKiSourceCallableExecutionTransformer> {
-private:
-    IGraphTransformer::TStatus PeepHole(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) const {
-        TPeepholeSettings peepholeSettings;
-        bool hasNonDeterministicFunctions;
-        auto status = PeepHoleOptimizeNode(input, output, ctx, TypesCtx, nullptr, hasNonDeterministicFunctions, peepholeSettings);
-        if (status.Level != TStatus::Ok) {
-            ctx.AddError(TIssue(ctx.GetPosition(output->Pos()), TString("Peephole optimization failed for Dq stage")));
-            return status;
-        }
-        return status;
-    }
-
-    IGraphTransformer::TStatus GetLambdaBody(TExprNode::TPtr resInput, NKikimrMiniKQL::TType& resultType, TExprContext& ctx, TString& lambda) {
-        auto pos = resInput->Pos();
-        auto typeAnn = resInput->GetTypeAnn();
-
-        const auto kind = resInput->GetTypeAnn()->GetKind();
-        const bool data = kind != ETypeAnnotationKind::Flow && kind != ETypeAnnotationKind::Stream && kind != ETypeAnnotationKind::Optional;
-        auto node = ctx.WrapByCallableIf(kind != ETypeAnnotationKind::Stream, "ToStream",
-                        ctx.WrapByCallableIf(data, "Just", std::move(resInput)));
-
-        auto peepHoleStatus = PeepHole(node, node, ctx);
-        if (peepHoleStatus.Level != IGraphTransformer::TStatus::Ok) {
-            return peepHoleStatus;
-        }
-
-        auto guard = Guard(SessionCtx->Query().QueryData->GetAllocState()->Alloc);
-
-        auto input = Build<TDqPhyStage>(ctx, pos)
-            .Inputs()
-                .Build()
-            .Program<TCoLambda>()
-                .Args({})
-                .Body(node)
-            .Build()
-            .Settings().Build()
-        .Done().Ptr();
-
-        NCommon::TMkqlCommonCallableCompiler compiler;
-
-        auto programLambda = TDqPhyStage(input).Program();
-
-        TVector<TExprBase> fakeReads;
-        auto paramsType = NDq::CollectParameters(programLambda, ctx);
-        lambda = NDq::BuildProgram(
-            programLambda, *paramsType, compiler, SessionCtx->Query().QueryData->GetAllocState()->TypeEnv,
-                *SessionCtx->Query().QueryData->GetAllocState()->HolderFactory.GetFunctionRegistry(),
-                ctx, fakeReads);
-
-        NKikimr::NMiniKQL::TProgramBuilder programBuilder(SessionCtx->Query().QueryData->GetAllocState()->TypeEnv,
-            *SessionCtx->Query().QueryData->GetAllocState()->HolderFactory.GetFunctionRegistry());
-
-        TStringStream errorStream;
-        auto type = NYql::NCommon::BuildType(*typeAnn, programBuilder, errorStream);
-        ExportTypeToProto(type, resultType);
-
-        return IGraphTransformer::TStatus::Ok;
-    }
-
-    TString EncodeResultToYson(const NKikimrMiniKQL::TResult& result, bool& truncated) {
-        TStringStream ysonStream;
-        NYson::TYsonWriter writer(&ysonStream, NYson::EYsonFormat::Binary);
-        NYql::IDataProvider::TFillSettings fillSettings;
-        KikimrResultToYson(ysonStream, writer, result, {}, fillSettings, truncated);
-
-        TStringStream out;
-        NYson::TYsonWriter writer2((IOutputStream*)&out);
-        writer2.OnBeginMap();
-        writer2.OnKeyedItem("Data");
-        writer2.OnRaw(ysonStream.Str());
-        writer2.OnEndMap();
-
-        return out.Str();
-    }
-
 public:
     TKiSourceCallableExecutionTransformer(TIntrusivePtr<IKikimrGateway> gateway,
-        TIntrusivePtr<TKikimrSessionContext> sessionCtx,
-        TTypeAnnotationContext& types)
+        TIntrusivePtr<TKikimrSessionContext> sessionCtx)
         : Gateway(gateway)
-        , SessionCtx(sessionCtx)
-        , TypesCtx(types) {}
+        , SessionCtx(sessionCtx) {}
 
     std::pair<TStatus, TAsyncTransformCallbackFuture> CallbackTransform(const TExprNode::TPtr& input,
         TExprNode::TPtr& output, TExprContext& ctx)
@@ -604,44 +258,14 @@ public:
         }
 
         if (input->Content() == "Result") {
-            auto result = TMaybeNode<TResult>(input).Cast();
-            NKikimrMiniKQL::TType resultType;
-            TString program;
-            TStatus status = GetLambdaBody(result.Input().Ptr(), resultType, ctx, program);
-            if (status.Level != TStatus::Ok) {
-                return SyncStatus(status);
-            }
-            auto asyncResult = Gateway->ExecuteLiteral(program, resultType, SessionCtx->Query().QueryData->GetAllocState());
+            auto resultInput = TExprBase(input->ChildPtr(0));
+            auto exec = resultInput.Maybe<TCoNth>().Tuple().Maybe<TCoRight>().Input();
+            YQL_ENSURE(exec.Maybe<TKiExecDataQuery>());
 
-            return std::make_pair(IGraphTransformer::TStatus::Async, asyncResult.Apply(
-                [this](const NThreading::TFuture<IKikimrGateway::TExecuteLiteralResult>& future) {
-                    return TAsyncTransformCallback(
-                        [future, this](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {
+            ui32 index = FromString<ui32>(resultInput.Cast<TCoNth>().Index().Value());
+            YQL_ENSURE(index == 0);
 
-                            const auto& literalResult = future.GetValueSync();
-
-                            if (!literalResult.Success()) {
-                                for (const auto& issue : literalResult.Issues()) {
-                                    ctx.AddError(issue);
-                                }
-                                input->SetState(TExprNode::EState::Error);
-                                return IGraphTransformer::TStatus::Error;
-                            }
-
-                            bool truncated = false;
-                            auto yson = this->EncodeResultToYson(literalResult.Result, truncated);
-                            if (truncated) {
-                                input->SetState(TExprNode::EState::Error);
-                                ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), "EvaluteExpr result is too big and was truncated"));
-                                return IGraphTransformer::TStatus::Error;
-                            }
-
-                            output = input;
-                            input->SetState(TExprNode::EState::ExecutionComplete);
-                            input->SetResult(ctx.NewAtom(input->Pos(), yson));
-                            return IGraphTransformer::TStatus::Ok;
-                        });
-                }));
+            return RunResOrPullForExec(TResOrPullBase(input), exec.Cast(), ctx, 0);
         }
 
         if (input->Content() == ConfigureName) {
@@ -737,20 +361,11 @@ private:
         }
 
         if (NCommon::HasResOrPullOption(res.Ref(), "ref")) {
-            ctx.AddError(TIssue(ctx.GetPosition(res.Pos()), TStringBuilder()
-                << "refselect isn't supported for Kikimr provider."));
+            ctx.AddError(TIssue(ctx.GetPosition(res.Pos()), TStringBuilder() << "refselect isn't supported for Kikimr provider."));
             return SyncError();
         }
 
         IDataProvider::TFillSettings fillSettings = NCommon::GetFillSettings(res.Ref());
-
-        if (IsIn({EKikimrQueryType::Query, EKikimrQueryType::Script}, SessionCtx->Query().Type)) {
-            if (fillSettings.Discard) {
-                ctx.AddError(YqlIssue(ctx.GetPosition(res.Pos()), TIssuesIds::KIKIMR_BAD_OPERATION, TStringBuilder()
-                    << "DISCARD not supported in YDB queries"));
-                return SyncError();
-            }
-        }
 
         auto* runResult = SessionCtx->Query().Results.FindPtr(exec.Ref().UniqueId());
         if (!runResult) {
@@ -776,16 +391,15 @@ private:
 private:
     TIntrusivePtr<IKikimrGateway> Gateway;
     TIntrusivePtr<TKikimrSessionContext> SessionCtx;
-    TTypeAnnotationContext& TypesCtx;
 };
 
 template <class TKiObject, class TSettings>
 class TObjectModifierTransformer {
 private:
     TIntrusivePtr<IKikimrGateway> Gateway;
+    TIntrusivePtr<TKikimrSessionContext> SessionCtx;
     TString ActionInfo;
 protected:
-    TIntrusivePtr<TKikimrSessionContext> SessionCtx;
     virtual TFuture<IKikimrGateway::TGenericResult> DoExecute(const TString& cluster, const TSettings& settings) = 0;
     TIntrusivePtr<IKikimrGateway> GetGateway() const {
         return Gateway;
@@ -793,8 +407,8 @@ protected:
 public:
     TObjectModifierTransformer(const TString& actionInfo, TIntrusivePtr<IKikimrGateway> gateway, TIntrusivePtr<TKikimrSessionContext> sessionCtx)
         : Gateway(gateway)
-        , ActionInfo(actionInfo)
         , SessionCtx(sessionCtx)
+        , ActionInfo(actionInfo)
     {
 
     }
@@ -824,17 +438,6 @@ public:
                 return resultNode;
             }, "Executing " + ActionInfo + " " + kiObject.TypeId());
     }
-};
-
-class TUpsertObjectTransformer: public TObjectModifierTransformer<TKiUpsertObject, TUpsertObjectSettings> {
-private:
-    using TBase = TObjectModifierTransformer<TKiUpsertObject, TUpsertObjectSettings>;
-protected:
-    virtual TFuture<IKikimrGateway::TGenericResult> DoExecute(const TString& cluster, const TUpsertObjectSettings& settings) override {
-        return GetGateway()->UpsertObject(cluster, settings);
-    }
-public:
-    using TBase::TBase;
 };
 
 class TCreateObjectTransformer: public TObjectModifierTransformer<TKiCreateObject, TCreateObjectSettings> {
@@ -920,6 +523,10 @@ public:
         }
 
         if (auto maybeCreate = TMaybeNode<TKiCreateTable>(input)) {
+            if (!EnsureNotPrepare("CREATE TABLE", input->Pos(), SessionCtx->Query(), ctx)) {
+                return SyncError();
+            }
+
             auto requireStatus = RequireChild(*input, 0);
             if (requireStatus.Level != TStatus::Ok) {
                 return SyncStatus(requireStatus);
@@ -928,27 +535,19 @@ public:
             auto cluster = TString(maybeCreate.Cast().DataSink().Cluster());
             auto& table = SessionCtx->Tables().GetTable(cluster, TString(maybeCreate.Cast().Table()));
 
-            auto tableTypeItem = table.Metadata->TableType;
-            if (tableTypeItem == ETableType::ExternalTable && !SessionCtx->Config().FeatureFlags.GetEnableExternalDataSources()) {
-                ctx.AddError(TIssue(ctx.GetPosition(input->Pos()),
-                    TStringBuilder() << "External table are disabled. Please contact your system administrator to enable it"));
-                return SyncError();
-            }
+            bool isTableStore = (table.Metadata->TableType == ETableType::TableStore);
 
-            if ((tableTypeItem == ETableType::Unknown || tableTypeItem == ETableType::Table) && !ApplyDdlOperation(cluster, input->Pos(), table.Metadata->Name, TYdbOperation::CreateTable, ctx)) {
+            if (!isTableStore && !ApplyDdlOperation(cluster, input->Pos(), table.Metadata->Name, TYdbOperation::CreateTable, ctx)) {
                 return SyncError();
             }
 
             NThreading::TFuture<IKikimrGateway::TGenericResult> future;
-            bool isColumn = (table.Metadata->StoreType == EStoreType::Column);
-            bool existingOk = (maybeCreate.ExistingOk().Cast().Value() == "1");
-            switch (tableTypeItem) {
-                case ETableType::ExternalTable: {
-                    future = Gateway->CreateExternalTable(cluster,
-                        ParseCreateExternalTableSettings(maybeCreate.Cast(), table.Metadata->TableSettings), false);
-                    break;
-                }
-                case ETableType::TableStore: {
+            if (SessionCtx->Query().PrepareOnly) {
+                future = CreateDummySuccess();
+            } else {
+                bool isColumn = (table.Metadata->StoreType == EStoreType::Column);
+
+                if (isTableStore) {
                     if (!isColumn) {
                         ctx.AddError(TIssue(ctx.GetPosition(input->Pos()),
                             TStringBuilder() << "TABLESTORE with not COLUMN store"));
@@ -956,12 +555,10 @@ public:
                     }
                     future = Gateway->CreateTableStore(cluster,
                         ParseCreateTableStoreSettings(maybeCreate.Cast(), table.Metadata->TableSettings));
-                    break;
-                }
-                case ETableType::Table:
-                case ETableType::Unknown: {
-                    future = isColumn ? Gateway->CreateColumnTable(table.Metadata, true) : Gateway->CreateTable(table.Metadata, true, existingOk);
-                    break;
+                } else if (isColumn) {
+                    future = Gateway->CreateColumnTable(table.Metadata, true);
+                } else {
+                    future = Gateway->CreateTable(table.Metadata, true);
                 }
             }
 
@@ -970,10 +567,14 @@ public:
                     Y_UNUSED(res);
                     auto resultNode = ctx.NewWorld(input->Pos());
                     return resultNode;
-                }, GetCreateTableDebugString(tableTypeItem));
+                }, isTableStore ? "Executing CREATE TABLESTORE" : "Executing CREATE TABLE");
         }
 
         if (auto maybeDrop = TMaybeNode<TKiDropTable>(input)) {
+            if (!EnsureNotPrepare("DROP TABLE", input->Pos(), SessionCtx->Query(), ctx)) {
+                return SyncError();
+            }
+
             auto requireStatus = RequireChild(*input, 0);
             if (requireStatus.Level != TStatus::Ok) {
                 return SyncStatus(requireStatus);
@@ -981,65 +582,39 @@ public:
             auto cluster = TString(maybeDrop.Cast().DataSink().Cluster());
             TString tableName = TString(maybeDrop.Cast().Table());
             auto& table = SessionCtx->Tables().GetTable(cluster, tableName);
-            auto tableTypeString = TString(maybeDrop.Cast().TableType());
-            auto tableTypeItem = GetTableTypeFromString(tableTypeString);
-            switch (tableTypeItem) {
+            auto tableType = TString(maybeDrop.Cast().TableType());
+            bool isTableStore;
+
+            switch (GetTableTypeFromString(tableType)) {
                 case ETableType::Table:
                     if (!ApplyDdlOperation(cluster, input->Pos(), tableName, TYdbOperation::DropTable, ctx)) {
                         return SyncError();
                     }
+                    isTableStore = false;
                     break;
                 case ETableType::TableStore:
-                case ETableType::ExternalTable:
+                    isTableStore = true;
                     break;
                 case ETableType::Unknown:
-                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << "Unsupported table type " << tableTypeString));
+                default:
+                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << "Unsupported table type " << tableType));
                     return SyncError();
             }
 
-            if (tableTypeItem == ETableType::ExternalTable && !SessionCtx->Config().FeatureFlags.GetEnableExternalDataSources()) {
-                ctx.AddError(TIssue(ctx.GetPosition(input->Pos()),
-                    TStringBuilder() << "External table are disabled. Please contact your system administrator to enable it"));
-                return SyncError();
-            }
+            bool prepareOnly = SessionCtx->Query().PrepareOnly;
+            auto future = prepareOnly ? CreateDummySuccess() : (
+                isTableStore
+                ? Gateway->DropTableStore(cluster, ParseDropTableStoreSettings(maybeDrop.Cast()))
+                : Gateway->DropTable(table.Metadata->Cluster, table.Metadata->Name)
+            );
 
-            bool missingOk = (maybeDrop.MissingOk().Cast().Value() == "1");
-
-            NThreading::TFuture<IKikimrGateway::TGenericResult> future;
-            switch (tableTypeItem) {
-                case ETableType::Table:
-                    future = Gateway->DropTable(table.Metadata->Cluster, TDropTableSettings{.Table = table.Metadata->Name, .SuccessOnNotExist = missingOk});
-                    if (missingOk) {
-                        future = future.Apply([](const NThreading::TFuture<IKikimrGateway::TGenericResult>& res) {
-                            auto operationResult = res.GetValue();
-                            bool pathNotExist = false;
-                            for (const auto& issue : operationResult.Issues()) {
-                                WalkThroughIssues(issue, false, [&pathNotExist](const NYql::TIssue& issue, int level) {
-                                    Y_UNUSED(level);
-                                    pathNotExist |= (issue.GetCode() == NKikimrIssues::TIssuesIds::PATH_NOT_EXIST);
-                                });
-                            }
-                            return pathNotExist ? CreateDummySuccess() : res;
-                        });
-                    }
-                    break;
-                case ETableType::TableStore:
-                    future = Gateway->DropTableStore(cluster, ParseDropTableStoreSettings(maybeDrop.Cast()));
-                    break;
-                case ETableType::ExternalTable:
-                    future = Gateway->DropExternalTable(cluster, ParseDropExternalTableSettings(maybeDrop.Cast()));
-                    break;
-                case ETableType::Unknown:
-                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << "Unsupported table type " << tableTypeString));
-                    return SyncError();
-            }
 
             return WrapFuture(future,
                 [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
                     Y_UNUSED(res);
                     auto resultNode = ctx.NewWorld(input->Pos());
                     return resultNode;
-                }, GetDropTableDebugString(tableTypeItem));
+                }, isTableStore ? "Executing DROP TABLESTORE" : "Executing DROP TABLE");
 
             input->SetState(TExprNode::EState::ExecutionComplete);
             input->SetResult(ctx.NewWorld(input->Pos()));
@@ -1047,6 +622,10 @@ public:
         }
 
         if (auto maybeAlter = TMaybeNode<TKiAlterTable>(input)) {
+            if (!EnsureNotPrepare("ALTER TABLE", input->Pos(), SessionCtx->Query(), ctx)) {
+                return SyncError();
+            }
+
             auto requireStatus = RequireChild(*input, 0);
             if (requireStatus.Level != TStatus::Ok) {
                 return SyncStatus(requireStatus);
@@ -1059,12 +638,8 @@ public:
                 return SyncError();
             }
 
-            ui64 alterTableFlags = 0; //additional flags to pass options without public api modification
             Ydb::Table::AlterTableRequest alterTableRequest;
             alterTableRequest.set_path(table.Metadata->Name);
-
-            NKikimrIndexBuilder::TIndexBuildSettings indexBuildSettings;
-            indexBuildSettings.set_source_path(table.Metadata->Name);
 
             for (auto action : maybeAlter.Cast().Actions()) {
                 auto name = action.Name().Value();
@@ -1093,30 +668,13 @@ public:
                         auto actualType = notNull ? type : type->Cast<TOptionalExprType>()->GetItemType();
                         auto dataType = actualType->Cast<TDataExprType>();
                         SetColumnType(*add_column->mutable_type(), TString(dataType->GetName()), notNull);
-
                         if (columnTuple.Size() > 2) {
-                            auto columnConstraints = columnTuple.Item(2).Cast<TCoNameValueTuple>();
-                            for(const auto& constraint: columnConstraints.Value().Cast<TCoNameValueTupleList>()) {
-                                if (constraint.Name().Value() == "serial") {
-                                    ctx.AddError(TIssue(ctx.GetPosition(constraint.Pos()), 
-                                        "Column addition with serial data type is unsupported"));
-                                    return SyncError();
-                                } else if (constraint.Name().Value() == "default") {
-                                    auto columnBuild = indexBuildSettings.mutable_column_build_operation()->add_column();
-                                    columnBuild->SetColumnName(TString(constraint.Name().Value()));
-                                    FillLiteralProto(constraint.Value().Cast<TCoDataCtor>(), *columnBuild->mutable_default_from_literal());
-                                }
-                            }
-                        }
-
-                        if (columnTuple.Size() > 3) {
-                            auto families = columnTuple.Item(3).Cast<TCoAtomList>();
+                            auto families = columnTuple.Item(2).Cast<TCoAtomList>();
                             if (families.Size() > 1) {
                                 ctx.AddError(TIssue(ctx.GetPosition(families.Pos()),
                                     "Unsupported number of families"));
                                 return SyncError();
                             }
-
                             for (auto family : families) {
                                 add_column->set_family(TString(family.Value()));
                             }
@@ -1354,20 +912,6 @@ public:
                                 TString columnName(column.Value());
                                 add_index->add_data_columns(columnName);
                             }
-                        } else if (name == "flags") {
-                            auto flagList = columnTuple.Item(1).Cast<TCoAtomList>();
-                            for (auto flag : flagList) {
-                                TString flagName(flag.Value());
-                                if (flagName == "pg") {
-                                    alterTableFlags |= NKqpProto::TKqpSchemeOperation::FLAG_PG_MODE;
-                                } else if (flagName == "ifNotExists") {
-                                    alterTableFlags |= NKqpProto::TKqpSchemeOperation::FLAG_IF_NOT_EXISTS;
-                                } else {
-                                    ctx.AddError(TIssue(ctx.GetPosition(nameNode.Pos()),
-                                        TStringBuilder() << "Unknown add index flag: " << flagName));
-                                    return SyncError();
-                                }
-                            }
                         } else {
                             ctx.AddError(TIssue(ctx.GetPosition(nameNode.Pos()),
                                 TStringBuilder() << "Unknown add index setting: " << name));
@@ -1429,8 +973,6 @@ public:
                                         add_changefeed->set_format(Ydb::Table::ChangefeedFormat::FORMAT_JSON);
                                     } else if (to_lower(format) == "dynamodb_streams_json") {
                                         add_changefeed->set_format(Ydb::Table::ChangefeedFormat::FORMAT_DYNAMODB_STREAMS_JSON);
-                                    } else if (to_lower(format) == "debezium_json") {
-                                        add_changefeed->set_format(Ydb::Table::ChangefeedFormat::FORMAT_DEBEZIUM_JSON);
                                     } else {
                                         ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
                                             TStringBuilder() << "Unknown changefeed format: " << format));
@@ -1448,21 +990,6 @@ public:
                                     );
 
                                     add_changefeed->set_virtual_timestamps(FromString<bool>(to_lower(value)));
-                                } else if (name == "resolved_timestamps") {
-                                    YQL_ENSURE(setting.Value().Maybe<TCoInterval>());
-                                    const auto value = FromString<i64>(
-                                        setting.Value().Cast<TCoInterval>().Literal().Value()
-                                    );
-
-                                    if (value <= 0) {
-                                        ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
-                                            TStringBuilder() << name << " must be positive"));
-                                        return SyncError();
-                                    }
-
-                                    const auto interval = TDuration::FromValue(value);
-                                    auto& resolvedTimestamps = *add_changefeed->mutable_resolved_timestamps_interval();
-                                    resolvedTimestamps.set_seconds(interval.Seconds());
                                 } else if (name == "retention_period") {
                                     YQL_ENSURE(setting.Value().Maybe<TCoInterval>());
                                     const auto value = FromString<i64>(
@@ -1478,19 +1005,6 @@ public:
                                     const auto duration = TDuration::FromValue(value);
                                     auto& retention = *add_changefeed->mutable_retention_period();
                                     retention.set_seconds(duration.Seconds());
-                                } else if (name == "topic_min_active_partitions") {
-                                    auto value = TString(
-                                        setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()
-                                    );
-
-                                    i64 minActivePartitions;
-                                    if (!TryFromString(value, minActivePartitions) || minActivePartitions <= 0) {
-                                        ctx.AddError(TIssue(ctx.GetPosition(setting.Name().Pos()),
-                                            TStringBuilder() << name << " must be greater than 0"));
-                                        return SyncError();
-                                    }
-
-                                    add_changefeed->mutable_topic_partitioning_settings()->set_min_active_partitions(minActivePartitions);
                                 } else if (name == "aws_region") {
                                     auto value = TString(
                                         setting.Value().Cast<TCoDataCtor>().Literal().Cast<TCoAtom>().Value()
@@ -1542,24 +1056,28 @@ public:
             }
 
             NThreading::TFuture<IKikimrGateway::TGenericResult> future;
-            bool isTableStore = (table.Metadata->TableType == ETableType::TableStore);
-            bool isColumn = (table.Metadata->StoreType == EStoreType::Column);
-
-            if (isTableStore) {
-                if (!isColumn) {
-                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()),
-                        TStringBuilder() << "TABLESTORE with not COLUMN store"));
-                    return SyncError();
-                }
-                future = Gateway->AlterTableStore(cluster, ParseAlterTableStoreSettings(maybeAlter.Cast()));
-            } else if (isColumn) {
-                future = Gateway->AlterColumnTable(cluster, ParseAlterColumnTableSettings(maybeAlter.Cast()));
+            if (SessionCtx->Query().PrepareOnly) {
+                future = CreateDummySuccess();
             } else {
-                TMaybe<TString> requestType;
-                if (!SessionCtx->Query().DocumentApiRestricted) {
-                    requestType = NKikimr::NDocApi::RequestType;
+                bool isTableStore = (table.Metadata->TableType == ETableType::TableStore);
+                bool isColumn = (table.Metadata->StoreType == EStoreType::Column);
+
+                if (isTableStore) {
+                    if (!isColumn) {
+                        ctx.AddError(TIssue(ctx.GetPosition(input->Pos()),
+                            TStringBuilder() << "TABLESTORE with not COLUMN store"));
+                        return SyncError();
+                    }
+                    future = Gateway->AlterTableStore(cluster, ParseAlterTableStoreSettings(maybeAlter.Cast()));
+                } else if (isColumn) {
+                    future = Gateway->AlterColumnTable(cluster, ParseAlterColumnTableSettings(maybeAlter.Cast()));
+                } else {
+                    TMaybe<TString> requestType;
+                    if (!SessionCtx->Query().DocumentApiRestricted) {
+                        requestType = NKikimr::NDocApi::RequestType;
+                    }
+                    future = Gateway->AlterTable(cluster, std::move(alterTableRequest), requestType);
                 }
-                future = Gateway->AlterTable(cluster, std::move(alterTableRequest), requestType, alterTableFlags, std::move(indexBuildSettings));
             }
 
             return WrapFuture(future,
@@ -1571,130 +1089,11 @@ public:
 
         }
 
-        if (auto maybeCreate = TMaybeNode<TKiCreateTopic>(input)) {
-            auto requireStatus = RequireChild(*input, 0);
-            if (requireStatus.Level != TStatus::Ok) {
-                return SyncStatus(requireStatus);
-            }
-            auto cluster = TString(maybeCreate.Cast().DataSink().Cluster());
-            TString topicName = TString(maybeCreate.Cast().Topic());
-            Ydb::Topic::CreateTopicRequest createReq;
-            createReq.set_path(topicName);
-            for (const auto& consumer : maybeCreate.Cast().Consumers()) {
-                auto error = AddConsumerToTopicRequest(createReq.add_consumers(), consumer);
-                if (!error.empty()) {
-                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << error << input->Content()));
-                    return SyncError();
-                }
-            }
-            AddTopicSettingsToRequest(&createReq,maybeCreate.Cast().TopicSettings());
-            bool prepareOnly = SessionCtx->Query().PrepareOnly;
-            // DEBUG
-            // Cerr << "Create topic request proto: " << createReq.DebugString() << Endl;
-            auto future = prepareOnly ? CreateDummySuccess() : (
-                    Gateway->CreateTopic(cluster, std::move(createReq))
-            );
-
-            return WrapFuture(future,
-                              [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
-                                  Y_UNUSED(res);
-                                  auto resultNode = ctx.NewWorld(input->Pos());
-                                  return resultNode;
-                              }, "Executing CREATE TOPIC");
-        }
-        if (auto maybeAlter = TMaybeNode<TKiAlterTopic>(input)) {
-            auto requireStatus = RequireChild(*input, 0);
-            if (requireStatus.Level != TStatus::Ok) {
-                return SyncStatus(requireStatus);
-            }
-            auto cluster = TString(maybeAlter.Cast().DataSink().Cluster());
-            TString topicName = TString(maybeAlter.Cast().Topic());
-            Ydb::Topic::AlterTopicRequest alterReq;
-            alterReq.set_path(topicName);
-            for (const auto& consumer : maybeAlter.Cast().AddConsumers()) {
-                auto error = AddConsumerToTopicRequest(alterReq.add_add_consumers(), consumer);
-                if (!error.empty()) {
-                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << error << input->Content()));
-                    return SyncError();
-                }
-            }
-            for (const auto& consumer : maybeAlter.Cast().AlterConsumers()) {
-                auto error = AddAlterConsumerToTopicRequest(alterReq.add_alter_consumers(), consumer);
-                if (!error.empty()) {
-                    ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << error << input->Content()));
-                    return SyncError();
-                }
-            }
-            for (const auto& consumer : maybeAlter.Cast().DropConsumers()) {
-                auto name = consumer.Cast<TCoAtom>().StringValue();
-                alterReq.add_drop_consumers(name);
-            }
-            AddAlterTopicSettingsToRequest(&alterReq, maybeAlter.Cast().TopicSettings());
-            bool prepareOnly = SessionCtx->Query().PrepareOnly;
-	    // DEBUG
-            // Cerr << "Alter topic request proto:\n" << alterReq.DebugString() << Endl;
-            auto future = prepareOnly ? CreateDummySuccess() : (
-                    Gateway->AlterTopic(cluster, std::move(alterReq))
-            );
-
-            return WrapFuture(future,
-                              [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
-                                  Y_UNUSED(res);
-                                  auto resultNode = ctx.NewWorld(input->Pos());
-                                  return resultNode;
-                              }, "Executing ALTER TOPIC");
-        }
-
-        if (auto maybeDrop = TMaybeNode<TKiDropTopic>(input)) {
-            if (!EnsureNotPrepare("DROP TOPIC", input->Pos(), SessionCtx->Query(), ctx)) {
-                return SyncError();
-            }
-
-            auto requireStatus = RequireChild(*input, 0);
-            if (requireStatus.Level != TStatus::Ok) {
-                return SyncStatus(requireStatus);
-            }
-            auto cluster = TString(maybeDrop.Cast().DataSink().Cluster());
-            TString topicName = TString(maybeDrop.Cast().Topic());
-
-            bool prepareOnly = SessionCtx->Query().PrepareOnly;
-            auto future = prepareOnly ? CreateDummySuccess() : (
-                    Gateway->DropTopic(cluster, topicName)
-            );
-
-            return WrapFuture(future,
-                              [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
-                                  Y_UNUSED(res);
-                                  auto resultNode = ctx.NewWorld(input->Pos());
-                                  return resultNode;
-                              }, "Executing DROP TOPIC");
-        }
-
-        if (auto maybeGrantPermissions = TMaybeNode<TKiModifyPermissions>(input)) {
-            if (!EnsureNotPrepare("MODIFY PERMISSIONS", input->Pos(), SessionCtx->Query(), ctx)) {
-                return SyncError();
-            }
-
-            auto requireStatus = RequireChild(*input, 0);
-            if (requireStatus.Level != TStatus::Ok) {
-                return SyncStatus(requireStatus);
-            }
-
-            auto cluster = TString(maybeGrantPermissions.Cast().DataSink().Cluster());
-            TModifyPermissionsSettings settings = ParsePermissionsSettings(maybeGrantPermissions.Cast());
-
-            bool prepareOnly = SessionCtx->Query().PrepareOnly;
-            auto future = prepareOnly ? CreateDummySuccess() : Gateway->ModifyPermissions(cluster, settings);
-
-            return WrapFuture(future,
-                [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
-                Y_UNUSED(res);
-                auto resultNode = ctx.NewWorld(input->Pos());
-                return resultNode;
-            }, "Executing MODIFY PERMISSIONS");
-        }
-
         if (auto maybeCreateUser = TMaybeNode<TKiCreateUser>(input)) {
+            if (!EnsureNotPrepare("CREATE USER", input->Pos(), SessionCtx->Query(), ctx)) {
+                return SyncError();
+            }
+
             auto requireStatus = RequireChild(*input, 0);
             if (requireStatus.Level != TStatus::Ok) {
                 return SyncStatus(requireStatus);
@@ -1703,7 +1102,8 @@ public:
             auto cluster = TString(maybeCreateUser.Cast().DataSink().Cluster());
             TCreateUserSettings createUserSettings = ParseCreateUserSettings(maybeCreateUser.Cast());
 
-            auto future = Gateway->CreateUser(cluster, createUserSettings);
+            bool prepareOnly = SessionCtx->Query().PrepareOnly;
+            auto future = prepareOnly ? CreateDummySuccess() : Gateway->CreateUser(cluster, createUserSettings);
 
             return WrapFuture(future,
                 [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
@@ -1714,6 +1114,10 @@ public:
         }
 
         if (auto maybeAlterUser = TMaybeNode<TKiAlterUser>(input)) {
+            if (!EnsureNotPrepare("ALTER USER", input->Pos(), SessionCtx->Query(), ctx)) {
+                return SyncError();
+            }
+
             auto requireStatus = RequireChild(*input, 0);
             if (requireStatus.Level != TStatus::Ok) {
                 return SyncStatus(requireStatus);
@@ -1722,7 +1126,8 @@ public:
             auto cluster = TString(maybeAlterUser.Cast().DataSink().Cluster());
             TAlterUserSettings alterUserSettings = ParseAlterUserSettings(maybeAlterUser.Cast());
 
-            auto future = Gateway->AlterUser(cluster, alterUserSettings);
+            bool prepareOnly = SessionCtx->Query().PrepareOnly;
+            auto future = prepareOnly ? CreateDummySuccess() : Gateway->AlterUser(cluster, alterUserSettings);
 
             return WrapFuture(future,
                 [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
@@ -1733,6 +1138,10 @@ public:
         }
 
         if (auto maybeDropUser = TMaybeNode<TKiDropUser>(input)) {
+            if (!EnsureNotPrepare("DROP USER", input->Pos(), SessionCtx->Query(), ctx)) {
+                return SyncError();
+            }
+
             auto requireStatus = RequireChild(*input, 0);
             if (requireStatus.Level != TStatus::Ok) {
                 return SyncStatus(requireStatus);
@@ -1741,7 +1150,8 @@ public:
             auto cluster = TString(maybeDropUser.Cast().DataSink().Cluster());
             TDropUserSettings dropUserSettings = ParseDropUserSettings(maybeDropUser.Cast());
 
-            auto future = Gateway->DropUser(cluster, dropUserSettings);
+            bool prepareOnly = SessionCtx->Query().PrepareOnly;
+            auto future = prepareOnly ? CreateDummySuccess() : Gateway->DropUser(cluster, dropUserSettings);
 
             return WrapFuture(future,
                 [](const IKikimrGateway::TGenericResult& res, const TExprNode::TPtr& input, TExprContext& ctx) {
@@ -1749,10 +1159,6 @@ public:
                 auto resultNode = ctx.NewWorld(input->Pos());
                 return resultNode;
             }, "Executing DROP USER");
-        }
-
-        if (auto kiObject = TMaybeNode<TKiUpsertObject>(input)) {
-            return TUpsertObjectTransformer("UPSERT OBJECT", Gateway, SessionCtx).Execute(kiObject.Cast(), input, ctx);
         }
 
         if (auto kiObject = TMaybeNode<TKiCreateObject>(input)) {
@@ -1839,29 +1245,6 @@ public:
             }, "Executing DROP GROUP");
         }
 
-        if (auto maybePgDropObject = TMaybeNode<TPgDropObject>(input)) {
-            auto requireStatus = RequireChild(*input, 0);
-            if (requireStatus.Level != TStatus::Ok) {
-                return SyncStatus(requireStatus);
-            }
-            auto pgDrop = maybePgDropObject.Cast();
-
-            auto cluster = TString(pgDrop.DataSink().Cluster());
-            const auto type = TString(pgDrop.TypeId().Value());
-            const auto objectName = TString(pgDrop.ObjectId().Value());
-
-            if (type == "pgIndex") {
-                // TODO: KIKIMR-19695
-                ctx.AddError(TIssue(ctx.GetPosition(pgDrop.Pos()),
-                                    TStringBuilder() << "DROP INDEX for Postgres indexes is not implemented yet"));
-                return SyncError();
-            } else {
-                ctx.AddError(TIssue(ctx.GetPosition(pgDrop.TypeId().Pos()),
-                                    TStringBuilder() << "Unknown PgDrop operation: " << type));
-                return SyncError();
-            }
-        }
-
         ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder()
             << "(Kikimr DataSink) Failed to execute node: " << input->Content()));
         return SyncError();
@@ -1872,30 +1255,6 @@ private:
         const IKikimrQueryExecutor::TExecuteSettings& settings)>;
     using TExecuteFinalizeFunc = std::function<void(TExprBase node, const IKikimrQueryExecutor::TQueryResult& result,
         TExprContext& ctx)>;
-
-    static TString GetCreateTableDebugString(ETableType tableType) {
-        switch (tableType) {
-            case ETableType::ExternalTable:
-                return "Executing CREATE EXTERNAL TABLE";
-            case ETableType::TableStore:
-                return "Executing CREATE TABLESTORE";
-            case ETableType::Table:
-            case ETableType::Unknown:
-                return "Executing CREATE TABLE";
-        }
-    }
-
-    static TString GetDropTableDebugString(ETableType tableType) {
-        switch (tableType) {
-            case ETableType::ExternalTable:
-                return "Executing DROP EXTERNAL TABLE";
-            case ETableType::TableStore:
-                return "Executing DROP TABLESTORE";
-            case ETableType::Table:
-            case ETableType::Unknown:
-                return "Executing DROP TABLE";
-        }
-    }
 
     std::pair<IGraphTransformer::TStatus, TAsyncTransformCallbackFuture> PerformExecution(TExprBase node,
         TExprContext& ctx, const TString& cluster, TMaybe<TString> mode,
@@ -2000,7 +1359,8 @@ private:
         return PerformExecution(execQuery, ctx, cluster, settings.Mode, runFunc, finalizeFunc);
     }
 
-    std::pair<bool, TIssues> ApplyTableOperations(const TString& cluster, const TVector<NKqpProto::TKqpTableOp>& tableOps)
+    bool ApplyTableOperations(const TString& cluster, const TVector<NKqpProto::TKqpTableOp>& tableOps,
+        NKikimrKqp::EIsolationLevel isolationLevel, TExprContext& ctx)
     {
         auto queryType = SessionCtx->Query().Type;
         TVector<NKqpProto::TKqpTableInfo> tableInfo;
@@ -2015,11 +1375,10 @@ private:
 
         if (!SessionCtx->HasTx()) {
             TKikimrTransactionContextBase emptyCtx(SessionCtx->Config().EnableKqpImmediateEffects);
-            emptyCtx.SetTempTables(SessionCtx->GetTempTablesState());
-            return emptyCtx.ApplyTableOperations(tableOps, tableInfo, queryType);
+            return emptyCtx.ApplyTableOperations(tableOps, tableInfo, isolationLevel, queryType, ctx);
         }
 
-        return SessionCtx->Tx().ApplyTableOperations(tableOps, tableInfo, queryType);
+        return SessionCtx->Tx().ApplyTableOperations(tableOps, tableInfo, isolationLevel, queryType, ctx);
     }
 
     bool ApplyDdlOperation(const TString& cluster, TPositionHandle pos, const TString& table,
@@ -2035,11 +1394,7 @@ private:
         protoOp.SetTable(table);
         protoOp.SetOperation((ui32)op);
 
-        auto [success, issues] = ApplyTableOperations(cluster, {protoOp});
-        for (auto& i : issues) {
-            ctx.AddError(std::move(i));
-        }
-        return success;
+        return ApplyTableOperations(cluster, {protoOp}, NKikimrKqp::ISOLATION_LEVEL_SERIALIZABLE, ctx);
     }
 
 private:
@@ -2052,10 +1407,9 @@ private:
 
 TAutoPtr<IGraphTransformer> CreateKiSourceCallableExecutionTransformer(
     TIntrusivePtr<IKikimrGateway> gateway,
-    TIntrusivePtr<TKikimrSessionContext> sessionCtx,
-    TTypeAnnotationContext& types)
+    TIntrusivePtr<TKikimrSessionContext> sessionCtx)
 {
-    return new TKiSourceCallableExecutionTransformer(gateway, sessionCtx, types);
+    return new TKiSourceCallableExecutionTransformer(gateway, sessionCtx);
 }
 
 TAutoPtr<IGraphTransformer> CreateKiSinkCallableExecutionTransformer(

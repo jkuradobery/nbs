@@ -55,17 +55,17 @@ THashMap<TStringBuf, TPragmaField> CTX_PRAGMA_FIELDS = {
     {"FlexibleTypes", &TContext::FlexibleTypes},
     {"AnsiCurrentRow", &TContext::AnsiCurrentRow},
     {"EmitStartsWith", &TContext::EmitStartsWith},
+    {"EnforceAnsiOrderByLimitInUnionAll", &TContext::EnforceAnsiOrderByLimitInUnionAll},
     {"EmitAggApply", &TContext::EmitAggApply},
     {"AnsiLike", &TContext::AnsiLike},
-    {"UseBlocks", &TContext::UseBlocks},
 };
 
 typedef TMaybe<bool> TContext::*TPragmaMaybeField;
 
 THashMap<TStringBuf, TPragmaMaybeField> CTX_PRAGMA_MAYBE_FIELDS = {
     {"AnsiRankForNullableKeys", &TContext::AnsiRankForNullableKeys},
+    {"AnsiOrderByLimitInUnionAll", &TContext::AnsiOrderByLimitInUnionAll},
     {"AnsiInForEmptyOrNullableItemsCollections", &TContext::AnsiInForEmptyOrNullableItemsCollections},
-    {"CompactGroupBy", &TContext::CompactGroupBy},
 };
 
 } // namespace
@@ -86,7 +86,7 @@ TContext::TContext(const NSQLTranslation::TTranslationSettings& settings,
     , AnsiQuotedIdentifiers(settings.AnsiLexer)
 {
     for (auto lib : settings.Libraries) {
-        Libraries.emplace(lib, TLibraryStuff());
+        Libraries[lib] = Nothing();
     }
 
     Scoped = MakeIntrusive<TScopedState>();
@@ -241,21 +241,6 @@ IOutputStream& TContext::MakeIssue(ESeverity severity, TIssueCode code, NYql::TP
     return *IssueMsgHolder;
 }
 
-bool TContext::IsDynamicCluster(const TDeferredAtom& cluster) const {
-    const TString* clusterPtr = cluster.GetLiteral();
-    if (!clusterPtr) {
-        return false;
-    }
-    TString unused;
-    if (ClusterMapping.GetClusterProvider(*clusterPtr, unused)) {
-        return false;
-    }
-    if (Settings.AssumeYdbOnClusterWithSlash && clusterPtr->StartsWith('/')) {
-        return false;
-    }
-    return !Settings.DynamicClusterProvider.Empty();
-}
-
 bool TContext::SetPathPrefix(const TString& value, TMaybe<TString> arg) {
     if (arg.Defined()) {
         if (*arg == YtProviderName
@@ -291,9 +276,6 @@ TNodePtr TContext::GetPrefixedPath(const TString& service, const TDeferredAtom& 
 }
 
 TStringBuf TContext::GetPrefixPath(const TString& service, const TDeferredAtom& cluster) const {
-    if (IsDynamicCluster(cluster)) {
-        return {};
-    }
     auto* clusterPrefix = cluster.GetLiteral()
                             ? ClusterPathPrefixes.FindPtr(*cluster.GetLiteral())
                             : nullptr;
@@ -317,18 +299,12 @@ TNodePtr TContext::UniversalAlias(const TString& baseName, TNodePtr&& node) {
 }
 
 bool TContext::IsAlreadyDeclared(const TString& varName) const {
-    return Variables.find(varName) != Variables.end() && !WeakVariables.contains(varName);
+    return Variables.find(varName) != Variables.end();
 }
 
-void TContext::DeclareVariable(const TString& varName, const TNodePtr& typeNode, bool isWeak) {
-    if (isWeak) {
-        auto inserted = Variables.emplace(varName, typeNode);
-        YQL_ENSURE(inserted.second);
-        WeakVariables.insert(varName);
-    } else {
-        WeakVariables.erase(WeakVariables.find(varName));
-        Variables[varName] = typeNode;
-    }
+void TContext::DeclareVariable(const TString& varName, const TNodePtr& typeNode) {
+    auto inserted = Variables.emplace(varName, typeNode);
+    YQL_ENSURE(inserted.second);
 }
 
 bool TContext::AddExport(TPosition pos, const TString& name) {
@@ -350,11 +326,7 @@ bool TContext::AddExport(TPosition pos, const TString& name) {
 
 TString TContext::AddImport(const TVector<TString>& modulePath) {
     YQL_ENSURE(!modulePath.empty());
-    TString path = JoinRange("/", modulePath.cbegin(), modulePath.cend());
-    if (!path.StartsWith('/')) {
-        path = Settings.FileAliasPrefix + path;
-    }
-    
+    const TString path = JoinRange("/", modulePath.cbegin(), modulePath.cend());
     auto iter = ImportModuleAliases.find(path);
     if (iter == ImportModuleAliases.end()) {
         const TString alias = MakeName(TStringBuilder() << modulePath.back() << "_module");
@@ -426,7 +398,7 @@ TNodePtr TScopedState::LookupNode(const TString& name) {
     if (mapIt == NamedNodes.end()) {
         return nullptr;
     }
-    Y_DEBUG_ABORT_UNLESS(!mapIt->second.empty());
+    Y_VERIFY_DEBUG(!mapIt->second.empty());
     mapIt->second.front()->IsUsed = true;
     return mapIt->second.front()->Node->Clone();
 }
@@ -495,6 +467,11 @@ TMaybe<EColumnRefState> GetFunctionArgColumnStatus(TContext& ctx, const TString&
         { {"ensuretype", 2},          EColumnRefState::Deny },
         { {"ensureconvertibleto", 1}, EColumnRefState::Deny },
         { {"ensureconvertibleto", 2}, EColumnRefState::Deny },
+
+        // TODO: switch to Deny here
+        { {"evaluateexpr", 0},        EColumnRefState::AsStringLiteral },
+        { {"evaluateatom", 0},        EColumnRefState::AsStringLiteral },
+        { {"evaluatetype", 0},        EColumnRefState::AsStringLiteral },
 
         { {"nothing", 0},             EColumnRefState::Deny },
         { {"formattype", 0},          EColumnRefState::Deny },
@@ -573,11 +550,11 @@ TString TTranslation::PushNamedNode(TPosition namePos, const TString& name, cons
         YQL_ENSURE(Ctx.Scoped->NamedNodes.find(resultName) == Ctx.Scoped->NamedNodes.end());
     }
     auto node = builder(resultName);
-    Y_DEBUG_ABORT_UNLESS(node);
+    Y_VERIFY_DEBUG(node);
     auto mapIt = Ctx.Scoped->NamedNodes.find(resultName);
     if (mapIt == Ctx.Scoped->NamedNodes.end()) {
         auto result = Ctx.Scoped->NamedNodes.insert(std::make_pair(resultName, TDeque<TNodeWithUsageInfoPtr>()));
-        Y_DEBUG_ABORT_UNLESS(result.second);
+        Y_VERIFY_DEBUG(result.second);
         mapIt = result.first;
     }
 
@@ -598,8 +575,8 @@ TString TTranslation::PushNamedAtom(TPosition namePos, const TString& name) {
 
 void TTranslation::PopNamedNode(const TString& name) {
     auto mapIt = Ctx.Scoped->NamedNodes.find(name);
-    Y_DEBUG_ABORT_UNLESS(mapIt != Ctx.Scoped->NamedNodes.end());
-    Y_DEBUG_ABORT_UNLESS(mapIt->second.size() > 0);
+    Y_VERIFY_DEBUG(mapIt != Ctx.Scoped->NamedNodes.end());
+    Y_VERIFY_DEBUG(mapIt->second.size() > 0);
     auto& top = mapIt->second.front();
     if (!top->IsUsed && !Ctx.HasPendingErrors && !name.StartsWith("$_")) {
         Ctx.Warning(top->NamePos, TIssuesIds::YQL_UNUSED_SYMBOL) << "Symbol " << name << " is not used";

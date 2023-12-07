@@ -4,7 +4,7 @@
 #include <util/folder/path.h>
 #include <util/string/strip.h>
 
-#if defined(_unix_)
+#ifdef _unix_
 #include <sys/ioctl.h>
 #include <termios.h>
 
@@ -60,9 +60,6 @@ void TProfileConfig::ReadFromFile() {
 }
 
 bool ReadFromFileIfExists(TString& filePath, const TString& fileName, TString& output, bool allowEmpty) {
-    if (filePath.StartsWith("~")) {
-        filePath = HomeDir + filePath.substr(1);
-    }
     TFsPath fsPath(filePath);
     if (!fsPath.Exists()) {
         correctpath(filePath);
@@ -88,6 +85,17 @@ TString ReadFromFile(TString& filePath, const TString& fileName, bool allowEmpty
     } else {
         throw yexception() << "Can't find " << fileName << " file \"" << filePath << "\".";
     }
+}
+
+size_t TermWidth() {
+#ifdef _unix_
+    struct winsize ws;
+    if (!ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws)) {
+        return ws.ws_col;
+    }
+#endif
+
+    return Max<size_t>();
 }
 
 TString InputPassword() {
@@ -127,7 +135,7 @@ TString InputPassword() {
         if (c == '\b' || c == 0x7F) {
             // Backspace. Remove last char if there is any
             if (password.size()) {
-                Cerr << "\b \b";
+                Cout << "\b \b";
                 password.pop_back();
             }
         } else if (c == 0x03) {
@@ -140,11 +148,11 @@ TString InputPassword() {
 #endif
             exit(EXIT_FAILURE);
         } else {
-            Cerr << '*';
+            Cout << '*';
             password.push_back(c);
         }
     }
-    Cerr << Endl;
+    Cout << Endl;
 
 #if defined(_unix_)
     tcsetattr(STDIN_FILENO, TCSANOW, &oldState);

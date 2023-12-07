@@ -27,9 +27,9 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void CreateRun(const TCodegenContext& ctx, BasicBlock*& block, Value* result, Value* args) const final {
-        ctx.Codegen.LoadBitCode(ModuleIR, ModuleIRUniqID);
+        ctx.Codegen->LoadBitCode(ModuleIR, ModuleIRUniqID);
 
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto type = Type::getInt128Ty(context);
         YQL_ENSURE(result->getType() == PointerType::getUnqual(type));
@@ -40,7 +40,7 @@ public:
         const auto builder = ctx.GetBuilder();
 
         const auto funType = FunctionType::get(Type::getVoidTy(context), {boxed->getType(), result->getType(), builder->getType(), args->getType()}, false);
-        const auto runFunc = ctx.Codegen.GetModule().getOrInsertFunction(llvm::StringRef(FunctionName.data(), FunctionName.size()), funType);
+        const auto runFunc = ctx.Codegen->GetModule().getOrInsertFunction(llvm::StringRef(FunctionName.data(), FunctionName.size()), funType).getCallee();
         CallInst::Create(runFunc, {boxed, result, builder, args}, "", block);
     }
 #endif
@@ -79,10 +79,8 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetValue(const TCodegenContext& ctx, Value* pointer, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
-
         GetNodeValue(pointer, RunConfigNode, ctx, block);
-        const auto conf = new LoadInst(Type::getInt128Ty(context), pointer, "conf", block);
+        const auto conf = new LoadInst(pointer, "conf", block);
 
         const auto func = GetNodeValue(FunctionImpl, ctx, block);
 
@@ -90,12 +88,14 @@ public:
 
         ValueUnRef(RunConfigNode->GetRepresentation(), conf, ctx, block);
 
+        auto& context = ctx.Codegen->GetContext();
+
         const auto ptrType = PointerType::getUnqual(StructType::get(context));
         const auto wrap = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TUdfWrapper::Wrap));
         const auto self = CastInst::Create(Instruction::IntToPtr, ConstantInt::get(Type::getInt64Ty(context), uintptr_t(this)), ptrType, "self", block);
         const auto funType = FunctionType::get(Type::getVoidTy(context), {self->getType(), pointer->getType()}, false);
         const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, wrap, PointerType::getUnqual(funType), "function", block);
-        CallInst::Create(funType, doFuncPtr, {self, pointer}, "", block);
+        CallInst::Create(doFuncPtr, {self, pointer}, "", block);
     }
 #endif
 private:
@@ -140,7 +140,7 @@ inline IComputationNode* CreateUdfWrapper(
                 return new TUdfWrapper<TValidateErrorPolicyThrow,TValidateModeGreedy<TValidateErrorPolicyThrow>>(ctx.Mutables, std::move(node), std::move(functionName), runConfigNode, callableType);
             }
         default:
-            Y_ABORT("Unexpected validate mode: %u", static_cast<unsigned>(ctx.ValidateMode));
+            Y_FAIL("Unexpected validate mode: %u", static_cast<unsigned>(ctx.ValidateMode));
     };
 }
 

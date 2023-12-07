@@ -12,9 +12,9 @@
 #include <ydb/library/yql/dq/actors/protos/dq_status_codes.pb.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -27,7 +27,7 @@ class TScanActorBase : public TActorBootstrapped<TDerived> {
 public:
     using TBase = TActorBootstrapped<TDerived>;
 
-    TScanActorBase(const NActors::TActorId& ownerId, ui32 scanId, const TTableId& tableId,
+    TScanActorBase(const TActorId& ownerId, ui32 scanId, const TTableId& tableId,
         const TTableRange& tableRange, const TArrayRef<NMiniKQL::TKqpComputeContextBase::TColumn>& columns)
         : OwnerActorId(ownerId)
         , ScanId(scanId)
@@ -223,7 +223,7 @@ private:
         using TNavigate = NSchemeCache::TSchemeCacheNavigate;
 
         THolder<NSchemeCache::TSchemeCacheNavigate> request(ev->Get()->Request.Release());
-        Y_ABORT_UNLESS(request->ResultSet.size() == 1);
+        Y_VERIFY(request->ResultSet.size() == 1);
 
         auto& entry = request->ResultSet.back();
         if (entry.Status != TNavigate::EStatus::Ok) {
@@ -285,7 +285,7 @@ private:
             cFunc(TEvents::TEvWakeup::EventType, HandleTimeout);
             cFunc(TEvents::TEvPoison::EventType, this->PassAway);
             default:
-                LOG_CRIT(*TlsActivationContext, NKikimrServices::SYSTEM_VIEWS,
+                LOG_CRIT(ctx, NKikimrServices::SYSTEM_VIEWS,
                     "NSysView::TScanActorBase: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
         }
     }
@@ -298,7 +298,7 @@ private:
             cFunc(TEvents::TEvWakeup::EventType, HandleTimeout);
             cFunc(TEvents::TEvPoison::EventType, this->PassAway);
             default:
-                LOG_CRIT(*TlsActivationContext, NKikimrServices::SYSTEM_VIEWS,
+                LOG_CRIT(ctx, NKikimrServices::SYSTEM_VIEWS,
                     "NSysView::TScanActorBase: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
         }
     }
@@ -311,7 +311,7 @@ private:
             cFunc(TEvents::TEvWakeup::EventType, HandleTimeout);
             cFunc(TEvents::TEvPoison::EventType, this->PassAway);
             default:
-                LOG_CRIT(*TlsActivationContext, NKikimrServices::SYSTEM_VIEWS,
+                LOG_CRIT(ctx, NKikimrServices::SYSTEM_VIEWS,
                     "NSysView::TScanActorBase: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
         }
     }
@@ -319,7 +319,7 @@ private:
 protected:
     static constexpr TDuration Timeout = TDuration::Seconds(60);
 
-    const NActors::TActorId OwnerActorId;
+    const TActorId OwnerActorId;
     const ui32 ScanId;
     const TTableId TableId;
     TSerializedTableRange TableRange;

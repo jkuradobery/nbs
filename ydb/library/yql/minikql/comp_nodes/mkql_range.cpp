@@ -277,8 +277,9 @@ bool RangeCanMerge(const TExpandedRange& a, const TExpandedRange& b, const TRang
 
 class TRangeComputeBase {
 public:
-    TRangeComputeBase(TComputationMutables&, TComputationNodePtrVector&& lists, std::vector<TRangeTypeInfo>&& typeInfos)
-        : Lists(std::move(lists)), TypeInfos(std::move(typeInfos))
+    TRangeComputeBase(TComputationMutables& mutables, TComputationNodePtrVector&& lists, std::vector<TRangeTypeInfo>&& typeInfos)
+        : TypeInfos(std::move(typeInfos))
+        , Lists(std::move(lists))
     {
         Y_ENSURE(Lists.size() == TypeInfos.size());
         Y_ENSURE(!Lists.empty());

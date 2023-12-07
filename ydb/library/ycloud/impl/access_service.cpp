@@ -1,5 +1,5 @@
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actor.h>
 #include <library/cpp/json/json_value.h>
 #include <ydb/public/api/client/yc_private/servicecontrol/access_service.grpc.pb.h>
 #include "access_service.h"
@@ -24,9 +24,6 @@ class TAccessService : public NActors::TActor<TAccessService>, TGrpcServiceClien
             if (r.iam_token()) {
                 r.set_iam_token(MaskToken(r.iam_token()));
             }
-            if (r.api_key()) {
-                r.set_api_key(MaskToken(r.api_key()));
-            }
             r.clear_iam_cookie();
             return r;
         }
@@ -50,9 +47,6 @@ class TAccessService : public NActors::TActor<TAccessService>, TGrpcServiceClien
             if (r.iam_token()) {
                 r.set_iam_token(MaskToken(r.iam_token()));
             }
-            if (r.api_key()) {
-                r.set_api_key(MaskToken(r.api_key()));
-            }
             return r;
         }
 
@@ -73,7 +67,7 @@ public:
         , TGrpcServiceClient(settings)
     {}
 
-    void StateWork(TAutoPtr<NActors::IEventHandle>& ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext&) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvAccessService::TEvAuthenticateRequest, Handle);
             hFunc(TEvAccessService::TEvAuthorizeRequest, Handle);

@@ -19,6 +19,7 @@ public:
     TFsPath GetRoot() const override;
     TFsPath GetTemp() const override;
     const TFileStorageConfig& GetConfig() const override;
+    void SetTokenResolver(std::function<TString(const TString&, const TString&)> tokenResolver) override;
 
 protected:
     TFileStoragePtr Inner_;

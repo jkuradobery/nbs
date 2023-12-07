@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from contrib.ydb.core.protos import cms_pb2
-import contrib.ydb.core.protos.msgbus_pb2 as msgbus
-from contrib.ydb.tests.library.common.protobuf import AbstractProtobufBuilder
+from ydb.core.protos import cms_pb2
+import ydb.core.protos.msgbus_pb2 as msgbus
+from ydb.tests.library.common.protobuf import AbstractProtobufBuilder
 
 
 class CmsPermissionRequest(AbstractProtobufBuilder):

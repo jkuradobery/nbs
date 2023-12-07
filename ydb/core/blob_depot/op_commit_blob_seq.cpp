@@ -13,7 +13,6 @@ namespace NKikimr::NBlobDepot {
             std::unique_ptr<TEvBlobDepot::TEvCommitBlobSeq::THandle> Request;
             std::unique_ptr<IEventHandle> Response;
             std::vector<TBlobSeqId> BlobSeqIds;
-            std::set<TBlobSeqId> FailedBlobSeqIds;
 
         public:
             TTxType GetTxType() const override { return NKikimrBlobDepot::TXTYPE_COMMIT_BLOB_SEQ; }
@@ -35,10 +34,9 @@ namespace NKikimr::NBlobDepot {
                             Y_VERIFY_S(blobSeqId.Generation < generation, "committing trimmed BlobSeqId"
                                 << " BlobSeqId# " << blobSeqId.ToString()
                                 << " Id# " << Self->GetLogId());
-                        } else if (!Self->Data->BeginCommittingBlobSeqId(agent, blobSeqId)) {
-                            FailedBlobSeqIds.insert(blobSeqId);
+                        } else if (Self->Data->BeginCommittingBlobSeqId(agent, blobSeqId)) {
+                            BlobSeqIds.push_back(blobSeqId);
                         }
-                        BlobSeqIds.push_back(blobSeqId);
                     }
                 }
             }
@@ -69,15 +67,9 @@ namespace NKikimr::NBlobDepot {
                     }
                     const auto& blobLocator = item.GetBlobLocator();
 
-                    const auto blobSeqId = TBlobSeqId::FromProto(blobLocator.GetBlobSeqId());
-                    if (FailedBlobSeqIds.contains(blobSeqId)) {
-                        responseItem->SetStatus(NKikimrProto::ERROR);
-                        responseItem->SetErrorReason("couldn't start commit sequence for blob");
-                        continue;
-                    }
-
                     responseItem->SetStatus(NKikimrProto::OK);
 
+                    const auto blobSeqId = TBlobSeqId::FromProto(blobLocator.GetBlobSeqId());
                     const bool canBeCollected = Self->Data->CanBeCollected(blobSeqId);
 
                     auto key = TData::TKey::FromBinaryKey(item.GetKey(), Self->Config);
@@ -197,7 +189,7 @@ namespace NKikimr::NBlobDepot {
         for (const auto& item : ev->Get()->Record.GetItems()) {
             const auto blobSeqId = TBlobSeqId::FromProto(item);
             if (blobSeqId.Generation == generation) {
-                Y_ABORT_UNLESS(blobSeqId.Channel < Channels.size());
+                Y_VERIFY(blobSeqId.Channel < Channels.size());
                 auto& channel = Channels[blobSeqId.Channel];
 
                 const TBlobSeqId leastExpectedBlobIdBefore = channel.GetLeastExpectedBlobId(generation);

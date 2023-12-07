@@ -1,7 +1,6 @@
 PROTO_LIBRARY()
 
 SRCS(
-    events.proto
     records.proto
 )
 

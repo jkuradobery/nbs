@@ -14,8 +14,7 @@ namespace NYql::NDqs {
     class TDatabaseManager;
 
     THolder<IGraphTransformer> CreateDqsFinalizingOptTransformer();
-    THolder<IGraphTransformer> CreateDqsRewritePhyCallablesTransformer(TTypeAnnotationContext& typesCtx);
-    THolder<IGraphTransformer> CreateDqsRewritePhyBlockReadOnDqIntegrationTransformer(TTypeAnnotationContext& typesCtx);
-    THolder<IGraphTransformer> CreateDqsReplacePrecomputesTransformer(TTypeAnnotationContext& typesCtx, const NKikimr::NMiniKQL::IFunctionRegistry* funcRegistry);
+    THolder<IGraphTransformer> CreateDqsRewritePhyCallablesTransformer();
+    THolder<IGraphTransformer> CreateDqsReplacePrecomputesTransformer(TTypeAnnotationContext* typesCtx, const NKikimr::NMiniKQL::IFunctionRegistry* funcRegistry);
 
 } // namespace NYql::NDqs

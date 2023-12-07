@@ -83,7 +83,7 @@ public:
 
         if (Response) {
             LOG_TRACE_S(ctx, NKikimrServices::NODE_BROKER,
-                        "TTxUpdateConfig reply with: " << Response->ToString());
+                        "TTxUpdateConfig reply with: " << Response->GetBase()->ToString());
             ctx.Send(Response);
         }
 

@@ -88,7 +88,7 @@ namespace NKikimr {
             auto info = MakeIntrusive<TEvReplFinished::TInfo>();
             info->WorkUnitsPlanned = Max<ui64>();
             TBlobIdQueuePtr unreplicatedBlobsPtr = std::make_shared<TBlobIdQueue>();
-            NRepl::TRecoveryMachine m(replCtx, info);
+            NRepl::TRecoveryMachine m(replCtx, info, unreplicatedBlobsPtr);
             TMap<TLogoBlobID, TVector<TString>> data = GenerateData(10000, 1024, groupInfo, vdisks);
             for (const auto& pair : data) {
                 const TLogoBlobID& id = pair.first;
@@ -146,19 +146,12 @@ namespace NKikimr {
                         }
                     }
                     UNIT_ASSERT(partIndex != groupInfo->Type.BlobSubgroupSize());
-                    p.AddData(0, TLogoBlobID(id, partIndex + 1), NKikimrProto::OK, TRope(v[i]));
+                    p.AddData(0, TLogoBlobID(id, partIndex + 1), NKikimrProto::OK, v[i]);
                 }
                 NRepl::TRecoveryMachine::TRecoveredBlobsQueue rbq;
-                struct {
-                    void AddUnreplicatedBlobRecord(const NRepl::TRecoveryMachine::TPartSet& /*item*/, TIngress /*ingress*/,
-                        bool /*looksLikePhantom*/) {}
-                    void DropUnreplicatedBlobRecord(const TLogoBlobID& /*id*/) {}
-                    void AddPhantomBlobRecord(const NRepl::TRecoveryMachine::TPartSet& /*item*/, TIngress /*ingress*/,
-                            NMatrix::TVectorType /*partsToRecover*/) {
-                        Y_ABORT();
-                    }
-                } processor;
-                m.Recover(p, rbq, processor);
+                NMatrix::TVectorType parts;
+                const bool success = m.Recover(p, rbq, parts);
+                Y_VERIFY(success);
 
                 ui8 partIndex;
                 for (partIndex = 0; partIndex < groupInfo->Type.BlobSubgroupSize(); ++partIndex) {

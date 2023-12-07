@@ -1,5 +1,4 @@
 #include "schemeshard_info_types.h"
-#include "schemeshard_olap_types.h"
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 
 namespace NKikimr {
@@ -15,8 +14,8 @@ namespace {
 
     inline
     ui32 GetType(const TOlapSchema::TColumn& col) {
-        Y_ABORT_UNLESS(col.GetType().GetTypeId() != NScheme::NTypeIds::Pg, "pg types are not supported");
-        return col.GetType().GetTypeId();
+        Y_VERIFY(col.Type.GetTypeId() != NScheme::NTypeIds::Pg, "pg types are not supported");
+        return col.Type.GetTypeId();
     }
 
     inline
@@ -26,7 +25,7 @@ namespace {
 
     inline
     ui32 GetType(const TTableInfo::TColumn& col) {
-        Y_ABORT_UNLESS(col.PType.GetTypeId() != NScheme::NTypeIds::Pg, "pg types are not supported");
+        Y_VERIFY(col.PType.GetTypeId() != NScheme::NTypeIds::Pg, "pg types are not supported");
         return col.PType.GetTypeId();
     }
 }
@@ -83,7 +82,7 @@ bool ValidateTtlSettings(const NKikimrSchemeOp::TTTLSettings& ttl,
         } else if (sourceColumns.contains(colId)) {
             column = &sourceColumns.at(colId);
         } else {
-            Y_ABORT_UNLESS("Unknown column");
+            Y_VERIFY("Unknown column");
         }
 
         if (IsDropped(*column)) {
@@ -121,13 +120,13 @@ static bool ValidateColumnTableTtl(const NKikimrSchemeOp::TColumnDataLifeCycle::
     const THashMap<ui32, TOlapSchema::TColumn>& sourceColumns,
     const THashMap<ui32, TOlapSchema::TColumn>& alterColumns,
     const THashMap<TString, ui32>& colName2Id,
-    IErrorCollector& errors)
+    TString& errStr)
 {
     const TString colName = ttl.GetColumnName();
 
     auto it = colName2Id.find(colName);
     if (it == colName2Id.end()) {
-        errors.AddError(Sprintf("Cannot enable TTL on unknown column: '%s'", colName.data()));
+        errStr = Sprintf("Cannot enable TTL on unknown column: '%s'", colName.data());
         return false;
     }
 
@@ -138,21 +137,21 @@ static bool ValidateColumnTableTtl(const NKikimrSchemeOp::TColumnDataLifeCycle::
     } else if (sourceColumns.contains(colId)) {
         column = &sourceColumns.at(colId);
     } else {
-        Y_ABORT_UNLESS("Unknown column");
+        Y_VERIFY("Unknown column");
     }
 
     if (IsDropped(*column)) {
-        errors.AddError(Sprintf("Cannot enable TTL on dropped column: '%s'", colName.data()));
+        errStr = Sprintf("Cannot enable TTL on dropped column: '%s'", colName.data());
         return false;
     }
 
     if (ttl.HasExpireAfterBytes()) {
-        errors.AddError("TTL with eviction by size is not supported yet");
+        errStr = "TTL with eviction by size is not supported yet";
         return false;
     }
 
     if (!ttl.HasExpireAfterSeconds()) {
-        errors.AddError("TTL without eviction time");
+        errStr = "TTL without eviction time";
         return false;
     }
 
@@ -160,26 +159,25 @@ static bool ValidateColumnTableTtl(const NKikimrSchemeOp::TColumnDataLifeCycle::
 
     switch (GetType(*column)) {
         case NScheme::NTypeIds::DyNumber:
-            errors.AddError("Unsupported column type for TTL in column tables");
+            errStr = "Unsupported column type for TTL in column tables"; // TODO
             return false;
         default:
             break;
     }
 
-    TString errStr;
-    if (!ValidateUnit(*column, unit, errStr)) {
-        errors.AddError(errStr);
-        return false;
-    }
-    return true;
+    return ValidateUnit(*column, unit, errStr);
 }
 
-bool TOlapSchema::ValidateTtlSettings(const NKikimrSchemeOp::TColumnDataLifeCycle& ttl, IErrorCollector& errors) const {
+bool ValidateTtlSettings(const NKikimrSchemeOp::TColumnDataLifeCycle& ttl,
+    const THashMap<ui32, TOlapSchema::TColumn>& columns,
+    const THashMap<TString, ui32>& columnsByName,
+    TString& errStr)
+{
     using TTtlProto = NKikimrSchemeOp::TColumnDataLifeCycle;
 
     switch (ttl.GetStatusCase()) {
         case TTtlProto::kEnabled:
-            return ValidateColumnTableTtl(ttl.GetEnabled(), {}, Columns, ColumnsByName, errors);
+            return ValidateColumnTableTtl(ttl.GetEnabled(), {}, columns, columnsByName, errStr);
         case TTtlProto::kDisabled:
         default:
             break;

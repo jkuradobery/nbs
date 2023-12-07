@@ -1,7 +1,6 @@
 #include "blobstorage_pdisk_impl.h"
 
 #include <ydb/core/blobstorage/base/html.h>
-#include <ydb/core/base/feature_flags.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -200,13 +199,9 @@ void TPDisk::OutputHtmlOwners(TStringStream &str) {
                     TABLEH() { str << "CutLogId"; }
                     TABLEH() { str << "WhiteboardProxyId"; }
                     TABLEH() { str << "CurLsnToKeep"; }
-                    TABLEH() { str << "AskedFreeUpToLsn"; }
-                    TABLEH() { str << "AskedLogChunkToCut"; }
-                    TABLEH() { str << "LogChunkCountBeforeCut"; }
                     TABLEH() { str << "FirstNonceToKeep"; }
                     TABLEH() { str << "AskedToCutLogAt"; }
                     TABLEH() { str << "CutLogAt"; }
-                    TABLEH() { str << "OperationLog"; }
                 }
             }
             TABLEBODY() {
@@ -220,9 +215,6 @@ void TPDisk::OutputHtmlOwners(TStringStream &str) {
                             TABLED() { str << data.CutLogId.ToString(); }
                             TABLED() { str << data.WhiteboardProxyId; }
                             TABLED() { str << data.CurrentFirstLsnToKeep; }
-                            TABLED() { str << data.AskedFreeUpToLsn; }
-                            TABLED() { str << data.AskedLogChunkToCut; }
-                            TABLED() { str << data.LogChunkCountBeforeCut; }
                             TABLED() { str << SysLogFirstNoncesToKeep.FirstNonceToKeep[owner]; }
                             TABLED() { str << data.AskedToCutLogAt; }
                             TABLED() {
@@ -233,20 +225,6 @@ void TPDisk::OutputHtmlOwners(TStringStream &str) {
                                 } else {
                                     str << data.CutLogAt;
                                 }
-                            }
-                            TABLED() {
-                                ui32 logSize = OwnerData[owner].OperationLog.Size();
-                                str << "<button type='button' class='btn btn-default' data-toggle='collapse' style='margin:5px' \
-                                    data-target='#operationLogCollapse" << owner << 
-                                    "'>Show last " << logSize << " operations</button>";
-
-                                str << "<div id='operationLogCollapse" << owner << "' class='collapse'>";
-                                for (ui32 i = 0; i < logSize; ++i) {
-                                    auto record = OwnerData[owner].OperationLog.BorrowByIdx(i);
-                                    str << *record << "<br><br>";
-                                    OwnerData[owner].OperationLog.ReturnBorrowedRecord(record);
-                                }
-                                str << "</div>";
                             }
                         }
                     }
@@ -294,12 +272,9 @@ void TPDisk::OutputHtmlLogChunksDetails(TStringStream &str) {
                         for (ui32 owner : activeOwners) {
                             if (owner < it->OwnerLsnRange.size()) {
                                 const TLogChunkInfo::TLsnRange &range = it->OwnerLsnRange[owner];
-                                const auto askedFreeUpToLsn = OwnerData[owner].AskedFreeUpToLsn;
                                 if (range.IsPresent) {
                                     TABLED() {
-                                        str << "<font color=\"" << (range.LastLsn < askedFreeUpToLsn ? "red" : "black") <<"\">"
-                                            << "[" << range.FirstLsn << ", " << range.LastLsn << "]"
-                                            << "</font>";
+                                        str << "[" << range.FirstLsn << ", " << range.LastLsn << "]";
                                     }
                                 } else {
                                     TABLED() {str << "-";}
@@ -415,11 +390,6 @@ void TPDisk::OutputHtmlChunkLockUnlockInfo(TStringStream &str) {
         }
 
         COLLAPSED_BUTTON_CONTENT("chunksStateTable", "Chunks State") {
-            str << "<style>";
-            str << "#chunksStateTable th, #chunksStateTable td { border: 1px solid #000; padding: 1px; }";
-            str << "#chunksStateTable th { position: sticky; top: 0; }";
-            str << "#chunksStateTable table { width: 100%; }";
-            str << "</style>";
             TABLE_CLASS ("") {
                 const size_t columns = 50;
                 TABLEHEAD() {
@@ -487,7 +457,6 @@ void TPDisk::HttpInfo(THttpInfo &httpInfo) {
         TStringStream str = httpInfo.OutputString;
         TGuard<TMutex> guard(StateMutex);
         HTML(str) {
-            str << "<style>@media (min-width: 1600px) {.container { width: 1560px;}} </style>"; // Make this page's container wider on big screens.
             DIV_CLASS("row") {
                 DIV_CLASS("col-md-7") { RenderState(str, httpInfo); }
                 DIV_CLASS("col-md-5") {
@@ -512,7 +481,7 @@ void TPDisk::HttpInfo(THttpInfo &httpInfo) {
                 DIV_CLASS("panel-heading") {
                     str << "Owners";
                 }
-                TAG_CLASS_STYLE(TDiv, "panel-body", "overflow-x: scroll;") {
+                DIV_CLASS("panel-body") {
                     OutputHtmlOwners(str);
                 }
             } // Owners

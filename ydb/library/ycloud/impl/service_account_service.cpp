@@ -1,5 +1,5 @@
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actor.h>
 #include <ydb/public/api/client/yc_private/iam/service_account_service.grpc.pb.h>
 #include "service_account_service.h"
 #include "grpc_service_client.h"
@@ -52,7 +52,7 @@ public:
         , TGrpcServiceClient(settings)
     {}
 
-    void StateWork(TAutoPtr<NActors::IEventHandle>& ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext&) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvServiceAccountService::TEvGetServiceAccountRequest, Handle);
             hFunc(TEvServiceAccountService::TEvIssueTokenRequest, Handle);

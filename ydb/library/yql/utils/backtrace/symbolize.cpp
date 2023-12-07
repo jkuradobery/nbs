@@ -1,7 +1,11 @@
 #include "backtrace.h"
 #include "symbolizer.h"
 
-#include "fake_llvm_symbolizer/fake_llvm_symbolizer.h"
+#ifdef _linux_
+#include <llvm/DebugInfo/Symbolize/Symbolize.h>
+#include <llvm/DebugInfo/Symbolize/DIPrinter.h>
+#include <llvm/Support/raw_ostream.h>
+#endif
 
 #include <util/string/split.h>
 #include <util/stream/str.h>
@@ -16,9 +20,40 @@ struct TStackFrame {
     ui64 Offset;
 };
 
+#ifdef _linux_
+class TRawOStreamProxy: public llvm::raw_ostream {
+public:
+    TRawOStreamProxy(IOutputStream& out)
+        : llvm::raw_ostream(true) // unbuffered
+        , Slave_(out)
+    {
+    }
+    void write_impl(const char* ptr, size_t size) override {
+        Slave_.Write(ptr, size);
+    }
+    uint64_t current_pos() const override {
+        return 0;
+    }
+    size_t preferred_buffer_size() const override {
+        return 0;
+    }
+private:
+    IOutputStream& Slave_;
+};
+#endif
+
 TString Symbolize(const TString& input, const THashMap<TString, TString>& mapping) {
     TString output;
     TStringOutput out(output);
+
+#ifdef _linux_
+    TRawOStreamProxy outStream(out);
+    llvm::symbolize::LLVMSymbolizer::Options opts;
+    llvm::symbolize::LLVMSymbolizer symbolyzer(opts);
+    llvm::symbolize::DIPrinter printer(outStream, true, true, false);
+#else
+    auto& outStream = out;
+#endif
 
     i64 stackSize = -1;
     TVector<TStackFrame> frames;
@@ -47,21 +82,32 @@ TString Symbolize(const TString& input, const THashMap<TString, TString>& mappin
                 frames.emplace_back(TStackFrame{modulePath, address, offset});
             }
         } else {
-            out << line << "\n";
+            outStream << line << "\n";
         }
     }
 
     if (stackSize == 0) {
-        out << "Empty stack trace\n";
+        outStream << "Empty stack trace\n";
     }
 
     for (const auto& frame : frames) {
 #ifdef _linux_
         llvm::object::SectionedAddress secAddr;
         secAddr.Address = frame.Address - frame.Offset;
-        out << NYql::NBacktrace::SymbolizeAndDumpToString(frame.ModulePath, secAddr, frame.Offset) << Endl;
+        auto resOrErr = symbolyzer.symbolizeCode(frame.ModulePath, secAddr);
+        if (resOrErr) {
+            auto value = resOrErr.get();
+            if (value.FileName == "<invalid>" && frame.Offset > 0) {
+                value.FileName = frame.ModulePath;
+            }
+
+            printer << value;
+        } else {
+            logAllUnhandledErrors(resOrErr.takeError(), outStream,
+                "LLVMSymbolizer: error reading file: ");
+        }
 #else
-        out << "StackFrame: " << frame.ModulePath << " " << frame.Address << " " << frame.Offset << Endl;
+        outStream << "StackFrame: " << frame.ModulePath << " " << frame.Address << " " << frame.Offset << Endl;
 #endif
     }
     return output;

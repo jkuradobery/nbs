@@ -3,9 +3,8 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/core/protos/console_config.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
@@ -40,10 +39,10 @@ public:
         Proceed(ctx);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -55,8 +54,6 @@ public:
         SetAuthToken(ev, *Request_);
         SetDatabase(ev, *Request_);
 
-        AuditContextAppend(Request_.get(), *req);
-
         if (traceId) {
             ev->Record.SetTraceId(traceId.GetRef());
         }
@@ -65,14 +62,15 @@ public:
             ev->Record.SetRequestType(requestType.GetRef());
         }
 
-        if (CheckSession(req->session_id(), Request_.get())) {
+        NYql::TIssues issues;
+        if (CheckSession(req->session_id(), issues)) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
-        if (!CheckQuery(req->yql_text(), Request_.get())) {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+        if (!CheckQuery(req->yql_text(), issues)) {
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         ev->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_PREPARE);
@@ -93,8 +91,13 @@ public:
             const auto& issueMessage = kqpResponse.GetQueryIssues();
             const auto& queryParameters = kqpResponse.GetQueryParameters();
 
+            Ydb::TOperationId opId;
+            opId.SetKind(TOperationId::PREPARED_QUERY_ID);
+
+            AddOptionalValue(opId, "id", queryId);
+
             Ydb::Table::PrepareQueryResult queryResult;
-            queryResult.set_query_id(FormatPreparedQueryIdCompat(queryId));
+            queryResult.set_query_id(ProtoToString(opId));
             for (const auto& queryParameter: queryParameters) {
                 Ydb::Type parameterType;
                 try {
@@ -106,9 +109,6 @@ public:
                 }
                 queryResult.mutable_parameters_types()->insert({queryParameter.GetName(), parameterType});
             }
-
-            AuditContextAppend(Request_.get(), *GetProtoRequest(), queryResult);
-
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, queryResult, ctx);
         } else {
             return OnGenericQueryResponseError(record, ctx);
@@ -116,8 +116,8 @@ public:
     }
 };
 
-void DoPrepareDataQueryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TPrepareDataQueryRPC(p.release()));
+void DoPrepareDataQueryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TPrepareDataQueryRPC(p.release()));
 }
 
 } // namespace NGRpcService

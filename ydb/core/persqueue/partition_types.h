@@ -94,7 +94,7 @@ struct TMessage {
         case 4:
             return std::get<4>(Body).Cookie;
         default:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
     }
 
@@ -103,11 +103,11 @@ struct TMessage {
             return Body.index() == i; \
         } \
         const auto& Get##name() const { \
-            Y_ABORT_UNLESS(Is##name()); \
+            Y_VERIFY(Is##name()); \
             return std::get<i>(Body); \
         } \
         auto& Get##name() { \
-            Y_ABORT_UNLESS(Is##name()); \
+            Y_VERIFY(Is##name()); \
             return std::get<i>(Body); \
         }
 

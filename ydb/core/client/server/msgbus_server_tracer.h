@@ -6,7 +6,7 @@
 #include <library/cpp/messagebus/message.h>
 #include <library/cpp/messagebus/defs.h>
 #include <ydb/public/lib/base/msgbus.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include "msgbus_server.h"
 #include <library/cpp/deprecated/atomic/atomic.h>
 
@@ -86,7 +86,7 @@ public:
     }
 
     TMessageBusTracerService();
-    void StateFunc(TAutoPtr<IEventHandle> &ev);
+    void StateFunc(TAutoPtr<IEventHandle> &ev, const TActorContext &ctx);
 
 private:
     void HandleStartTrace(TEvMessageBusTracer::TEvStartTrace::TPtr &ev, const TActorContext &ctx);

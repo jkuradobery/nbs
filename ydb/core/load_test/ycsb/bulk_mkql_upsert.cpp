@@ -1,5 +1,4 @@
 #include "actors.h"
-#include "common.h"
 
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
@@ -17,11 +16,14 @@
 
 namespace NKikimr::NDataShardLoad {
 
+TString GetKey(size_t n) {
+    // user1000385178204227360
+    return Sprintf("user%.19lu", n);
+}
+
 using TUploadRowsRequestPtr = std::unique_ptr<TEvDataShard::TEvUploadRowsRequest>;
 
 namespace {
-
-const ui64 RECONNECT_LIMIT = 10;
 
 enum class ERequestType {
     UpsertBulk,
@@ -60,22 +62,24 @@ TUploadRequest GenerateBulkRowRequest(ui64 tableId, ui64 keyStart, ui64 n) {
 }
 
 TUploadRequest GenerateMkqlRowRequest(ui64 /* tableId */, ui64 keyNum, const TString& table) {
-    TString programWithoutKey;
+    static TString programWithoutKey;
 
-    TString fields;
-    for (size_t i = 0; i < 10; ++i) {
-        fields += Sprintf("'('field%lu (String '%s))", i, Value.data());
+    if (!programWithoutKey) {
+        TString fields;
+        for (size_t i = 0; i < 10; ++i) {
+            fields += Sprintf("'('field%lu (String '%s))", i, Value.data());
+        }
+        TString rowUpd = "(let upd_ '(" + fields + "))";
+
+        programWithoutKey = rowUpd;
+
+        programWithoutKey += Sprintf(R"(
+            (let ret_ (AsList
+                (UpdateRow '__user__%s row1_ upd_
+            )))
+            (return ret_)
+        ))", table.c_str());
     }
-    TString rowUpd = "(let upd_ '(" + fields + "))";
-
-    programWithoutKey = rowUpd;
-
-    programWithoutKey += Sprintf(R"(
-        (let ret_ (AsList
-            (UpdateRow '__user__%s row1_ upd_
-        )))
-        (return ret_)
-    ))", table.c_str());
 
     TString key = GetKey(keyNum);
 
@@ -89,24 +93,35 @@ TUploadRequest GenerateMkqlRowRequest(ui64 /* tableId */, ui64 keyNum, const TSt
     return TUploadRequest(request.release());
 }
 
-TUploadRequest GenerateRequest(
+TRequestsVector GenerateRequests(
     ui64 tableId,
     ui64 keyFrom,
-    ui64 batchSize, // only bulk requests, otherwise 1
+    ui64 n,
+    ui64 batchSize, // only bulk requests
     ERequestType requestType,
     const TString& table)
 {
-    switch (requestType) {
-    case ERequestType::UpsertBulk:
-        return GenerateBulkRowRequest(tableId, keyFrom, batchSize);
-        break;
-    case ERequestType::UpsertLocalMkql:
-        return GenerateMkqlRowRequest(tableId, keyFrom, table);
-        break;
-    default:
-        // should not happen, just for compiler
-        Y_ABORT("Unsupported request type");
+    TRequestsVector requests;
+    requests.reserve(n);
+
+    for (size_t i = keyFrom; i < keyFrom + n; ++i) {
+        switch (requestType) {
+        case ERequestType::UpsertBulk: {
+            auto keysLeft = keyFrom + n - i;
+            auto currentBatchSize = Max(Min(batchSize, keysLeft), ui64(1));
+            requests.emplace_back(GenerateBulkRowRequest(tableId, i, currentBatchSize));
+            break;
+        }
+        case ERequestType::UpsertLocalMkql:
+            requests.emplace_back(GenerateMkqlRowRequest(tableId, i, table));
+            break;
+        default:
+            // should not happen, just for compiler
+            Y_FAIL("Unsupported request type");
+        }
     }
+
+    return requests;
 }
 
 class TUpsertActor : public TActorBootstrapped<TUpsertActor> {
@@ -119,9 +134,10 @@ class TUpsertActor : public TActorBootstrapped<TUpsertActor> {
 
     TActorId Pipe;
     bool WasConnected = false;
-    ui64 ReconnectLimit = RECONNECT_LIMIT;
+    ui64 ReconnectLimit = 10;
 
-    size_t CurrentRow = 0;
+    TRequestsVector Requests;
+    size_t CurrentRequest = 0;
     size_t Inflight = 0;
 
     TInstant StartTs;
@@ -152,8 +168,17 @@ public:
 
     void Bootstrap(const TActorContext& ctx) {
         LOG_NOTICE_S(ctx, NKikimrServices::DS_LOAD_TEST, "Id# " << Id
-            << " TUpsertActor Bootstrap called: " << ConfingString << " with type# " << int(RequestType)
-            << ", target# " << Target.DebugString());
+            << " TUpsertActor Bootstrap called: " << ConfingString);
+
+        // note that we generate all requests at once to send at max speed, i.e.
+        // do not mess with protobufs, strings, etc when send data
+        Requests = GenerateRequests(
+            Target.GetTableId(),
+            Config.GetKeyFrom(),
+            Config.GetRowCount(),
+            Config.GetBatchSize(),
+            RequestType,
+            Target.GetTableName());
 
         Become(&TUpsertActor::StateFunc);
         Connect(ctx);
@@ -161,15 +186,7 @@ public:
 
 private:
     void Connect(const TActorContext &ctx) {
-        if (ReconnectLimit != RECONNECT_LIMIT) {
-            LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TUpsertActor# " << Id
-                << " will reconnect to tablet# " << Target.GetTabletId()
-                << " retries left# " << (ReconnectLimit - 1));
-        } else {
-            LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TUpsertActor# " << Id
-                << " will connect to tablet# " << Target.GetTabletId());
-        }
-
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "Id# " << Id << " TUpsertActor Connect called");
         --ReconnectLimit;
         if (ReconnectLimit == 0) {
             TStringStream ss;
@@ -182,7 +199,7 @@ private:
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr ev, const TActorContext& ctx) {
         TEvTabletPipe::TEvClientConnected *msg = ev->Get();
 
-        LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "Id# " << Id
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "Id# " << Id
             << " TUpsertActor Handle TEvClientConnected called, Status# " << msg->Status);
 
         if (msg->Status != NKikimrProto::OK) {
@@ -208,34 +225,42 @@ private:
     }
 
     void SendRows(const TActorContext &ctx) {
-        while (Inflight < Config.GetInflight() && CurrentRow < Config.GetRowCount()) {
-            auto rowsLest = Config.GetRowCount() - CurrentRow;
-            auto batchSize = Min(size_t{Config.GetBatchSize()}, rowsLest);
-
-            auto request = GenerateRequest(
-                Target.GetTableId(),
-                Config.GetKeyFrom() + CurrentRow,
-                batchSize,
-                RequestType,
-                Target.GetTableName());
-
+        while (Inflight < Config.GetInflight() && CurrentRequest < Requests.size()) {
+            const auto* request = Requests[CurrentRequest].get();
             LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TUpsertActor# " << Id
-                << " sends request# " << CurrentRow << " with batchSize# " << batchSize
-                <<  ": " << request->ToString());
+                << " send request# " << CurrentRequest << ": " << request->ToString());
 
-            NTabletPipe::SendData(ctx, Pipe, request.release());
+            if (!Config.GetInfinite()) {
+                NTabletPipe::SendData(ctx, Pipe, Requests[CurrentRequest].release());
+            } else {
+                switch (RequestType) {
+                case ERequestType::UpsertBulk: {
+                    const auto& casted = static_cast<const TEvDataShard::TEvUploadRowsRequest*>(request);
+                    auto requestCopy = std::make_unique<TEvDataShard::TEvUploadRowsRequest>();
+                    requestCopy->Record = casted->Record;
+                    NTabletPipe::SendData(ctx, Pipe, requestCopy.release());
+                    break;
+                } case ERequestType::UpsertLocalMkql: {
+                    const auto& casted = static_cast<const TEvTablet::TEvLocalMKQL*>(request);
+                    auto requestCopy = std::make_unique<TEvTablet::TEvLocalMKQL>();
+                    requestCopy->Record = casted->Record;
+                    NTabletPipe::SendData(ctx, Pipe, requestCopy.release());
+                    break;
+                }
+                }
+            }
 
-            CurrentRow += batchSize;
+            ++CurrentRequest;
             ++Inflight;
         }
     }
 
     void OnRequestDone(const TActorContext& ctx) {
-        if (Config.GetInfinite() && CurrentRow >= Config.GetRowCount()) {
-            CurrentRow = 0;
+        if (Config.GetInfinite() && CurrentRequest >= Requests.size()) {
+            CurrentRequest = 0;
         }
 
-        if (CurrentRow < Config.GetRowCount()) {
+        if (CurrentRequest < Requests.size()) {
             SendRows(ctx);
         } else if (Inflight == 0) {
             EndTs = TInstant::Now();
@@ -245,7 +270,7 @@ private:
             auto& report = *response->Record.MutableReport();
             report.SetTag(Id.SubTag);
             report.SetDurationMs(delta.MilliSeconds());
-            report.SetOperationsOK(Config.GetRowCount() - Errors);
+            report.SetOperationsOK(Requests.size() - Errors);
             report.SetOperationsError(Errors);
 
             ctx.Send(Parent, response.release());
@@ -294,10 +319,10 @@ private:
         TStringStream str;
         HTML(str) {
             str << "DS bulk upsert load actor# " << Id << " started on " << StartTs
-                << " sent " << CurrentRow << " out of " << Config.GetRowCount();
+                << " sent " << CurrentRequest << " out of " << Requests.size();
             TInstant ts = EndTs ? EndTs : TInstant::Now();
             auto delta = ts - StartTs;
-            auto throughput = Config.GetRowCount() * 1000 / (delta.MilliSeconds() ? delta.MilliSeconds() : 1);
+            auto throughput = Requests.size() * 1000 / delta.MilliSeconds();
             str << " in " << delta << " (" << throughput << " op/s)"
                 << " errors=" << Errors;
         }
@@ -306,13 +331,13 @@ private:
     }
 
     void HandlePoison(const TActorContext& ctx) {
-        LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "Load tablet recieved PoisonPill, going to die");
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "Load tablet recieved PoisonPill, going to die");
         NTabletPipe::CloseClient(SelfId(), Pipe);
         Die(ctx);
     }
 
     void StopWithError(const TActorContext& ctx, const TString& reason) {
-        LOG_ERROR_S(ctx, NKikimrServices::DS_LOAD_TEST, "Load tablet stopped with error: " << reason);
+        LOG_NOTICE_S(ctx, NKikimrServices::DS_LOAD_TEST, "Load tablet stopped with error: " << reason);
         ctx.Send(Parent, new TEvDataShardLoad::TEvTestLoadFinished(Id.SubTag, reason));
         NTabletPipe::CloseClient(SelfId(), Pipe);
         Die(ctx);

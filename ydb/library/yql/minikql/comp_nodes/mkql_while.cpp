@@ -47,7 +47,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -62,7 +62,7 @@ public:
 
         const auto result = PHINode::Create(valueType, SkipOrTake ? 3U : 4U, "result", done);
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto finished = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, state, GetTrue(context), "finished", block);
 
         BranchInst::Create(skip, work, finished, block);
@@ -303,9 +303,9 @@ protected:
     {}
 
 #ifndef MKQL_DISABLE_CODEGEN
-    Function* GenerateFilter(NYql::NCodegen::ICodegen& codegen, const TString& name) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateFilter(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
 
@@ -315,7 +315,7 @@ protected:
             return f;
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = IsStream ? Type::getInt32Ty(context) : Type::getInt1Ty(context);
         const auto funcType = FunctionType::get(statusType, {PointerType::getUnqual(contextType), containerType, PointerType::getUnqual(valueType), PointerType::getUnqual(valueType)}, false);
@@ -333,8 +333,8 @@ protected:
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
         auto block = main;
 
-        const auto container = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-            new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
+        const auto container = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            new LoadInst(containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
         const auto good = BasicBlock::Create(context, "good", ctx.Func);
         const auto stop = BasicBlock::Create(context, "stop", ctx.Func);
@@ -358,7 +358,7 @@ protected:
         BranchInst::Create(good, done, icmp, block);
         block = good;
 
-        const auto item = new LoadInst(valueType, itemPtr, "item", block);
+        const auto item = new LoadInst(itemPtr, "item", block);
         const auto predicate = GetNodeValue(Predicate, ctx, block);
 
         const auto boolPred = CastInst::Create(Instruction::Trunc, predicate, Type::getInt1Ty(context), "bool", block);
@@ -434,14 +434,14 @@ private:
         this->DependsOn(this->Predicate);
     }
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         this->FilterFunc = this->GenerateFilter(codegen, TBaseComputation::MakeName("Fetch"));
-        codegen.ExportSymbol(this->FilterFunc);
+        codegen->ExportSymbol(this->FilterFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (this->FilterFunc)
-            this->Filter = reinterpret_cast<typename TBaseWrapper::TFilterPtr>(codegen.GetPointerToFunction(this->FilterFunc));
+            this->Filter = reinterpret_cast<typename TBaseWrapper::TFilterPtr>(codegen->GetPointerToFunction(this->FilterFunc));
     }
 #endif
 };
@@ -498,7 +498,7 @@ public:
     }
 
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(this->Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -537,14 +537,14 @@ public:
 
             block = loop;
 
-            const auto ptr = GetElementPtrInst::CreateInBounds(list->getType(), elements, {index}, "ptr", block);
+            const auto ptr = GetElementPtrInst::CreateInBounds(elements, {index}, "ptr", block);
             const auto plus = BinaryOperator::CreateAdd(index, ConstantInt::get(size->getType(), 1), "plus", block);
             const auto more = CmpInst::Create(Instruction::ICmp, Inclusive ? ICmpInst::ICMP_ULT : ICmpInst::ICMP_ULE, plus, size, "more", block);
             BranchInst::Create(test, stop, more, block);
 
             block = test;
 
-            const auto item = new LoadInst(list->getType(), ptr, "item", block);
+            const auto item = new LoadInst(ptr, "item", block);
             codegenItem->CreateSetValue(ctx, block, item);
             const auto predicate = GetNodeValue(this->Predicate, ctx, block);
             const auto boolPred = CastInst::Create(Instruction::Trunc, predicate, Type::getInt1Ty(context), "bool", block);
@@ -562,13 +562,12 @@ public:
 
             block = make;
 
-            const auto itemsType = PointerType::getUnqual(list->getType());
             const auto itemsPtr = *this->Stateless || ctx.AlwaysInline ?
-                new AllocaInst(itemsType, 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
-                new AllocaInst(itemsType, 0U, "items_ptr", block);
+                new AllocaInst(PointerType::getUnqual(list->getType()), 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
+                new AllocaInst(PointerType::getUnqual(list->getType()), 0U, "items_ptr", block);
             const auto array = GenNewArray(ctx, copy, itemsPtr, block);
-            const auto items = new LoadInst(itemsType, itemsPtr, "items", block);
-            const auto from = SkipOrTake ? GetElementPtrInst::CreateInBounds(list->getType(), elements, {pass}, "from", block) : elements;
+            const auto items = new LoadInst(itemsPtr, "items", block);
+            const auto from = SkipOrTake ? GetElementPtrInst::CreateInBounds(elements, {pass}, "from", block) : elements;
 
             const auto move = BasicBlock::Create(context, "move", ctx.Func);
             const auto step = BasicBlock::Create(context, "step", ctx.Func);
@@ -585,10 +584,10 @@ public:
 
             block = step;
 
-            const auto src = GetElementPtrInst::CreateInBounds(list->getType(), from, {idx}, "src", block);
-            const auto itm = new LoadInst(list->getType(), src, "item", block);
+            const auto src = GetElementPtrInst::CreateInBounds(from, {idx}, "src", block);
+            const auto itm = new LoadInst(src, "item", block);
             ValueAddRef(this->Item->GetRepresentation(), itm, ctx, block);
-            const auto dst = GetElementPtrInst::CreateInBounds(list->getType(), items, {idx}, "dst", block);
+            const auto dst = GetElementPtrInst::CreateInBounds(items, {idx}, "dst", block);
             new StoreInst(itm, dst, block);
             const auto inc = BinaryOperator::CreateAdd(idx, ConstantInt::get(idx->getType(), 1), "inc", block);
             idx->addIncoming(inc, block);
@@ -608,18 +607,18 @@ public:
             const auto doFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TListWhileWrapper::MakeLazyList));
             const auto ptrType = PointerType::getUnqual(StructType::get(context));
             const auto self = CastInst::Create(Instruction::IntToPtr, ConstantInt::get(Type::getInt64Ty(context), uintptr_t(this)), ptrType, "self", block);
-            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
                 const auto funType = FunctionType::get(list->getType() , {self->getType(), ctx.Ctx->getType(), list->getType()}, false);
                 const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "function", block);
-                const auto value = CallInst::Create(funType, doFuncPtr, {self, ctx.Ctx, list}, "value", block);
+                const auto value = CallInst::Create(doFuncPtr, {self, ctx.Ctx, list}, "value", block);
                 out->addIncoming(value, block);
             } else {
                 const auto resultPtr = new AllocaInst(list->getType(), 0U, "return", block);
                 new StoreInst(list, resultPtr, block);
                 const auto funType = FunctionType::get(Type::getVoidTy(context), {self->getType(), resultPtr->getType(), ctx.Ctx->getType(), resultPtr->getType()}, false);
                 const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "function", block);
-                CallInst::Create(funType, doFuncPtr, {self, resultPtr, ctx.Ctx, resultPtr}, "", block);
-                const auto value = new LoadInst(list->getType(), resultPtr, "value", block);
+                CallInst::Create(doFuncPtr, {self, resultPtr, ctx.Ctx, resultPtr}, "", block);
+                const auto value = new LoadInst(resultPtr, "value", block);
                 out->addIncoming(value, block);
             }
             BranchInst::Create(done, block);
@@ -637,16 +636,16 @@ private:
         this->DependsOn(this->Predicate);
     }
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         TMutableCodegeneratorRootNode<TListWhileWrapper<SkipOrTake, Inclusive>>::GenerateFunctions(codegen);
         this->FilterFunc = this->GenerateFilter(codegen, TBaseComputation::MakeName("Next"));
-        codegen.ExportSymbol(this->FilterFunc);
+        codegen->ExportSymbol(this->FilterFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         TMutableCodegeneratorRootNode<TListWhileWrapper<SkipOrTake, Inclusive>>::FinalizeFunctions(codegen);
         if (this->FilterFunc)
-            this->Filter = reinterpret_cast<typename TBaseWrapper::TFilterPtr>(codegen.GetPointerToFunction(this->FilterFunc));
+            this->Filter = reinterpret_cast<typename TBaseWrapper::TFilterPtr>(codegen->GetPointerToFunction(this->FilterFunc));
     }
 #endif
 };

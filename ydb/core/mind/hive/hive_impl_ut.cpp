@@ -1,6 +1,5 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
-#include <ydb/library/actors/helpers/selfping_actor.h>
 #include <util/stream/null.h>
 #include <util/datetime/cputimer.h>
 #include "hive_impl.h"
@@ -25,19 +24,6 @@
 using namespace NKikimr;
 using namespace NHive;
 
-using duration_nano_t = std::chrono::duration<ui64, std::nano>;
-using duration_t = std::chrono::duration<double>;
-
-duration_t GetBasePerformance() {
-    duration_nano_t accm{};
-    for (int i = 0; i < 1000000; ++i) {
-        accm += duration_nano_t(NActors::MeasureTaskDurationNs());
-    }
-    return std::chrono::duration_cast<duration_t>(accm);
-}
-
-static double BASE_PERF = GetBasePerformance().count();
-
 Y_UNIT_TEST_SUITE(THiveImplTest) {
     Y_UNIT_TEST(BootQueueSpeed) {
         TBootQueue bootQueue;
@@ -59,9 +45,9 @@ Y_UNIT_TEST_SUITE(THiveImplTest) {
         Ctest << "Create = " << passed << Endl;
 #ifndef SANITIZER_TYPE
 #ifndef NDEBUG
-        UNIT_ASSERT(passed < 3 * BASE_PERF);
+        UNIT_ASSERT(passed < 3);
 #else
-        UNIT_ASSERT(passed < 1 * BASE_PERF);
+        UNIT_ASSERT(passed < 1);
 #endif
 #endif
         timer.Reset();
@@ -82,9 +68,9 @@ Y_UNIT_TEST_SUITE(THiveImplTest) {
         Ctest << "Process = " << passed << Endl;
 #ifndef SANITIZER_TYPE
 #ifndef NDEBUG
-        UNIT_ASSERT(passed < 10 * BASE_PERF);
+        UNIT_ASSERT(passed < 10);
 #else
-        UNIT_ASSERT(passed < 2 * BASE_PERF);
+        UNIT_ASSERT(passed < 1);
 #endif
 #endif
 
@@ -96,9 +82,9 @@ Y_UNIT_TEST_SUITE(THiveImplTest) {
         Ctest << "Move = " << passed << Endl;
 #ifndef SANITIZER_TYPE
 #ifndef NDEBUG
-        UNIT_ASSERT(passed < 2 * BASE_PERF);
+        UNIT_ASSERT(passed < 2);
 #else
-        UNIT_ASSERT(passed < 0.1 * BASE_PERF);
+        UNIT_ASSERT(passed < 0.1);
 #endif
 #endif
     }
@@ -109,8 +95,7 @@ Y_UNIT_TEST_SUITE(THiveImplTest) {
 
         auto CheckSpeedAndDistribution = [](
             std::unordered_map<ui64, TLeaderTabletInfo>& allTablets,
-            std::function<void(std::vector<TTabletInfo*>&, EResourceToBalance)> func,
-            EResourceToBalance resource) -> void {
+            std::function<void(std::vector<TTabletInfo*>&)> func) -> void {
 
             std::vector<TTabletInfo*> tablets;
             for (auto& [id, tab] : allTablets) {
@@ -119,28 +104,27 @@ Y_UNIT_TEST_SUITE(THiveImplTest) {
 
             TProfileTimer timer;
 
-            func(tablets, resource);
+            func(tablets);
 
             double passed = timer.Get().SecondsFloat();
 
             Ctest << "Time=" << passed << Endl;
 #ifndef SANITIZER_TYPE
 #ifndef NDEBUG
-            UNIT_ASSERT(passed < 1 * BASE_PERF);
+            UNIT_ASSERT(passed < 1);
 #else
-            UNIT_ASSERT(passed < 1 * BASE_PERF);
+            UNIT_ASSERT(passed < 0.4);
 #endif
 #endif
             std::vector<double> buckets(NUM_BUCKETS, 0);
             size_t revs = 0;
             double prev = 0;
             for (size_t n = 0; n < tablets.size(); ++n) {
-                double weight = tablets[n]->GetWeight(resource);
-                buckets[n / (NUM_TABLETS / NUM_BUCKETS)] += weight;
-                if (n != 0 && weight >= prev) {
+                buckets[n / (NUM_TABLETS / NUM_BUCKETS)] += tablets[n]->Weight;
+                if (n != 0 && tablets[n]->Weight >= prev) {
                     ++revs;
                 }
-                prev = weight;
+                prev = tablets[n]->Weight;
             }
 
             Ctest << "Indirection=" << revs * 100 / NUM_TABLETS << "%" << Endl;
@@ -178,19 +162,19 @@ Y_UNIT_TEST_SUITE(THiveImplTest) {
 
         for (ui64 i = 0; i < NUM_TABLETS; ++i) {
             TLeaderTabletInfo& tablet = allTablets.emplace(std::piecewise_construct, std::tuple<TTabletId>(i), std::tuple<TTabletId, THive&>(i, hive)).first->second;
-            tablet.GetMutableResourceValues().SetMemory(RandomNumber<double>());
+            tablet.Weight = RandomNumber<double>();
         }
 
         Ctest << "HIVE_TABLET_BALANCE_STRATEGY_HEAVIEST" << Endl;
-        CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_HEAVIEST>, EResourceToBalance::Memory);
+        CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_HEAVIEST>);
 
         //Ctest << "HIVE_TABLET_BALANCE_STRATEGY_OLD_WEIGHTED_RANDOM" << Endl;
         //CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_OLD_WEIGHTED_RANDOM>);
 
         Ctest << "HIVE_TABLET_BALANCE_STRATEGY_WEIGHTED_RANDOM" << Endl;
-        CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_WEIGHTED_RANDOM>, EResourceToBalance::Memory);
+        CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_WEIGHTED_RANDOM>);
 
         Ctest << "HIVE_TABLET_BALANCE_STRATEGY_RANDOM" << Endl;
-        CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_RANDOM>, EResourceToBalance::Memory);
+        CheckSpeedAndDistribution(allTablets, BalanceTablets<NKikimrConfig::THiveConfig::HIVE_TABLET_BALANCE_STRATEGY_RANDOM>);
     }
 }

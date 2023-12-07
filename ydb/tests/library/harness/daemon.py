@@ -9,8 +9,7 @@ import subprocess
 from yatest.common import process
 import six
 
-from contrib.ydb.tests.library.common.wait_for import wait_for
-from contrib.ydb.tests.library.common import yatest_common
+from ydb.tests.library.common.wait_for import wait_for
 from . import param_constants
 
 
@@ -19,9 +18,6 @@ logger = logging.getLogger(__name__)
 
 def extract_stderr_details(stderr_file, max_lines=0):
     if max_lines == 0:
-        return []
-
-    if stderr_file is None:
         return []
 
     result = ["Stderr content:", ""]
@@ -58,17 +54,9 @@ class SeveralDaemonErrors(RuntimeError):
 
 
 class Daemon(object):
-    def __init__(
-        self,
-        command,
-        cwd,
-        timeout,
-        stdin_file=yatest_common.work_path('stdin'),
-        stdout_file=yatest_common.work_path('stdout'),
-        stderr_file=yatest_common.work_path('stderr'),
-        stderr_on_error_lines=0,
-        core_pattern=None
-    ):
+    def __init__(self, command, cwd, timeout, stdin_file=None, stdout_file=None,
+                 stderr_file=None, stderr_on_error_lines=0, core_pattern=None):
+
         self.__cwd = cwd
         self.__timeout = timeout
         self.__command = tuple(command)
@@ -77,9 +65,13 @@ class Daemon(object):
         self.__killed = False
         self.__core_pattern = core_pattern
         self.logger = logger.getChild(self.__class__.__name__)
-        self.__stdout_file = open(stdout_file, mode='w+b')
-        self.__stdin_file = open(stdin_file, mode='w+b')
-        self.__stderr_file = open(stderr_file, mode='w+b')
+        self.__stdout_file = sys.stdout
+        self.__stdin_file = sys.stdin
+        self.__stderr_file = sys.stderr
+        if stdout_file is not None:
+            self.__stdout_file = open(stdout_file, mode='w+b')
+            self.__stdin_file = open(stdin_file, mode='w+b')
+            self.__stderr_file = open(stderr_file, mode='w+b')
 
     @property
     def daemon(self):

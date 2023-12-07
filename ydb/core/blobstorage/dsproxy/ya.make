@@ -55,6 +55,7 @@ SRCS(
     group_sessions.cpp
     group_sessions.h
     log_acc.h
+    blobstorage_backoff.cpp
 )
 
 PEERDIR(
@@ -78,5 +79,4 @@ RECURSE(
 RECURSE_FOR_TESTS(
     ut
     ut_fat
-    ut_ftol
 )

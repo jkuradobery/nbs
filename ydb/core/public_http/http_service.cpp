@@ -4,11 +4,11 @@
 #include "http_router.h"
 #include "fq_handlers.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/http/http_proxy.h>
 #include <library/cpp/resource/resource.h>
 
 #include <util/stream/file.h>
@@ -119,7 +119,7 @@ namespace {
             return;
         }
 
-
+        
         auto actor = NKikimr::NPublicHttp::CreatePublicHttp(config, appData.Counters->GetSubgroup("counters", "public_http"));
         localServices.push_back(std::pair<TActorId, TActorSetupCmd>(
             MakePublicHttpID(),

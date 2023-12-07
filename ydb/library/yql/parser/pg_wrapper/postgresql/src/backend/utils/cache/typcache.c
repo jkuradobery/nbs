@@ -285,36 +285,18 @@ static __thread int32 NextRecordTypmod = 0;	/* number of entries used */
  */
 static __thread uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
 
-void LoadRecordCacheState(RecordCacheState* state) {
-    RecordCacheHash = state->RecordCacheHash;
-    RecordCacheArray = state->RecordCacheArray;
-    RecordIdentifierArray = state->RecordIdentifierArray;
-    RecordCacheArrayLen = state->RecordCacheArrayLen;
-    NextRecordTypmod = state->NextRecordTypmod;
-    tupledesc_id_counter = state->tupledesc_id_counter;
-}
-
-extern void SaveRecordCacheState(RecordCacheState* state) {
-    state->RecordCacheHash = RecordCacheHash;
-    state->RecordCacheArray = RecordCacheArray;
-    state->RecordIdentifierArray = RecordIdentifierArray;
-    state->RecordCacheArrayLen = RecordCacheArrayLen;
-    state->NextRecordTypmod = NextRecordTypmod;
-    state->tupledesc_id_counter = tupledesc_id_counter;
-}
-
 static void load_typcache_tupdesc(TypeCacheEntry *typentry);
 static void load_rangetype_info(TypeCacheEntry *typentry);
 static void load_multirangetype_info(TypeCacheEntry *typentry);
 static void load_domaintype_info(TypeCacheEntry *typentry);
-static int  dcs_cmp(const void *a, const void *b);
+static int	dcs_cmp(const void *a, const void *b);
 static void decr_dcc_refcount(DomainConstraintCache *dcc);
 static void dccref_deletion_callback(void *arg);
 static List *prep_domain_constraints(List *constraints, MemoryContext execctx);
-bool array_element_has_equality(TypeCacheEntry *typentry);
-bool array_element_has_compare(TypeCacheEntry *typentry);
-bool array_element_has_hashing(TypeCacheEntry *typentry);
-bool array_element_has_extended_hashing(TypeCacheEntry *typentry);
+static bool array_element_has_equality(TypeCacheEntry *typentry);
+static bool array_element_has_compare(TypeCacheEntry *typentry);
+static bool array_element_has_hashing(TypeCacheEntry *typentry);
+static bool array_element_has_extended_hashing(TypeCacheEntry *typentry);
 static void cache_array_element_properties(TypeCacheEntry *typentry);
 static bool record_fields_have_equality(TypeCacheEntry *typentry);
 static bool record_fields_have_compare(TypeCacheEntry *typentry);
@@ -353,7 +335,7 @@ static dsa_pointer share_tupledesc(dsa_area *area, TupleDesc tupdesc,
  * are InvalidOid or not.
  */
 TypeCacheEntry *
-lookup_type_cache_original(Oid type_id, int flags)
+lookup_type_cache(Oid type_id, int flags)
 {
 	TypeCacheEntry *typentry;
 	bool		found;
@@ -1432,7 +1414,7 @@ DomainHasConstraints(Oid type_id)
  * component datatype(s).
  */
 
-bool
+static bool
 array_element_has_equality(TypeCacheEntry *typentry)
 {
 	if (!(typentry->flags & TCFLAGS_CHECKED_ELEM_PROPERTIES))
@@ -1440,7 +1422,7 @@ array_element_has_equality(TypeCacheEntry *typentry)
 	return (typentry->flags & TCFLAGS_HAVE_ELEM_EQUALITY) != 0;
 }
 
-bool
+static bool
 array_element_has_compare(TypeCacheEntry *typentry)
 {
 	if (!(typentry->flags & TCFLAGS_CHECKED_ELEM_PROPERTIES))
@@ -1448,7 +1430,7 @@ array_element_has_compare(TypeCacheEntry *typentry)
 	return (typentry->flags & TCFLAGS_HAVE_ELEM_COMPARE) != 0;
 }
 
-bool
+static bool
 array_element_has_hashing(TypeCacheEntry *typentry)
 {
 	if (!(typentry->flags & TCFLAGS_CHECKED_ELEM_PROPERTIES))
@@ -1456,7 +1438,7 @@ array_element_has_hashing(TypeCacheEntry *typentry)
 	return (typentry->flags & TCFLAGS_HAVE_ELEM_HASHING) != 0;
 }
 
-bool
+static bool
 array_element_has_extended_hashing(TypeCacheEntry *typentry)
 {
 	if (!(typentry->flags & TCFLAGS_CHECKED_ELEM_PROPERTIES))

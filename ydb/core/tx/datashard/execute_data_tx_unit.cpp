@@ -24,13 +24,12 @@ public:
 
 private:
     void ExecuteDataTx(TOperation::TPtr op,
-                       TTransactionContext& txc,
                        const TActorContext& ctx,
                        TSetupSysLocks& guardLocks);
     void AddLocksToResult(TOperation::TPtr op, const TActorContext& ctx);
 
 private:
-    class TRollbackAndWaitException : public yexception {};
+    class TRescheduleOpException : public yexception {};
 };
 
 TExecuteDataTxUnit::TExecuteDataTxUnit(TDataShard& dataShard,
@@ -86,7 +85,7 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
                 // For immediate transactions we want to translate this into a propose failure
                 if (op->IsImmediate()) {
                     const auto& dataTx = tx->GetDataTx();
-                    Y_ABORT_UNLESS(!dataTx->Ready());
+                    Y_VERIFY(!dataTx->Ready());
                     op->SetAbortedFlag();
                     BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::ERROR);
                     op->Result()->SetProcessError(dataTx->Code(), dataTx->GetErrors());
@@ -94,7 +93,7 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
                 }
 
                 // For planned transactions errors are not expected
-                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
 
@@ -107,7 +106,7 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
     if (op->IsImmediate() && !tx->ReValidateKeys()) {
         // Immediate transactions may be reordered with schema changes and become invalid
         const auto& dataTx = tx->GetDataTx();
-        Y_ABORT_UNLESS(!dataTx->Ready());
+        Y_VERIFY(!dataTx->Ready());
         op->SetAbortedFlag();
         BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::ERROR);
         op->Result()->SetProcessError(dataTx->Code(), dataTx->GetErrors());
@@ -160,7 +159,7 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
 
     try {
         try {
-            ExecuteDataTx(op, txc, ctx, guardLocks);
+            ExecuteDataTx(op, ctx, guardLocks);
         } catch (const TNotReadyTabletException&) {
             // We want to try pinning (actually precharging) all required pages
             // before restarting the transaction, to minimize future restarts.
@@ -194,17 +193,15 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
         tx->ReleaseTxData(txc, ctx);
 
         return EExecutionStatus::Restart;
-    } catch (const TRollbackAndWaitException&) {
+    } catch (const TRescheduleOpException&) {
         LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, "Tablet " << DataShard.TabletID()
-            << " needs to wait " << *op << " for dependencies");
+            << " needs to reschedule " << *op << " for dependencies");
 
         tx->GetDataTx()->ResetCollectedChanges();
         tx->ReleaseTxData(txc, ctx);
 
-        if (txc.DB.HasChanges()) {
-            txc.DB.RollbackChanges();
-        }
-        return EExecutionStatus::Continue;
+        txc.Reschedule();
+        return EExecutionStatus::Restart;
     }
 
     DataShard.IncCounter(COUNTER_WAIT_EXECUTE_LATENCY_MS, waitExecuteLatency.MilliSeconds());
@@ -223,7 +220,6 @@ EExecutionStatus TExecuteDataTxUnit::Execute(TOperation::TPtr op,
 }
 
 void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
-                                       TTransactionContext& txc,
                                        const TActorContext& ctx,
                                        TSetupSysLocks& guardLocks)
 {
@@ -256,7 +252,7 @@ void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
     IEngineFlat::EResult engineResult = engine->Execute();
 
     if (Pipeline.AddLockDependencies(op, guardLocks)) {
-        throw TRollbackAndWaitException();
+        throw TRescheduleOpException();
     }
 
     if (engineResult != IEngineFlat::EResult::Ok) {
@@ -269,7 +265,7 @@ void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
                 break;
             case IEngineFlat::EResult::Cancelled:
                 LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, errorMessage);
-                Y_ABORT_UNLESS(tx->GetDataTx()->CanCancel());
+                Y_VERIFY(tx->GetDataTx()->CanCancel());
                 break;
             default:
                 if (op->IsReadOnly() || op->IsImmediate()) {
@@ -318,21 +314,6 @@ void TExecuteDataTxUnit::ExecuteDataTx(TOperation::TPtr op,
 
     if (counters.InvisibleRowSkips && op->LockTxId()) {
         DataShard.SysLocksTable().BreakSetLocks();
-    }
-
-    // Note: any transaction (e.g. immediate or non-volatile) may decide to commit as volatile due to dependencies
-    // Such transactions would have no participants and become immediately committed
-    if (auto commitTxIds = tx->GetDataTx()->GetVolatileCommitTxIds()) {
-        TVector<ui64> participants; // empty participants
-        DataShard.GetVolatileTxManager().PersistAddVolatileTx(
-            tx->GetTxId(),
-            writeVersion,
-            commitTxIds,
-            tx->GetDataTx()->GetVolatileDependencies(),
-            participants,
-            tx->GetDataTx()->GetVolatileChangeGroup(),
-            tx->GetDataTx()->GetVolatileCommitOrdered(),
-            txc);
     }
 
     AddLocksToResult(op, ctx);

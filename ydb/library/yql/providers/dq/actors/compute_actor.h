@@ -7,13 +7,13 @@ namespace NYql {
 
 NActors::IActor* CreateComputeActor(
     const NYql::NDqs::TLocalWorkerManagerOptions& options,
-    NDq::IMemoryQuotaManager::TPtr memoryQuotaManager,
+    NDq::TAllocateMemoryCallback allocateMemoryFn,
+    NDq::TFreeMemoryCallback freeMemoryFn,
     const NActors::TActorId& executerId,
     const TString& operationId,
-    NDqProto::TDqTask* task,
+    NYql::NDqProto::TDqTask&& task,
     const TString& computeActorType,
     const NDq::NTaskRunnerActor::ITaskRunnerActorFactory::TPtr& taskRunnerActorFactory,
-    ::NMonitoring::TDynamicCounterPtr taskCounters,
-    NDqProto::EDqStatsMode statsMode);
+    ::NMonitoring::TDynamicCounterPtr taskCounters = nullptr);
 
 } // namespace NYql

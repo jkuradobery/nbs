@@ -2,9 +2,6 @@
 #include "datashard_impl.h"
 #include "datashard_pipeline.h"
 #include "execution_unit_ctors.h"
-#include "probes.h"
-
-LWTRACE_USING(DATASHARD_PROVIDER)
 
 namespace NKikimr {
 namespace NDataShard {
@@ -81,8 +78,6 @@ EExecutionStatus TFinishProposeUnit::Execute(TOperation::TPtr op,
     if (op->IsAborted()) {
         // Make sure we confirm aborts with a commit
         op->SetWaitCompletionFlag(true);
-    } else if (DataShard.IsFollower()) {
-        // It doesn't matter whether we wait or not
     } else if (DataShard.IsMvccEnabled() && op->IsImmediate()) {
         auto res = PromoteImmediatePostExecuteEdges(op.Get(), txc);
 
@@ -100,7 +95,7 @@ EExecutionStatus TFinishProposeUnit::Execute(TOperation::TPtr op,
         op->SetFinishProposeTs(DataShard.ConfirmReadOnlyLease());
     }
 
-    if (!op->HasResultSentFlag() && (op->IsDirty() || op->HasVolatilePrepareFlag() || !Pipeline.WaitCompletion(op)))
+    if (!op->HasResultSentFlag() && (op->IsDirty() || !Pipeline.WaitCompletion(op)))
         CompleteRequest(op, ctx);
 
     if (!DataShard.IsFollower())
@@ -142,7 +137,6 @@ void TFinishProposeUnit::Complete(TOperation::TPtr op,
         Pipeline.RemoveActiveOp(op);
 
         DataShard.EnqueueChangeRecords(std::move(op->ChangeRecords()));
-        DataShard.EmitHeartbeats(ctx);
     }
 
     DataShard.SendRegistrationRequestTimeCast(ctx);
@@ -152,7 +146,7 @@ void TFinishProposeUnit::CompleteRequest(TOperation::TPtr op,
                                          const TActorContext &ctx)
 {
     auto res = std::move(op->Result());
-    Y_ABORT_UNLESS(res);
+    Y_VERIFY(res);
 
     TDuration duration = TAppData::TimeProvider->Now() - op->GetReceivedAt();
     res->Record.SetProposeLatency(duration.MilliSeconds());
@@ -165,7 +159,7 @@ void TFinishProposeUnit::CompleteRequest(TOperation::TPtr op,
 
     TString errors = res->GetError();
     if (errors.size()) {
-        LOG_LOG_S_THROTTLE(DataShard.GetLogThrottler(TDataShard::ELogThrottlerType::FinishProposeUnit_CompleteRequest), ctx, NActors::NLog::PRI_ERROR, NKikimrServices::TX_DATASHARD, 
+        LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD,
                     "Errors while proposing transaction txid " << op->GetTxId()
                     << " at tablet " << DataShard.TabletID() << " status: "
                     << res->GetStatus() << " errors: " << errors);
@@ -186,12 +180,6 @@ void TFinishProposeUnit::CompleteRequest(TOperation::TPtr op,
     DataShard.IncCounter(COUNTER_TX_RESULT_SIZE, res->Record.GetTxResult().size());
 
     if (!gSkipRepliesFailPoint.Check(DataShard.TabletID(), op->GetTxId())) {
-        if (res->IsPrepared()) {
-            LWTRACK(ProposeTransactionSendPrepared, op->Orbit);
-        } else {
-            LWTRACK(ProposeTransactionSendResult, op->Orbit);
-            res->Orbit = std::move(op->Orbit);
-        }
         if (op->IsImmediate() && !op->IsReadOnly() && !op->IsAborted() && op->MvccReadWriteVersion) {
             DataShard.SendImmediateWriteResult(*op->MvccReadWriteVersion, op->GetTarget(), res.Release(), op->GetCookie());
         } else if (op->IsImmediate() && op->IsReadOnly() && !op->IsAborted()) {
@@ -220,7 +208,7 @@ void TFinishProposeUnit::UpdateCounters(TOperation::TPtr op,
                                         const TActorContext &ctx)
 {
     auto &res = op->Result();
-    Y_ABORT_UNLESS(res);
+    Y_VERIFY(res);
     auto execLatency = TAppData::TimeProvider->Now() - op->GetReceivedAt();
 
     res->Record.SetExecLatency(execLatency.MilliSeconds());
@@ -234,7 +222,7 @@ void TFinishProposeUnit::UpdateCounters(TOperation::TPtr op,
 
         if (res->IsError()) {
             DataShard.IncCounter(COUNTER_PREPARE_ERROR);
-            LOG_LOG_S_THROTTLE(DataShard.GetLogThrottler(TDataShard::ELogThrottlerType::FinishProposeUnit_UpdateCounters), ctx,  NActors::NLog::PRI_ERROR, NKikimrServices::TX_DATASHARD,
+            LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD,
                         "Prepare transaction failed. txid " << op->GetTxId()
                         << " at tablet " << DataShard.TabletID()  << " errors: "
                         << PrintErrors(res->Record));
@@ -250,7 +238,8 @@ TString TFinishProposeUnit::PrintErrors(const NKikimrTxDataShard::TEvProposeTran
     TStringOutput str(s);
     str << "[ ";
     for (size_t i = 0; i < rec.ErrorSize(); ++i) {
-        str << rec.GetError(i).GetKind() << "(" << rec.GetError(i).GetReason() << ") ";
+        str << NKikimrTxDataShard::TError_EKind_Name(rec.GetError(i).GetKind())
+            << "(" << rec.GetError(i).GetReason() << ") ";
     }
     str << "]";
     return s;

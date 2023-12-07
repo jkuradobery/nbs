@@ -43,7 +43,7 @@ void TFakeNodeWhiteboardService::Handle(TEvConfigsDispatcher::TEvGetConfigReques
                                         const TActorContext &ctx)
 {
     TGuard<TMutex> guard(Mutex);
-    Y_UNUSED(ev);
+    Y_UNUSED(ev); 
     NKikimrConfig::TAppConfig appConfig;
     appConfig.MutableBootstrapConfig()->CopyFrom(BootstrapConfig);
     auto resp = MakeHolder<TEvConfigsDispatcher::TEvGetConfigResponse>();
@@ -373,7 +373,7 @@ inline void AddTablet(NKikimrConfig::TBootstrap::ETabletType type,
 }
 
 static NKikimrConfig::TBootstrap GenerateBootstrapConfig(TTestActorRuntime &runtime,
-                                                         const ui32 nodesCount,
+                                                         const ui32 nodesCount, 
                                                          const TNodeTenantsMap &tenants) {
     NKikimrConfig::TBootstrap res;
 
@@ -441,7 +441,7 @@ static void SetupServices(TTestActorRuntime &runtime,
             new TNodeWardenConfig(STRAND_PDISK && !runtime.IsRealThreads()
                                   ? static_cast<IPDiskServiceFactory*>(new TStrandedPDiskServiceFactory(runtime))
                                   : static_cast<IPDiskServiceFactory*>(new TRealPDiskServiceFactory()));
-        google::protobuf::TextFormat::ParseFromString(staticConfig, nodeWardenConfig->BlobStorageConfig.MutableServiceSet());
+        google::protobuf::TextFormat::ParseFromString(staticConfig, &nodeWardenConfig->ServiceSet);
 
         if (nodeIndex == 0) {
             TString pDiskPath;
@@ -461,7 +461,7 @@ static void SetupServices(TTestActorRuntime &runtime,
                 static TTempDir tempDir;
                 pDiskPath = tempDir() + "/pdisk0.dat";
             }
-            nodeWardenConfig->BlobStorageConfig.MutableServiceSet()->MutablePDisks(0)->SetPath(pDiskPath);
+            nodeWardenConfig->ServiceSet.MutablePDisks(0)->SetPath(pDiskPath);
             ui64 pDiskGuid = 1;
             static ui64 iteration = 0;
             ++iteration;
@@ -505,15 +505,10 @@ static void SetupServices(TTestActorRuntime &runtime,
     runtime.Initialize(app.Unwrap());
     auto dnsConfig = new TDynamicNameserviceConfig();
     dnsConfig->MaxStaticNodeId = 1000;
-    dnsConfig->MinDynamicNodeId = 1001;
     dnsConfig->MaxDynamicNodeId = 2000;
     runtime.GetAppData().DynamicNameserviceConfig = dnsConfig;
     runtime.GetAppData().DisableCheckingSysNodesCms = true;
     runtime.GetAppData().BootstrapConfig = TFakeNodeWhiteboardService::BootstrapConfig;
-
-    NKikimrCms::TCmsConfig cmsConfig;
-    cmsConfig.MutableSentinelConfig()->SetEnable(false);
-    runtime.GetAppData().DefaultCmsConfig = MakeHolder<NKikimrCms::TCmsConfig>(cmsConfig);
 
     if (!runtime.IsRealThreads()) {
         TDispatchOptions options;
@@ -534,9 +529,11 @@ static void SetupServices(TTestActorRuntime &runtime,
 
 } // anonymous namespace
 
-TCmsTestEnv::TCmsTestEnv(const TTestEnvOpts &options)
+TCmsTestEnv::TCmsTestEnv(const TTestEnvOpts &options) 
         : TTestBasicRuntime(options.NodeCount, options.DataCenterCount, false)
-        , CmsId(MakeCmsID(0))
+        , CmsId(MakeCmsID(0)) 
+        , ProcessQueueCount(0)
+        , CmsTabletActor(TActorId())
 {
     TFakeNodeWhiteboardService::Config.MutableResponse()->SetSuccess(true);
     TFakeNodeWhiteboardService::Config.MutableResponse()->ClearStatus();
@@ -548,16 +545,38 @@ TCmsTestEnv::TCmsTestEnv(const TTestEnvOpts &options)
 
     GenerateExtendedInfo(*this, config, options.VDisks, 4, options.Tenants, options.UseMirror3dcErasure);
 
-    SetObserverFunc([](TAutoPtr<IEventHandle> &event) -> auto {
+    SetObserverFunc([&ProcessQueueCount = ProcessQueueCount, &CmsTabletActor = CmsTabletActor](TTestActorRuntimeBase&,
+                                    TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvBlobStorage::EvControllerConfigRequest
-            || event->Type == TEvBlobStorage::EvControllerConfigRequest
             || event->GetTypeRewrite() == TEvConfigsDispatcher::EvGetConfigRequest) {
             auto fakeId = NNodeWhiteboard::MakeNodeWhiteboardServiceId(event->Recipient.NodeId());
             if (event->Recipient != fakeId)
-                event = IEventHandle::Forward(std::move(event), fakeId);
+                event = event->Forward(fakeId);
+        }
+
+        if (event->GetTypeRewrite() == TCms::TEvPrivate::EvProcessQueue
+            && event->Recipient == CmsTabletActor) {
+            ++ProcessQueueCount;
+        }
+
+        if (event->GetTypeRewrite() == TCms::TEvPrivate::EvUpdateClusterInfo
+            || event->GetTypeRewrite() == TEvCms::EvClusterStateRequest
+            || event->GetTypeRewrite() == TEvCms::EvNotification
+            || event->GetTypeRewrite() == TEvCms::EvResetMarkerRequest
+            || event->GetTypeRewrite() == TEvCms::EvSetMarkerRequest
+            || event->GetTypeRewrite() == TEvCms::EvGetClusterInfoRequest) {
+            --ProcessQueueCount;
         }
 
         return TTestActorRuntime::EEventAction::PROCESS;
+    });
+
+    SetRegistrationObserverFunc([&CmsTabletActor = CmsTabletActor](TTestActorRuntimeBase& runtime, const TActorId& parentId, const TActorId& actorId) {
+        if (TypeName(*runtime.FindActor(actorId)) == "NKikimr::NCms::TCms") {
+            CmsTabletActor = actorId;
+        }
+
+        runtime.DefaultRegistrationObserver(runtime, parentId, actorId);
     });
 
     using namespace NMalloc;
@@ -580,9 +599,8 @@ TCmsTestEnv::TCmsTestEnv(const TTestEnvOpts &options)
     NKikimrCms::TCmsConfig cmsConfig;
     cmsConfig.MutableTenantLimits()->SetDisabledNodesRatioLimit(0);
     cmsConfig.MutableClusterLimits()->SetDisabledNodesRatioLimit(0);
-    cmsConfig.MutableSentinelConfig()->SetEnable(false);
     SetCmsConfig(cmsConfig);
-
+    
     // Need to allow restart state storage nodes
     AdvanceCurrentTime(TDuration::Minutes(2));
 }
@@ -868,10 +886,10 @@ TCmsTestEnv::CheckRequest(const TString &user,
 
 
 void TCmsTestEnv::CheckWalleStoreTaskIsFailed(NCms::TEvCms::TEvStoreWalleTask* req)
-{
+{ 
     TString TaskId = req->Task.TaskId;
     SendToPipe(CmsId, Sender, req, 0, GetPipeConfigWithRetries());
-
+    
     TAutoPtr<IEventHandle> handle;
     auto reply = GrabEdgeEventRethrow<TEvCms::TEvStoreWalleTaskFailed>(handle, TDuration::Seconds(30));
     UNIT_ASSERT(reply);

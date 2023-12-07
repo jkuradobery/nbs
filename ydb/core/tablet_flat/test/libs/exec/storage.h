@@ -29,7 +29,7 @@ namespace NFake {
             Logger = new NUtil::TLogger(sys, NKikimrServices::FAKE_ENV);
         }
 
-        void Inbox(TEventHandlePtr &eh)
+        void Inbox(TEventHandlePtr &eh, const ::NActors::TActorContext&)
         {
             if (auto *ev = eh->CastAsLocal<NStore::TEvPut>()) {
 
@@ -68,7 +68,7 @@ namespace NFake {
 
                 PassAway();
             } else {
-                 Y_ABORT("DS proxy model got an unexpected event");
+                 Y_FAIL("DS proxy model got an unexpected event");
             }
         }
 

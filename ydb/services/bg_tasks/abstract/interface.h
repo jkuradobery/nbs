@@ -1,13 +1,12 @@
 #pragma once
 #include <ydb/core/base/events.h>
 #include <ydb/services/bg_tasks/protos/container.pb.h>
-#include <ydb/library/services/services.pb.h>
 
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/events.h>
 #include <library/cpp/object_factory/object_factory.h>
 #include <library/cpp/json/writer/json_value.h>
 #include <library/cpp/json/json_reader.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 namespace NKikimr::NBackgroundTasks {
 
@@ -119,14 +118,14 @@ public:
     template <class T>
     const T& GetAsSafe() const {
         auto result = std::dynamic_pointer_cast<T>(Object);
-        Y_ABORT_UNLESS(!!result);
+        Y_VERIFY(!!result);
         return *result;
     }
 
     template <class T>
     T& GetAsSafe() {
         auto result = std::dynamic_pointer_cast<T>(Object);
-        Y_ABORT_UNLESS(!!result);
+        Y_VERIFY(!!result);
         return *result;
     }
 

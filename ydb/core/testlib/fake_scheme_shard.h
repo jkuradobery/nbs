@@ -7,8 +7,8 @@
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/library/aclib/aclib.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/events.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/ptr.h>
@@ -41,13 +41,14 @@ public:
     {
     }
 
-    void DefaultSignalTabletActive(const TActorContext &) override {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext &ctx) final {
         Become(&TFakeSchemeShard::StateWork);
-        SignalTabletActive(ctx);
+
+        while (!InitialEventsQueue.empty()) {
+            TAutoPtr<IEventHandle> &ev = InitialEventsQueue.front();
+            ctx.ExecutorThread.Send(ev.Release());
+            InitialEventsQueue.pop_front();
+        }
     }
 
     void OnDetach(const TActorContext &ctx) override {
@@ -59,8 +60,13 @@ public:
         Die(ctx);
     }
 
+    void Enqueue(STFUNC_SIG) override {
+        Y_UNUSED(ctx);
+        InitialEventsQueue.push_back(ev);
+    }
+
     void StateInit(STFUNC_SIG) {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     void StateWork(STFUNC_SIG) {
@@ -98,6 +104,7 @@ public:
 
 private:
     TState::TPtr State;
+    TDeque<TAutoPtr<IEventHandle>> InitialEventsQueue;
 };
 
 inline void BootFakeSchemeShard(TTestActorRuntime& runtime, ui64 tabletId, TFakeSchemeShardState::TPtr state) {

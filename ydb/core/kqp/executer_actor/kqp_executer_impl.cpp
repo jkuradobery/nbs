@@ -1,6 +1,6 @@
 #include "kqp_executer_impl.h"
 
-#include <ydb/core/formats/arrow/arrow_helpers.h>
+#include <ydb/core/formats/arrow_helpers.h>
 #include <ydb/core/kqp/runtime/kqp_transport.h>
 
 #include <ydb/public/api/protos/ydb_rate_limiter.pb.h>
@@ -8,7 +8,7 @@
 #include <ydb/library/yql/dq/runtime/dq_transport.h>
 #include <ydb/library/yql/dq/runtime/dq_arrow_helpers.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -17,43 +17,110 @@ using namespace NYql;
 
 void TEvKqpExecuter::TEvTxResponse::InitTxResult(const TKqpPhyTxHolder::TConstPtr& tx) {
     TxHolders.push_back(tx);
-    TxResults.reserve(TxResults.size() + tx->ResultsSize());
-
-    for (ui32 i = 0; i < tx->ResultsSize(); ++i) {
-        const auto& result = tx->GetResults(i);
-        const auto& resultMeta = tx->GetTxResultsMeta()[i];
-
-        TMaybe<ui32> queryResultIndex;
-        if (result.HasQueryResultIndex()) {
-            queryResultIndex = result.GetQueryResultIndex();
-        }
-
-        TxResults.emplace_back(result.GetIsStream(), resultMeta.MkqlItemType, &resultMeta.ColumnOrder,
-            queryResultIndex);
+    TxResults.reserve(TxResults.size() + tx->GetTxResultsMeta().size());
+    for (const auto& txResult : tx->GetTxResultsMeta()) {
+        TxResults.emplace_back(txResult.IsStream, txResult.MkqlItemType, &txResult.ColumnOrder);
     }
 }
 
-void TEvKqpExecuter::TEvTxResponse::TakeResult(ui32 idx, NDq::TDqSerializedBatch&& rows) {
+void TEvKqpExecuter::TEvTxResponse::TakeResult(ui32 idx, const NYql::NDqProto::TData& rows) {
     YQL_ENSURE(idx < TxResults.size());
-    YQL_ENSURE(AllocState);
-    ResultRowsCount += rows.RowCount();
-    ResultRowsBytes += rows.Size();
+    ResultRowsCount += rows.GetRows();
+    ResultRowsBytes += rows.GetRaw().size();
     auto guard = AllocState->TypeEnv.BindAllocator();
     auto& result = TxResults[idx];
-    if (rows.RowCount() || !result.IsStream) {
+    if (rows.GetRows() || !result.IsStream) {
         NDq::TDqDataSerializer dataSerializer(
             AllocState->TypeEnv, AllocState->HolderFactory,
-            static_cast<NDqProto::EDataTransportVersion>(rows.Proto.GetTransportVersion()));
-        dataSerializer.Deserialize(std::move(rows), result.MkqlItemType, result.Rows);
+            static_cast<NDqProto::EDataTransportVersion>(rows.GetTransportVersion()));
+        dataSerializer.Deserialize(rows, result.MkqlItemType, result.Rows);
     }
 }
 
 TEvKqpExecuter::TEvTxResponse::~TEvTxResponse() {
-    if (!TxResults.empty() && Y_LIKELY(AllocState)) {
+    if (!TxResults.empty()) {
         with_lock(AllocState->Alloc) {
             TxResults.crop(0);
         }
     }
+}
+
+void TEvKqpExecuter::TEvTxResponse::TakeResult(ui32 idx, NKikimr::NMiniKQL::TUnboxedValueVector& rows) {
+    YQL_ENSURE(idx < TxResults.size());
+    ResultRowsCount += rows.size();
+    auto& txResult = TxResults[idx];
+    auto serializer = NYql::NDq::TDqDataSerializer(
+        AllocState->TypeEnv, AllocState->HolderFactory, NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0);
+    auto buffer = serializer.Serialize(rows, txResult.MkqlItemType);
+    {
+        auto g = AllocState->TypeEnv.BindAllocator();
+        NKikimr::NMiniKQL::TUnboxedValueVector emptyVector;
+        emptyVector.swap(rows);
+    }
+
+    serializer.Deserialize(buffer, txResult.MkqlItemType, txResult.Rows);
+}
+
+void PrepareKqpTaskParameters(const NKqpProto::TKqpPhyStage& stage, const TStageInfo& stageInfo, const TTask& task,
+    NDqProto::TDqTask& dqTask, const NMiniKQL::TTypeEnvironment& typeEnv, const NMiniKQL::THolderFactory&)
+{
+    auto g = typeEnv.BindAllocator();
+    for (auto& paramName : stage.GetProgramParameters()) {
+        auto& dqParams = *dqTask.MutableParameters();
+        if (auto* taskParam = task.Meta.Params.FindPtr(paramName)) {
+            dqParams[paramName] = *taskParam;
+        } else {
+            dqParams[paramName] = stageInfo.Meta.Tx.Params->SerializeParamValue(paramName);
+        }
+    }
+}
+
+std::pair<TString, TString> SerializeKqpTasksParametersForOlap(const NKqpProto::TKqpPhyStage& stage,
+    const TStageInfo& stageInfo, const TTask& task)
+{
+    std::vector<std::shared_ptr<arrow::Field>> columns;
+    std::vector<std::shared_ptr<arrow::Array>> data;
+    auto& parameterNames = task.Meta.ReadInfo.OlapProgram.ParameterNames;
+
+    columns.reserve(parameterNames.size());
+    data.reserve(parameterNames.size());
+
+    for (auto& name : stage.GetProgramParameters()) {
+        if (!parameterNames.contains(name)) {
+            continue;
+        }
+
+        if (auto* taskParam = task.Meta.Params.FindPtr(name)) {
+            // This parameter is the list, holding type from task.Meta.ParamTypes
+            // Those parameters can't be used in Olap programs now
+            YQL_ENSURE(false, "OLAP program contains task parameter, not supported yet.");
+            continue;
+        }
+
+        auto [type, value] = stageInfo.Meta.Tx.Params->GetParameterUnboxedValue(name);
+        YQL_ENSURE(NYql::NArrow::IsArrowCompatible(type), "Incompatible parameter type. Can't convert to arrow");
+
+        std::unique_ptr<arrow::ArrayBuilder> builder = NYql::NArrow::MakeArrowBuilder(type);
+        NYql::NArrow::AppendElement(value, builder.get(), type);
+
+        std::shared_ptr<arrow::Array> array;
+        auto status = builder->Finish(&array);
+
+        YQL_ENSURE(status.ok(), "Failed to build arrow array of variables.");
+
+        auto field = std::make_shared<arrow::Field>(name, array->type());
+
+        columns.emplace_back(std::move(field));
+        data.emplace_back(std::move(array));
+    }
+
+    auto schema = std::make_shared<arrow::Schema>(columns);
+    auto recordBatch = arrow::RecordBatch::Make(schema, 1, data);
+
+    return std::make_pair<TString, TString>(
+        NArrow::SerializeSchema(*schema),
+        NArrow::SerializeBatchNoCompression(recordBatch)
+    );
 }
 
 TActorId ReportToRl(ui64 ru, const TString& database, const TString& userToken,
@@ -79,16 +146,12 @@ TActorId ReportToRl(ui64 ru, const TString& database, const TString& userToken,
 
 IActor* CreateKqpExecuter(IKqpGateway::TExecPhysicalRequest&& request, const TString& database,
     const TIntrusiveConstPtr<NACLib::TUserToken>& userToken, TKqpRequestCounters::TPtr counters,
-    const NKikimrConfig::TTableServiceConfig::TAggregationConfig& aggregation,
-    const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& executerRetriesConfig,
-    NYql::NDq::IDqAsyncIoFactory::TPtr asyncIoFactory, TPreparedQueryHolder::TConstPtr preparedQuery,
-    const NKikimrConfig::TTableServiceConfig::EChannelTransportVersion chanTransportVersion, const TActorId& creator,
-    TDuration maximalSecretsSnapshotWaitTime, const TIntrusivePtr<TUserRequestContext>& userRequestContext)
+    const NKikimrConfig::TTableServiceConfig::TExecuterRetriesConfig& executerRetriesConfig)
 {
     if (request.Transactions.empty()) {
         // commit-only or rollback-only data transaction
-        YQL_ENSURE(request.LocksOp == ELocksOp::Commit || request.LocksOp == ELocksOp::Rollback);
-        return CreateKqpDataExecuter(std::move(request), database, userToken, counters, false, aggregation, executerRetriesConfig, std::move(asyncIoFactory), chanTransportVersion, creator, maximalSecretsSnapshotWaitTime, userRequestContext);
+        YQL_ENSURE(request.EraseLocks);
+        return CreateKqpDataExecuter(std::move(request), database, userToken, counters, false, executerRetriesConfig);
     }
 
     TMaybe<NKqpProto::TKqpPhyTx::EType> txsType;
@@ -104,13 +167,13 @@ IActor* CreateKqpExecuter(IKqpGateway::TExecPhysicalRequest&& request, const TSt
     switch (*txsType) {
         case NKqpProto::TKqpPhyTx::TYPE_COMPUTE:
         case NKqpProto::TKqpPhyTx::TYPE_DATA:
-            return CreateKqpDataExecuter(std::move(request), database, userToken, counters, false, aggregation, executerRetriesConfig, std::move(asyncIoFactory), chanTransportVersion, creator, maximalSecretsSnapshotWaitTime, userRequestContext);
+            return CreateKqpDataExecuter(std::move(request), database, userToken, counters, false, executerRetriesConfig);
 
         case NKqpProto::TKqpPhyTx::TYPE_SCAN:
-            return CreateKqpScanExecuter(std::move(request), database, userToken, counters, aggregation, executerRetriesConfig, preparedQuery, chanTransportVersion, maximalSecretsSnapshotWaitTime, userRequestContext);
+            return CreateKqpScanExecuter(std::move(request), database, userToken, counters, executerRetriesConfig);
 
         case NKqpProto::TKqpPhyTx::TYPE_GENERIC:
-            return CreateKqpDataExecuter(std::move(request), database, userToken, counters, true, aggregation, executerRetriesConfig, std::move(asyncIoFactory), chanTransportVersion, creator, maximalSecretsSnapshotWaitTime, userRequestContext);
+            return CreateKqpDataExecuter(std::move(request), database, userToken, counters, true, executerRetriesConfig);
 
         default:
             YQL_ENSURE(false, "Unsupported physical tx type: " << (ui32)*txsType);

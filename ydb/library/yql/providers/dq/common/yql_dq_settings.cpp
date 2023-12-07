@@ -17,7 +17,7 @@ TDqConfiguration::TDqConfiguration() {
     REGISTER_SETTING(*this, MaxNetworkRetries);
     REGISTER_SETTING(*this, RetryBackoffMs);
     REGISTER_SETTING(*this, CollectCoreDumps);
-    REGISTER_SETTING(*this, FallbackPolicy).Parser([](const TString& v) { return FromString<EFallbackPolicy>(v); });
+    REGISTER_SETTING(*this, FallbackPolicy);
     REGISTER_SETTING(*this, PullRequestTimeoutMs);
     REGISTER_SETTING(*this, PingTimeoutMs);
     REGISTER_SETTING(*this, UseSimpleYtReader);
@@ -58,35 +58,6 @@ TDqConfiguration::TDqConfiguration() {
     REGISTER_SETTING(*this, HashJoinMode).Parser([](const TString& v) { return FromString<NDq::EHashJoinMode>(v); });
     REGISTER_SETTING(*this, HashShuffleTasksRatio).Lower(0.5).Upper(5);
     REGISTER_SETTING(*this, HashShuffleMaxTasks).Lower(1).Upper(1000);
-
-    REGISTER_SETTING(*this, UseWideChannels);
-    REGISTER_SETTING(*this, UseWideBlockChannels)
-        .ValueSetter([this](const TString&, bool value) {
-            UseWideBlockChannels = value;
-            if (value) {
-                UseWideChannels = true;
-            }
-        });
-    REGISTER_SETTING(*this, UseFastPickleTransport);
-    REGISTER_SETTING(*this, UseOOBTransport);
-
-    REGISTER_SETTING(*this, AggregateStatsByStage);
-    REGISTER_SETTING(*this, EnableChannelStats);
-    REGISTER_SETTING(*this, ExportStats);
-    REGISTER_SETTING(*this, TaskRunnerStats).Parser([](const TString& v) { return FromString<ETaskRunnerStats>(v); });
-    REGISTER_SETTING(*this, _SkipRevisionCheck);
-    REGISTER_SETTING(*this, UseBlockReader);
-    REGISTER_SETTING(*this, SpillingEngine)
-        .Parser([](const TString& v) {
-            return FromString<TDqSettings::ESpillingEngine>(v);
-        })
-        .ValueSetter([this](const TString&, TDqSettings::ESpillingEngine value) {
-            SpillingEngine = value;
-            if (value != TDqSettings::ESpillingEngine::Disable) {
-                EnableDqReplicate = true;
-            }
-        });
-    REGISTER_SETTING(*this, DisableLLVMForBlockStages);
 }
 
 } // namespace NYql

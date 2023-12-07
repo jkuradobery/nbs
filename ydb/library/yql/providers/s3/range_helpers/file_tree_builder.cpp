@@ -2,21 +2,18 @@
 
 namespace NYql::NS3Details {
 
-void TFileTreeBuilder::AddPath(const TString& path, ui64 fileSize, bool isDirectory) {
+void TFileTreeBuilder::AddPath(const TString& path, ui64 fileSize) {
     const auto parts = SplitPath(path);
-    TPath::TFileTreeMap* currentChildren = &Roots;
+    std::map<TString, TPath>* currentChildren = &Roots;
     for (size_t i = 0, size = parts.size(); i < size; ++i) {
-        bool isSubDirectory = i != size - 1;
-        if (!isSubDirectory) {
-            TPath& p = (*currentChildren)[TTreeKey{parts[i], isDirectory}];
-            Y_ABORT_UNLESS(p.FileSize == 0);
-            Y_ABORT_UNLESS(!p.Read);
+        TPath& p = (*currentChildren)[parts[i]];
+        if (i == size - 1) { // last
+            Y_VERIFY(p.FileSize == 0);
+            Y_VERIFY(!p.Read);
             p.FileSize = fileSize;
             p.Read = true;
         } else {
-            TPath& p = (*currentChildren)[TTreeKey{parts[i], isSubDirectory}];
             currentChildren = &p.Children;
-
         }
     }
 }
@@ -27,9 +24,8 @@ void TFileTreeBuilder::Save(NS3::TRange* range) const {
     }
 }
 
-void TFileTreeBuilder::SaveImpl(NS3::TRange::TPath* path, const TTreeKey& nodeKey, const TPath& srcPath) const {
-    path->SetName(nodeKey.Name);
-    path->SetIsDirectory(nodeKey.IsDirectory);
+void TFileTreeBuilder::SaveImpl(NS3::TRange::TPath* path, const TString& name, const TPath& srcPath) const {
+    path->SetName(name);
     path->SetSize(srcPath.FileSize);
     path->SetRead(srcPath.Read);
     for (const auto& [n, p] : srcPath.Children) {
@@ -39,9 +35,6 @@ void TFileTreeBuilder::SaveImpl(NS3::TRange::TPath* path, const TTreeKey& nodeKe
 
 std::vector<TString> TFileTreeBuilder::SplitPath(const TString& path) {
     std::vector<TString> parts = StringSplitter(path).Split('/');
-    if (!path.empty() && path.back() == '/') {
-        parts.pop_back();
-    }
     return parts;
 }
 

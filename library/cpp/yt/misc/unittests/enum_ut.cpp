@@ -1,6 +1,5 @@
 #include <library/cpp/testing/gtest/gtest.h>
 
-#include <library/cpp/yt/misc/cast.h>
 #include <library/cpp/yt/misc/enum.h>
 
 namespace NYT {
@@ -38,18 +37,6 @@ DEFINE_AMBIGUOUS_ENUM_WITH_UNDERLYING_TYPE(EMultipleNames, int,
     ((D2)(100))
 );
 
-DEFINE_ENUM(ECustomString,
-    ((A) (1) ("1_a"))
-    ((B) (2) ("1_b"))
-);
-
-DEFINE_ENUM_WITH_UNDERLYING_TYPE(ECardinal, char,
-    ((West)  (0))
-    ((North) (1))
-    ((East)  (2))
-    ((South) (3))
-);
-
 ////////////////////////////////////////////////////////////////////////////////
 
 template <class T, size_t N>
@@ -60,7 +47,7 @@ std::vector<T> ToVector(std::array<T, N> array)
 
 TEST(TEnumTest, Domain)
 {
-    EXPECT_EQ(3, TEnumTraits<ESimple>::GetDomainSize());
+    EXPECT_EQ(3, TEnumTraits<ESimple>::DomainSize);
     std::vector<ESimple> v {
         ESimple::X,
         ESimple::Y,
@@ -109,8 +96,16 @@ TEST(TEnumTest, FromString)
 
     EXPECT_THROW(TEnumTraits<EColor>::FromString("Pink"), std::exception);
 
-    EXPECT_EQ(EColor::Red, TEnumTraits<EColor>::FindValueByLiteral("Red"));
-    EXPECT_EQ(std::nullopt, TEnumTraits<EColor>::FindValueByLiteral("Pink"));
+    EColor color;
+    bool returnValue;
+
+    returnValue = TEnumTraits<EColor>::FindValueByLiteral("Red", &color);
+    EXPECT_EQ(EColor::Red, color);
+    EXPECT_TRUE(returnValue);
+
+    returnValue = TEnumTraits<EColor>::FindValueByLiteral("Pink", &color);
+    EXPECT_EQ(EColor::Red, color);
+    EXPECT_FALSE(returnValue);
 }
 
 TEST(TEnumTest, Ordering)
@@ -182,8 +177,8 @@ TEST(TEnumTest, OrderingWithDomainValues)
 
 TEST(TEnumTest, DomainSize)
 {
-    EXPECT_EQ(3, TEnumTraits<ESimple>::GetDomainSize());
-    EXPECT_EQ(5, TEnumTraits<EColor>::GetDomainSize());
+    EXPECT_EQ(3, TEnumTraits<ESimple>::DomainSize);
+    EXPECT_EQ(5, TEnumTraits<EColor>::DomainSize);
 }
 
 TEST(TEnumTest, DomainValues)
@@ -246,38 +241,6 @@ TEST(TEnumTest, MultipleNames)
     EXPECT_EQ("C",  ToString(EMultipleNames::C));
     EXPECT_EQ("D1", ToString(EMultipleNames::D1));
     EXPECT_EQ("D1", ToString(EMultipleNames::D2));
-}
-
-TEST(TEnumTest, CustomString)
-{
-    EXPECT_EQ(ECustomString::A, TEnumTraits<ECustomString>::FromString("1_a"));
-    EXPECT_EQ(ECustomString::B, TEnumTraits<ECustomString>::FromString("1_b"));
-
-    EXPECT_EQ("1_a", ToString(ECustomString::A));
-    EXPECT_EQ("1_b", ToString(ECustomString::B));
-}
-
-TEST(TEnumTest, Cast)
-{
-    ECardinal cardinal;
-    {
-        char validValue = 2;
-        EXPECT_TRUE(TryEnumCast(validValue, &cardinal));
-        EXPECT_EQ(cardinal, ECardinal::East);
-    }
-    {
-        char invalidValue = 100;
-        EXPECT_FALSE(TryEnumCast(invalidValue, &cardinal));
-    }
-    {
-        int widerTypeValidValue = 3;
-        EXPECT_TRUE(TryEnumCast(widerTypeValidValue, &cardinal));
-        EXPECT_EQ(cardinal, ECardinal::South);
-    }
-    {
-        int widerTypeInvalueValue = (1 << 8) + 100;
-        EXPECT_FALSE(TryEnumCast(widerTypeInvalueValue, &cardinal));
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

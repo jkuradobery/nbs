@@ -5,8 +5,6 @@
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
 
-#include <ydb/library/yql/utils/sort.h>
-
 namespace NKikimr {
 namespace NMiniKQL {
 
@@ -52,7 +50,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
 
@@ -76,25 +74,24 @@ public:
 
         block = work;
 
-        const auto itemsType = PointerType::getUnqual(valueType);
         const auto itemsPtr = *Stateless || ctx.AlwaysInline ?
-            new AllocaInst(itemsType, 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
-            new AllocaInst(itemsType, 0U, "items_ptr", block);
+            new AllocaInst(PointerType::getUnqual(valueType), 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
+            new AllocaInst(PointerType::getUnqual(valueType), 0U, "items_ptr", block);
 
         const auto idxType = Type::getInt32Ty(context);
 
         Value* array = nullptr;
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {fact->getType(), list->getType(), itemsPtr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            array = CallInst::Create(funType, funcPtr, {fact, list, itemsPtr}, "array", block);
+            array = CallInst::Create(funcPtr, {fact, list, itemsPtr}, "array", block);
         } else {
             const auto arrayPtr = new AllocaInst(valueType, 0U, "array_ptr", block);
             new StoreInst(list, arrayPtr, block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {fact->getType(), arrayPtr->getType(), arrayPtr->getType(), itemsPtr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            CallInst::Create(funType, funcPtr, {fact, arrayPtr, arrayPtr, itemsPtr}, "", block);
-            array = new LoadInst(valueType, arrayPtr, "array", block);
+            CallInst::Create(funcPtr, {fact, arrayPtr, arrayPtr, itemsPtr}, "", block);
+            array = new LoadInst(arrayPtr, "array", block);
         }
 
         result->addIncoming(array, block);
@@ -102,16 +99,16 @@ public:
         const auto algo = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THeapWrapper::Do));
         const auto self = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(this));
 
-        const auto items = new LoadInst(itemsType, itemsPtr, "items", block);
+        const auto items = new LoadInst(itemsPtr, "items", block);
         const auto zero = ConstantInt::get(idxType, 0);
-        const auto begin = GetElementPtrInst::CreateInBounds(valueType, items, {zero}, "begin", block);
-        const auto end = GetElementPtrInst::CreateInBounds(valueType, items, {size}, "end", block);
+        const auto begin = GetElementPtrInst::CreateInBounds(items, {zero}, "begin", block);
+        const auto end = GetElementPtrInst::CreateInBounds(items, {size}, "end", block);
 
         const auto selfPtr = CastInst::Create(Instruction::IntToPtr, self, PointerType::getUnqual(StructType::get(context)), "comp", block);
         const auto doType = FunctionType::get(Type::getVoidTy(context), {selfPtr->getType(), ctx.Ctx->getType(), begin->getType(), end->getType()}, false);
         const auto doPtr = CastInst::Create(Instruction::IntToPtr, algo, PointerType::getUnqual(doType), "do", block);
 
-        CallInst::Create(doType, doPtr, {selfPtr, ctx.Ctx, begin, end}, "", block);
+        CallInst::Create(doPtr, {selfPtr, ctx.Ctx, begin, end}, "", block);
 
         BranchInst::Create(done, block);
 
@@ -121,7 +118,7 @@ public:
 #endif
 private:
     void Do(TComputationContext& ctx, NUdf::TUnboxedValuePod* begin, NUdf::TUnboxedValuePod* end) const {
-        if (ctx.ExecuteLLVM && Comparator) {
+        if (Comparator) {
             return Algorithm(begin, end, std::bind(Comparator, std::ref(ctx), std::placeholders::_1, std::placeholders::_2));
         }
 
@@ -161,15 +158,15 @@ private:
         return out.Str();
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (CompareFunc) {
-            Comparator = reinterpret_cast<TComparePtr>(codegen.GetPointerToFunction(CompareFunc));
+            Comparator = reinterpret_cast<TComparePtr>(codegen->GetPointerToFunction(CompareFunc));
         }
     }
 
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         CompareFunc = GenerateCompareFunction(codegen, MakeName(), Left, Right, Compare);
-        codegen.ExportSymbol(CompareFunc);
+        codegen->ExportSymbol(CompareFunc);
     }
 
     Function* CompareFunc = nullptr;
@@ -229,7 +226,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
 
@@ -261,25 +258,24 @@ public:
 
         block = work;
 
-        const auto itemsType = PointerType::getUnqual(valueType);
         const auto itemsPtr = *Stateless || ctx.AlwaysInline ?
-            new AllocaInst(itemsType, 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
-            new AllocaInst(itemsType, 0U, "items_ptr", block);
+            new AllocaInst(PointerType::getUnqual(valueType), 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
+            new AllocaInst(PointerType::getUnqual(valueType), 0U, "items_ptr", block);
 
         const auto idxType = Type::getInt32Ty(context);
 
         Value* array = nullptr;
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {fact->getType(), list->getType(), itemsPtr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            array = CallInst::Create(funType, funcPtr, {fact, list, itemsPtr}, "array", block);
+            array = CallInst::Create(funcPtr, {fact, list, itemsPtr}, "array", block);
         } else {
             const auto arrayPtr = new AllocaInst(valueType, 0U, "array_ptr", block);
             new StoreInst(list, arrayPtr, block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {fact->getType(), arrayPtr->getType(), arrayPtr->getType(), itemsPtr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            CallInst::Create(funType, funcPtr, {fact, arrayPtr, arrayPtr, itemsPtr}, "", block);
-            array = new LoadInst(valueType, arrayPtr, "array", block);
+            CallInst::Create(funcPtr, {fact, arrayPtr, arrayPtr, itemsPtr}, "", block);
+            array = new LoadInst(arrayPtr, "array", block);
         }
 
         result->addIncoming(array, block);
@@ -287,17 +283,17 @@ public:
         const auto algo = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TNthWrapper::Do));
         const auto self = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(this));
 
-        const auto items = new LoadInst(itemsType, itemsPtr, "items", block);
+        const auto items = new LoadInst(itemsPtr, "items", block);
         const auto zero = ConstantInt::get(idxType, 0);
-        const auto begin = GetElementPtrInst::CreateInBounds(valueType, items, {zero}, "begin", block);
-        const auto mid = GetElementPtrInst::CreateInBounds(valueType, items, {min}, "middle", block);
-        const auto end = GetElementPtrInst::CreateInBounds(valueType, items, {size}, "end", block);
+        const auto begin = GetElementPtrInst::CreateInBounds(items, {zero}, "begin", block);
+        const auto mid = GetElementPtrInst::CreateInBounds(items, {min}, "middle", block);
+        const auto end = GetElementPtrInst::CreateInBounds(items, {size}, "end", block);
 
         const auto selfPtr = CastInst::Create(Instruction::IntToPtr, self, PointerType::getUnqual(StructType::get(context)), "comp", block);
         const auto doType = FunctionType::get(Type::getVoidTy(context), {selfPtr->getType(), ctx.Ctx->getType(), begin->getType(), mid->getType(), end->getType()}, false);
         const auto doPtr = CastInst::Create(Instruction::IntToPtr, algo, PointerType::getUnqual(doType), "do", block);
 
-        CallInst::Create(doType, doPtr, {selfPtr, ctx.Ctx, begin, mid, end}, "", block);
+        CallInst::Create(doPtr, {selfPtr, ctx.Ctx, begin, mid, end}, "", block);
 
         BranchInst::Create(done, block);
 
@@ -307,7 +303,7 @@ public:
 #endif
 private:
     void Do(TComputationContext& ctx, NUdf::TUnboxedValuePod* begin, NUdf::TUnboxedValuePod* nth,  NUdf::TUnboxedValuePod* end) const {
-        if (ctx.ExecuteLLVM && Comparator) {
+        if (Comparator) {
             return Algorithm(begin, nth, end, std::bind(Comparator, std::ref(ctx), std::placeholders::_1, std::placeholders::_2));
         }
 
@@ -349,15 +345,15 @@ private:
         return out.Str();
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (CompareFunc) {
-            Comparator = reinterpret_cast<TComparePtr>(codegen.GetPointerToFunction(CompareFunc));
+            Comparator = reinterpret_cast<TComparePtr>(codegen->GetPointerToFunction(CompareFunc));
         }
     }
 
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         CompareFunc = GenerateCompareFunction(codegen, MakeName(), Left, Right, Compare);
-        codegen.ExportSymbol(CompareFunc);
+        codegen->ExportSymbol(CompareFunc);
     }
 
     Function* CompareFunc = nullptr;
@@ -399,11 +395,11 @@ IComputationNode* WrapStableSort(TCallable& callable, const TComputationNodeFact
 }
 
 IComputationNode* WrapNthElement(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    return WrapNth(&NYql::FastNthElement<NUdf::TUnboxedValuePod*, TComparator>, callable, ctx);
+    return WrapNth(&std::nth_element<NUdf::TUnboxedValuePod*, TComparator>, callable, ctx);
 }
 
 IComputationNode* WrapPartialSort(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    return WrapNth(&NYql::FastPartialSort<NUdf::TUnboxedValuePod*, TComparator>, callable, ctx);
+    return WrapNth(&std::partial_sort<NUdf::TUnboxedValuePod*, TComparator>, callable, ctx);
 }
 }
 }

@@ -6,8 +6,8 @@
 #include <contrib/libs/aws-sdk-cpp/aws-cpp-sdk-core/include/aws/core/utils/stream/ResponseStream.h>
 #include <contrib/libs/aws-sdk-cpp/aws-cpp-sdk-core/include/aws/core/Aws.h>
 #include <contrib/libs/curl/include/curl/curl.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/log.h>
 #include <util/string/cast.h>
 
 #ifndef KIKIMR_DISABLE_S3_OPS
@@ -118,7 +118,7 @@ Aws::Client::ClientConfiguration TS3ExternalStorageConfig::ConfigFromSettings(co
             config.scheme = Aws::Http::Scheme::HTTPS;
             break;
         default:
-            Y_ABORT("Unknown scheme");
+            Y_FAIL("Unknown scheme");
     }
 
     if (settings.HasRegion()) {
@@ -164,7 +164,7 @@ Aws::Client::ClientConfiguration TS3ExternalStorageConfig::ConfigFromSettings(co
             config.scheme = Http::Scheme::HTTPS;
             break;
         default:
-            Y_ABORT("Unknown scheme");
+            Y_FAIL("Unknown scheme");
     }
 
     return config;
@@ -182,8 +182,8 @@ TString TS3ExternalStorageConfig::DoGetStorageId() const {
     return TString(Config.endpointOverride.data(), Config.endpointOverride.size());
 }
 
-IExternalStorageOperator::TPtr TS3ExternalStorageConfig::DoConstructStorageOperator(bool verbose) const {
-    return std::make_shared<TS3ExternalStorage>(Config, Credentials, Bucket, StorageClass, verbose);
+IExternalStorageOperator::TPtr TS3ExternalStorageConfig::DoConstructStorageOperator() const {
+    return std::make_shared<TS3ExternalStorage>(Config, Credentials, Bucket);
 }
 
 TS3ExternalStorageConfig::TS3ExternalStorageConfig(const Ydb::Import::ImportFromS3Settings& settings): Config(ConfigFromSettings(settings))
@@ -203,33 +203,8 @@ TS3ExternalStorageConfig::TS3ExternalStorageConfig(const Aws::Auth::AWSCredentia
 TS3ExternalStorageConfig::TS3ExternalStorageConfig(const NKikimrSchemeOp::TS3Settings& settings)
     : Config(ConfigFromSettings(settings))
     , Credentials(CredentialsFromSettings(settings))
-    , StorageClass(ConvertStorageClass(settings.GetStorageClass()))
 {
     Bucket = settings.GetBucket();
-}
-
-Aws::S3::Model::StorageClass TS3ExternalStorageConfig::ConvertStorageClass(const Ydb::Export::ExportToS3Settings::StorageClass storage) {
-    switch (storage) {
-        case Ydb::Export::ExportToS3Settings::STANDARD:
-            return Aws::S3::Model::StorageClass::STANDARD;
-        case Ydb::Export::ExportToS3Settings::STANDARD_IA:
-            return Aws::S3::Model::StorageClass::STANDARD_IA;
-        case Ydb::Export::ExportToS3Settings::REDUCED_REDUNDANCY:
-            return Aws::S3::Model::StorageClass::REDUCED_REDUNDANCY;
-        case Ydb::Export::ExportToS3Settings::ONEZONE_IA:
-            return Aws::S3::Model::StorageClass::ONEZONE_IA;
-        case Ydb::Export::ExportToS3Settings::INTELLIGENT_TIERING:
-            return Aws::S3::Model::StorageClass::INTELLIGENT_TIERING;
-        case Ydb::Export::ExportToS3Settings::GLACIER:
-            return Aws::S3::Model::StorageClass::GLACIER;
-        case Ydb::Export::ExportToS3Settings::DEEP_ARCHIVE:
-            return Aws::S3::Model::StorageClass::DEEP_ARCHIVE;
-        case Ydb::Export::ExportToS3Settings::OUTPOSTS:
-            return Aws::S3::Model::StorageClass::OUTPOSTS;
-        case Ydb::Export::ExportToS3Settings::STORAGE_CLASS_UNSPECIFIED:
-        default:
-            return Aws::S3::Model::StorageClass::NOT_SET;
-    }
 }
 
 }

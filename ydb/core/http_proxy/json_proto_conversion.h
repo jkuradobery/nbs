@@ -15,18 +15,16 @@
 
 namespace NKikimr::NHttpProxy {
 
-inline TString ProxyFieldNameConverter(const google::protobuf::FieldDescriptor& descriptor) {
+TString ProxyFieldNameConverter(const google::protobuf::FieldDescriptor& descriptor) {
     return NNaming::SnakeToCamelCase(descriptor.name());
 }
 
 class TYdsProtoToJsonPrinter : public NProtobufJson::TProto2JsonPrinter {
 public:
     TYdsProtoToJsonPrinter(const google::protobuf::Reflection* reflection,
-                           const NProtobufJson::TProto2JsonConfig& config,
-                           bool skipBase64Encode)
+                           const NProtobufJson::TProto2JsonConfig& config)
     : NProtobufJson::TProto2JsonPrinter(config)
     , ProtoReflection(reflection)
-    , SkipBase64Encode(skipBase64Encode)
     {}
 
 protected:
@@ -51,22 +49,14 @@ protected:
                     key = MakeKey(field);
                 }
 
-                auto maybeBase64Encode = [skipBase64Encode = this->SkipBase64Encode, &key](const TString& str) {
-                    if (key == "Data" && skipBase64Encode) {
-                        return str;
-                    }
-
-                    return Base64Encode(str);
-                };
-
                 if (field.is_repeated()) {
                     for (int i = 0, endI = ProtoReflection->FieldSize(proto, &field); i < endI; ++i) {
                         PrintStringValue<false>(field, TStringBuf(),
-                            maybeBase64Encode(proto.GetReflection()->GetRepeatedString(proto, &field, i)), json);
+                            Base64Encode(proto.GetReflection()->GetRepeatedString(proto, &field, i)), json);
                     }
                 } else {
                     PrintStringValue<true>(field, key,
-                        maybeBase64Encode(proto.GetReflection()->GetString(proto, &field)), json);
+                        Base64Encode(proto.GetReflection()->GetString(proto, &field)), json);
                 }
                 return;
             }
@@ -125,20 +115,19 @@ protected:
 
 private:
     const google::protobuf::Reflection* ProtoReflection = nullptr;
-    bool SkipBase64Encode;
 };
 
-inline void ProtoToJson(const NProtoBuf::Message& resp, NJson::TJsonValue& value, bool skipBase64Encode) {
+inline void ProtoToJson(const NProtoBuf::Message& resp, NJson::TJsonValue& value) {
     auto config = NProtobufJson::TProto2JsonConfig()
                   .SetFormatOutput(false)
                   .SetMissingSingleKeyMode(NProtobufJson::TProto2JsonConfig::MissingKeyDefault)
                   .SetNameGenerator(ProxyFieldNameConverter)
                   .SetEnumMode(NProtobufJson::TProto2JsonConfig::EnumName);
-    TYdsProtoToJsonPrinter printer(resp.GetReflection(), config, skipBase64Encode);
+    TYdsProtoToJsonPrinter printer(resp.GetReflection(), config);
     printer.Print(resp, *NProtobufJson::CreateJsonMapOutput(value));
 }
 
-inline void JsonToProto(const NJson::TJsonValue& jsonValue, NProtoBuf::Message* message, ui32 depth = 0) {
+void JsonToProto(const NJson::TJsonValue& jsonValue, NProtoBuf::Message* message, ui32 depth = 0) {
     Y_ENSURE(depth < 101, "Json depth is > 100");
     Y_ENSURE_EX(
         !jsonValue.IsNull(),

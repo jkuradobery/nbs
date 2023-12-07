@@ -1,8 +1,8 @@
 import logging
 import copy
 
-import contrib.ydb.tests.library.common.protobuf_cms as cms_pb
-from contrib.ydb.core.protos import cms_pb2
+import ydb.tests.library.common.protobuf_cms as cms_pb
+from ydb.core.protos import cms_pb2
 
 logger = logging.getLogger(__name__)
 

@@ -22,7 +22,6 @@ PEERDIR(
     ydb/core/formats
     ydb/core/grpc_services
     ydb/core/grpc_services/base
-    ydb/core/grpc_services/auth_processor
     ydb/core/grpc_streaming
     ydb/core/protos
     ydb/core/scheme
@@ -37,9 +36,7 @@ PEERDIR(
 END()
 
 RECURSE_FOR_TESTS(
+    index_ut
     sdk_credprovider_ut
-    sdk_sessions_ut
-    sdk_sessions_pool_ut
-    table_split_ut
     ut
 )

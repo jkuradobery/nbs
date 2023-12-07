@@ -26,26 +26,9 @@
 namespace NKikimr {
 namespace NMiniKQL {
 
-std::unique_ptr<IArrowKernelComputationNode> IComputationNode::PrepareArrowKernelComputationNode(TComputationContext& ctx) const {
-    Y_UNUSED(ctx);
-    return {};
-}
-
-TDatumProvider MakeDatumProvider(const arrow::Datum& datum) {
-    return [datum]() {
-        return datum;
-    };
-}
-
-TDatumProvider MakeDatumProvider(const IComputationNode* node, TComputationContext& ctx) {
-    return [node, &ctx]() {
-        return TArrowBlock::From(node->GetValue(ctx)).GetDatum();
-    };
-}
-
 TComputationContext::TComputationContext(const THolderFactory& holderFactory,
     const NUdf::IValueBuilder* builder,
-    const TComputationOptsFull& opts,
+    TComputationOptsFull& opts,
     const TComputationMutables& mutables,
     arrow::MemoryPool& arrowMemoryPool)
     : TComputationContextLLVM{holderFactory, opts.Stats, std::make_unique<NUdf::TUnboxedValue[]>(mutables.CurValueIndex), builder}
@@ -54,7 +37,6 @@ TComputationContext::TComputationContext(const THolderFactory& holderFactory,
     , ArrowMemoryPool(arrowMemoryPool)
     , WideFields(mutables.CurWideFieldsIndex, nullptr)
     , TypeEnv(opts.TypeEnv)
-    , Mutables(mutables)
 {
     std::fill_n(MutableValues.get(), mutables.CurValueIndex, NUdf::TUnboxedValue(NUdf::TUnboxedValuePod::Invalid()));
 

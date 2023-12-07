@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/services/services.pb.h>
+#include <library/cpp/actors/core/log.h>
+#include <ydb/core/protos/services.pb.h>
 
 // You have to define TLogThis in local namespace to use these macros
 #define LOG_S_EMERG(stream) { TLogThis(*TlsActivationContext, NActors::NLog::PRI_EMERG, [&](TStringBuilder& ss){ ss << stream; }); }
@@ -23,7 +23,7 @@ public:
     template <typename TFunc>
     TCtorLogger(const NActors::TActivationContext& ctx, NActors::NLog::EPriority priority, TFunc logFunc)
     {
-        if (IS_LOG_PRIORITY_ENABLED(priority, Component)) {
+        if (IS_LOG_PRIORITY_ENABLED(ctx, priority, Component)) {
             TStringBuilder strStream;
             logFunc(strStream);
             ::NActors::MemLogAdapter(ctx, priority, Component, "%s", strStream.data());

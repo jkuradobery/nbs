@@ -24,8 +24,6 @@ public:
     explicit IBlockAggregatorBase(ui32 stateSize)
         : StateSize(stateSize)
     {}
-
-    virtual void DestroyState(void* state) noexcept = 0;
 };
 
 
@@ -44,9 +42,9 @@ public:
 
 class IBlockAggregatorCombineKeys : public IBlockAggregatorBase {
 public:
-    virtual void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
+    virtual void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
 
-    virtual void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
+    virtual void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
 
     virtual std::unique_ptr<IAggColumnBuilder> MakeStateBuilder(ui64 size) = 0;
 
@@ -57,9 +55,9 @@ public:
 
 class IBlockAggregatorFinalizeKeys : public IBlockAggregatorBase {
 public:
-    virtual void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
+    virtual void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
 
-    virtual void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
+    virtual void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) = 0;
 
     virtual std::unique_ptr<IAggColumnBuilder> MakeResultBuilder(ui64 size) = 0;
 
@@ -109,14 +107,14 @@ public:
 
    virtual std::unique_ptr<IPreparedBlockAggregator<IBlockAggregatorCombineKeys>> PrepareCombineKeys(
        TTupleType* tupleType,
+       std::optional<ui32> filterColumn,
        const std::vector<ui32>& argsColumns,
        const TTypeEnvironment& env) const = 0;
 
    virtual std::unique_ptr<IPreparedBlockAggregator<IBlockAggregatorFinalizeKeys>> PrepareFinalizeKeys(
        TTupleType* tupleType,
        const std::vector<ui32>& argsColumns,
-       const TTypeEnvironment& env,
-       TType* returnType) const = 0;
+       const TTypeEnvironment& env) const = 0;
 };
 
 const IBlockAggregatorFactory& GetBlockAggregatorFactory(TStringBuf name);

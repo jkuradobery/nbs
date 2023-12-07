@@ -4,7 +4,6 @@
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
-#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>
 #include <ydb/library/yql/minikql/computation/presort.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
@@ -25,21 +24,24 @@ using NYql::EnsureDynamicCast;
 namespace {
 
 class THashedMultiMapAccumulator {
-    using TMapType = TValuesDictHashMap;
+    using TMapType = std::unordered_map<
+        NUdf::TUnboxedValue,
+        TUnboxedValueVector,
+        NYql::TVaryingHash<NUdf::TUnboxedValue, TValueHasher>,
+        TValueEqual,
+        TMKQLAllocator<std::pair<const NUdf::TUnboxedValue, TUnboxedValueVector>>>;
 
     TComputationContext& Ctx;
     TType* KeyType;
     const TKeyTypes& KeyTypes;
     bool IsTuple;
-    std::shared_ptr<TValuePacker> Packer;
+    std::optional<TValuePacker> Packer;
     const NUdf::IHash* Hash;
     const NUdf::IEquate* Equate;
 
     TMapType Map;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedMultiMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Hash(hash), Equate(equate)
@@ -47,7 +49,7 @@ public:
     {
         Y_UNUSED(compare);
         if (encoded) {
-            Packer = std::make_shared<TValuePacker>(true, keyType);
+            Packer.emplace(true, keyType);
         }
 
         Y_UNUSED(payloadType);
@@ -60,17 +62,30 @@ public:
             key = MakeString(Packer->Pack(key));
         }
 
-        auto it = Map.find(key);
-        if (it == Map.end()) {
-            it = Map.emplace(std::move(key), Ctx.HolderFactory.NewVectorHolder()).first;
-        }
-        it->second.Push(std::move(payload));
+        const auto ins = Map.emplace(std::move(key), 1U);
+        if (ins.second)
+            ins.first->second.front() = std::move(payload);
+        else
+            ins.first->second.emplace_back(std::move(payload));
     }
 
     NUdf::TUnboxedValue Build()
     {
         const auto filler = [this](TValuesDictHashMap& targetMap) {
-            targetMap = std::move(Map);
+            targetMap.reserve(Map.size());
+
+            for (auto& pair : Map) {
+                auto itemFactory = [](const NUdf::TUnboxedValuePod& value) {
+                    return value;
+                };
+
+                ui64 start = 0;
+                ui64 finish = pair.second.size();
+                auto payloadList = CreateOwningVectorListAdapter(std::move(pair.second), itemFactory,
+                    start, finish, false, Ctx.HolderFactory.GetMemInfo());
+
+                targetMap.emplace(pair.first, std::move(payloadList));
+            }
         };
 
         return Ctx.HolderFactory.CreateDirectHashedDictHolder(filler, KeyTypes, IsTuple, true, Packer ? KeyType : nullptr, Hash, Equate);
@@ -84,15 +99,13 @@ class THashedMapAccumulator {
     TType* KeyType;
     const TKeyTypes& KeyTypes;
     const bool IsTuple;
-    std::shared_ptr<TValuePacker> Packer;
+    std::optional<TValuePacker> Packer;
     const NUdf::IHash* Hash;
     const NUdf::IEquate* Equate;
 
     TMapType Map;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Hash(hash), Equate(equate)
@@ -100,7 +113,7 @@ public:
     {
         Y_UNUSED(compare);
         if (encoded) {
-            Packer = std::make_shared<TValuePacker>(true, keyType);
+            Packer.emplace(true, keyType);
         }
 
         Y_UNUSED(payloadType);
@@ -128,19 +141,23 @@ public:
 
 template<typename T, bool OptionalKey>
 class THashedSingleFixedMultiMapAccumulator {
-    using TMapType = TValuesDictHashSingleFixedMap<T>;
+    using TMapType = std::unordered_map<
+        T,
+        TUnboxedValueVector,
+        NYql::TVaryingHash<T, TMyHash<T>>,
+        TMyEquals<T>,
+        TMKQLAllocator<std::pair<const T, TUnboxedValueVector>>>;
 
     TComputationContext& Ctx;
     const TKeyTypes& KeyTypes;
     TMapType Map;
     TUnboxedValueVector NullPayloads;
-    NUdf::TUnboxedValue CurrentEmptyVectorForInsert;
-public:
-    static constexpr bool IsSorted = false;
 
+public:
     THashedSingleFixedMultiMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
-        : Ctx(ctx), KeyTypes(keyTypes), Map(0, TMyHash<T>(), TMyEquals<T>()) {
+        : Ctx(ctx), KeyTypes(keyTypes), Map(0, TMyHash<T>(), TMyEquals<T>())
+    {
         Y_UNUSED(keyType);
         Y_UNUSED(payloadType);
         Y_UNUSED(isTuple);
@@ -149,29 +166,52 @@ public:
         Y_UNUSED(equate);
         Y_UNUSED(hash);
         Map.reserve(itemsCountHint);
-        CurrentEmptyVectorForInsert = Ctx.HolderFactory.NewVectorHolder();
     }
 
-    void Add(NUdf::TUnboxedValue&& key, NUdf::TUnboxedValue&& payload) {
+    void Add(NUdf::TUnboxedValue&& key, NUdf::TUnboxedValue&& payload)
+    {
         if constexpr (OptionalKey) {
             if (!key) {
                 NullPayloads.emplace_back(std::move(payload));
                 return;
             }
         }
-        auto insertInfo = Map.emplace(key.Get<T>(), CurrentEmptyVectorForInsert);
-        if (insertInfo.second) {
-            CurrentEmptyVectorForInsert = Ctx.HolderFactory.NewVectorHolder();
-        }
-        insertInfo.first->second.Push(payload.Release());
+        const auto ins = Map.emplace(key.Get<T>(), 1U);
+        if (ins.second)
+            ins.first->second.front() = std::move(payload);
+        else
+            ins.first->second.emplace_back(std::move(payload));
     }
 
-    NUdf::TUnboxedValue Build() {
-        std::optional<NUdf::TUnboxedValue> nullPayload;
-        if (NullPayloads.size()) {
-            nullPayload = Ctx.HolderFactory.VectorAsVectorHolder(std::move(NullPayloads));
-        }
-        return Ctx.HolderFactory.CreateDirectHashedSingleFixedMapHolder<T, OptionalKey>(std::move(Map), std::move(nullPayload));
+    NUdf::TUnboxedValue Build()
+    {
+        const auto filler = [this](TValuesDictHashMap& targetMap) {
+            targetMap.reserve(Map.size());
+
+            auto itemFactory = [](const NUdf::TUnboxedValuePod& value) {
+                return value;
+            };
+            for (auto& pair : Map) {
+                ui64 start = 0;
+                ui64 finish = pair.second.size();
+                auto payloadList = CreateOwningVectorListAdapter(std::move(pair.second), itemFactory,
+                    start, finish, false,
+                    Ctx.HolderFactory.GetMemInfo());
+
+                targetMap.emplace(NUdf::TUnboxedValuePod(pair.first), std::move(payloadList));
+            }
+            if constexpr (OptionalKey) {
+                if (!NullPayloads.empty()) {
+                    auto payloadList = CreateOwningVectorListAdapter(std::move(NullPayloads), itemFactory,
+                        /*start*/ 0, /*finish*/ NullPayloads.size(), /*reversed*/ false,
+                        Ctx.HolderFactory.GetMemInfo());
+
+                    targetMap.emplace(NUdf::TUnboxedValuePod(), std::move(payloadList));
+                }
+            }
+        };
+
+        return Ctx.HolderFactory.CreateDirectHashedDictHolder(filler, KeyTypes, false, true, nullptr, nullptr, nullptr);
     }
 };
 
@@ -184,8 +224,6 @@ class THashedSingleFixedMapAccumulator {
     std::optional<NUdf::TUnboxedValue> NullPayload;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedSingleFixedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Map(0, TMyHash<T>(), TMyEquals<T>())
@@ -225,14 +263,12 @@ class THashedSetAccumulator {
     TType* KeyType;
     const TKeyTypes& KeyTypes;
     bool IsTuple;
-    std::shared_ptr<TValuePacker> Packer;
+    std::optional<TValuePacker> Packer;
     TSetType Set;
     const NUdf::IHash* Hash;
     const NUdf::IEquate* Equate;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Set(0, TValueHasher(KeyTypes, isTuple, hash),
@@ -240,7 +276,7 @@ public:
     {
         Y_UNUSED(compare);
         if (encoded) {
-            Packer = std::make_shared<TValuePacker>(true, keyType);
+            Packer.emplace(true, keyType);
         }
 
         Set.reserve(itemsCountHint);
@@ -274,8 +310,6 @@ class THashedSingleFixedSetAccumulator {
     bool HasNull = false;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedSingleFixedSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Set(0, TMyHash<T>(), TMyEquals<T>())
@@ -317,8 +351,6 @@ class THashedSingleFixedCompactSetAccumulator {
     bool HasNull = false;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedSingleFixedCompactSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Set(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
@@ -357,15 +389,13 @@ class THashedCompactSetAccumulator {
     TPagedArena Pool;
     TSetType Set;
     TType *KeyType;
-    std::shared_ptr<TValuePacker> KeyPacker;
+    TValuePacker KeyPacker;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedCompactSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Set(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR, TSmallValueHash(), TSmallValueEqual())
-        , KeyType(keyType), KeyPacker(std::make_shared<TValuePacker>(true, keyType))
+        , KeyType(keyType), KeyPacker(true, keyType)
     {
         Y_UNUSED(keyTypes);
         Y_UNUSED(isTuple);
@@ -378,7 +408,7 @@ public:
 
     void Add(NUdf::TUnboxedValue&& key)
     {
-        Set.Insert(AddSmallValue(Pool, KeyPacker->Pack(key)));
+        Set.Insert(AddSmallValue(Pool, KeyPacker.Pack(key)));
     }
 
     NUdf::TUnboxedValue Build()
@@ -398,17 +428,13 @@ class THashedCompactMapAccumulator<false> {
     TPagedArena Pool;
     TMapType Map;
     TType *KeyType, *PayloadType;
-    std::shared_ptr<TValuePacker> KeyPacker, PayloadPacker;
+    TValuePacker KeyPacker, PayloadPacker;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
-        , KeyType(keyType), PayloadType(payloadType)
-        , KeyPacker(std::make_shared<TValuePacker>(true, keyType))
-        , PayloadPacker(std::make_shared<TValuePacker>(false, payloadType))
+        , KeyType(keyType), PayloadType(payloadType), KeyPacker(true, keyType), PayloadPacker(false, payloadType)
     {
         Y_UNUSED(keyTypes);
         Y_UNUSED(isTuple);
@@ -421,7 +447,7 @@ public:
 
     void Add(NUdf::TUnboxedValue&& key, NUdf::TUnboxedValue&& payload)
     {
-        Map.InsertNew(AddSmallValue(Pool, KeyPacker->Pack(key)), AddSmallValue(Pool, PayloadPacker->Pack(payload)));
+        Map.InsertNew(AddSmallValue(Pool, KeyPacker.Pack(key)), AddSmallValue(Pool, PayloadPacker.Pack(payload)));
     }
 
     NUdf::TUnboxedValue Build()
@@ -438,17 +464,13 @@ class THashedCompactMapAccumulator<true> {
     TPagedArena Pool;
     TMapType Map;
     TType *KeyType, *PayloadType;
-    std::shared_ptr<TValuePacker> KeyPacker, PayloadPacker;
+    TValuePacker KeyPacker, PayloadPacker;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
-        , KeyType(keyType), PayloadType(payloadType)
-        , KeyPacker(std::make_shared<TValuePacker>(true, keyType))
-        , PayloadPacker(std::make_shared<TValuePacker>(false, payloadType))
+        , KeyType(keyType), PayloadType(payloadType), KeyPacker(true, keyType), PayloadPacker(false, payloadType)
     {
         Y_UNUSED(keyTypes);
         Y_UNUSED(isTuple);
@@ -461,7 +483,7 @@ public:
 
     void Add(NUdf::TUnboxedValue&& key, NUdf::TUnboxedValue&& payload)
     {
-        Map.Insert(AddSmallValue(Pool, KeyPacker->Pack(key)), AddSmallValue(Pool, PayloadPacker->Pack(payload)));
+        Map.Insert(AddSmallValue(Pool, KeyPacker.Pack(key)), AddSmallValue(Pool, PayloadPacker.Pack(payload)));
     }
 
     NUdf::TUnboxedValue Build()
@@ -482,15 +504,13 @@ class THashedSingleFixedCompactMapAccumulator<T, OptionalKey, false> {
     TMapType Map;
     std::optional<ui64> NullPayload;
     TType* PayloadType;
-    std::shared_ptr<TValuePacker> PayloadPacker;
+    TValuePacker PayloadPacker;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedSingleFixedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
-        , PayloadType(payloadType), PayloadPacker(std::make_shared<TValuePacker>(false, payloadType))
+        , PayloadType(payloadType), PayloadPacker(false, payloadType)
     {
         Y_UNUSED(keyType);
         Y_UNUSED(keyTypes);
@@ -506,11 +526,11 @@ public:
     {
         if constexpr (OptionalKey) {
             if (!key) {
-                NullPayload = AddSmallValue(Pool, PayloadPacker->Pack(payload));
+                NullPayload = AddSmallValue(Pool, PayloadPacker.Pack(payload));
                 return;
             }
         }
-        Map.InsertNew(key.Get<T>(), AddSmallValue(Pool, PayloadPacker->Pack(payload)));
+        Map.InsertNew(key.Get<T>(), AddSmallValue(Pool, PayloadPacker.Pack(payload)));
     }
 
     NUdf::TUnboxedValue Build()
@@ -528,15 +548,13 @@ class THashedSingleFixedCompactMapAccumulator<T, OptionalKey, true> {
     TMapType Map;
     std::vector<ui64> NullPayloads;
     TType* PayloadType;
-    std::shared_ptr<TValuePacker> PayloadPacker;
+    TValuePacker PayloadPacker;
 
 public:
-    static constexpr bool IsSorted = false;
-
     THashedSingleFixedCompactMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), Pool(&Ctx.HolderFactory.GetPagePool()), Map(Ctx.HolderFactory.GetPagePool(), itemsCountHint / COMPACT_HASH_MAX_LOAD_FACTOR)
-        , PayloadType(payloadType), PayloadPacker(std::make_shared<TValuePacker>(false, payloadType))
+        , PayloadType(payloadType), PayloadPacker(false, payloadType)
     {
         Y_UNUSED(keyTypes);
         Y_UNUSED(keyType);
@@ -552,11 +570,11 @@ public:
     {
         if constexpr (OptionalKey) {
             if (!key) {
-                NullPayloads.push_back(AddSmallValue(Pool, PayloadPacker->Pack(payload)));
+                NullPayloads.push_back(AddSmallValue(Pool, PayloadPacker.Pack(payload)));
                 return;
             }
         }
-        Map.Insert(key.Get<T>(), AddSmallValue(Pool, PayloadPacker->Pack(payload)));
+        Map.Insert(key.Get<T>(), AddSmallValue(Pool, PayloadPacker.Pack(payload)));
     }
 
     NUdf::TUnboxedValue Build()
@@ -577,8 +595,6 @@ class TSortedSetAccumulator {
     TUnboxedValueVector Items;
 
 public:
-    static constexpr bool IsSorted = true;
-
     TSortedSetAccumulator(TType* keyType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Compare(compare), Equate(equate)
@@ -629,8 +645,6 @@ class TSortedMapAccumulator<false> {
     TKeyPayloadPairVector Items;
 
 public:
-    static constexpr bool IsSorted = true;
-
     TSortedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
     const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx)
@@ -681,8 +695,6 @@ class TSortedMapAccumulator<true> {
     TKeyPayloadPairVector Items;
 
 public:
-    static constexpr bool IsSorted = true;
-
     TSortedMapAccumulator(TType* keyType, TType* payloadType, const TKeyTypes& keyTypes, bool isTuple, bool encoded,
         const NUdf::ICompare* compare, const NUdf::IEquate* equate, const NUdf::IHash* hash, TComputationContext& ctx, ui64 itemsCountHint)
         : Ctx(ctx), KeyType(keyType), KeyTypes(keyTypes), IsTuple(isTuple), Compare(compare), Equate(equate)
@@ -800,9 +812,9 @@ public:
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
 
-        Compare = UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Compare = UseIHash ? MakeCompareImpl(KeyType) : nullptr;
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
+        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
@@ -856,32 +868,6 @@ private:
     NUdf::IHash::TPtr Hash;
 };
 
-#ifndef MKQL_DISABLE_CODEGEN
-template <class TLLVMBase>
-class TLLVMFieldsStructureStateWithAccum: public TLLVMBase {
-private:
-    using TBase = TLLVMBase;
-    llvm::PointerType* StructPtrType;
-protected:
-    using TBase::Context;
-public:
-    std::vector<llvm::Type*> GetFieldsArray() {
-        std::vector<llvm::Type*> result = TBase::GetFields();
-        result.emplace_back(StructPtrType); //accumulator
-        return result;
-    }
-
-    llvm::Constant* GetAccumulator() {
-        return ConstantInt::get(Type::getInt32Ty(Context), TBase::GetFieldsCount() + 0);
-    }
-
-    TLLVMFieldsStructureStateWithAccum(llvm::LLVMContext& context)
-        : TBase(context)
-        , StructPtrType(PointerType::getUnqual(StructType::get(context))) {
-    }
-};
-#endif
-
 template <typename TSetAccumulator>
 class TSqueezeSetFlowWrapper : public TStatefulFlowCodegeneratorNode<TSqueezeSetFlowWrapper<TSetAccumulator>> {
     using TBase = TStatefulFlowCodegeneratorNode<TSqueezeSetFlowWrapper<TSetAccumulator>>;
@@ -915,9 +901,9 @@ public:
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
 
-        Compare = UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Compare = UseIHash ? MakeCompareImpl(KeyType) : nullptr;
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
+        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -943,7 +929,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItemArg, "Item must be codegenerator node.");
@@ -951,8 +937,14 @@ public:
         const auto valueType = Type::getInt128Ty(context);
         const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
-        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+            structPtrType               // accumulator
+        });
 
         const auto statePtrType = PointerType::getUnqual(stateType);
 
@@ -967,7 +959,7 @@ public:
         const auto makeFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TSqueezeSetFlowWrapper<TSetAccumulator>::MakeState));
         const auto makeType = FunctionType::get(Type::getVoidTy(context), {self->getType(), ctx.Ctx->getType(), statePtr->getType()}, false);
         const auto makeFuncPtr = CastInst::Create(Instruction::IntToPtr, makeFunc, PointerType::getUnqual(makeType), "function", block);
-        CallInst::Create(makeType, makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
+        CallInst::Create(makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
         BranchInst::Create(main, block);
 
         block = main;
@@ -979,7 +971,7 @@ public:
 
         const auto result = PHINode::Create(valueType, 3U, "result", over);
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto half = CastInst::Create(Instruction::Trunc, state, Type::getInt64Ty(context), "half", block);
         const auto stateArg = CastInst::Create(Instruction::IntToPtr, half, statePtrType, "state_arg", block);
 
@@ -1007,7 +999,7 @@ public:
 
         const auto insType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), keyArg->getType()}, false);
         const auto insPtr = CastInst::Create(Instruction::IntToPtr, insert, PointerType::getUnqual(insType), "insert", block);
-        CallInst::Create(insType, insPtr, {stateArg, keyArg}, "", block);
+        CallInst::Create(insPtr, {stateArg, keyArg}, "", block);
 
         BranchInst::Create(more, block);
 
@@ -1015,18 +1007,18 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
+            const auto dict = CallInst::Create(funcPtr, {stateArg}, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         } else {
             const auto ptr = new AllocaInst(valueType, 0U, "ptr", block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), ptr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            CallInst::Create(funType, funcPtr, {stateArg, ptr}, "", block);
-            const auto dict = new LoadInst(valueType, ptr, "dict", block);
+            CallInst::Create(funcPtr, {stateArg, ptr}, "", block);
+            const auto dict = new LoadInst(ptr, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         }
@@ -1096,14 +1088,14 @@ public:
         , Items(std::move(items))
         , Key(key)
         , ItemsCountHint(itemsCountHint)
-        , PasstroughKey(GetPasstroughtMap(TComputationNodePtrVector{Key}, Items).front())
+        , PasstroughKey(GetPasstroughtMap({Key}, Items).front())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
 
-        Compare = UseIHash && TSetAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Compare = UseIHash ? MakeCompareImpl(KeyType) : nullptr;
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash && !TSetAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
+        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -1136,13 +1128,19 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
-        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+            structPtrType               // accumulator
+        });
 
         const auto statePtrType = PointerType::getUnqual(stateType);
 
@@ -1157,7 +1155,7 @@ public:
         const auto makeFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TSqueezeSetWideWrapper<TSetAccumulator>::MakeState));
         const auto makeType = FunctionType::get(Type::getVoidTy(context), {self->getType(), ctx.Ctx->getType(), statePtr->getType()}, false);
         const auto makeFuncPtr = CastInst::Create(Instruction::IntToPtr, makeFunc, PointerType::getUnqual(makeType), "function", block);
-        CallInst::Create(makeType, makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
+        CallInst::Create(makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
         BranchInst::Create(main, block);
 
         block = main;
@@ -1169,7 +1167,7 @@ public:
 
         const auto result = PHINode::Create(valueType, 3U, "result", over);
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto half = CastInst::Create(Instruction::Trunc, state, Type::getInt64Ty(context), "half", block);
         const auto stateArg = CastInst::Create(Instruction::IntToPtr, half, statePtrType, "state_arg", block);
 
@@ -1203,7 +1201,7 @@ public:
 
         const auto insType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), keyArg->getType()}, false);
         const auto insPtr = CastInst::Create(Instruction::IntToPtr, insert, PointerType::getUnqual(insType), "insert", block);
-        CallInst::Create(insType, insPtr, {stateArg, keyArg}, "", block);
+        CallInst::Create(insPtr, {stateArg, keyArg}, "", block);
 
         BranchInst::Create(more, block);
 
@@ -1211,18 +1209,18 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
+            const auto dict = CallInst::Create(funcPtr, {stateArg}, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         } else {
             const auto ptr = new AllocaInst(valueType, 0U, "ptr", block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), ptr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            CallInst::Create(funType, funcPtr, {stateArg, ptr}, "", block);
-            const auto dict = new LoadInst(valueType, ptr, "dict", block);
+            CallInst::Create(funcPtr, {stateArg, ptr}, "", block);
+            const auto dict = new LoadInst(ptr, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         }
@@ -1330,9 +1328,9 @@ public:
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
 
-        Compare = UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Compare = UseIHash ? MakeCompareImpl(KeyType) : nullptr;
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
+        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
@@ -1426,9 +1424,9 @@ public:
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
 
-        Compare = UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Compare = UseIHash ? MakeCompareImpl(KeyType) : nullptr;
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
+        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -1454,15 +1452,22 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItemArg, "Item must be codegenerator node.");
 
         const auto valueType = Type::getInt128Ty(context);
         const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
+
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+            structPtrType               // accumulator
+        });
 
         const auto statePtrType = PointerType::getUnqual(stateType);
 
@@ -1477,7 +1482,7 @@ public:
         const auto makeFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TSqueezeMapFlowWrapper<TMapAccumulator>::MakeState));
         const auto makeType = FunctionType::get(Type::getVoidTy(context), {self->getType(), ctx.Ctx->getType(), statePtr->getType()}, false);
         const auto makeFuncPtr = CastInst::Create(Instruction::IntToPtr, makeFunc, PointerType::getUnqual(makeType), "function", block);
-        CallInst::Create(makeType, makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
+        CallInst::Create(makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
         BranchInst::Create(main, block);
 
         block = main;
@@ -1489,7 +1494,7 @@ public:
 
         const auto result = PHINode::Create(valueType, 3U, "result", over);
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto half = CastInst::Create(Instruction::Trunc, state, Type::getInt64Ty(context), "half", block);
         const auto stateArg = CastInst::Create(Instruction::IntToPtr, half, statePtrType, "state_arg", block);
 
@@ -1519,7 +1524,7 @@ public:
 
         const auto insType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), keyArg->getType(), payloadArg->getType()}, false);
         const auto insPtr = CastInst::Create(Instruction::IntToPtr, insert, PointerType::getUnqual(insType), "insert", block);
-        CallInst::Create(insType, insPtr, {stateArg, keyArg, payloadArg}, "", block);
+        CallInst::Create(insPtr, {stateArg, keyArg, payloadArg}, "", block);
 
         BranchInst::Create(more, block);
 
@@ -1527,18 +1532,18 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
+            const auto dict = CallInst::Create(funcPtr, {stateArg}, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         } else {
             const auto ptr = new AllocaInst(valueType, 0U, "ptr", block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), ptr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            CallInst::Create(funType, funcPtr, {stateArg, ptr}, "", block);
-            const auto dict = new LoadInst(valueType, ptr, "dict", block);
+            CallInst::Create(funcPtr, {stateArg, ptr}, "", block);
+            const auto dict = new LoadInst(ptr, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         }
@@ -1614,15 +1619,15 @@ public:
         , Key(key)
         , Payload(payload)
         , ItemsCountHint(itemsCountHint)
-        , PasstroughKey(GetPasstroughtMap(TComputationNodePtrVector{Key}, Items).front())
-        , PasstroughPayload(GetPasstroughtMap(TComputationNodePtrVector{Payload}, Items).front())
+        , PasstroughKey(GetPasstroughtMap({Key, Payload}, Items).front())
+        , PasstroughPayload(GetPasstroughtMap({Key, Payload}, Items).back())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {
         GetDictionaryKeyTypes(KeyType, KeyTypes, IsTuple, Encoded, UseIHash);
 
-        Compare = UseIHash && TMapAccumulator::IsSorted ? MakeCompareImpl(KeyType) : nullptr;
+        Compare = UseIHash ? MakeCompareImpl(KeyType) : nullptr;
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
-        Hash = UseIHash && !TMapAccumulator::IsSorted ? MakeHashImpl(KeyType) : nullptr;
+        Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -1655,13 +1660,19 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto structPtrType = PointerType::getUnqual(StructType::get(context));
 
-        TLLVMFieldsStructureStateWithAccum<TLLVMFieldsStructure<TComputationValue<TState>>> fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+            structPtrType               // accumulator
+        });
 
         const auto statePtrType = PointerType::getUnqual(stateType);
 
@@ -1676,7 +1687,7 @@ public:
         const auto makeFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TSqueezeMapWideWrapper<TMapAccumulator>::MakeState));
         const auto makeType = FunctionType::get(Type::getVoidTy(context), {self->getType(), ctx.Ctx->getType(), statePtr->getType()}, false);
         const auto makeFuncPtr = CastInst::Create(Instruction::IntToPtr, makeFunc, PointerType::getUnqual(makeType), "function", block);
-        CallInst::Create(makeType, makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
+        CallInst::Create(makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
         BranchInst::Create(main, block);
 
         block = main;
@@ -1688,7 +1699,7 @@ public:
 
         const auto result = PHINode::Create(valueType, 3U, "result", over);
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto half = CastInst::Create(Instruction::Trunc, state, Type::getInt64Ty(context), "half", block);
         const auto stateArg = CastInst::Create(Instruction::IntToPtr, half, statePtrType, "state_arg", block);
 
@@ -1724,7 +1735,7 @@ public:
 
         const auto insType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), keyArg->getType(), payloadArg->getType()}, false);
         const auto insPtr = CastInst::Create(Instruction::IntToPtr, insert, PointerType::getUnqual(insType), "insert", block);
-        CallInst::Create(insType, insPtr, {stateArg, keyArg, payloadArg}, "", block);
+        CallInst::Create(insPtr, {stateArg, keyArg, payloadArg}, "", block);
 
         BranchInst::Create(more, block);
 
@@ -1732,18 +1743,18 @@ public:
 
         const auto build = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Build));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {stateArg->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            const auto dict = CallInst::Create(funType, funcPtr, {stateArg}, "dict", block);
+            const auto dict = CallInst::Create(funcPtr, {stateArg}, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         } else {
             const auto ptr = new AllocaInst(valueType, 0U, "ptr", block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), ptr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, build, PointerType::getUnqual(funType), "build", block);
-            CallInst::Create(funType, funcPtr, {stateArg, ptr}, "", block);
-            const auto dict = new LoadInst(valueType, ptr, "dict", block);
+            CallInst::Create(funcPtr, {stateArg, ptr}, "", block);
+            const auto dict = new LoadInst(ptr, "dict", block);
             UnRefBoxed(state, ctx, block);
             result->addIncoming(dict, block);
         }

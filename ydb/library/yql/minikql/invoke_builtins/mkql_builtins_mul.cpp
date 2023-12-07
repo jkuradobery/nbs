@@ -38,13 +38,13 @@ struct TNumMulInterval {
         const auto lv = static_cast<TOutput>(left.template Get<TLeft>());
         const auto rv = static_cast<TOutput>(right.template Get<TRight>());
         const auto ret = lv * rv;
-        return IsBadInterval(ret) ? NUdf::TUnboxedValuePod() : NUdf::TUnboxedValuePod(ret);
+        return IsBadInterval(ret) ? NUdf::TUnboxedValuePod() : NUdf::TUnboxedValuePod(FromScaledDate<TOutput>(ret));;
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto lhs = StaticCast<TLeft, i64>(GetterFor<TLeft>(left, context, block), context, block);
         const auto rhs = StaticCast<TRight, i64>(GetterFor<TRight>(right, context, block), context, block);
         const auto mul = BinaryOperator::CreateMul(lhs, rhs, "mul", block);

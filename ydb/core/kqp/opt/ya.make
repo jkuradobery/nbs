@@ -12,7 +12,6 @@ SRCS(
     kqp_opt_range_legacy.cpp
     kqp_query_blocks_transformer.cpp
     kqp_query_plan.cpp
-    kqp_statistics_transformer.cpp
 )
 
 PEERDIR(
@@ -22,9 +21,6 @@ PEERDIR(
     ydb/core/kqp/opt/physical
     ydb/library/yql/dq/common
     ydb/library/yql/dq/opt
-    ydb/library/yql/dq/type_ann
-    ydb/library/yql/providers/s3/expr_nodes
-    ydb/core/kqp/provider
 )
 
 YQL_LAST_ABI_VERSION()

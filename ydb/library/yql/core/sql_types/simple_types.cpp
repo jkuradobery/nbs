@@ -46,7 +46,6 @@ std::optional<std::string_view> LookupSimpleTypeBySqlAlias(const std::string_vie
         {"yson",         "Yson"},
         {"json",         "Json"},
         {"jsondocument", "JsonDocument"},
-        {"json_document", "JsonDocument"},
         {"xml",          "Xml"},
         {"yaml",         "Yaml"},
 

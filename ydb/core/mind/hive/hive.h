@@ -10,6 +10,7 @@
 #include <ydb/core/base/subdomain.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/mind/local.h>
 #include <ydb/core/protos/counters_hive.pb.h>
 #include <ydb/core/tablet/tablet_exception.h>
@@ -24,12 +25,10 @@
 
 #include <ydb/core/tablet_flat/flat_executor_counters.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <ydb/core/tablet/tablet_metrics.h>
-
-#include <util/stream/format.h>
 
 namespace NKikimr {
 namespace NHive {
@@ -48,7 +47,6 @@ using TStorageGroupId = ui32;
 using TFullTabletId = std::pair<TTabletId, TFollowerId>;
 using TObjectId = ui64; // schema object id, used to organize tablets of the same schema object
 using TOwnerId = ui64;
-using TFullObjectId = std::pair<TOwnerId, TObjectId>;
 using TResourceRawValues = std::tuple<i64, i64, i64, i64>; // CPU, Memory, Network, Counter
 using TResourceNormalizedValues = std::tuple<double, double, double, double>;
 using TOwnerIdxType = NScheme::TPairUi64Ui64;
@@ -76,33 +74,6 @@ enum class EFollowerStrategy : ui32 {
 
 TString EFollowerStrategyName(EFollowerStrategy value);
 
-enum class EBalancerType {
-    Manual,
-    Scatter,
-    ScatterCounter,
-    ScatterCPU,
-    ScatterMemory,
-    ScatterNetwork,
-    Emergency,
-    SpreadNeighbours,
-
-    Last = SpreadNeighbours,
-};
-
-constexpr std::size_t EBalancerTypeSize = static_cast<std::size_t>(EBalancerType::Last) + 1;
-
-TString EBalancerTypeName(EBalancerType value);
-
-enum class EResourceToBalance {
-    Dominant,
-    Counter,
-    CPU,
-    Memory,
-    Network,
-};
-
-EResourceToBalance ToResourceToBalance(NMetrics::EResource resource);
-
 struct ISubActor {
     virtual void Cleanup() = 0;
 };
@@ -118,12 +89,12 @@ struct TCompleteNotifications {
     }
 
     void Send(const TActorId& recipient, IEventBase* ev, ui32 flags = 0, ui64 cookie = 0) {
-        Y_ABORT_UNLESS(!!SelfID);
+        Y_VERIFY(!!SelfID);
         Notifications.emplace_back(new IEventHandle(recipient, SelfID, ev, flags, cookie), TDuration());
     }
 
     void Schedule(TDuration duration, IEventBase* ev, ui32 flags = 0, ui64 cookie = 0) {
-        Y_ABORT_UNLESS(!!SelfID);
+        Y_VERIFY(!!SelfID);
         Notifications.emplace_back(new IEventHandle(SelfID, {}, ev, flags, cookie), duration);
     }
 
@@ -186,7 +157,6 @@ struct TSideEffects : TCompleteNotifications, TCompleteActions {
 
 TResourceNormalizedValues NormalizeRawValues(const TResourceRawValues& values, const TResourceRawValues& maximum);
 NMetrics::EResource GetDominantResourceType(const TResourceRawValues& values, const TResourceRawValues& maximum);
-NMetrics::EResource GetDominantResourceType(const TResourceNormalizedValues& normValues);
 
 template <typename... ResourceTypes>
 inline std::tuple<ResourceTypes...> GetStDev(const TVector<std::tuple<ResourceTypes...>>& values) {
@@ -249,32 +219,6 @@ struct TDrainSettings {
     bool Persist = true;
     bool KeepDown = false;
     ui32 DrainInFlight = 0;
-};
-
-struct TBalancerSettings {
-    EBalancerType Type = EBalancerType::Manual;
-    int MaxMovements = 0;
-    bool RecheckOnFinish = false;
-    ui64 MaxInFlight = 1;
-    const std::vector<TNodeId> FilterNodeIds = {};
-    EResourceToBalance ResourceToBalance = EResourceToBalance::Dominant;
-    std::optional<TFullObjectId> FilterObjectId;
-};
-
-struct TBalancerStats {
-    ui64 TotalRuns = 0;
-    ui64 TotalMovements = 0;
-    bool IsRunningNow = false;
-    ui64 CurrentMovements = 0;
-    ui64 CurrentMaxMovements = 0;
-    TInstant LastRunTimestamp;
-    ui64 LastRunMovements = 0;
-};
-
-struct TNodeFilter {
-    TVector<TSubDomainKey> AllowedDomains;
-    TVector<TNodeId> AllowedNodes;
-    TVector<TDataCenterId> AllowedDataCenters;
 };
 
 } // NHive

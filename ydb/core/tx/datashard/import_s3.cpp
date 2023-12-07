@@ -7,9 +7,8 @@
 #include "import_s3.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/protos/datashard_config.pb.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
 #include <ydb/core/tablet/resource_broker.h>
 #include <ydb/core/wrappers/s3_wrapper.h>
@@ -18,9 +17,9 @@
 #include <ydb/public/lib/scheme_types/scheme_type_id.h>
 
 #include <contrib/libs/zstd/include/zstd.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/buffer.h>
 #include <util/generic/ptr.h>
@@ -83,8 +82,8 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         }
 
         std::pair<ui64, ui64> NextRange(ui64 contentLength, ui64 processedBytes) const {
-            Y_ABORT_UNLESS(contentLength > 0);
-            Y_ABORT_UNLESS(processedBytes < contentLength);
+            Y_VERIFY(contentLength > 0);
+            Y_VERIFY(processedBytes < contentLength);
 
             const ui64 start = processedBytes + PendingBytes();
             const ui64 end = Min(SumWithSaturation(start, RangeSize), contentLength) - 1;
@@ -127,7 +126,7 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         }
 
         EDataStatus TryGetData(TStringBuf& data, TString& error) override {
-            Y_ABORT_UNLESS(Pos == 0);
+            Y_VERIFY(Pos == 0);
 
             const ui64 pos = AsStringBuf(Buffer.Size()).rfind('\n');
             if (TString::npos == pos) {
@@ -179,12 +178,12 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         }
 
         void Feed(TString&& portion) override {
-            Y_ABORT_UNLESS(Portion.Empty());
+            Y_VERIFY(Portion.Empty());
             Portion.Assign(portion.data(), portion.size());
         }
 
         EDataStatus TryGetData(TStringBuf& data, TString& error) override {
-            Y_ABORT_UNLESS(ReadyInputBytes == 0 && ReadyOutputPos == 0);
+            Y_VERIFY(ReadyInputBytes == 0 && ReadyOutputPos == 0);
 
             auto input = ZSTD_inBuffer{Portion.Data(), Portion.Size(), 0};
             while (!ReadyOutputPos) {
@@ -293,14 +292,14 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         }
 
         void AddRow(const TVector<TCell>& keys, const TVector<TCell>& values) {
-            Y_ABORT_UNLESS(Record);
+            Y_VERIFY(Record);
             auto& row = *Record->AddRows();
             row.SetKeyColumns(TSerializedCellVec::Serialize(keys));
             row.SetValueColumns(TSerializedCellVec::Serialize(values));
         }
 
         const std::shared_ptr<NKikimrTxDataShard::TEvUploadRowsRequest>& GetRecord() {
-            Y_ABORT_UNLESS(Record);
+            Y_VERIFY(Record);
             return Record;
         }
 
@@ -311,6 +310,7 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
 
     enum class EWakeupTag: ui64 {
         Restart,
+        RetryUpload,
     };
 
     void AllocateResource() {
@@ -406,7 +406,7 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
             Reader.Reset(new TReadControllerZstd(ReadBatchSize, ReadBufferSizeLimit));
             break;
         case NBackupRestoreTraits::ECompressionCodec::Invalid:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
 
         ETag = result.GetResult().GetETag();
@@ -433,7 +433,7 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         IMPORT_LOG_N("Process download info at '" << marker << "'"
             << ": info# " << info);
 
-        Y_ABORT_UNLESS(info.DataETag);
+        Y_VERIFY(info.DataETag);
         if (!CheckETag(*info.DataETag, ETag, marker)) {
             return;
         }
@@ -527,9 +527,9 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         columnOrderTypes.reserve(Scheme.GetColumns().size());
 
         for (const auto& column : Scheme.GetColumns()) {
-            auto typeInfoMod = NScheme::TypeInfoModFromProtoColumnType(column.GetTypeId(),
+            auto typeInfo = NScheme::TypeInfoFromProtoColumnType(column.GetTypeId(),
                 column.HasTypeInfo() ? &column.GetTypeInfo() : nullptr);
-            columnOrderTypes.emplace_back(TableInfo.KeyOrder(column.GetName()), typeInfoMod.TypeInfo);
+            columnOrderTypes.emplace_back(TableInfo.KeyOrder(column.GetName()), typeInfo);
         }
 
         TVector<TCell> keys;
@@ -541,7 +541,7 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
             return false;
         }
 
-        Y_ABORT_UNLESS(!keys.empty());
+        Y_VERIFY(!keys.empty());
         if (!TableInfo.IsMyKey(keys) /* TODO: maybe skip */) {
             Finish(false, TStringBuilder() << "Key is out of range on line: " << origLine);
             return false;
@@ -560,18 +560,21 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
             << ": count# " << record->RowsSize()
             << ", size# " << record->ByteSizeLong());
 
-        Send(DataShard, new TEvDataShard::TEvS3UploadRowsRequest(TxId, record, {
+        Send(DataShard, new TEvDataShard::TEvUnsafeUploadRowsRequest(TxId, record, {
             ETag, ProcessedBytes, WrittenBytes, WrittenRows
         }));
     }
 
-    void Handle(TEvDataShard::TEvS3UploadRowsResponse::TPtr& ev) {
+    void Handle(TEvDataShard::TEvUnsafeUploadRowsResponse::TPtr& ev) {
         IMPORT_LOG_D("Handle " << ev->Get()->ToString());
 
         const auto& record = ev->Get()->Record;
         switch (record.GetStatus()) {
         case NKikimrTxDataShard::TError::OK:
             return ProcessDownloadInfo(ev->Get()->Info, TStringBuf("UploadResponse"));
+
+        case NKikimrTxDataShard::TError::WRONG_SHARD_STATE: // OVERLOADED
+            return RetryUpload();
 
         case NKikimrTxDataShard::TError::SCHEME_ERROR:
         case NKikimrTxDataShard::TError::BAD_ARGUMENT:
@@ -624,14 +627,14 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
                     << ": name# " << column.GetName());
             }
 
-            const auto type = TableInfo.GetColumnType(column.GetName());
-            auto schemeType = NScheme::TypeInfoModFromProtoColumnType(column.GetTypeId(),
+            const auto typeInfo = TableInfo.GetColumnType(column.GetName());
+            auto columnTypeInfo = NScheme::TypeInfoFromProtoColumnType(column.GetTypeId(),
                 column.HasTypeInfo() ? &column.GetTypeInfo() : nullptr);
-            if (type.first != schemeType.TypeInfo || type.second != schemeType.TypeMod) {
+            if (typeInfo != columnTypeInfo) {
                 return finish(TStringBuilder() << "Scheme mismatch: column type mismatch"
                     << ": name# " << column.GetName()
-                    << ", expected# " << NScheme::TypeName(type.first, type.second)
-                    << ", got# " << NScheme::TypeName(schemeType.TypeInfo, schemeType.TypeMod));
+                    << ", expected# " << NScheme::TypeName(typeInfo)
+                    << ", got# " << NScheme::TypeName(columnTypeInfo));
             }
         }
 
@@ -656,6 +659,10 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         return true;
     }
 
+    void RetryUpload() {
+        Schedule(TDuration::MilliSeconds(50), new TEvents::TEvWakeup(static_cast<ui64>(EWakeupTag::RetryUpload)));
+    }
+
     void RestartOrFinish(const TString& error) {
         if (Attempt++ < Retries) {
             Delay = Min(Delay * Attempt, MaxDelay);
@@ -671,6 +678,8 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         switch (static_cast<EWakeupTag>(ev->Get()->Tag)) {
         case EWakeupTag::Restart:
             return Restart();
+        case EWakeupTag::RetryUpload:
+            return UploadRows();
         }
     }
 
@@ -684,7 +693,7 @@ class TS3Downloader: public TActorBootstrapped<TS3Downloader> {
         TAutoPtr<IDestructable> prod = new TImportJobProduct(success, error, WrittenBytes, WrittenRows);
         Send(DataShard, new TDataShard::TEvPrivate::TEvAsyncJobComplete(prod), 0, TxId);
 
-        Y_ABORT_UNLESS(TaskId);
+        Y_VERIFY(TaskId);
         Send(MakeResourceBrokerID(), new TEvResourceBroker::TEvFinishTask(TaskId));
 
         PassAway();
@@ -752,7 +761,7 @@ public:
             hFunc(TEvExternalStorage::TEvGetObjectResponse, Handle);
 
             hFunc(TEvDataShard::TEvS3DownloadInfo, Handle);
-            hFunc(TEvDataShard::TEvS3UploadRowsResponse, Handle);
+            hFunc(TEvDataShard::TEvUnsafeUploadRowsResponse, Handle);
 
             hFunc(TEvents::TEvWakeup, Handle);
             sFunc(TEvents::TEvPoisonPill, NotifyDied);

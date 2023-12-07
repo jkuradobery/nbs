@@ -4,7 +4,7 @@
 #include <ydb/core/cms/console/net_classifier_updater.h>
 #include <ydb/core/testlib/test_client.h>
 
-#include <ydb/library/actors/http/http_proxy.cpp>
+#include <library/cpp/actors/http/http_proxy.cpp>
 
 #include <library/cpp/protobuf/util/is_equal.h>
 
@@ -201,7 +201,7 @@ Y_UNIT_TEST_SUITE(TNetClassifierUpdaterTest) {
         }
         TestGetUpdatesFromHttpServer(netboxResponce, data, TNetClassifierUpdaterConfig::NETBOX, tags);
     }
-
+    
     void RunNetBoxCommonTests(const TString& netboxResponce) {
         RunNetBoxTest(
             netboxResponce,
@@ -273,7 +273,7 @@ Y_UNIT_TEST_SUITE(TNetClassifierUpdaterTest) {
             }
         );
     }
-
+    
     Y_UNIT_TEST(TestFiltrationByNetboxCustomFieldsAndTags) {
         const TString netboxResponce = R"__(
             {
@@ -289,7 +289,7 @@ Y_UNIT_TEST_SUITE(TNetClassifierUpdaterTest) {
         )__";
         RunTestWithCastomFields(netboxResponce);
     }
-
+    
     Y_UNIT_TEST(TestFiltrationByNetboxCustomFieldsOnly) {
         const TString netboxResponce = R"__(
             {
@@ -303,7 +303,7 @@ Y_UNIT_TEST_SUITE(TNetClassifierUpdaterTest) {
                 ]
             }
         )__";
-
+        
         RunTestWithCastomFields(netboxResponce);
     }
 

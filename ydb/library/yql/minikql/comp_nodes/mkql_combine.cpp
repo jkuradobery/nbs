@@ -1,7 +1,6 @@
 #include "mkql_combine.h"
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
-#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_stats_registry.h>
 #include <ydb/library/yql/minikql/defs.h>
@@ -68,15 +67,16 @@ struct TCombineCoreNodes {
     }
 };
 
-class TState: public TComputationValue<TState> {
-    using TBase = TComputationValue<TState>;
-    using TStateMap = std::unordered_map<
-        NUdf::TUnboxedValuePod, NUdf::TUnboxedValuePod,
-        THashFunc, TEqualsFunc,
-        TMKQLAllocator<std::pair<const NUdf::TUnboxedValuePod, NUdf::TUnboxedValuePod>>>;
+class TState : public TComputationValue<TState> {
+using TBase = TComputationValue<TState>;
+using TStateMap = std::unordered_map<
+    NUdf::TUnboxedValuePod, NUdf::TUnboxedValuePod,
+    THashFunc, TEqualsFunc,
+    TMKQLAllocator<std::pair<const NUdf::TUnboxedValuePod, NUdf::TUnboxedValuePod>>>;
 public:
     TState(TMemoryUsageInfo* memInfo, const THashFunc& hash, const TEqualsFunc& equal)
-        : TBase(memInfo), States(0, hash, equal) {
+        : TBase(memInfo), States(0, hash, equal)
+    {
         States.max_load_factor(1.2f);
     }
 
@@ -120,39 +120,6 @@ public:
 private:
     TStateMap States;
 };
-
-#ifndef MKQL_DISABLE_CODEGEN
-class TLLVMFieldsStructureState: public TLLVMFieldsStructure<TComputationValue<TState>> {
-private:
-    using TBase = TLLVMFieldsStructure<TComputationValue<TState>>;
-    llvm::PointerType* StructPtrType;
-    llvm::IntegerType* StatusType;
-protected:
-    using TBase::Context;
-public:
-    std::vector<llvm::Type*> GetFieldsArray() {
-        std::vector<llvm::Type*> result = TBase::GetFields();
-        result.emplace_back(StatusType);    // status
-        result.emplace_back(StructPtrType); // map
-
-        return result;
-    }
-
-    llvm::Constant* GetStatus() {
-        return ConstantInt::get(Type::getInt32Ty(Context), TBase::GetFieldsCount() + 0);
-    }
-
-    llvm::Constant* GetMap() {
-        return ConstantInt::get(Type::getInt32Ty(Context), TBase::GetFieldsCount() + 1);
-    }
-
-    TLLVMFieldsStructureState(llvm::LLVMContext& context)
-        : TBase(context)
-        , StructPtrType(PointerType::getUnqual(StructType::get(context)))
-        , StatusType(Type::getInt32Ty(context)) {
-    }
-};
-#endif
 
 template <bool IsMultiRowState, bool StateContainerOpt, bool TrackRss>
 class TCombineCoreFlowWrapper: public std::conditional_t<IsMultiRowState,
@@ -244,7 +211,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.ItemNode);
         const auto codegenKeyArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.KeyNode);
@@ -260,8 +227,15 @@ public:
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
 
-        TLLVMFieldsStructureState fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+            statusType,                 // status
+            structPtrType               // map
+        });
 
         const auto statePtrType = PointerType::getUnqual(stateType);
 
@@ -282,12 +256,12 @@ public:
         const auto makeFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TCombineCoreFlowWrapper::MakeState));
         const auto makeType = FunctionType::get(Type::getVoidTy(context), {self->getType(), ctx.Ctx->getType(), statePtr->getType()}, false);
         const auto makeFuncPtr = CastInst::Create(Instruction::IntToPtr, makeFunc, PointerType::getUnqual(makeType), "function", block);
-        CallInst::Create(makeType, makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
+        CallInst::Create(makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
         BranchInst::Create(main, block);
 
         block = main;
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto half = CastInst::Create(Instruction::Trunc, state, Type::getInt64Ty(context), "half", block);
         const auto stateArg = CastInst::Create(Instruction::IntToPtr, half, statePtrType, "state_arg", block);
         BranchInst::Create(more, block);
@@ -300,7 +274,7 @@ public:
         const auto isEmptyFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::IsEmpty));
         const auto isEmptyFuncType = FunctionType::get(Type::getInt1Ty(context), { statePtrType }, false);
         const auto isEmptyFuncPtr = CastInst::Create(Instruction::IntToPtr, isEmptyFunc, PointerType::getUnqual(isEmptyFuncType), "cast", block);
-        const auto empty = CallInst::Create(isEmptyFuncType, isEmptyFuncPtr, { stateArg }, "empty", block);
+        const auto empty = CallInst::Create(isEmptyFuncPtr, { stateArg }, "empty", block);
 
         const auto next = BasicBlock::Create(context, "next", ctx.Func);
         const auto full = BasicBlock::Create(context, "full", ctx.Func);
@@ -316,9 +290,9 @@ public:
             const auto good = BasicBlock::Create(context, "good", ctx.Func);
             const auto done = BasicBlock::Create(context, "done", ctx.Func);
 
-            const auto statusPtr = GetElementPtrInst::CreateInBounds(stateType, stateArg, { fieldsStruct.This(), fieldsStruct.GetStatus() }, "last", block);
+            const auto statusPtr = GetElementPtrInst::CreateInBounds(stateArg, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 5)}, "last", block);
 
-            const auto last = new LoadInst(statusType, statusPtr, "last", block);
+            const auto last = new LoadInst(statusPtr, "last", block);
 
             result->addIncoming(GetFinish(context), block);
             const auto choise = SwitchInst::Create(last, pull, 2U, block);
@@ -356,17 +330,17 @@ public:
             const auto key = GetNodeValue(Nodes.KeyResultNode, ctx, block);
             codegenKeyArg->CreateSetValue(ctx, block, key);
 
-            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget() ?
+            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget() ?
                 new AllocaInst(key->getType(), 0U, "key_param", &main->back()) : key;
 
-            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget()) {
                 new StoreInst(key, keyParam, block);
             }
 
             const auto atFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::At));
             const auto atType = FunctionType::get(ptrValueType, {stateArg->getType(), keyParam->getType()}, false);
             const auto atPtr = CastInst::Create(Instruction::IntToPtr, atFunc, PointerType::getUnqual(atType), "function", block);
-            const auto place = CallInst::Create(atType, atPtr, {stateArg, keyParam}, "place", block);
+            const auto place = CallInst::Create(atPtr, {stateArg, keyParam}, "place", block);
 
             const auto init = BasicBlock::Create(context, "init", ctx.Func);
             const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -394,7 +368,7 @@ public:
             const auto statFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::PushStat));
             const auto statType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), stat->getType()}, false);
             const auto statPtr = CastInst::Create(Instruction::IntToPtr, statFunc, PointerType::getUnqual(statType), "stat", block);
-            CallInst::Create(statType, statPtr, {stateArg, stat}, "", block);
+            CallInst::Create(statPtr, {stateArg, stat}, "", block);
 
             BranchInst::Create(full, block);
         }
@@ -407,7 +381,7 @@ public:
             const auto extractFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Extract));
             const auto extractType = FunctionType::get(Type::getInt1Ty(context), {stateArg->getType(), onePtr->getType(), twoPtr->getType()}, false);
             const auto extractPtr = CastInst::Create(Instruction::IntToPtr, extractFunc, PointerType::getUnqual(extractType), "extract", block);
-            const auto has = CallInst::Create(extractType, extractPtr, {stateArg, onePtr, twoPtr}, "has", block);
+            const auto has = CallInst::Create(extractPtr, {stateArg, onePtr, twoPtr}, "has", block);
 
             BranchInst::Create(good, more, has, block);
 
@@ -440,7 +414,7 @@ public:
     }
 
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, Value* currentPtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto statusType = Type::getInt32Ty(context);
         const auto valueType = Type::getInt128Ty(context);
@@ -458,7 +432,7 @@ public:
 
         block = more;
 
-        const auto current = new LoadInst(valueType, currentPtr, "current", block);
+        const auto current = new LoadInst(currentPtr, "current", block);
         BranchInst::Create(pull, skip, HasValue(current, block), block);
 
         {
@@ -479,7 +453,7 @@ public:
             }
 
             block = good;
-            const auto value = new LoadInst(valueType, valuePtr, "value", block);
+            const auto value = new LoadInst(valuePtr, "value", block);
             ValueRelease(static_cast<const IComputationNode*>(this)->GetRepresentation(), value, ctx, block);
             result->addIncoming(value, block);
             BranchInst::Create(over, block);
@@ -554,18 +528,18 @@ private:
         return out.Str();
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (EqualsFunc) {
-            Equals = reinterpret_cast<TEqualsPtr>(codegen.GetPointerToFunction(EqualsFunc));
+            Equals = reinterpret_cast<TEqualsPtr>(codegen->GetPointerToFunction(EqualsFunc));
         }
         if (HashFunc) {
-            Hash = reinterpret_cast<THashPtr>(codegen.GetPointerToFunction(HashFunc));
+            Hash = reinterpret_cast<THashPtr>(codegen->GetPointerToFunction(HashFunc));
         }
     }
 
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
-        codegen.ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeName<false>(), IsTuple, KeyTypes));
-        codegen.ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeName<true>(), IsTuple, KeyTypes));
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+        codegen->ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeName<false>(), IsTuple, KeyTypes));
+        codegen->ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeName<true>(), IsTuple, KeyTypes));
     }
 #endif
 };
@@ -688,27 +662,27 @@ private:
         return out.Str();
     }
 
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
-        codegen.ExportSymbol(CombineFunc = GenerateCombine(codegen));
-        codegen.ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeFuncName<true>(), IsTuple, KeyTypes));
-        codegen.ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeFuncName<false>(), IsTuple, KeyTypes));
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+        codegen->ExportSymbol(CombineFunc = GenerateCombine(codegen));
+        codegen->ExportSymbol(EqualsFunc = GenerateEqualsFunction(codegen, MakeFuncName<true>(), IsTuple, KeyTypes));
+        codegen->ExportSymbol(HashFunc = GenerateHashFunction(codegen, MakeFuncName<false>(), IsTuple, KeyTypes));
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (CombineFunc) {
-            Combine = reinterpret_cast<TCombinePtr>(codegen.GetPointerToFunction(CombineFunc));
+            Combine = reinterpret_cast<TCombinePtr>(codegen->GetPointerToFunction(CombineFunc));
         }
         if (EqualsFunc) {
-            Equals = reinterpret_cast<TEqualsPtr>(codegen.GetPointerToFunction(EqualsFunc));
+            Equals = reinterpret_cast<TEqualsPtr>(codegen->GetPointerToFunction(EqualsFunc));
         }
         if (HashFunc) {
-            Hash = reinterpret_cast<THashPtr>(codegen.GetPointerToFunction(HashFunc));
+            Hash = reinterpret_cast<THashPtr>(codegen->GetPointerToFunction(HashFunc));
         }
     }
 
-    Function* GenerateCombine(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateCombine(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.ItemNode);
         const auto codegenKeyArg = dynamic_cast<ICodegeneratorExternalNode*>(Nodes.KeyNode);
@@ -725,13 +699,18 @@ private:
         const auto valueType = Type::getInt128Ty(context);
         const auto ptrValueType = PointerType::getUnqual(valueType);
         const auto structPtrType = PointerType::getUnqual(StructType::get(context));
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(ptrValueType) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(ptrValueType) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
-
-        TLLVMFieldsStructureState fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
-
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+            statusType,                 // status
+            structPtrType               // map
+        });
         const auto statePtrType = PointerType::getUnqual(stateType);
         const auto funcType = IsMultiRowState ?
             FunctionType::get(statusType, {PointerType::getUnqual(contextType), containerType, statePtrType, ptrValueType, ptrValueType}, false):
@@ -767,7 +746,7 @@ private:
             const auto next = BasicBlock::Create(context, "next", ctx.Func);
             const auto skip = BasicBlock::Create(context, "skip", ctx.Func);
 
-            const auto current = new LoadInst(valueType, currArg, "current", block);
+            const auto current = new LoadInst(currArg, "current", block);
             BranchInst::Create(skip, pull, IsEmpty(current, block), block);
 
             block = pull;
@@ -795,7 +774,7 @@ private:
         const auto isEmptyFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::IsEmpty));
         const auto isEmptyFuncType = FunctionType::get(Type::getInt1Ty(context), { statePtrType }, false);
         const auto isEmptyFuncPtr = CastInst::Create(Instruction::IntToPtr, isEmptyFunc, PointerType::getUnqual(isEmptyFuncType), "cast", block);
-        const auto empty = CallInst::Create(isEmptyFuncType, isEmptyFuncPtr, { stateArg }, "empty", block);
+        const auto empty = CallInst::Create(isEmptyFuncPtr, { stateArg }, "empty", block);
 
         const auto next = BasicBlock::Create(context, "next", ctx.Func);
         const auto full = BasicBlock::Create(context, "full", ctx.Func);
@@ -812,9 +791,9 @@ private:
             const auto good = BasicBlock::Create(context, "good", ctx.Func);
             const auto done = BasicBlock::Create(context, "done", ctx.Func);
 
-            const auto statusPtr = GetElementPtrInst::CreateInBounds(stateType, stateArg, { fieldsStruct.This(), fieldsStruct.GetStatus() }, "last", block);
+            const auto statusPtr = GetElementPtrInst::CreateInBounds(stateArg, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 5)}, "last", block);
 
-            const auto last = new LoadInst(statusType, statusPtr, "last", block);
+            const auto last = new LoadInst(statusPtr, "last", block);
 
             const auto choise = SwitchInst::Create(last, pull, 2U, block);
             choise->addCase(ConstantInt::get(statusType, static_cast<ui32>(NUdf::EFetchStatus::Yield)), rest);
@@ -831,8 +810,8 @@ private:
 
             const auto used = GetMemoryUsed(MemLimit, ctx, block);
 
-            const auto stream = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-                new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
+            const auto stream = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+                new LoadInst(containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
             BranchInst::Create(loop, block);
 
@@ -851,17 +830,17 @@ private:
             const auto key = GetNodeValue(Nodes.KeyResultNode, ctx, block);
             codegenKeyArg->CreateSetValue(ctx, block, key);
 
-            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget() ?
+            const auto keyParam = NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget() ?
                 new AllocaInst(key->getType(), 0U, "key_param", &main->back()) : key;
 
-            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows == ctx.Codegen->GetEffectiveTarget()) {
                 new StoreInst(key, keyParam, block);
             }
 
             const auto atFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::At));
             const auto atType = FunctionType::get(ptrValueType, {stateArg->getType(), keyParam->getType()}, false);
             const auto atPtr = CastInst::Create(Instruction::IntToPtr, atFunc, PointerType::getUnqual(atType), "function", block);
-            const auto place = CallInst::Create(atType, atPtr, {stateArg, keyParam}, "place", block);
+            const auto place = CallInst::Create(atPtr, {stateArg, keyParam}, "place", block);
 
             const auto init = BasicBlock::Create(context, "init", ctx.Func);
             const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -889,7 +868,7 @@ private:
             const auto statFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::PushStat));
             const auto statType = FunctionType::get(Type::getVoidTy(context), {stateArg->getType(), stat->getType()}, false);
             const auto statPtr = CastInst::Create(Instruction::IntToPtr, statFunc, PointerType::getUnqual(statType), "stat", block);
-            CallInst::Create(statType, statPtr, {stateArg, stat}, "", block);
+            CallInst::Create(statPtr, {stateArg, stat}, "", block);
 
             BranchInst::Create(full, block);
         }
@@ -902,7 +881,7 @@ private:
             const auto extractFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TState::Extract));
             const auto extractType = FunctionType::get(Type::getInt1Ty(context), {stateArg->getType(), onePtr->getType(), twoPtr->getType()}, false);
             const auto extractPtr = CastInst::Create(Instruction::IntToPtr, extractFunc, PointerType::getUnqual(extractType), "extract", block);
-            const auto has = CallInst::Create(extractType, extractPtr, {stateArg, onePtr, twoPtr}, "has", block);
+            const auto has = CallInst::Create(extractPtr, {stateArg, onePtr, twoPtr}, "has", block);
 
             BranchInst::Create(good, more, has, block);
 
@@ -925,7 +904,7 @@ private:
             } else {
                 SafeUnRefUnboxed(valuePtr, ctx, block);
                 GetNodeValue(valuePtr, Nodes.FinishResultNode, ctx, block);
-                const auto value = new LoadInst(valueType, valuePtr, "value", block);
+                const auto value = new LoadInst(valuePtr, "value", block);
 
                 const auto exit = BasicBlock::Create(context, "exit", ctx.Func);
                 BranchInst::Create(more, exit, IsEmpty(value, block), block);
@@ -976,7 +955,7 @@ IComputationNode* WrapCombineCore(TCallable& callable, const TComputationNodeFac
     bool encoded;
     bool useIHash;
     GetDictionaryKeyTypes(keyType, keyTypes, isTuple, encoded, useIHash);
-    Y_ENSURE(!encoded, "TODO");
+    Y_VERIFY(!encoded, "TODO");
     const auto memLimit = AS_VALUE(TDataLiteral, callable.GetInput(8))->AsValue().Get<ui64>();
     const bool trackRss = EGraphPerProcess::Single == ctx.GraphPerProcess;
 

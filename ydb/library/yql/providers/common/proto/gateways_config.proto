@@ -2,8 +2,6 @@ package NYql;
 option java_package = "ru.yandex.yql.proto";
 
 import "ydb/library/yql/protos/clickhouse.proto";
-import "ydb/library/yql/providers/generic/connector/api/common/data_source.proto";
-import "ydb/library/yql/providers/generic/connector/api/common/endpoint.proto";
 
 
 /////////////////////////////// common ///////////////////////////////
@@ -19,11 +17,6 @@ message TActivationPercentage {
     repeated string IncludeUsers = 3;
     repeated string ExcludeUsers = 4;
     optional bool ExcludeRobots = 5 [default = true];
-    repeated string Tags = 6;
-    repeated string IncludeGroups = 7;
-    repeated string ExcludeGroups = 8;
-    repeated string IncludeRevisions = 9;
-    repeated string ExcludeRevisions = 10;
 }
 
 message TAttr {
@@ -60,24 +53,6 @@ enum ETokenType {
 
 /////////////////////////////// HTTP GATEWAY //////////////////////
 
-message TExplicitDNSRecord {
-  enum ProtocolVersion {
-    ANY = 0;
-    IPV4 = 1;
-    IPV6 = 2;
-  };
-
-  optional string Address = 1 [default = ""];
-  optional uint32 Port = 2 [default = 443];
-  optional string ExpectedIP = 3 [default = ""];
-  optional ProtocolVersion Protocol = 4 [default = ANY];
-}
-
-message TDnsResolverConfig {
-  optional uint32 RefreshMs = 1 [default = 60000];
-  repeated TExplicitDNSRecord ExplicitDNSRecord = 100;
-}
-
 message THttpGatewayConfig {
     optional uint32 MaxInFlightCount = 1;
     optional uint64 MaxSimulatenousDownloadsSize = 2;
@@ -88,8 +63,6 @@ message THttpGatewayConfig {
     optional uint64 RequestTimeoutSeconds = 7;
     optional uint64 LowSpeedTimeSeconds = 8;
     optional uint64 LowSpeedBytesLimit = 9;
-    optional TDnsResolverConfig DnsResolverConfig = 10;
-    optional uint64 MaxRetries = 11;
 }
 
 /////////////////////////////// YT ///////////////////////////////
@@ -128,10 +101,9 @@ message TYtGatewayConfig {
 /////////////////////////////// Grut ///////////////////////////////
 
 message TYtOrmClusterConfig {
-    optional string Name = 1; // Examples: grut_testing, grut_stable, grut_dev
-    optional string Cluster = 2; // Examples: sas, vla, etc
+    optional string Name = 1;
+    optional string Cluster = 2; // Real cluster server name with port
     optional bool Enabled = 3 [default = true]; // Allow to handle YTORM queries
-    optional string EndpointSetId = 4; // Examples: grut-stable.object_api, grut-testing.object_api, etc
 }
 
 message TYtOrmGatewayConfig {
@@ -286,9 +258,6 @@ message TRtmrClusterConfig {
     repeated TRtmrPqConsumerInfo PqConsumerMapping = 15;
     optional uint32 MaxPqPartitions = 16;
     optional uint32 PreviewCollectTimeoutMs = 17;
-    optional string SbdTvmSecretFile = 18;
-    optional uint64 SbdTvmClientId = 19;
-    optional uint64 SbdTvmServerId = 20 [default = 2021848];
     repeated TAttr Settings = 101;
 }
 
@@ -384,20 +353,11 @@ message TS3GatewayConfig {
     repeated TS3ClusterConfig ClusterMapping = 1;
 
     optional uint64 FileSizeLimit = 2;               // Global limit
-    repeated TS3FormatSizeLimit FormatSizeLimit = 6; // Format limits (override FileSizeLimit)
-    optional uint64 BlockFileSizeLimit = 10;         // Global limit for block readers (overrides FormatSizeLimit)
+    repeated TS3FormatSizeLimit FormatSizeLimit = 6; // Format limits
     optional uint64 MaxFilesPerQuery = 3;
     optional uint64 MaxReadSizePerQuery = 4;
     optional uint64 MaxDiscoveryFilesPerQuery = 5;
     optional uint64 MaxInflightListsPerQuery = 7;
-    optional uint64 MaxDirectoriesAndFilesPerQuery = 8;
-    optional uint64 MinDesiredDirectoriesOfFilesPerQuery = 9;
-    optional bool AllowConcurrentListings = 11 [default = false];
-    optional uint64 ListingCallbackThreadCount = 12;
-    optional uint64 ListingCallbackPerThreadQueueSize = 13;
-    optional uint64 RegexpCacheSize = 14;
-    optional uint64 GeneratorPathsLimit = 15;
-    optional uint64 MaxListingResultSizePerPartition = 16;
 
     repeated TAttr DefaultSettings = 100;
 }
@@ -456,12 +416,10 @@ message TPostgresqlClusterConfig {
     optional string Cluster = 2;
     optional string PGtoken = 3;
     optional string TargetServerType = 4;
-    optional uint64 MaxResultBufferSize = 5 [default = 1000000]; // Zero value disables adaptiveFetch
 }
 
 message TPostgresqlGatewayConfig {
     repeated TPostgresqlClusterConfig ClusterMapping = 1;
-    optional uint64 MaxResultBufferSize = 2 [default = 1000000]; // Zero value disables adaptiveFetch by default
 }
 
 /////////////////////////////// Mysql /////////////////////////////
@@ -492,12 +450,10 @@ message TDqGatewayConfig {
 
     repeated TAttr DefaultSettings = 102;
 
-    optional uint32 WithHiddenPercentage = 5 [default = 0];     // Depricated. TODO: remove
-    repeated TDefaultAutoByHourPercentage WithHiddenByHour = 6; // Depricated. TODO: remove
-    repeated string NoWithHiddenForUsers = 7;                   // Depricated. TODO: remove
-    repeated string WithHiddenForUsers = 8;                     // Depricated. TODO: remove
-
-    optional TActivationPercentage HiddenActivation = 9;
+    optional uint32 WithHiddenPercentage = 5 [default = 0];
+    repeated TDefaultAutoByHourPercentage WithHiddenByHour = 6;
+    repeated string NoWithHiddenForUsers = 7;
+    repeated string WithHiddenForUsers = 8;
 }
 
 /////////////////////////////// Yql Core ///////////////////////////////
@@ -527,113 +483,6 @@ message TSqlCoreConfig {
     repeated string TranslationFlags = 4;
 }
 
-/////////////////////////////// Db Tool ///////////////////////////////
-
-message TUserException {
-    required string Login = 1;
-    optional uint32 ExpireDays = 2 [default = 0]; // 0 - don't delete history at all
-}
-
-message TDbToolConfig {
-    optional uint32 DefaultExpireDays = 1;
-    optional string RobotPattern = 2;
-    repeated string DeleteQueryRunner = 3;
-    repeated TUserException UserException = 4;
-}
-
-
-/////////// Generic gateway for the external data sources ////////////
-
-message TGenericClusterConfig {
-    // Cluster name
-    required string Name = 1;
-
-    // Data source kind
-    required NYql.NConnector.NApi.EDataSourceKind Kind = 8;
-
-    // Location represents the network address of a data source instance we want to connect
-    oneof Location {
-        // Endpoint must be used for on-premise deployments.
-        NYql.NConnector.NApi.TEndpoint Endpoint = 9;
-        // DatabaseId must be used when the data source is deployed in cloud.
-        // Data source FQDN and port will be resolved by MDB service.
-        string DatabaseId = 4;
-    }
-
-    // Credentials used to access data source instance
-    required NYql.NConnector.NApi.TCredentials Credentials = 10;
-
-    // Credentials used to access MDB API.
-    // When working with data source instances deployed in a cloud,
-    // you should either set (ServiceAccountId, ServiceAccountIdSignature) pair,
-    // or set IAM Token.
-    // The names of these fields must satisfy this template function:
-    // https://github.com/ydb-platform/ydb/arcadia/ydb/core/fq/libs/actors/clusters_from_connections.cpp?rev=r11823087#L19
-    optional string ServiceAccountId = 6;
-    optional string ServiceAccountIdSignature = 7;
-    optional string Token = 11;
-
-    // If true, the generic provider will ask connector server to use secure connections
-    // to access remote data sources.
-    optional bool UseSsl = 12;
-
-    // Name of a particular database within a database cluster
-    optional string DatabaseName = 13;
-
-    // Transport protocol used to establish a network connection with database
-    optional NYql.NConnector.NApi.EProtocol Protocol = 14;
-
-    // Data source options specific to various data sources
-    map<string, string> DataSourceOptions = 15;
-
-    reserved 2, 3, 5;
-}
-
-message TGenericConnectorConfig {
-    // Connector instance network endpoint
-    required NYql.NConnector.NApi.TEndpoint Endpoint = 3;
-    // If true, GRPC Client will use TLS encryption.
-    // Server cert will be verified with system CA cert pool.
-    required bool UseSsl = 4;
-
-    reserved 1, 2;
-}
-
-message TGenericGatewayConfig {
-    // Connector service network endpoint
-    // TODO: replace with map<DataSourceKind, TGenericConnectorConfig>
-    required TGenericConnectorConfig Connector = 5;
-
-    // Database clusters supported by this particular instance
-    repeated TGenericClusterConfig ClusterMapping = 3;
-
-    // MDB API endpoint (do not fill in case of on-prem deployment)
-    optional string MdbGateway = 4;
-
-    repeated TAttr DefaultSettings = 6;
-
-    reserved 1, 2;
-}
-
-/////////////////////////////// Db Resolver ///////////////////////////////////
-
-message TDbResolverConfig {
-    // Ydb / Yds mvp endpoint
-    optional string YdbMvpEndpoint = 2;
-}
-
-/////////////////////////////// Revision filter ///////////////////////////////
-
-message TRevisionException {
-    repeated string Revisions = 1;
-    repeated string IncludeUsers = 2;
-    repeated string ExcludeUsers = 3;
-}
-
-message TRevisionFilterConfig {
-    repeated TRevisionException RevisionException = 1;
-}
-
 /////////////////////////////// Root ///////////////////////////////
 
 message TGatewaysConfig {
@@ -656,8 +505,4 @@ message TGatewaysConfig {
     optional TS3GatewayConfig S3 = 17;
     optional THttpGatewayConfig HttpGateway = 18;
     optional TYtOrmGatewayConfig YtOrm = 19;
-    optional TDbToolConfig DbTool = 20;
-    optional TGenericGatewayConfig Generic = 21;
-    optional TRevisionFilterConfig RevisionFilter = 22;
-    optional TDbResolverConfig DbResolver = 23;
 }

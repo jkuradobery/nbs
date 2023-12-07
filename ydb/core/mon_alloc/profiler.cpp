@@ -1,13 +1,11 @@
 #include "profiler.h"
 #include "tcmalloc.h"
 
-#include <ydb/library/services/services.pb.h>
-
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/prof/tag.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/prof/tag.h>
 #include <library/cpp/html/pcdata/pcdata.h>
 #include <library/cpp/malloc/api/malloc.h>
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -174,7 +172,7 @@ namespace NActors {
                 char* buf = nullptr;
                 size_t len = 0;
                 FILE* stream = open_memstream(&buf, &len);
-                Y_ABORT_UNLESS(stream);
+                Y_VERIFY(stream);
 
                 EndProfiling(stream);
                 fflush(stream);
@@ -244,7 +242,7 @@ namespace NActors {
 
         public:
             static constexpr EActivityType ActorActivityType() {
-                return EActivityType::ACTORLIB_STATS;
+                return ACTORLIB_STATS;
             }
 
             TProfilerActor(TDynamicCountersPtr counters, TString dir, std::unique_ptr<IProfilerLogic> profiler)

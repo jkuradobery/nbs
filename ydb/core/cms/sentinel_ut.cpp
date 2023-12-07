@@ -350,10 +350,10 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
 
         void SetPDiskStateImpl(const TSet<TPDiskID>& ids, EPDiskState state) {
             for (const auto& id : ids) {
-                Y_ABORT_UNLESS(MockNodes.contains(id.NodeId));
+                Y_VERIFY(MockNodes.contains(id.NodeId));
                 auto& node = MockNodes.at(id.NodeId);
 
-                Y_ABORT_UNLESS(node.PDiskStateInfo.contains(id.DiskId));
+                Y_VERIFY(node.PDiskStateInfo.contains(id.DiskId));
                 auto& pdisk = node.PDiskStateInfo.at(id.DiskId);
 
                 pdisk.SetState(state);
@@ -366,40 +366,40 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
         explicit TTestEnv(ui32 nodeCount, ui32 pdisks)
             : TCmsTestEnv(nodeCount, pdisks)
         {
-            SetLogPriority(NKikimrServices::CMS, NLog::PRI_DEBUG);
-
             SetScheduledEventFilter([this](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev, TDuration, TInstant&) -> bool {
                 if (ev->Recipient != Sentinel) {
                     return true;
                 }
 
                 switch (ev->GetTypeRewrite()) {
-                    case TEvSentinel::TEvUpdateConfig::EventType:
-                    case TEvSentinel::TEvUpdateState::EventType:
-                    case TEvents::TEvWakeup::EventType:
-                        return false;
+                case TEvSentinel::TEvUpdateConfig::EventType:
+                case TEvSentinel::TEvUpdateState::EventType:
+                case TEvents::TEvWakeup::EventType:
+                    return false;
 
-                    default:
-                        return true;
+                default:
+                    return true;
                 }
             });
-
             auto prevObserver = SetObserverFunc(&TTestActorRuntimeBase::DefaultObserverFunc);
-            SetObserverFunc([this, prevObserver](TAutoPtr<IEventHandle>& ev) {
-                if (ev->GetTypeRewrite() == TEvCms::TEvClusterStateRequest::EventType) {
-                    auto response = MakeHolder<TEvCms::TEvClusterStateResponse>();
-                    auto& record = response->Record;
+            SetObserverFunc([this, prevObserver](TTestActorRuntimeBase& runtime,
+                                    TAutoPtr<IEventHandle> &event){
+                switch (event->GetTypeRewrite()) {
+                case TEvCms::TEvClusterStateRequest::EventType:
+                {
+                    TAutoPtr<TEvCms::TEvClusterStateResponse> resp = new TEvCms::TEvClusterStateResponse;
                     if (State) {
-                        record.MutableStatus()->SetCode(NKikimrCms::TStatus::OK);
-                        for (auto [_, nodeInfo]: State->ClusterInfo->AllNodes()) {
-                            NCms::TCms::AddHostState(State->ClusterInfo, *nodeInfo, record, State->ClusterInfo->GetTimestamp());
+                        resp->Record.MutableStatus()->SetCode(NKikimrCms::TStatus::OK);
+                        for (const auto &entry : State->ClusterInfo->AllNodes()) {
+                            NCms::TCms::AddHostState(State->ClusterInfo, *entry.second, resp->Record, State->ClusterInfo->GetTimestamp());
                         }
                     }
-                    Send(ev->Sender, TActorId(), response.Release());
-                    return TTestActorRuntime::EEventAction::DROP;
+                    Send(new IEventHandle(event->Sender, TActorId(), resp.Release()));
+                    return TTestActorRuntime::EEventAction::PROCESS;
                 }
-
-                return prevObserver(ev);
+                default:
+                    return prevObserver(runtime, event);
+                }
             });
 
             State = new TCmsState;
@@ -409,6 +409,8 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
             Sentinel = Register(CreateSentinel(State));
             EnableScheduleForActor(Sentinel, true);
             WaitForSentinelBoot();
+
+            SetLogPriority(NKikimrServices::CMS, NLog::PRI_DEBUG);
         }
 
         TPDiskID RandomPDiskID() const {
@@ -443,7 +445,7 @@ Y_UNIT_TEST_SUITE(TSentinelTests) {
             size_t idx = RandomNumber(nodes.size() - 1);
 
             auto info = std::next(nodes.begin(), idx)->second;
-            Y_ABORT_UNLESS(info);
+            Y_VERIFY(info);
             return info->PDisks;
         }
 

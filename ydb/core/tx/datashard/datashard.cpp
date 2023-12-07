@@ -1,21 +1,16 @@
 #include "datashard_impl.h"
 #include "datashard_txs.h"
-#include "probes.h"
 
 #include <ydb/core/base/interconnect_channels.h>
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
-#include <ydb/core/formats/arrow/arrow_batch_builder.h>
+#include <ydb/core/formats/arrow_batch_builder.h>
 #include <ydb/core/scheme/scheme_tablecell.h>
 #include <ydb/core/tablet/tablet_counters_protobuf.h>
 #include <ydb/core/tx/long_tx_service/public/events.h>
-#include <ydb/core/protos/datashard_config.pb.h>
 
-#include <ydb/library/actors/core/monotonic_provider.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
 #include <contrib/libs/apache/arrow/cpp/src/arrow/api.h>
-
-LWTRACE_USING(DATASHARD_PROVIDER)
 
 namespace NKikimr {
 
@@ -132,7 +127,6 @@ TDataShard::TDataShard(const TActorId &tablet, TTabletStorageInfo *info)
     , SnapshotManager(this)
     , SchemaSnapshotManager(this)
     , VolatileTxManager(this)
-    , ConflictsCache(this)
     , DisableByKeyFilter(0, 0, 1)
     , MaxTxInFly(15000, 0, 100000)
     , MaxTxLagMilliseconds(5*60*1000, 0, 30*24*3600*1000ll)
@@ -168,8 +162,6 @@ TDataShard::TDataShard(const TActorId &tablet, TTabletStorageInfo *info)
         ETxTypes_descriptor
     >());
     TabletCounters = TabletCountersPtr.Get();
-
-    RegisterDataShardProbes();
 }
 
 NTabletPipe::TClientConfig TDataShard::GetPipeClientConfig() {
@@ -292,7 +284,7 @@ void TDataShard::Cleanup(const TActorContext& ctx) {
         auto op = Pipeline.FindOp(Pipeline.CurrentSchemaTxId());
         if (op && op->IsWaitingForAsyncJob()) {
             TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
-            Y_ABORT_UNLESS(tx);
+            Y_VERIFY(tx);
             tx->KillAsyncJobActor(ctx);
         }
     }
@@ -359,7 +351,7 @@ void TDataShard::OnActivateExecutor(const TActorContext& ctx) {
     if (TabletCountersPtr) {
         Executor()->RegisterExternalTabletCounters(TabletCountersPtr);
     }
-    Y_ABORT_UNLESS(TabletCounters);
+    Y_VERIFY(TabletCounters);
 
     AllocCounters = TAlignedPagePoolCounters(AppData(ctx)->Counters, "datashard");
 
@@ -486,65 +478,15 @@ void TDataShard::PrepareAndSaveOutReadSets(ui64 step,
 
 void TDataShard::SendDelayedAcks(const TActorContext& ctx, TVector<THolder<IEventHandle>>& delayedAcks) const {
     for (auto& x : delayedAcks) {
+        TEvTxProcessing::TEvReadSetAck* ev = dynamic_cast<TEvTxProcessing::TEvReadSetAck*>(x->GetBase());
         LOG_DEBUG(ctx, NKikimrServices::TX_DATASHARD,
                   "Send delayed Ack RS Ack at %" PRIu64 " %s",
-                  TabletID(), x->ToString().data());
+                  TabletID(), ev->ToString().data());
         ctx.ExecutorThread.Send(x.Release());
         IncCounter(COUNTER_ACK_SENT_DELAYED);
     }
 
     delayedAcks.clear();
-}
-
-void TDataShard::GetCleanupReplies(const TOperation::TPtr& op, std::vector<std::unique_ptr<IEventHandle>>& cleanupReplies) {
-    if (!op->HasOutputData()) {
-        // There are no replies
-        return;
-    }
-
-    auto& delayedAcks = op->DelayedAcks();
-    for (auto& x : delayedAcks) {
-        LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD,
-            "Cleanup TxId# " << op->GetTxId() << " at " << TabletID() << " Ack RS " << x->ToString());
-        cleanupReplies.emplace_back(x.Release());
-        IncCounter(COUNTER_ACK_SENT_DELAYED);
-    }
-    delayedAcks.clear();
-
-    auto& expectedReadSets = op->ExpectedReadSets();
-    for (auto& x : expectedReadSets) {
-        for (const auto& recipient : x.second) {
-            cleanupReplies.push_back(GenerateReadSetNoData(recipient, op->GetStep(), op->GetTxId(), x.first.first, x.first.second));
-        }
-    }
-    expectedReadSets.clear();
-}
-
-void TDataShard::SendConfirmedReplies(TMonotonic ts, std::vector<std::unique_ptr<IEventHandle>>&& replies) {
-    if (replies.empty()) {
-        return;
-    }
-
-    struct TState : public TThrRefBase {
-        std::vector<std::unique_ptr<IEventHandle>> Replies;
-
-        TState(std::vector<std::unique_ptr<IEventHandle>>&& replies)
-            : Replies(std::move(replies))
-        {}
-    };
-
-    Executor()->ConfirmReadOnlyLease(ts,
-        [state = MakeIntrusive<TState>(std::move(replies))] {
-            for (auto& ev : state->Replies) {
-                TActivationContext::Send(std::move(ev));
-            }
-        });
-}
-
-void TDataShard::SendCommittedReplies(std::vector<std::unique_ptr<IEventHandle>>&& replies) {
-    for (auto& ev : replies) {
-        TActivationContext::Send(std::move(ev));
-    }
 }
 
 class TDataShard::TWaitVolatileDependencies final : public IVolatileTxCallback {
@@ -592,7 +534,7 @@ void TDataShard::WaitVolatileDependenciesThenSend(
         const TActorId& target, std::unique_ptr<IEventBase> event,
         ui64 cookie)
 {
-    Y_ABORT_UNLESS(!dependencies.empty(), "Unexpected empty dependencies");
+    Y_VERIFY(!dependencies.empty(), "Unexpected empty dependencies");
     auto callback = MakeIntrusive<TWaitVolatileDependencies>(this, dependencies, target, std::move(event), cookie);
     for (ui64 txId : dependencies) {
         bool ok = VolatileTxManager.AttachVolatileTxCallback(txId, callback);
@@ -622,7 +564,6 @@ public:
 
         ui64 resultSize = Result->GetTxResult().size();
         ui32 flags = IEventHandle::MakeFlags(TInterconnectChannels::GetTabletChannel(resultSize), 0);
-        LWTRACK(ProposeTransactionSendResult, Result->Orbit);
         Self->Send(Target, Result.Release(), flags);
     }
 
@@ -647,13 +588,13 @@ void TDataShard::SendResult(const TActorContext &ctx,
                                    ui64 step,
                                    ui64 txId)
 {
-    Y_ABORT_UNLESS(txId == res->GetTxId(), "%" PRIu64 " vs %" PRIu64, txId, res->GetTxId());
+    Y_VERIFY(txId == res->GetTxId(), "%" PRIu64 " vs %" PRIu64, txId, res->GetTxId());
 
     if (VolatileTxManager.FindByTxId(txId)) {
         // This is a volatile transaction, and we need to wait until it is resolved
         bool ok = VolatileTxManager.AttachVolatileTxCallback(txId,
             new TSendVolatileResult(this, std::move(res), target, step, txId));
-        Y_ABORT_UNLESS(ok);
+        Y_VERIFY(ok);
         return;
     }
 
@@ -665,7 +606,6 @@ void TDataShard::SendResult(const TActorContext &ctx,
 
     ui64 resultSize = res->GetTxResult().size();
     ui32 flags = IEventHandle::MakeFlags(TInterconnectChannels::GetTabletChannel(resultSize), 0);
-    LWTRACK(ProposeTransactionSendResult, res->Orbit);
     ctx.Send(target, res.Release(), flags);
 }
 
@@ -690,7 +630,7 @@ ui64 TDataShard::AllocateChangeRecordOrder(NIceDb::TNiceDb& db, ui64 count) {
 }
 
 ui64 TDataShard::AllocateChangeRecordGroup(NIceDb::TNiceDb& db) {
-    const ui64 now = TInstant::Now().MicroSeconds();
+    const ui64 now = TInstant::Now().GetValue();
     const ui64 result = now > LastChangeRecordGroup ? now : (LastChangeRecordGroup + 1);
 
     LastChangeRecordGroup = result;
@@ -727,24 +667,23 @@ void TDataShard::PersistChangeRecord(NIceDb::TNiceDb& db, const TChangeRecord& r
             NIceDb::TUpdate<Schema::ChangeRecords::TablePathId>(record.GetTableId().LocalPathId));
         db.Table<Schema::ChangeRecordDetails>().Key(record.GetOrder()).Update(
             NIceDb::TUpdate<Schema::ChangeRecordDetails::Kind>(record.GetKind()),
-            NIceDb::TUpdate<Schema::ChangeRecordDetails::Body>(record.GetBody()),
-            NIceDb::TUpdate<Schema::ChangeRecordDetails::Source>(record.GetSource()));
+            NIceDb::TUpdate<Schema::ChangeRecordDetails::Body>(record.GetBody()));
     } else {
         auto& state = LockChangeRecords[lockId];
-        Y_ABORT_UNLESS(state.Changes.empty() || state.Changes.back().LockOffset < record.GetLockOffset(),
+        Y_VERIFY(state.Changes.empty() || state.Changes.back().LockOffset < record.GetLockOffset(),
             "Lock records must be added in their lock offset order");
 
         if (state.Changes.size() == state.PersistentCount) {
             db.GetDatabase().OnCommit([this, lockId] {
                 // We mark all added records as persistent
                 auto it = LockChangeRecords.find(lockId);
-                Y_ABORT_UNLESS(it != LockChangeRecords.end());
+                Y_VERIFY(it != LockChangeRecords.end());
                 it->second.PersistentCount = it->second.Changes.size();
             });
             db.GetDatabase().OnRollback([this, lockId] {
                 // We remove all change records that have not been committed
                 auto it = LockChangeRecords.find(lockId);
-                Y_ABORT_UNLESS(it != LockChangeRecords.end());
+                Y_VERIFY(it != LockChangeRecords.end());
                 it->second.Changes.erase(
                     it->second.Changes.begin() + it->second.PersistentCount,
                     it->second.Changes.end());
@@ -776,8 +715,7 @@ void TDataShard::PersistChangeRecord(NIceDb::TNiceDb& db, const TChangeRecord& r
             NIceDb::TUpdate<Schema::LockChangeRecords::TablePathId>(record.GetTableId().LocalPathId));
         db.Table<Schema::LockChangeRecordDetails>().Key(record.GetLockId(), record.GetLockOffset()).Update(
             NIceDb::TUpdate<Schema::LockChangeRecordDetails::Kind>(record.GetKind()),
-            NIceDb::TUpdate<Schema::LockChangeRecordDetails::Body>(record.GetBody()),
-            NIceDb::TUpdate<Schema::LockChangeRecordDetails::Source>(record.GetSource()));
+            NIceDb::TUpdate<Schema::LockChangeRecordDetails::Body>(record.GetBody()));
     }
 }
 
@@ -880,7 +818,7 @@ void TDataShard::RemoveChangeRecord(NIceDb::TNiceDb& db, ui64 order) {
         // Delete ChangeRecordCommits row when the last record is removed
         auto it = CommittedLockChangeRecords.find(record.LockId);
         if (it != CommittedLockChangeRecords.end()) {
-            Y_DEBUG_ABORT_UNLESS(it->second.Count > 0);
+            Y_VERIFY_DEBUG(it->second.Count > 0);
             if (it->second.Count > 0 && 0 == --it->second.Count) {
                 db.Table<Schema::ChangeRecordCommits>().Key(it->second.Order).Delete();
                 CommittedLockChangeRecords.erase(it);
@@ -892,11 +830,11 @@ void TDataShard::RemoveChangeRecord(NIceDb::TNiceDb& db, ui64 order) {
         db.Table<Schema::ChangeRecordDetails>().Key(order).Delete();
     }
 
-    Y_ABORT_UNLESS(record.BodySize <= ChangesQueueBytes);
+    Y_VERIFY(record.BodySize <= ChangesQueueBytes);
     ChangesQueueBytes -= record.BodySize;
 
     if (record.SchemaSnapshotAcquired) {
-        Y_ABORT_UNLESS(record.TableId);
+        Y_VERIFY(record.TableId);
         auto tableIt = TableInfos.find(record.TableId.LocalPathId);
 
         if (tableIt != TableInfos.end()) {
@@ -905,24 +843,21 @@ void TDataShard::RemoveChangeRecord(NIceDb::TNiceDb& db, ui64 order) {
 
             if (last) {
                 const auto* snapshot = SchemaSnapshotManager.FindSnapshot(snapshotKey);
-                Y_ABORT_UNLESS(snapshot);
+                Y_VERIFY(snapshot);
 
                 if (snapshot->Schema->GetTableSchemaVersion() < tableIt->second->GetTableSchemaVersion()) {
                     SchemaSnapshotManager.RemoveShapshot(db, snapshotKey);
                 }
             }
         } else {
-            Y_DEBUG_ABORT_UNLESS(State == TShardState::PreOffline);
+            Y_VERIFY_DEBUG(State == TShardState::PreOffline);
         }
     }
 
-    UpdateChangeExchangeLag(AppData()->TimeProvider->Now());
     ChangesQueue.erase(it);
 
     IncCounter(COUNTER_CHANGE_RECORDS_REMOVED);
     SetCounter(COUNTER_CHANGE_QUEUE_SIZE, ChangesQueue.size());
-
-    CheckChangesQueueNoOverflow();
 }
 
 void TDataShard::EnqueueChangeRecords(TVector<IDataShardChangeCollector::TChange>&& records) {
@@ -942,20 +877,12 @@ void TDataShard::EnqueueChangeRecords(TVector<IDataShardChangeCollector::TChange
         << ": at tablet: " << TabletID()
         << ", records: " << JoinSeq(", ", records));
 
-    const auto now = AppData()->TimeProvider->Now();
     TVector<TEvChangeExchange::TEvEnqueueRecords::TRecordInfo> forward(Reserve(records.size()));
     for (const auto& record : records) {
         forward.emplace_back(record.Order, record.PathId, record.BodySize);
 
-        auto res = ChangesQueue.emplace(
-            std::piecewise_construct,
-            std::forward_as_tuple(record.Order),
-            std::forward_as_tuple(record, now)
-        );
-        if (res.second) {
-            ChangesList.PushBack(&res.first->second);
-
-            Y_ABORT_UNLESS(ChangesQueueBytes <= (Max<ui64>() - record.BodySize));
+        if (auto res = ChangesQueue.emplace(record.Order, record); res.second) {
+            Y_VERIFY(ChangesQueueBytes <= (Max<ui64>() - record.BodySize));
             ChangesQueueBytes += record.BodySize;
 
             if (record.SchemaVersion) {
@@ -965,27 +892,15 @@ void TDataShard::EnqueueChangeRecords(TVector<IDataShardChangeCollector::TChange
         }
     }
 
-    UpdateChangeExchangeLag(now);
     IncCounter(COUNTER_CHANGE_RECORDS_ENQUEUED, forward.size());
     SetCounter(COUNTER_CHANGE_QUEUE_SIZE, ChangesQueue.size());
 
-    Y_ABORT_UNLESS(OutChangeSender);
+    Y_VERIFY(OutChangeSender);
     Send(OutChangeSender, new TEvChangeExchange::TEvEnqueueRecords(std::move(forward)));
 }
 
-void TDataShard::UpdateChangeExchangeLag(TInstant now) {
-    if (!ChangesList.Empty()) {
-        const auto* front = ChangesList.Front();
-        SetCounter(COUNTER_CHANGE_DATA_LAG, Max(now - front->CreatedAt, TDuration::Zero()).MilliSeconds());
-        SetCounter(COUNTER_CHANGE_DELIVERY_LAG, (now - front->EnqueuedAt).MilliSeconds());
-    } else {
-        SetCounter(COUNTER_CHANGE_DATA_LAG, 0);
-        SetCounter(COUNTER_CHANGE_DELIVERY_LAG, 0);
-    }
-}
-
 void TDataShard::CreateChangeSender(const TActorContext& ctx) {
-    Y_ABORT_UNLESS(!OutChangeSender);
+    Y_VERIFY(!OutChangeSender);
     OutChangeSender = Register(NDataShard::CreateChangeSender(this));
 
     LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Change sender created"
@@ -1029,7 +944,7 @@ void TDataShard::MaybeActivateChangeSender(const TActorContext& ctx) {
         break;
     }
 
-    Y_ABORT_UNLESS(OutChangeSender);
+    Y_VERIFY(OutChangeSender);
     Send(OutChangeSender, new TEvChangeExchange::TEvActivateSender());
 
     LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD, "Change sender activated"
@@ -1353,12 +1268,12 @@ TUserTable::TPtr TDataShard::AlterTableSchemaVersion(
     const TPathId& pathId, const ui64 tableSchemaVersion, bool persist)
 {
 
-    Y_ABORT_UNLESS(GetPathOwnerId() == pathId.OwnerId);
+    Y_VERIFY(GetPathOwnerId() == pathId.OwnerId);
     ui64 tableId = pathId.LocalPathId;
 
-    Y_ABORT_UNLESS(TableInfos.contains(tableId));
+    Y_VERIFY(TableInfos.contains(tableId));
     auto oldTableInfo = TableInfos[tableId];
-    Y_ABORT_UNLESS(oldTableInfo);
+    Y_VERIFY(oldTableInfo);
 
     TUserTable::TPtr newTableInfo = new TUserTable(*oldTableInfo);
     newTableInfo->SetTableSchemaVersion(tableSchemaVersion);
@@ -1456,8 +1371,8 @@ void TDataShard::AddSchemaSnapshot(const TPathId& pathId, ui64 tableSchemaVersio
         << ", txId# " << txId
         << ", at tablet# " << TabletID());
 
-    Y_ABORT_UNLESS(GetPathOwnerId() == pathId.OwnerId);
-    Y_ABORT_UNLESS(TableInfos.contains(pathId.LocalPathId));
+    Y_VERIFY(GetPathOwnerId() == pathId.OwnerId);
+    Y_VERIFY(TableInfos.contains(pathId.LocalPathId));
     auto tableInfo = TableInfos[pathId.LocalPathId];
 
     const auto key = TSchemaSnapshotKey(pathId.OwnerId, pathId.LocalPathId, tableSchemaVersion);
@@ -1475,7 +1390,7 @@ TUserTable::TPtr TDataShard::CreateUserTable(TTransactionContext& txc,
     const TString mainTableName = TDataShard::Schema::UserTablePrefix + tableScheme.GetName();
     ui64 tableId = tableScheme.GetId_Deprecated();
     if (tableScheme.HasPathId()) {
-        Y_ABORT_UNLESS(GetPathOwnerId() == tableScheme.GetPathId().GetOwnerId() || GetPathOwnerId() == INVALID_TABLET_ID);
+        Y_VERIFY(GetPathOwnerId() == tableScheme.GetPathId().GetOwnerId() || GetPathOwnerId() == INVALID_TABLET_ID);
         tableId = tableScheme.GetPathId().GetLocalId();
     }
     ui32 localTid = ++LastLocalTid;
@@ -1528,11 +1443,11 @@ TUserTable::TPtr TDataShard::MoveUserTable(TOperation::TPtr op, const NKikimrTxD
     const auto prevId = PathIdFromPathId(move.GetPathId());
     const auto newId = PathIdFromPathId(move.GetDstPathId());
 
-    Y_ABORT_UNLESS(GetPathOwnerId() == prevId.OwnerId);
-    Y_ABORT_UNLESS(TableInfos.contains(prevId.LocalPathId));
+    Y_VERIFY(GetPathOwnerId() == prevId.OwnerId);
+    Y_VERIFY(TableInfos.contains(prevId.LocalPathId));
 
     const auto version = move.GetTableSchemaVersion();
-    Y_ABORT_UNLESS(version);
+    Y_VERIFY(version);
 
     auto newTableInfo = AlterTableSchemaVersion(ctx, txc, prevId, version, false);
     newTableInfo->SetPath(move.GetDstPath());
@@ -1542,7 +1457,7 @@ TUserTable::TPtr TDataShard::MoveUserTable(TOperation::TPtr op, const NKikimrTxD
     NKikimrSchemeOp::TTableDescription schema;
     newTableInfo->GetSchema(schema);
     for (auto& indexDesc: *schema.MutableTableIndexes()) {
-        Y_ABORT_UNLESS(indexDesc.HasPathOwnerId() && indexDesc.HasLocalPathId());
+        Y_VERIFY(indexDesc.HasPathOwnerId() && indexDesc.HasLocalPathId());
         auto prevPathId = TPathId(indexDesc.GetPathOwnerId(), indexDesc.GetLocalPathId());
         Y_VERIFY_S(remap.contains(prevPathId), "no rule how to move index with pathId " << prevPathId); // we should remap all indexes
         auto newPathId = remap.at(prevPathId);
@@ -1554,12 +1469,6 @@ TUserTable::TPtr TDataShard::MoveUserTable(TOperation::TPtr op, const NKikimrTxD
         newTableInfo->Indexes.erase(prevPathId);
     }
     newTableInfo->SetSchema(schema);
-
-    //NOTE: Stats building is bound to table id, but move-table changes table id,
-    // so already built stats couldn't be inherited by moved table
-    // and have to be rebuilt from the ground up
-    newTableInfo->StatsUpdateInProgress = false;
-    newTableInfo->StatsNeedUpdate = true;
 
     RemoveUserTable(prevId);
     AddUserTable(newId, newTableInfo);
@@ -1588,11 +1497,11 @@ TUserTable::TPtr TDataShard::MoveUserIndex(TOperation::TPtr op, const NKikimrTxD
 {
     const auto pathId = PathIdFromPathId(move.GetPathId());
 
-    Y_ABORT_UNLESS(GetPathOwnerId() == pathId.OwnerId);
-    Y_ABORT_UNLESS(TableInfos.contains(pathId.LocalPathId));
+    Y_VERIFY(GetPathOwnerId() == pathId.OwnerId);
+    Y_VERIFY(TableInfos.contains(pathId.LocalPathId));
 
     const auto version = move.GetTableSchemaVersion();
-    Y_ABORT_UNLESS(version);
+    Y_VERIFY(version);
 
     auto newTableInfo = AlterTableSchemaVersion(ctx, txc, pathId, version, false);
 
@@ -1606,7 +1515,7 @@ TUserTable::TPtr TDataShard::MoveUserIndex(TOperation::TPtr op, const NKikimrTxD
         size_t id = 0;
         bool found = false;
         for (auto& indexDesc: *schema.MutableTableIndexes()) {
-            Y_ABORT_UNLESS(indexDesc.HasPathOwnerId() && indexDesc.HasLocalPathId());
+            Y_VERIFY(indexDesc.HasPathOwnerId() && indexDesc.HasLocalPathId());
             auto pathId = TPathId(indexDesc.GetPathOwnerId(), indexDesc.GetLocalPathId());
             if (oldPathId == pathId) {
                 found = true;
@@ -1623,11 +1532,11 @@ TUserTable::TPtr TDataShard::MoveUserIndex(TOperation::TPtr op, const NKikimrTxD
 
     const auto remapPrevId = PathIdFromPathId(move.GetReMapIndex().GetSrcPathId());
     const auto remapNewId = PathIdFromPathId(move.GetReMapIndex().GetDstPathId());
-    Y_ABORT_UNLESS(move.GetReMapIndex().HasDstName());
+    Y_VERIFY(move.GetReMapIndex().HasDstName());
     const auto dstIndexName = move.GetReMapIndex().GetDstName();
 
     for (auto& indexDesc: *schema.MutableTableIndexes()) {
-        Y_ABORT_UNLESS(indexDesc.HasPathOwnerId() && indexDesc.HasLocalPathId());
+        Y_VERIFY(indexDesc.HasPathOwnerId() && indexDesc.HasLocalPathId());
         auto prevPathId = TPathId(indexDesc.GetPathOwnerId(), indexDesc.GetLocalPathId());
         if (remapPrevId != prevPathId) {
             continue;
@@ -1639,7 +1548,7 @@ TUserTable::TPtr TDataShard::MoveUserIndex(TOperation::TPtr op, const NKikimrTxD
         newTableInfo->Indexes[remapNewId] = newTableInfo->Indexes[prevPathId];
         newTableInfo->Indexes.erase(prevPathId);
 
-        Y_ABORT_UNLESS(move.GetReMapIndex().HasDstName());
+        Y_VERIFY(move.GetReMapIndex().HasDstName());
         indexDesc.SetName(dstIndexName);
         newTableInfo->Indexes[remapNewId].Name = dstIndexName;
     }
@@ -1663,11 +1572,11 @@ TUserTable::TPtr TDataShard::AlterUserTable(const TActorContext& ctx, TTransacti
 {
     ui64 tableId = alter.GetId_Deprecated();
     if (alter.HasPathId()) {
-        Y_ABORT_UNLESS(GetPathOwnerId() == alter.GetPathId().GetOwnerId());
+        Y_VERIFY(GetPathOwnerId() == alter.GetPathId().GetOwnerId());
         tableId = alter.GetPathId().GetLocalId();
     }
     TUserTable::TCPtr oldTable = TableInfos[tableId];
-    Y_ABORT_UNLESS(oldTable);
+    Y_VERIFY(oldTable);
 
     TUserTable::TPtr tableInfo = new TUserTable(*oldTable, alter);
     TString strError;
@@ -1724,7 +1633,7 @@ TUserTable::TPtr TDataShard::AlterUserTable(const TActorContext& ctx, TTransacti
 
 void TDataShard::DropUserTable(TTransactionContext& txc, ui64 tableId) {
     auto ti = TableInfos.find(tableId);
-    Y_ABORT_UNLESS(ti != TableInfos.end(), "Table with id %" PRIu64 " doesn't exist on this datashard", tableId);
+    Y_VERIFY(ti != TableInfos.end(), "Table with id %" PRIu64 " doesn't exist on this datashard", tableId);
 
     NIceDb::TNiceDb db(txc.DB);
     txc.DB.NoMoreReadsForTx();
@@ -1782,7 +1691,7 @@ void TDataShard::SnapshotComplete(TIntrusivePtr<NTabletFlatExecutor::TTableSnaps
         auto stepOrder = txSnapContext->GetStepOrder();
         auto op = Pipeline.GetActiveOp(stepOrder.TxId);
 
-        Y_DEBUG_ABORT_UNLESS(op, "The Tx that requested snapshot must be active!");
+        Y_VERIFY_DEBUG(op, "The Tx that requested snapshot must be active!");
         if (!op) {
             LOG_CRIT_S(ctx, NKikimrServices::TX_DATASHARD,
                        "Got snapshot for missing operation " << stepOrder
@@ -1790,7 +1699,7 @@ void TDataShard::SnapshotComplete(TIntrusivePtr<NTabletFlatExecutor::TTableSnaps
             return;
         }
 
-        Y_ABORT_UNLESS(txSnapContext->TablesToSnapshot().size() == 1,
+        Y_VERIFY(txSnapContext->TablesToSnapshot().size() == 1,
                  "Currently only 1 table can be snapshotted");
         ui32 tableId = txSnapContext->TablesToSnapshot()[0];
 
@@ -1809,17 +1718,17 @@ void TDataShard::SnapshotComplete(TIntrusivePtr<NTabletFlatExecutor::TTableSnaps
         return;
     }
 
-    Y_ABORT("Unexpected table snapshot context");
+    Y_FAIL("Unexpected table snapshot context");
 }
 
 TUserTable::TSpecialUpdate TDataShard::SpecialUpdates(const NTable::TDatabase& db, const TTableId& tableId) const {
-    Y_ABORT_UNLESS(tableId.PathId.OwnerId == PathOwnerId, "%" PRIu64 " vs %" PRIu64,
+    Y_VERIFY(tableId.PathId.OwnerId == PathOwnerId, "%" PRIu64 " vs %" PRIu64,
              tableId.PathId.OwnerId, PathOwnerId);
 
     auto it = TableInfos.find(tableId.PathId.LocalPathId);
-    Y_ABORT_UNLESS(it != TableInfos.end());
+    Y_VERIFY(it != TableInfos.end());
     const TUserTable& tableInfo = *it->second;
-    Y_ABORT_UNLESS(tableInfo.LocalTid != Max<ui32>());
+    Y_VERIFY(tableInfo.LocalTid != Max<ui32>());
 
     TUserTable::TSpecialUpdate ret;
 
@@ -1845,25 +1754,25 @@ TUserTable::TSpecialUpdate TDataShard::SpecialUpdates(const NTable::TDatabase& d
 }
 
 void TDataShard::SetTableAccessTime(const TTableId& tableId, TInstant ts) {
-    Y_ABORT_UNLESS(!TSysTables::IsSystemTable(tableId));
+    Y_VERIFY(!TSysTables::IsSystemTable(tableId));
     auto iter = TableInfos.find(tableId.PathId.LocalPathId);
-    Y_ABORT_UNLESS(iter != TableInfos.end());
+    Y_VERIFY(iter != TableInfos.end());
     iter->second->Stats.AccessTime = ts;
 }
 
 void TDataShard::SetTableUpdateTime(const TTableId& tableId, TInstant ts) {
-    Y_ABORT_UNLESS(!TSysTables::IsSystemTable(tableId));
+    Y_VERIFY(!TSysTables::IsSystemTable(tableId));
     auto iter = TableInfos.find(tableId.PathId.LocalPathId);
-    Y_ABORT_UNLESS(iter != TableInfos.end());
+    Y_VERIFY(iter != TableInfos.end());
     iter->second->Stats.AccessTime = ts;
     iter->second->Stats.UpdateTime = ts;
 }
 
 void TDataShard::SampleKeyAccess(const TTableId& tableId, const TArrayRef<const TCell>& row) {
-    Y_ABORT_UNLESS(!TSysTables::IsSystemTable(tableId));
+    Y_VERIFY(!TSysTables::IsSystemTable(tableId));
 
     auto iter = TableInfos.find(tableId.PathId.LocalPathId);
-    Y_ABORT_UNLESS(iter != TableInfos.end());
+    Y_VERIFY(iter != TableInfos.end());
 
     const ui64 samplingKeyPrefixSize = row.size();
     TArrayRef<const TCell> key(row.data(), samplingKeyPrefixSize);
@@ -1961,9 +1870,6 @@ bool TDataShard::IsMvccEnabled() const {
 }
 
 TReadWriteVersions TDataShard::GetLocalReadWriteVersions() const {
-    if (IsFollower())
-        return {TRowVersion::Max(), TRowVersion::Max()};
-
     if (!IsMvccEnabled())
         return {TRowVersion::Max(), SnapshotManager.GetMinWriteVersion()};
 
@@ -1981,7 +1887,7 @@ TReadWriteVersions TDataShard::GetLocalReadWriteVersions() const {
 }
 
 TRowVersion TDataShard::GetMvccTxVersion(EMvccTxMode mode, TOperation* op) const {
-    Y_DEBUG_ABORT_UNLESS(IsMvccEnabled());
+    Y_VERIFY_DEBUG(IsMvccEnabled());
 
     if (op) {
         if (op->IsMvccSnapshotRead()) {
@@ -2058,14 +1964,10 @@ TRowVersion TDataShard::GetMvccTxVersion(EMvccTxMode mode, TOperation* op) const
         }
     }
 
-    Y_ABORT("unreachable");
+    Y_FAIL("unreachable");
 }
 
 TReadWriteVersions TDataShard::GetReadWriteVersions(TOperation* op) const {
-    if (IsFollower()) {
-        return {TRowVersion::Max(), TRowVersion::Max()};
-    }
-
     if (!IsMvccEnabled())
         return {TRowVersion::Max(), SnapshotManager.GetMinWriteVersion()};
 
@@ -2083,8 +1985,6 @@ TReadWriteVersions TDataShard::GetReadWriteVersions(TOperation* op) const {
 TDataShard::TPromotePostExecuteEdges TDataShard::PromoteImmediatePostExecuteEdges(
         const TRowVersion& version, EPromotePostExecuteEdges mode, TTransactionContext& txc)
 {
-    Y_ABORT_UNLESS(!IsFollower(), "Unexpected attempt to promote edges on a follower");
-
     TPromotePostExecuteEdges res;
 
     res.HadWrites |= Pipeline.MarkPlannedLogicallyCompleteUpTo(version, txc);
@@ -2135,10 +2035,6 @@ TDataShard::TPromotePostExecuteEdges TDataShard::PromoteImmediatePostExecuteEdge
                 res.HadWrites |= SnapshotManager.PromoteCompleteEdge(version.Step, txc);
             }
             res.HadWrites |= SnapshotManager.PromoteImmediateWriteEdge(version, txc);
-            if (res.HadWrites) {
-                // Promoting write edges may promote read edge
-                PromoteFollowerReadEdge(txc);
-            }
             break;
         }
     }
@@ -2249,10 +2145,6 @@ void TDataShard::SendWithConfirmedReadOnlyLease(
     SendWithConfirmedReadOnlyLease(TMonotonic::Zero(), target, event, cookie, sessionId);
 }
 
-void TDataShard::Handle(TEvPrivate::TEvConfirmReadonlyLease::TPtr& ev, const TActorContext&) {
-    SendWithConfirmedReadOnlyLease(ev->Get()->Timestamp, ev->Sender, new TEvPrivate::TEvReadonlyLeaseConfirmation, ev->Cookie);
-}
-
 void TDataShard::SendImmediateReadResult(
     TMonotonic readTime,
     const TActorId& target,
@@ -2272,7 +2164,7 @@ void TDataShard::SendImmediateReadResult(
     SendWithConfirmedReadOnlyLease(TMonotonic::Zero(), target, event, cookie, sessionId);
 }
 
-void TDataShard::SendAfterMediatorStepActivate(ui64 mediatorStep, const TActorContext& ctx) {
+void TDataShard::SendAfterMediatorStepActivate(ui64 mediatorStep) {
     for (auto it = MediatorDelayedReplies.begin(); it != MediatorDelayedReplies.end();) {
         const ui64 step = it->first.Step;
 
@@ -2287,25 +2179,10 @@ void TDataShard::SendAfterMediatorStepActivate(ui64 mediatorStep, const TActorCo
         if (MediatorTimeCastEntry && (MediatorTimeCastWaitingSteps.empty() || step < *MediatorTimeCastWaitingSteps.begin())) {
             MediatorTimeCastWaitingSteps.insert(step);
             Send(MakeMediatorTimecastProxyID(), new TEvMediatorTimecast::TEvWaitPlanStep(TabletID(), step));
-            LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Waiting for PlanStep# " << step << " from mediator time cast");
+            LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "Waiting for PlanStep# " << step << " from mediator time cast");
         }
         break;
     }
-
-    if (Pipeline.HasPredictedPlan()) {
-        ui64 nextStep = Pipeline.NextPredictedPlanStep();
-        if (nextStep <= mediatorStep) {
-            SchedulePlanPredictedTxs();
-        } else {
-            WaitPredictedPlanStep(nextStep);
-        }
-    }
-
-    if (IsMvccEnabled()) {
-        PromoteFollowerReadEdge();
-    }
-
-    EmitHeartbeats(ctx);
 }
 
 void TDataShard::CheckMediatorStateRestored() {
@@ -2329,20 +2206,22 @@ void TDataShard::CheckMediatorStateRestored() {
     }
 
     // CoordinatorPrevReadStepMax shows us what is the next minimum step that
-    // may be acquired as a snapshot. This tells us that no previous read
-    // could have happened after this step, even if it was acquired, since it
-    // would have been waiting until mediator time advances to that step.
+    // may be acquired as a snapshot. This tells as that no previous read
+    // could have happened after this step, even if it has been acquired.
     // CoordinatorPrevReadStepMin shows us the maximum step that could have
-    // been acquired at coordinators before we subscribed, however this does
-    // not include possible local snapshots that could have been acquired by a
-    // previous generation during iterator reads, so we have to always use
-    // CoordinatorPrevReadStepMax as a worst case possible readStep.
-    // Note we always need to wait for CoordinatorPrevReadStepMax even without
-    // local snapshots, because previous generation may have observed it and
-    // may have replied to immediate writes at that step, and new immediate
-    // HEAD reads must include that in their results.
+    // been acquired before we subscribed. Even if the next step is very
+    // large it may be used to infer an erlier step, as previous generation
+    // could not have read any step that was not acquired.
+    // When some coordinators are still pending we use CoordinatorPrevReadStepMax
+    // as a worst case read step in the future, hoping to make a tighter
+    // prediction while we wait for that.
+    // Note we always need to wait for CoordinatorPrevReadStepMax because
+    // previous generation may have observed it and may have replied to
+    // immediate writes at that step.
     const ui64 waitStep = CoordinatorPrevReadStepMax;
-    const ui64 readStep = CoordinatorPrevReadStepMax;
+    const ui64 readStep = CoordinatorSubscriptionsPending == 0
+        ? Min(CoordinatorPrevReadStepMax, CoordinatorPrevReadStepMin)
+        : CoordinatorPrevReadStepMax;
 
     LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "CheckMediatorStateRestored: waitStep# " << waitStep << " readStep# " << readStep);
 
@@ -2378,17 +2257,9 @@ void TDataShard::CheckMediatorStateRestored() {
     // writes before the restart, and conversely don't accidentally read any
     // data that is definitely not replied yet.
     if (SnapshotManager.GetImmediateWriteEdgeReplied() < SnapshotManager.GetImmediateWriteEdge()) {
-        const ui64 writeStep = SnapshotManager.GetImmediateWriteEdge().Step;
         const TRowVersion edge(GetMaxObservedStep(), Max<ui64>());
         SnapshotManager.PromoteImmediateWriteEdgeReplied(
             Min(edge, SnapshotManager.GetImmediateWriteEdge()));
-        // Try to ensure writes become visible sooner rather than later
-        if (edge.Step < writeStep) {
-            if (MediatorTimeCastWaitingSteps.insert(writeStep).second) {
-                Send(MakeMediatorTimecastProxyID(), new TEvMediatorTimecast::TEvWaitPlanStep(TabletID(), writeStep));
-                LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "Waiting for PlanStep# " << writeStep << " from mediator time cast");
-            }
-        }
     }
 
     MediatorStateWaiting = false;
@@ -2446,7 +2317,6 @@ Ydb::StatusIds::StatusCode ConvertToYdbStatusCode(NKikimrTxDataShard::TError::EK
         case NKikimrTxDataShard::TError::UNKNOWN:
         case NKikimrTxDataShard::TError::REPLY_SIZE_EXCEEDED:
         case NKikimrTxDataShard::TError::EXECUTION_CANCELLED:
-        case NKikimrTxDataShard::TError::DISK_SPACE_EXHAUSTED:
             return Ydb::StatusIds::INTERNAL_ERROR;
         case NKikimrTxDataShard::TError::BAD_ARGUMENT:
         case NKikimrTxDataShard::TError::READONLY:
@@ -2464,6 +2334,12 @@ Ydb::StatusIds::StatusCode ConvertToYdbStatusCode(NKikimrTxDataShard::TError::EK
 
 void TDataShard::Handle(TEvents::TEvGone::TPtr &ev) {
     Actors.erase(ev->Sender);
+}
+
+void TDataShard::Handle(TEvents::TEvPoisonPill::TPtr &ev, const TActorContext &ctx) {
+    LOG_DEBUG(ctx, NKikimrServices::TX_DATASHARD, "Handle TEvents::TEvPoisonPill");
+    Y_UNUSED(ev);
+    BecomeBroken(ctx);
 }
 
 void TDataShard::Handle(TEvDataShard::TEvGetShardState::TPtr &ev, const TActorContext &ctx) {
@@ -2491,13 +2367,11 @@ void TDataShard::Handle(TEvDataShard::TEvStateChangedResult::TPtr& ev, const TAc
 bool TDataShard::CheckDataTxReject(const TString& opDescr,
                                           const TActorContext &ctx,
                                           NKikimrTxDataShard::TEvProposeTransactionResult::EStatus &rejectStatus,
-                                          ERejectReasons &rejectReasons,
-                                          TString &rejectDescription)
+                                          TString &reason)
 {
     bool reject = false;
     rejectStatus = NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED;
-    rejectReasons = ERejectReasons::None;
-    TVector<TString> rejectDescriptions;
+    TVector<TString> rejectReasons;
 
     // In v0.5 reject all transactions on split Src after receiving EvSplit
     if (State == TShardState::SplitSrcWaitForNoTxInFlight ||
@@ -2505,43 +2379,37 @@ bool TDataShard::CheckDataTxReject(const TString& opDescr,
         State == TShardState::SplitSrcSendingSnapshot ||
         State == TShardState::SplitSrcWaitForPartitioningChanged) {
         reject = true;
-        rejectReasons |= ERejectReasons::WrongState;
-        rejectDescriptions.push_back(TStringBuilder()
+        rejectReasons.push_back(TStringBuilder()
             << "is in process of split opId " << SrcSplitOpId
             << " state " << DatashardStateName(State)
             << " (wrong shard state)");
     } else if (State == TShardState::SplitDstReceivingSnapshot) {
         reject = true;
-        rejectReasons |= ERejectReasons::WrongState;
-        rejectDescriptions.push_back(TStringBuilder()
+        rejectReasons.push_back(TStringBuilder()
             << "is in process of split opId " << DstSplitOpId
             << " state " << DatashardStateName(State));
     } else if (State == TShardState::PreOffline || State == TShardState::Offline) {
         reject = true;
         rejectStatus = NKikimrTxDataShard::TEvProposeTransactionResult::ERROR;
-        rejectReasons |= ERejectReasons::WrongState;
-        rejectDescriptions.push_back("is in a pre/offline state assuming this is due to a finished split (wrong shard state)");
+        rejectReasons.push_back("is in a pre/offline state assuming this is due to a finished split (wrong shard state)");
     } else if (MvccSwitchState == TSwitchState::SWITCHING) {
         reject = true;
-        rejectReasons |= ERejectReasons::WrongState;
-        rejectDescriptions.push_back(TStringBuilder()
+        rejectReasons.push_back(TStringBuilder()
             << "is in process of mvcc state change"
             << " state " << DatashardStateName(State));
     }
 
     if (Pipeline.HasDrop()) {
         reject = true;
+        rejectReasons.push_back("is in process of drop");
         rejectStatus = NKikimrTxDataShard::TEvProposeTransactionResult::ERROR;
-        rejectReasons |= ERejectReasons::Dropping;
-        rejectDescriptions.push_back("is in process of drop");
     }
 
     ui64 txInfly = TxInFly();
     TDuration lag = GetDataTxCompleteLag();
     if (txInfly > 1 && lag > TDuration::MilliSeconds(MaxTxLagMilliseconds)) {
         reject = true;
-        rejectReasons |= ERejectReasons::OverloadByLag;
-        rejectDescriptions.push_back(TStringBuilder()
+        rejectReasons.push_back(TStringBuilder()
             << "lags behind, lag: " << lag
             << " in-flight tx count: " << txInfly);
     }
@@ -2550,10 +2418,8 @@ bool TDataShard::CheckDataTxReject(const TString& opDescr,
     if (!reject && rejectProbabilty > 0) {
         float rnd = AppData(ctx)->RandomProvider->GenRandReal2();
         reject |= (rnd < rejectProbabilty);
-        if (reject) {
-            rejectReasons |= ERejectReasons::OverloadByProbability;
-            rejectDescriptions.push_back("decided to reject due to given RejectProbability");
-        }
+        if (reject)
+            rejectReasons.push_back("decided to reject due to given RejectProbability");
     }
 
     size_t totalInFly =
@@ -2561,41 +2427,37 @@ bool TDataShard::CheckDataTxReject(const TString& opDescr,
             + ProposeQueue.Size() + TxWaiting();
     if (totalInFly > GetMaxTxInFly()) {
         reject = true;
-        rejectReasons |= ERejectReasons::OverloadByTxInFly;
-        rejectDescriptions.push_back("MaxTxInFly was exceeded");
+        rejectReasons.push_back("MaxTxInFly was exceeded");
     }
 
     if (!reject && Stopping) {
         reject = true;
-        rejectReasons |= ERejectReasons::WrongState;
-        rejectDescriptions.push_back("is restarting");
+        rejectReasons.push_back("is restarting");
     }
 
     if (!reject) {
         for (auto& it : TableInfos) {
             if (it.second->IsBackup) {
                 reject = true;
+                rejectReasons.push_back("is a backup table");
                 rejectStatus = NKikimrTxDataShard::TEvProposeTransactionResult::ERROR;
-                rejectReasons |= ERejectReasons::WrongState;
-                rejectDescriptions.push_back("is a backup table");
                 break;
             }
         }
     }
 
     if (reject) {
-        rejectDescription = TStringBuilder()
+        reason = TStringBuilder()
             << "Rejecting " << opDescr
             << " because datashard " << TabletID() << ": "
-            << JoinSeq("; ", rejectDescriptions);
+            << JoinSeq("; ", rejectReasons);
     }
 
     return reject;
 }
 
-bool TDataShard::CheckDataTxRejectAndReply(const TEvDataShard::TEvProposeTransaction::TPtr& ev, const TActorContext& ctx)
+bool TDataShard::CheckDataTxRejectAndReply(TEvDataShard::TEvProposeTransaction* msg, const TActorContext& ctx)
 {
-    auto* msg = ev->Get();
     switch (msg->GetTxKind()) {
         case NKikimrTxDataShard::TX_KIND_DATA:
         case NKikimrTxDataShard::TX_KIND_SCAN:
@@ -2610,22 +2472,20 @@ bool TDataShard::CheckDataTxRejectAndReply(const TEvDataShard::TEvProposeTransac
     TString txDescr = TStringBuilder() << "data TxId " << msg->GetTxId();
 
     NKikimrTxDataShard::TEvProposeTransactionResult::EStatus rejectStatus;
-    ERejectReasons rejectReasons;
-    TString rejectDescription;
-    bool reject = CheckDataTxReject(txDescr, ctx, rejectStatus, rejectReasons, rejectDescription);
+    TString rejectReason;
+    bool reject = CheckDataTxReject(txDescr, ctx, rejectStatus, rejectReason);
 
     if (reject) {
-        LWTRACK(ProposeTransactionReject, msg->Orbit);
         THolder<TEvDataShard::TEvProposeTransactionResult> result =
             THolder(new TEvDataShard::TEvProposeTransactionResult(msg->GetTxKind(),
                                                             TabletID(),
                                                             msg->GetTxId(),
                                                             rejectStatus));
 
-        result->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, rejectDescription);
-        LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, rejectDescription);
+        result->AddError(NKikimrTxDataShard::TError::WRONG_SHARD_STATE, rejectReason);
+        LOG_NOTICE_S(ctx, NKikimrServices::TX_DATASHARD, rejectReason);
 
-        ctx.Send(ev->Sender, result.Release());
+        ctx.Send(msg->GetSource(), result.Release());
         IncCounter(COUNTER_PREPARE_OVERLOADED);
         IncCounter(COUNTER_PREPARE_COMPLETE);
         return true;
@@ -2640,16 +2500,12 @@ void TDataShard::UpdateProposeQueueSize() const {
 }
 
 void TDataShard::Handle(TEvDataShard::TEvProposeTransaction::TPtr &ev, const TActorContext &ctx) {
-    auto* msg = ev->Get();
-    LWTRACK(ProposeTransactionRequest, msg->Orbit);
-
     // Check if we need to delay an immediate transaction
     if (MediatorStateWaiting &&
         (ev->Get()->GetFlags() & TTxFlags::Immediate) &&
         !(ev->Get()->GetFlags() & TTxFlags::ForceOnline))
     {
         // We cannot calculate correct version until we restore mediator state
-        LWTRACK(ProposeTransactionWaitMediatorState, msg->Orbit);
         MediatorStateWaitingMsgs.emplace_back(ev.Release());
         UpdateProposeQueueSize();
         return;
@@ -2658,7 +2514,6 @@ void TDataShard::Handle(TEvDataShard::TEvProposeTransaction::TPtr &ev, const TAc
     if (Pipeline.HasProposeDelayers()) {
         LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD,
             "Handle TEvProposeTransaction delayed at " << TabletID() << " until dependency graph is restored");
-        LWTRACK(ProposeTransactionWaitDelayers, msg->Orbit);
         DelayedProposeQueue.emplace_back().Reset(ev.Release());
         UpdateProposeQueueSize();
         return;
@@ -2675,7 +2530,7 @@ void TDataShard::Handle(TEvDataShard::TEvProposeTransaction::TPtr &ev, const TAc
 
     IncCounter(COUNTER_PREPARE_REQUEST);
 
-    if (CheckDataTxRejectAndReply(ev, ctx)) {
+    if (CheckDataTxRejectAndReply(ev->Get(), ctx)) {
         return;
     }
 
@@ -2700,7 +2555,7 @@ void TDataShard::Handle(TEvDataShard::TEvProposeTransaction::TPtr &ev, const TAc
                                                         ev->Get()->GetTxId(),
                                                         NKikimrTxDataShard::TEvProposeTransactionResult::ERROR));
     result->AddError(NKikimrTxDataShard::TError::BAD_TX_KIND, "Unknown kind of transaction");
-    ctx.Send(ev->Sender, result.Release());
+    ctx.Send(ev->Get()->GetSource(), result.Release());
     IncCounter(COUNTER_PREPARE_ERROR);
     IncCounter(COUNTER_PREPARE_COMPLETE);
 
@@ -2727,16 +2582,13 @@ void TDataShard::Handle(TEvDataShard::TEvProposeTransactionAttach::TPtr &ev, con
 }
 
 void TDataShard::HandleAsFollower(TEvDataShard::TEvProposeTransaction::TPtr &ev, const TActorContext &ctx) {
-    auto* msg = ev->Get();
-    LWTRACK(ProposeTransactionRequest, msg->Orbit);
-
     IncCounter(COUNTER_PREPARE_REQUEST);
 
     if (TxInFly() > GetMaxTxInFly()) {
         THolder<TEvDataShard::TEvProposeTransactionResult> result =
             THolder(new TEvDataShard::TEvProposeTransactionResult(ev->Get()->GetTxKind(), TabletID(),
                 ev->Get()->GetTxId(), NKikimrTxDataShard::TEvProposeTransactionResult::OVERLOADED));
-        ctx.Send(ev->Sender, result.Release());
+        ctx.Send(ev->Get()->GetSource(), result.Release());
         IncCounter(COUNTER_PREPARE_OVERLOADED);
         IncCounter(COUNTER_PREPARE_COMPLETE);
         return;
@@ -2753,7 +2605,7 @@ void TDataShard::HandleAsFollower(TEvDataShard::TEvProposeTransaction::TPtr &ev,
                                                         ev->Get()->GetTxId(),
                                                         NKikimrTxDataShard::TEvProposeTransactionResult::ERROR));
     result->AddError(NKikimrTxDataShard::TError::BAD_TX_KIND, "Unsupported transaction kind");
-    ctx.Send(ev->Sender, result.Release());
+    ctx.Send(ev->Get()->GetSource(), result.Release());
     IncCounter(COUNTER_PREPARE_ERROR);
     IncCounter(COUNTER_PREPARE_COMPLETE);
 }
@@ -2770,12 +2622,11 @@ void TDataShard::CheckDelayedProposeQueue(const TActorContext &ctx) {
 }
 
 void TDataShard::ProposeTransaction(TEvDataShard::TEvProposeTransaction::TPtr &&ev, const TActorContext &ctx) {
-    auto* msg = ev->Get();
     bool mayRunImmediate = false;
 
-    if ((msg->GetFlags() & TTxFlags::Immediate) &&
-        !(msg->GetFlags() & TTxFlags::ForceOnline) &&
-        msg->GetTxKind() == NKikimrTxDataShard::TX_KIND_DATA)
+    if ((ev->Get()->GetFlags() & TTxFlags::Immediate) &&
+        !(ev->Get()->GetFlags() & TTxFlags::ForceOnline) &&
+        ev->Get()->GetTxKind() == NKikimrTxDataShard::TX_KIND_DATA)
     {
         // This transaction may run in immediate mode
         mayRunImmediate = true;
@@ -2783,7 +2634,6 @@ void TDataShard::ProposeTransaction(TEvDataShard::TEvProposeTransaction::TPtr &&
 
     if (mayRunImmediate) {
         // Enqueue immediate transactions so they don't starve existing operations
-        LWTRACK(ProposeTransactionEnqueue, msg->Orbit);
         ProposeQueue.Enqueue(std::move(ev), TAppData::TimeProvider->Now(), NextTieBreakerIndex++, ctx);
         UpdateProposeQueueSize();
     } else {
@@ -2798,7 +2648,7 @@ void TDataShard::Handle(TEvTxProcessing::TEvPlanStep::TPtr &ev, const TActorCont
         LOG_CRIT_S(ctx, NKikimrServices::TX_DATASHARD, "tablet " << TabletID() <<
                    " receive PlanStep " << ev->Get()->Record.GetStep() <<
                    " from unauthorized mediator " << srcMediatorId);
-        HandlePoison(ctx);
+        BecomeBroken(ctx);
         return;
     }
 
@@ -2853,7 +2703,7 @@ void TDataShard::Handle(TEvPrivate::TEvDelayedProposeTransaction::TPtr &ev, cons
             return;
         }
 
-        TActorId target = item.Event->Sender;
+        TActorId target = item.Event->Get()->GetSource();
         ui64 cookie = item.Event->Cookie;
         auto kind = item.Event->Get()->GetTxKind();
         auto txId = item.Event->Get()->GetTxId();
@@ -2909,7 +2759,7 @@ void TDataShard::Handle(TEvPrivate::TEvPersistScanState::TPtr& ev, const TActorC
 }
 
 void TDataShard::Handle(TEvTabletPipe::TEvClientConnected::TPtr &ev, const TActorContext &ctx) {
-    Y_ABORT_UNLESS(ev->Get()->Leader, "Unexpectedly connected to follower of tablet %" PRIu64, ev->Get()->TabletId);
+    Y_VERIFY(ev->Get()->Leader, "Unexpectedly connected to follower of tablet %" PRIu64, ev->Get()->TabletId);
 
     if (ev->Get()->ClientId == SchemeShardPipe) {
         if (!TransQueue.HasNotAckedSchemaTx()) {
@@ -3092,49 +2942,34 @@ void TDataShard::AbortExpectationsFromDeletedTablet(ui64 tabletId, THashMap<ui64
 }
 
 void TDataShard::Handle(TEvTabletPipe::TEvServerConnected::TPtr &ev, const TActorContext &ctx) {
+    Y_UNUSED(ev); Y_UNUSED(ctx);
     LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Server connected at "
         << (Executor()->GetStats().IsFollower ? "follower " : "leader ")
         << "tablet# " << ev->Get()->TabletId
         << ", clientId# " << ev->Get()->ClientId
         << ", serverId# " << ev->Get()->ServerId
         << ", sessionId# " << ev->InterconnectSession);
-
-    auto res = PipeServers.emplace(
-        std::piecewise_construct,
-        std::forward_as_tuple(ev->Get()->ServerId),
-        std::forward_as_tuple());
-    Y_VERIFY_DEBUG_S(res.second,
-        "Unexpected TEvServerConnected for " << ev->Get()->ServerId);
-
-    res.first->second.InterconnectSession = ev->Get()->InterconnectSession;
 }
 
 void TDataShard::Handle(TEvTabletPipe::TEvServerDisconnected::TPtr &ev, const TActorContext &ctx) {
+    Y_UNUSED(ev); Y_UNUSED(ctx);
     LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Server disconnected at "
         << (Executor()->GetStats().IsFollower ? "follower " : "leader ")
         << "tablet# " << ev->Get()->TabletId
         << ", clientId# " << ev->Get()->ClientId
         << ", serverId# " << ev->Get()->ServerId
         << ", sessionId# " << ev->InterconnectSession);
-
-    auto it = PipeServers.find(ev->Get()->ServerId);
-    Y_VERIFY_DEBUG_S(it != PipeServers.end(),
-        "Unexpected TEvServerDisconnected for " << ev->Get()->ServerId);
-
-    DiscardOverloadSubscribers(it->second);
-
-    PipeServers.erase(it);
 }
 
 void TDataShard::Handle(TEvMediatorTimecast::TEvRegisterTabletResult::TPtr& ev, const TActorContext& ctx) {
     LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD,
                 "Got TEvMediatorTimecast::TEvRegisterTabletResult at " << TabletID()
                 << " time " << ev->Get()->Entry->Get(TabletID()));
-    Y_ABORT_UNLESS(ev->Get()->TabletId == TabletID());
+    Y_VERIFY(ev->Get()->TabletId == TabletID());
     MediatorTimeCastEntry = ev->Get()->Entry;
-    Y_ABORT_UNLESS(MediatorTimeCastEntry);
+    Y_VERIFY(MediatorTimeCastEntry);
 
-    SendAfterMediatorStepActivate(MediatorTimeCastEntry->Get(TabletID()), ctx);
+    SendAfterMediatorStepActivate(MediatorTimeCastEntry->Get(TabletID()));
 
     Pipeline.ActivateWaitingTxOps(ctx);
 
@@ -3147,7 +2982,7 @@ void TDataShard::Handle(TEvMediatorTimecast::TEvSubscribeReadStepResult::TPtr& e
                 "Got TEvMediatorTimecast::TEvSubscribeReadStepResult at " << TabletID()
                 << " coordinator " << msg->CoordinatorId
                 << " last step " << msg->LastReadStep
-                << " next step " << msg->NextReadStep);
+                << " next step " << msg->ReadStep->Get());
     auto it = CoordinatorSubscriptionById.find(msg->CoordinatorId);
     Y_VERIFY_S(it != CoordinatorSubscriptionById.end(),
         "Unexpected TEvSubscribeReadStepResult for coordinator " << msg->CoordinatorId);
@@ -3162,16 +2997,16 @@ void TDataShard::Handle(TEvMediatorTimecast::TEvSubscribeReadStepResult::TPtr& e
 
 void TDataShard::Handle(TEvMediatorTimecast::TEvNotifyPlanStep::TPtr& ev, const TActorContext& ctx) {
     const auto* msg = ev->Get();
-    Y_ABORT_UNLESS(msg->TabletId == TabletID());
+    Y_VERIFY(msg->TabletId == TabletID());
 
-    Y_ABORT_UNLESS(MediatorTimeCastEntry);
+    Y_VERIFY(MediatorTimeCastEntry);
     ui64 step = MediatorTimeCastEntry->Get(TabletID());
     LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Notified by mediator time cast with PlanStep# " << step << " at tablet " << TabletID());
 
     for (auto it = MediatorTimeCastWaitingSteps.begin(); it != MediatorTimeCastWaitingSteps.end() && *it <= step;)
         it = MediatorTimeCastWaitingSteps.erase(it);
 
-    SendAfterMediatorStepActivate(step, ctx);
+    SendAfterMediatorStepActivate(step);
 
     Pipeline.ActivateWaitingTxOps(ctx);
 
@@ -3208,27 +3043,7 @@ bool TDataShard::WaitPlanStep(ui64 step) {
     return false;
 }
 
-void TDataShard::WaitPredictedPlanStep(ui64 step) {
-    if (!MediatorTimeCastEntry) {
-        return;
-    }
-
-    if (step <= MediatorTimeCastEntry->Get(TabletID())) {
-        // This step is ready, schedule a transaction plan
-        SchedulePlanPredictedTxs();
-        return;
-    }
-
-    if (MediatorTimeCastWaitingSteps.empty() || step < *MediatorTimeCastWaitingSteps.begin()) {
-        MediatorTimeCastWaitingSteps.insert(step);
-        Send(MakeMediatorTimecastProxyID(), new TEvMediatorTimecast::TEvWaitPlanStep(TabletID(), step));
-        LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "Waiting for PlanStep# " << step << " from mediator time cast");
-    }
-}
-
 bool TDataShard::CheckTxNeedWait(const TEvDataShard::TEvProposeTransaction::TPtr& ev) const {
-    auto* msg = ev->Get();
-
     if (MvccSwitchState == TSwitchState::SWITCHING) {
         LOG_TRACE_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "New transaction needs to wait because of mvcc state switching");
         return true;
@@ -3240,7 +3055,6 @@ bool TDataShard::CheckTxNeedWait(const TEvDataShard::TEvProposeTransaction::TPtr
         TRowVersion unreadableEdge = Pipeline.GetUnreadableEdge(GetEnablePrioritizedMvccSnapshotReads());
         if (rowVersion >= unreadableEdge) {
             LOG_TRACE_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD, "New transaction reads from " << rowVersion << " which is not before unreadable edge " << unreadableEdge);
-            LWTRACK(ProposeTransactionWaitSnapshot, msg->Orbit, rowVersion.Step, rowVersion.TxId);
             return true;
         }
     }
@@ -3255,20 +3069,20 @@ bool TDataShard::CheckChangesQueueOverflow() const {
     return ChangesQueue.size() >= sizeLimit || ChangesQueueBytes >= bytesLimit;
 }
 
-void TDataShard::CheckChangesQueueNoOverflow() {
-    if (OverloadSubscribersByReason[RejectReasonIndex(ERejectReason::ChangesQueueOverflow)]) {
-        const auto* appData = AppData();
-        const auto sizeLimit = appData->DataShardConfig.GetChangesQueueItemsLimit();
-        const auto bytesLimit = appData->DataShardConfig.GetChangesQueueBytesLimit();
-        if (ChangesQueue.size() < sizeLimit && ChangesQueueBytes < bytesLimit) {
-            NotifyOverloadSubscribers(ERejectReason::ChangesQueueOverflow);
-        }
-    }
+void TDataShard::Handle(TEvDataShard::TEvCancelTransactionProposal::TPtr &ev, const TActorContext &ctx) {
+    ui64 txId = ev->Get()->Record.GetTxId();
+    LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Got TEvDataShard::TEvCancelTransactionProposal " << TabletID()
+                << " txId " <<  txId);
+
+    // Mark any queued proposals as cancelled
+    ProposeQueue.Cancel(txId);
+
+    // Cancel transactions that have already been proposed
+    Execute(new TTxCancelTransactionProposal(this, txId), ctx);
 }
 
 void TDataShard::DoPeriodicTasks(const TActorContext &ctx) {
     UpdateLagCounters(ctx);
-    UpdateChangeExchangeLag(ctx.Now());
     UpdateTableStats(ctx);
     SendPeriodicTableStats(ctx);
     CollectCpuUsage(ctx);
@@ -3285,7 +3099,7 @@ void TDataShard::DoPeriodicTasks(const TActorContext &ctx) {
 }
 
 void TDataShard::DoPeriodicTasks(TEvPrivate::TEvPeriodicWakeup::TPtr&, const TActorContext &ctx) {
-    Y_ABORT_UNLESS(PeriodicWakeupPending, "Unexpected TEvPeriodicWakeup message");
+    Y_VERIFY(PeriodicWakeupPending, "Unexpected TEvPeriodicWakeup message");
     PeriodicWakeupPending = false;
     DoPeriodicTasks(ctx);
 }
@@ -3374,14 +3188,14 @@ bool TDataShard::AddExpectation(ui64 target, ui64 step, ui64 txId) {
 bool TDataShard::RemoveExpectation(ui64 target, ui64 txId) {
     bool removed = OutReadSets.RemoveExpectation(target, txId);
     if (removed && !OutReadSets.HasExpectations(target)) {
-        auto ctx = ActorContext();
+        auto ctx = TActivationContext::ActorContextFor(SelfId());
         ResendReadSetPipeTracker.DetachTablet(Max<ui64>(), target, 0, ctx);
     }
 
     // progress one more tx to force delayed schema operations
     if (removed && OutReadSets.Empty() && Pipeline.HasSchemaOperation()) {
         // TODO: wait for empty OutRS in a separate unit?
-        auto ctx = ActorContext();
+        auto ctx = TActivationContext::ActorContextFor(SelfId());
         Pipeline.AddCandidateUnit(EExecutionUnitKind::PlanQueue);
         PlanQueue.Progress(ctx);
     }
@@ -3396,36 +3210,33 @@ void TDataShard::SendReadSetExpectation(const TActorContext& ctx, ui64 step, ui6
     PipeClientCache->Send(ctx, target, ev.Release());
 }
 
-std::unique_ptr<IEventHandle> TDataShard::GenerateReadSetNoData(const TActorId& recipient, ui64 step, ui64 txId, ui64 source, ui64 target)
-{
-    auto msg = std::make_unique<TEvTxProcessing::TEvReadSet>(step, txId, source, target, TabletID());
-    msg->Record.SetFlags(
-        NKikimrTx::TEvReadSet::FLAG_NO_DATA |
-        NKikimrTx::TEvReadSet::FLAG_NO_ACK);
-    if (source != TabletID()) {
-        FillSplitTrajectory(source, *msg->Record.MutableBalanceTrackList());
-    }
-
-    return std::make_unique<IEventHandle>(recipient, SelfId(), msg.release());
-}
-
 void TDataShard::SendReadSetNoData(const TActorContext& ctx, const TActorId& recipient, ui64 step, ui64 txId, ui64 source, ui64 target)
 {
     Y_UNUSED(ctx);
-    auto ev = GenerateReadSetNoData(recipient, step, txId, source, target);
+    auto ev = MakeHolder<TEvTxProcessing::TEvReadSet>(step, txId, source, target, TabletID());
+    ev->Record.SetFlags(
+        NKikimrTx::TEvReadSet::FLAG_NO_DATA |
+        NKikimrTx::TEvReadSet::FLAG_NO_ACK);
+    if (source != TabletID()) {
+        FillSplitTrajectory(source, *ev->Record.MutableBalanceTrackList());
+    }
 
     struct TSendState : public TThrRefBase {
-        std::unique_ptr<IEventHandle> Event;
+        TDataShard* Self;
+        TActorId Recipient;
+        THolder<TEvTxProcessing::TEvReadSet> Event;
 
-        TSendState(std::unique_ptr<IEventHandle>&& event)
-            : Event(std::move(event))
+        TSendState(TDataShard* self, const TActorId& recipient, THolder<TEvTxProcessing::TEvReadSet>&& event)
+            : Self(self)
+            , Recipient(recipient)
+            , Event(std::move(event))
         { }
     };
 
     // FIXME: we can probably avoid lease confirmation here
     Executor()->ConfirmReadOnlyLease(
-        [state = MakeIntrusive<TSendState>(std::move(ev))] {
-            TActivationContext::Send(std::move(state->Event));
+        [state = MakeIntrusive<TSendState>(this, recipient, std::move(ev))] {
+            state->Self->Send(state->Recipient, state->Event.Release());
         });
 }
 
@@ -3808,7 +3619,7 @@ void TDataShard::Handle(TEvDataShard::TEvGetRSInfoRequest::TPtr &ev,
 
     for (auto &pr : Pipeline.GetDelayedAcks()) {
         for (auto &ack : pr.second) {
-            auto *ev = ack->CastAsLocal<TEvTxProcessing::TEvReadSetAck>();
+            auto *ev = dynamic_cast<TEvTxProcessing::TEvReadSetAck*>(ack->GetBase());
             if (ev) {
                 auto &rec = ev->Record;
                 auto &ack = *response->Record.AddDelayedRSAcks();
@@ -3923,19 +3734,23 @@ void TDataShard::Handle(TEvDataShard::TEvStoreS3DownloadInfo::TPtr& ev, const TA
     Execute(new TTxStoreS3DownloadInfo(this, ev), ctx);
 }
 
-void TDataShard::Handle(TEvDataShard::TEvS3UploadRowsRequest::TPtr& ev, const TActorContext& ctx)
+void TDataShard::Handle(TEvDataShard::TEvUnsafeUploadRowsRequest::TPtr& ev, const TActorContext& ctx)
 {
     const float rejectProbabilty = Executor()->GetRejectProbability();
     if (rejectProbabilty > 0) {
         const float rnd = AppData(ctx)->RandomProvider->GenRandReal2();
         if (rnd < rejectProbabilty) {
-            DelayedS3UploadRows.emplace_back().Reset(ev.Release());
+            auto response = MakeHolder<TEvDataShard::TEvUnsafeUploadRowsResponse>(
+                TabletID(), NKikimrTxDataShard::TError::WRONG_SHARD_STATE);
+            response->Record.SetErrorDescription("Reject due to given RejectProbability");
+            ctx.Send(ev->Sender, std::move(response));
             IncCounter(COUNTER_BULK_UPSERT_OVERLOADED);
+
             return;
         }
     }
 
-    Execute(new TTxS3UploadRows(this, ev), ctx);
+    Execute(new TTxUnsafeUploadRows(this, ev), ctx);
 }
 
 void TDataShard::ScanComplete(NTable::EAbort,
@@ -4037,7 +3852,7 @@ void TDataShard::ExecuteProgressTx(const TActorContext& ctx) {
 }
 
 void TDataShard::ExecuteProgressTx(TOperation::TPtr op, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(op->IsInProgress());
+    Y_VERIFY(op->IsInProgress());
     Execute(new TTxProgressTransaction(this, std::move(op)), ctx);
 }
 
@@ -4059,7 +3874,7 @@ public:
     bool Execute(TTransactionContext& txc, const TActorContext&) override {
         auto pathId = Ev->Get()->PathId;
         auto it = pathId ? Self->GetUserTables().find(pathId.LocalPathId) : Self->GetUserTables().begin();
-        Y_ABORT_UNLESS(it != Self->GetUserTables().end());
+        Y_VERIFY(it != Self->GetUserTables().end());
 
         Reply = MakeHolder<TEvDataShard::TEvGetRemovedRowVersionsResult>(txc.DB.GetRemovedRowVersions(it->second->LocalTid));
         return true;
@@ -4095,8 +3910,6 @@ void SendViaSession(const TActorId& sessionId,
 }
 
 class TBreakWriteConflictsTxObserver : public NTable::ITransactionObserver {
-    friend class TBreakWriteConflictsTxObserverVolatileDependenciesGuard;
-
 public:
     TBreakWriteConflictsTxObserver(TDataShard* self)
         : Self(self)
@@ -4104,8 +3917,7 @@ public:
     }
 
     void OnSkipUncommitted(ui64 txId) override {
-        Y_ABORT_UNLESS(VolatileDependencies);
-        Self->BreakWriteConflict(txId, *VolatileDependencies);
+        Self->SysLocksTable().BreakLock(txId);
     }
 
     void OnSkipCommitted(const TRowVersion&) override {
@@ -4126,53 +3938,24 @@ public:
 
 private:
     TDataShard* Self;
-    absl::flat_hash_set<ui64>* VolatileDependencies = nullptr;
 };
 
-class TBreakWriteConflictsTxObserverVolatileDependenciesGuard {
-public:
-    TBreakWriteConflictsTxObserverVolatileDependenciesGuard(
-            TBreakWriteConflictsTxObserver* observer,
-            absl::flat_hash_set<ui64>& volatileDependencies)
-        : Observer(observer)
-    {
-        Y_ABORT_UNLESS(!Observer->VolatileDependencies);
-        Observer->VolatileDependencies = &volatileDependencies;
-    }
-
-    ~TBreakWriteConflictsTxObserverVolatileDependenciesGuard() {
-        Observer->VolatileDependencies = nullptr;
-    }
-
-private:
-    TBreakWriteConflictsTxObserver* const Observer;
-};
-
-bool TDataShard::BreakWriteConflicts(NTable::TDatabase& db, const TTableId& tableId,
-        TArrayRef<const TCell> keyCells, absl::flat_hash_set<ui64>& volatileDependencies)
-{
+bool TDataShard::BreakWriteConflicts(NTable::TDatabase& db, const TTableId& tableId, TArrayRef<const TCell> keyCells) {
     const auto localTid = GetLocalTableId(tableId);
-    Y_ABORT_UNLESS(localTid);
-
-    if (auto* cached = GetConflictsCache().GetTableCache(localTid).FindUncommittedWrites(keyCells)) {
-        for (ui64 txId : *cached) {
-            BreakWriteConflict(txId, volatileDependencies);
-        }
-        return true;
-    }
+    Y_VERIFY(localTid);
+    const NTable::TScheme& scheme = db.GetScheme();
+    const NTable::TScheme::TTableInfo* tableInfo = scheme.GetTableInfo(localTid);
+    TSmallVec<TRawTypeValue> key;
+    NMiniKQL::ConvertTableKeys(scheme, tableInfo, keyCells, key, nullptr);
 
     if (!BreakWriteConflictsTxObserver) {
         BreakWriteConflictsTxObserver = new TBreakWriteConflictsTxObserver(this);
     }
 
-    TBreakWriteConflictsTxObserverVolatileDependenciesGuard guard(
-        static_cast<TBreakWriteConflictsTxObserver*>(BreakWriteConflictsTxObserver.Get()),
-        volatileDependencies);
-
     // We are not actually interested in the row version, we only need to
     // detect uncommitted transaction skips on the path to that version.
     auto res = db.SelectRowVersion(
-        localTid, keyCells, /* readFlags */ 0,
+        localTid, key, /* readFlags */ 0,
         nullptr,
         BreakWriteConflictsTxObserver);
 
@@ -4181,16 +3964,6 @@ bool TDataShard::BreakWriteConflicts(NTable::TDatabase& db, const TTableId& tabl
     }
 
     return true;
-}
-
-void TDataShard::BreakWriteConflict(ui64 txId, absl::flat_hash_set<ui64>& volatileDependencies) {
-    if (auto* info = GetVolatileTxManager().FindByCommitTxId(txId)) {
-        if (info->State != EVolatileTxState::Aborting) {
-            volatileDependencies.insert(txId);
-        }
-    } else {
-        SysLocksTable().BreakLock(txId);
-    }
 }
 
 class TDataShard::TTxGetOpenTxs : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
@@ -4203,11 +3976,11 @@ public:
     bool Execute(TTransactionContext& txc, const TActorContext&) override {
         auto pathId = Ev->Get()->PathId;
         auto it = pathId ? Self->GetUserTables().find(pathId.LocalPathId) : Self->GetUserTables().begin();
-        Y_ABORT_UNLESS(it != Self->GetUserTables().end());
+        Y_VERIFY(it != Self->GetUserTables().end());
 
-        auto openTxs = txc.DB.GetOpenTxs(it->second->LocalTid);
+        auto txs = txc.DB.GetOpenTxs(it->second->LocalTid);
 
-        Reply = MakeHolder<TEvDataShard::TEvGetOpenTxsResult>(pathId, std::move(openTxs));
+        Reply = MakeHolder<TEvDataShard::TEvGetOpenTxsResult>(pathId, std::move(txs));
         return true;
     }
 
@@ -4222,15 +3995,6 @@ private:
 
 void TDataShard::Handle(TEvDataShard::TEvGetOpenTxs::TPtr& ev, const TActorContext& ctx) {
     Execute(new TTxGetOpenTxs(this, std::move(ev)), ctx);
-}
-
-void TDataShard::Handle(TEvTxUserProxy::TEvAllocateTxIdResult::TPtr& ev, const TActorContext& ctx) {
-    auto op = Pipeline.FindOp(ev->Cookie);
-    if (op && op->HasWaitingForGlobalTxIdFlag()) {
-        Pipeline.ProvideGlobalTxId(op, ev->Get()->TxId);
-        Pipeline.AddCandidateOp(op);
-        PlanQueue.Progress(ctx);
-    }
 }
 
 
@@ -4331,19 +4095,7 @@ void TEvDataShard::TEvReadResult::FillRecord() {
         protoBatch->SetBatch(NArrow::SerializeBatchNoCompression(ArrowBatch));
         ArrowBatch.reset();
         return;
-    }
-
-    if (!Batch.empty()) {
-        auto* protoBatch = Record.MutableCellVec();
-        protoBatch->MutableRows()->Reserve(Batch.Size());
-        for (const auto& row: Batch) {
-            protoBatch->AddRows(TSerializedCellVec::Serialize(row));
-        }
-        Batch = {};
-        return;
-    }
-
-    if (!Rows.empty()) {
+    } else if (!Rows.empty()) {
         auto* protoBatch = Record.MutableCellVec();
         protoBatch->MutableRows()->Reserve(Rows.size());
         for (const auto& row: Rows) {

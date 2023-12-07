@@ -1,12 +1,11 @@
 #include "dq_compute_actor.h"
 #include "dq_async_compute_actor.h"
-#include "dq_task_runner_exec_ctx.h"
 
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor_impl.h>
 
 #include <ydb/library/yql/dq/common/dq_common.h>
 
-#include <ydb/core/quoter/public/quoter.h>
+#include <ydb/core/base/quoter.h>
 
 namespace NYql {
 namespace NDq {
@@ -34,7 +33,7 @@ public:
 
     static constexpr bool HasAsyncTaskRunner = true;
 
-    TDqAsyncComputeActor(const TActorId& executerId, const TTxId& txId, NDqProto::TDqTask* task,
+    TDqAsyncComputeActor(const TActorId& executerId, const TTxId& txId, NDqProto::TDqTask&& task,
         IDqAsyncIoFactory::TPtr asyncIoFactory,
         const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
         const TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits,
@@ -42,7 +41,7 @@ public:
         const ::NMonitoring::TDynamicCounterPtr& taskCounters,
         const TActorId& quoterServiceActorId,
         bool ownCounters)
-        : TBase(executerId, txId, task, std::move(asyncIoFactory), functionRegistry, settings, memoryLimits, /* ownMemoryQuota = */ false, false, taskCounters)
+        : TBase(executerId, txId, std::move(task), std::move(asyncIoFactory), functionRegistry, settings, memoryLimits, /* ownMemoryQuota = */ false, false, taskCounters)
         , TaskRunnerActorFactory(taskRunnerActorFactory)
         , ReadyToCheckpointFlag(false)
         , SentStatsRequest(false)
@@ -60,7 +59,7 @@ public:
 
         TLogFunc logger;
         if (IsDebugLogEnabled(actorSystem)) {
-            logger = [actorSystem, txId = GetTxId(), taskId = Task.GetId()] (const TString& message) {
+            logger = [actorSystem, txId = GetTxId(), taskId = GetTask().GetId()] (const TString& message) {
                 LOG_DEBUG_S(*actorSystem, NKikimrServices::KQP_COMPUTE, "TxId: " << txId
                     << ", task: " << taskId << ": " << message);
             };
@@ -74,7 +73,7 @@ public:
             }
         }
         std::tie(TaskRunnerActor, actor) = TaskRunnerActorFactory->Create(
-            this, GetTxId(), Task.GetId(), std::move(inputWithDisabledCheckpointing), InitMemoryQuota());
+            this, GetTxId(), GetTask().GetId(), std::move(inputWithDisabledCheckpointing), InitMemoryQuota());
         TaskRunnerActorId = RegisterWithSameMailbox(actor);
 
         TDqTaskRunnerMemoryLimits limits;
@@ -83,13 +82,12 @@ public:
 
         Become(&TDqAsyncComputeActor::StateFuncWrapper<&TDqAsyncComputeActor::StateFuncBody>);
 
-        auto wakeup = [this]{ ContinueExecute(EResumeSource::CABootstrapWakeup); };
-        std::shared_ptr<IDqTaskRunnerExecutionContext> execCtx = std::make_shared<TDqTaskRunnerExecutionContext>(
-            TxId, RuntimeSettings.UseSpilling, std::move(wakeup));
+        // TODO:
+        std::shared_ptr<IDqTaskRunnerExecutionContext> execCtx = std::shared_ptr<IDqTaskRunnerExecutionContext>(new TDqTaskRunnerExecutionContext());
 
         Send(TaskRunnerActorId,
             new NTaskRunnerActor::TEvTaskRunnerCreate(
-                Task.GetSerializedTask(), limits, RuntimeSettings.StatsMode, execCtx));
+                GetTask(), limits, execCtx));
 
         CA_LOG_D("Use CPU quota: " << UseCpuQuota() << ". Rate limiter resource: { \"" << Task.GetRateLimiter() << "\", \"" << Task.GetRateLimiterResource() << "\" }");
     }
@@ -109,11 +107,11 @@ public:
 private:
     STFUNC(StateFuncBody) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(NTaskRunnerActor::TEvTaskRunFinished, OnRunFinished);
-            hFunc(NTaskRunnerActor::TEvAsyncInputPushFinished, OnAsyncInputPushFinished);
-            hFunc(NTaskRunnerActor::TEvChannelPopFinished, OnPopFinished);
-            hFunc(NTaskRunnerActor::TEvTaskRunnerCreateFinished, OnTaskRunnerCreated);
-            hFunc(NTaskRunnerActor::TEvPushFinished, OnPushFinished);
+            HFunc(NTaskRunnerActor::TEvTaskRunFinished, OnRunFinished);
+            HFunc(NTaskRunnerActor::TEvAsyncInputPushFinished, OnAsyncInputPushFinished);
+            HFunc(NTaskRunnerActor::TEvChannelPopFinished, OnPopFinished);
+            HFunc(NTaskRunnerActor::TEvTaskRunnerCreateFinished, OnTaskRunnerCreated);
+            HFunc(NTaskRunnerActor::TEvContinueRun, OnContinueRun); // push finished
             hFunc(TEvDqCompute::TEvStateRequest, OnStateRequest);
             hFunc(NTaskRunnerActor::TEvStatistics, OnStatisticsResponse);
             hFunc(NTaskRunnerActor::TEvLoadTaskRunnerFromStateDone, OnTaskRunnerLoaded);
@@ -121,7 +119,7 @@ private:
             hFunc(TEvDqCompute::TEvRestoreFromCheckpoint, OnRestoreFromCheckpoint);
             hFunc(NKikimr::TEvQuota::TEvClearance, OnCpuQuotaGiven);
             default:
-                TBase::BaseStateFuncBody(ev);
+                TBase::BaseStateFuncBody(ev, ctx);
         };
     };
 
@@ -186,15 +184,17 @@ private:
         WaitingForStateResponse.clear();
     }
 
-    const IDqAsyncOutputBuffer* GetSink(ui64 outputIdx, const TAsyncOutputInfoBase&) const override {
-        return TaskRunnerStats.GetSink(outputIdx);
+    const TDqAsyncOutputBufferStats* GetSinkStats(ui64 outputIdx, const TAsyncOutputInfoBase& sinkInfo) const override {
+        Y_UNUSED(sinkInfo);
+        return TaskRunnerStats.GetSinkStats(outputIdx);
     }
 
-    const IDqAsyncInputBuffer* GetInputTransform(ui64 inputIdx, const TAsyncInputTransformInfo&) const override {
-        return TaskRunnerStats.GetInputTransform(inputIdx);
+    const TDqAsyncInputBufferStats* GetInputTransformStats(ui64 inputIdx, const TAsyncInputTransformInfo& inputTransformInfo) const override {
+        Y_UNUSED(inputTransformInfo);
+        return TaskRunnerStats.GetInputTransformStats(inputIdx);
     }
 
-    void DrainOutputChannel(TOutputChannelInfo& outputChannel) override {
+    void DrainOutputChannel(TOutputChannelInfo& outputChannel, const TDqComputeActorChannels::TPeerState& peerState) override {
         YQL_ENSURE(!outputChannel.Finished || Checkpoints);
 
         if (outputChannel.PopStarted) {
@@ -204,29 +204,35 @@ private:
         const bool wasFinished = outputChannel.Finished;
         auto channelId = outputChannel.ChannelId;
 
-        const auto& peerState = Channels->GetOutputChannelInFlightState(channelId);
+        const ui32 allowedOvercommit = AllowedChannelsOvercommit();
+
+        const i64 toSend = peerState.PeerFreeSpace + allowedOvercommit - peerState.InFlightBytes;
 
         CA_LOG_T("About to drain channelId: " << channelId
             << ", hasPeer: " << outputChannel.HasPeer
-            << ", peerState:(" << peerState.DebugString() << ")"
+            << ", peerFreeSpace: " << peerState.PeerFreeSpace
+            << ", inFlightBytes: " << peerState.InFlightBytes
+            << ", inFlightRows: " << peerState.InFlightRows
+            << ", inFlightCount: " << peerState.InFlightCount
+            << ", allowedOvercommit: " << allowedOvercommit
+            << ", toSend: " << toSend
 //            << ", finished: " << outputChannel.Channel->IsFinished());
             );
 
         outputChannel.PopStarted = true;
-        const bool hasFreeMemory = peerState.HasFreeMemory();
-        UpdateBlocked(outputChannel, !hasFreeMemory);
         ProcessOutputsState.Inflight++;
-        if (!hasFreeMemory) {
-            CA_LOG_T("Can not drain channel because it is blocked by capacity. ChannelId: " << channelId
-                << ", peerState:(" << peerState.DebugString() << ")"
-            );
+        if (toSend <= 0) {
+            if (Y_UNLIKELY(outputChannel.Stats)) {
+                outputChannel.Stats->BlockedByCapacity++;
+            }
+            CA_LOG_D("Cannot drain channel cause it blocked by capacity, channelId: " << channelId);
             auto ev = MakeHolder<NTaskRunnerActor::TEvChannelPopFinished>(channelId);
-            Y_ABORT_UNLESS(!ev->Finished);
+            Y_VERIFY(!ev->Finished);
             Send(SelfId(), std::move(ev));  // try again, ev.Finished == false
             return;
         }
 
-        Send(TaskRunnerActorId, new NTaskRunnerActor::TEvPop(channelId, wasFinished, peerState.GetFreeMemory()));
+        Send(TaskRunnerActorId, new NTaskRunnerActor::TEvPop(channelId, wasFinished, toSend));
     }
 
     void DrainAsyncOutput(ui64 outputIndex, TAsyncOutputInfoBase& sinkInfo) override {
@@ -238,8 +244,8 @@ private:
             return;
         }
 
-        Y_ABORT_UNLESS(sinkInfo.AsyncOutput);
-        Y_ABORT_UNLESS(sinkInfo.Actor);
+        Y_VERIFY(sinkInfo.AsyncOutput);
+        Y_VERIFY(sinkInfo.Actor);
 
         const ui32 allowedOvercommit = AllowedChannelsOvercommit();
         const i64 sinkFreeSpaceBeforeSend = sinkInfo.AsyncOutput->GetFreeSpace();
@@ -259,13 +265,13 @@ private:
     }
 
     bool DoHandleChannelsAfterFinishImpl() override {
-        Y_ABORT_UNLESS(Checkpoints);
+        Y_VERIFY(Checkpoints);
         auto req = GetCheckpointRequest();
         if (!req.Defined()) {
             return true;  // handled channels syncronously
         }
         CA_LOG_D("DoHandleChannelsAfterFinishImpl");
-        AskContinueRun(std::move(req), /* checkpointOnly = */ true);
+        AskContinueRun(std::make_unique<NTaskRunnerActor::TEvContinueRun>(GetWatermarkRequest(), std::move(req), /* checkpointOnly = */ true));
         return false;
     }
 
@@ -281,16 +287,15 @@ private:
         DoExecute();
     }
 
-    void AsyncInputPush(NKikimr::NMiniKQL::TUnboxedValueBatch&& batch, TAsyncInputInfoBase& source, i64 space, bool finished) override {
+    void AsyncInputPush(NKikimr::NMiniKQL::TUnboxedValueVector&& batch, TAsyncInputInfoBase& source, i64 space, bool finished) override {
         ProcessSourcesState.Inflight++;
         source.PushStarted = true;
         source.Finished = finished;
         TaskRunnerActor->AsyncInputPush(Cookie++, source.Index, std::move(batch), space, finished);
     }
 
-    void TakeInputChannelData(TChannelDataOOB&& channelDataOOB, bool ack) override {
+    void TakeInputChannelData(NDqProto::TChannelData&& channelData, bool ack) override {
         CA_LOG_T("took input");
-        NDqProto::TChannelData& channelData = channelDataOOB.Proto;
         TInputChannelInfo* inputChannel = InputChannelsMap.FindPtr(channelData.GetChannelId());
         YQL_ENSURE(inputChannel, "task: " << Task.GetId() << ", unknown input channelId: " << channelData.GetChannelId());
 
@@ -313,31 +318,29 @@ private:
             WatermarkTakeInputChannelDataRequests[*watermark]++;
         }
 
-        TDqSerializedBatch batch;
-        batch.Proto = std::move(*channelData.MutableData());
-        batch.Payload = std::move(channelDataOOB.Payload);
-
-        MetricsReporter.ReportInputChannelWatermark(
+        DqComputeActorMetrics.ReportInputChannelWatermark(
             channelData.GetChannelId(),
-            batch.RowCount(),
+            channelData.GetData().GetRows(),
             watermark);
 
-        auto ev = batch.RowCount()
+        auto ev = (channelData.GetData().GetRows())
             ? MakeHolder<NTaskRunnerActor::TEvPush>(
                 channelData.GetChannelId(),
-                std::move(batch),
+                std::move(*channelData.MutableData()),
                 finished,
+                /* askFreeSpace = */ true,
                 /* pauseAfterPush = */ channelData.HasCheckpoint())
             : MakeHolder<NTaskRunnerActor::TEvPush>(
                 channelData.GetChannelId(),
                 finished,
+                /* askFreeSpace = */ true,
                 /* pauseAfterPush = */ channelData.HasCheckpoint());
 
         Send(TaskRunnerActorId, ev.Release(), 0, Cookie);
 
         if (channelData.HasCheckpoint()) {
-            Y_ABORT_UNLESS(inputChannel->CheckpointingMode != NDqProto::CHECKPOINTING_MODE_DISABLED);
-            Y_ABORT_UNLESS(Checkpoints);
+            Y_VERIFY(inputChannel->CheckpointingMode != NDqProto::CHECKPOINTING_MODE_DISABLED);
+            Y_VERIFY(Checkpoints);
             const auto& checkpoint = channelData.GetCheckpoint();
             inputChannel->Pause(checkpoint);
             Checkpoints->RegisterCheckpoint(checkpoint, channelData.GetChannelId());
@@ -364,7 +367,7 @@ private:
         TBase::PassAway();
     }
 
-    TMaybe<TInstant> GetWatermarkRequest() {
+    TMaybe<NTaskRunnerActor::TWatermarkRequest> GetWatermarkRequest() {
         if (!WatermarksTracker.HasPendingWatermark()) {
             return Nothing();
         }
@@ -375,17 +378,27 @@ private:
             return Nothing();
         }
 
-        MetricsReporter.ReportInjectedToTaskRunnerWatermark(pendingWatermark);
+        TVector<ui32> channelIds;
+        for (const auto& [channelId, info] : OutputChannelsMap) {
+            if (info.WatermarksMode == NDqProto::EWatermarksMode::WATERMARKS_MODE_DISABLED) {
+                continue;
+            }
 
-        return pendingWatermark;
+            channelIds.emplace_back(channelId);
+        }
+
+        DqComputeActorMetrics.ReportInjectedToTaskRunnerWatermark(pendingWatermark);
+
+        return TMaybe<NTaskRunnerActor::TWatermarkRequest>({std::move(channelIds), pendingWatermark});
     }
 
-    TMaybe<NDqProto::TCheckpoint> GetCheckpointRequest() {
+    TMaybe<NTaskRunnerActor::TCheckpointRequest> GetCheckpointRequest() {
+        TMaybe<NTaskRunnerActor::TCheckpointRequest> req = Nothing();
         if (!CheckpointRequestedFromTaskRunner && Checkpoints && Checkpoints->HasPendingCheckpoint() && !Checkpoints->ComputeActorStateSaved()) {
             CheckpointRequestedFromTaskRunner = true;
-            return Checkpoints->GetPendingCheckpoint();
+            req = {GetIds(OutputChannelsMap), GetIds(SinksMap), Checkpoints->GetPendingCheckpoint()};
         }
-        return Nothing();
+        return req;
     }
 
     void DoExecuteImpl() override {
@@ -395,7 +408,7 @@ private:
         if (ProcessSourcesState.Inflight == 0) {
             auto req = GetCheckpointRequest();
             CA_LOG_T("DoExecuteImpl: " << (bool) req);
-            AskContinueRun(std::move(req), /* checkpointOnly = */ false);
+            AskContinueRun(std::make_unique<NTaskRunnerActor::TEvContinueRun>(GetWatermarkRequest(), std::move(req), /* checkpointOnly = */ false));
         }
     }
 
@@ -410,7 +423,7 @@ private:
         return inputChannel->FreeSpace;
     }
 
-    i64 AsyncInputFreeSpace(TAsyncInputInfoBase& source) override {
+    i64 AsyncIoFreeSpace(TAsyncInputInfoBase& source) override {
         return source.FreeSpace;
     }
 
@@ -426,17 +439,16 @@ private:
         return guard;
     }
 
-    void OnTaskRunnerCreated(NTaskRunnerActor::TEvTaskRunnerCreateFinished::TPtr& ev) {
+    void OnTaskRunnerCreated(NTaskRunnerActor::TEvTaskRunnerCreateFinished::TPtr& ev, const NActors::TActorContext& ) {
         const auto& secureParams = ev->Get()->SecureParams;
         const auto& taskParams = ev->Get()->TaskParams;
-        const auto& readRanges = ev->Get()->ReadRanges;
         const auto& typeEnv = ev->Get()->TypeEnv;
         const auto& holderFactory = ev->Get()->HolderFactory;
         if (Stat) {
             Stat->AddCounters2(ev->Get()->Sensors);
         }
         TypeEnv = const_cast<NKikimr::NMiniKQL::TTypeEnvironment*>(&typeEnv);
-        FillIoMaps(holderFactory, typeEnv, secureParams, taskParams, readRanges);
+        FillIoMaps(holderFactory, typeEnv, secureParams, taskParams);
 
         {
             // say "Hello" to executer
@@ -454,14 +466,14 @@ private:
             ForwardToCheckpoints(std::move(DeferredRestoreFromCheckpointEvent));
         }
 
-        ContinueExecute(EResumeSource::CATaskRunnerCreated);
+        ContinueExecute();
     }
 
     bool ReadyToCheckpoint() const override {
         return ReadyToCheckpointFlag;
     }
 
-    void OnRunFinished(NTaskRunnerActor::TEvTaskRunFinished::TPtr& ev) {
+    void OnRunFinished(NTaskRunnerActor::TEvTaskRunFinished::TPtr& ev, const NActors::TActorContext& ) {
         if (Stat) {
             Stat->AddCounters2(ev->Get()->Sensors);
         }
@@ -482,12 +494,6 @@ private:
                 it->second.FreeSpace = freeSpace;
             }
         }
-        for (const auto& [inputIndex, freeSpace] : ev->Get()->SourcesFreeSpace) {
-            auto it = SourcesMap.find(inputIndex);
-            if (it != SourcesMap.end()) {
-                it->second.FreeSpace = freeSpace;
-            }
-        }
 
         if (status != ERunStatus::Finished) {
             PollSources(std::move(sourcesState));
@@ -503,7 +509,7 @@ private:
             CheckpointRequestedFromTaskRunner = false;
         }
         if (ReadyToCheckpointFlag) {
-            Y_ABORT_UNLESS(!ProgramState);
+            Y_VERIFY(!ProgramState);
             ProgramState = std::move(ev->Get()->ProgramState);
             Checkpoints->DoCheckpoint();
         }
@@ -521,7 +527,7 @@ private:
 
     void SaveState(const NDqProto::TCheckpoint& checkpoint, NDqProto::TComputeActorState& state) const override {
         CA_LOG_D("Save state");
-        Y_ABORT_UNLESS(ProgramState);
+        Y_VERIFY(ProgramState);
         state.MutableMiniKqlProgram()->Swap(&*ProgramState);
         ProgramState.Destroy();
 
@@ -534,26 +540,27 @@ private:
         }
     }
 
-    void OnAsyncInputPushFinished(NTaskRunnerActor::TEvAsyncInputPushFinished::TPtr& ev) {
+    void OnAsyncInputPushFinished(NTaskRunnerActor::TEvAsyncInputPushFinished::TPtr& ev, const NActors::TActorContext& ) {
         auto it = SourcesMap.find(ev->Get()->Index);
-        Y_ABORT_UNLESS(it != SourcesMap.end());
+        Y_VERIFY(it != SourcesMap.end());
         auto& source = it->second;
         source.PushStarted = false;
-        source.FreeSpace = ev->Get()->FreeSpaceLeft;
-        if (--ProcessSourcesState.Inflight == 0) {
-            CA_LOG_T("Send TEvContinueRun on OnAsyncInputPushFinished");
-            AskContinueRun(Nothing(), false);
+        // source.FreeSpace = ev->Get()->FreeSpace; TODO:XXX get freespace on run
+        ProcessSourcesState.Inflight--;
+        if (ProcessSourcesState.Inflight == 0) {
+            CA_LOG_T("send TEvContinueRun on OnAsyncInputPushFinished");
+            AskContinueRun(std::make_unique<NTaskRunnerActor::TEvContinueRun>(GetWatermarkRequest(), Nothing(), false));
         }
     }
 
-    void OnPopFinished(NTaskRunnerActor::TEvChannelPopFinished::TPtr& ev) {
+    void OnPopFinished(NTaskRunnerActor::TEvChannelPopFinished::TPtr& ev, const NActors::TActorContext&) {
         if (Stat) {
             Stat->AddCounters2(ev->Get()->Sensors);
         }
         auto it = OutputChannelsMap.find(ev->Get()->ChannelId);
-        Y_ABORT_UNLESS(it != OutputChannelsMap.end());
+        Y_VERIFY(it != OutputChannelsMap.end());
         TOutputChannelInfo& outputChannel = it->second;
-        Y_ABORT_UNLESS(!outputChannel.AsyncData); // have finished previous cycle
+        Y_VERIFY(!outputChannel.AsyncData); // have finished previous cycle
         outputChannel.AsyncData.ConstructInPlace();
         outputChannel.AsyncData->Watermark = std::move(ev->Get()->Watermark);
         outputChannel.AsyncData->Data = std::move(ev->Get()->Data);
@@ -574,11 +581,6 @@ private:
         // If the channel has finished, then the data received after drain is no longer needed
         const bool shouldSkipData = Channels->ShouldSkipData(outputChannel.ChannelId);
         if (!shouldSkipData && !Channels->CanSendChannelData(outputChannel.ChannelId)) { // When channel will be connected, they will call resume execution.
-            CA_LOG_T("TrySendAsyncChannelData return false because Channel can't send channel data");
-            return false;
-        }
-        if (!shouldSkipData && !Channels->HasFreeMemoryInChannel(outputChannel.ChannelId)) {
-            CA_LOG_T("TrySendAsyncChannelData return false because No free memory in channel");
             return false;
         }
 
@@ -611,33 +613,32 @@ private:
             }
 
             for (ui32 i = 0; i < asyncData.Data.size(); i++) {
-                TDqSerializedBatch& chunk = asyncData.Data[i];
-                TChannelDataOOB channelData;
-                channelData.Proto.SetChannelId(outputChannel.ChannelId);
+                auto& chunk = asyncData.Data[i];
+                NDqProto::TChannelData channelData;
+                channelData.SetChannelId(outputChannel.ChannelId);
                 // set finished only for last chunk
                 const bool lastChunk = i == asyncData.Data.size() - 1;
-                channelData.Proto.SetFinished(asyncData.Finished && lastChunk);
-                channelData.Proto.MutableData()->Swap(&chunk.Proto);
-                channelData.Payload = std::move(chunk.Payload);
+                channelData.SetFinished(asyncData.Finished && lastChunk);
+                channelData.MutableData()->Swap(&chunk);
                 if (lastChunk && asyncData.Watermark.Defined()) {
-                    channelData.Proto.MutableWatermark()->Swap(&*asyncData.Watermark);
+                    channelData.MutableWatermark()->Swap(&*asyncData.Watermark);
                 }
                 if (lastChunk && asyncData.Checkpoint.Defined()) {
-                    channelData.Proto.MutableCheckpoint()->Swap(&*asyncData.Checkpoint);
+                    channelData.MutableCheckpoint()->Swap(&*asyncData.Checkpoint);
                 }
-                Channels->SendChannelData(std::move(channelData), i + 1 == asyncData.Data.size());
+                Channels->SendChannelData(std::move(channelData));
             }
             if (asyncData.Data.empty() && asyncData.Changed) {
-                TChannelDataOOB channelData;
-                channelData.Proto.SetChannelId(outputChannel.ChannelId);
-                channelData.Proto.SetFinished(asyncData.Finished);
+                NDqProto::TChannelData channelData;
+                channelData.SetChannelId(outputChannel.ChannelId);
+                channelData.SetFinished(asyncData.Finished);
                 if (asyncData.Watermark.Defined()) {
-                    channelData.Proto.MutableWatermark()->Swap(&*asyncData.Watermark);
+                    channelData.MutableWatermark()->Swap(&*asyncData.Watermark);
                 }
                 if (asyncData.Checkpoint.Defined()) {
-                    channelData.Proto.MutableCheckpoint()->Swap(&*asyncData.Checkpoint);
+                    channelData.MutableCheckpoint()->Swap(&*asyncData.Checkpoint);
                 }
-                Channels->SendChannelData(std::move(channelData), true);
+                Channels->SendChannelData(std::move(channelData));
             }
         }
 
@@ -663,7 +664,7 @@ private:
         return result;
     }
 
-    void OnPushFinished(NTaskRunnerActor::TEvPushFinished::TPtr& ev) {
+    void OnContinueRun(NTaskRunnerActor::TEvContinueRun::TPtr& ev, const NActors::TActorContext& ) {
         auto it = TakeInputChannelDataRequests.find(ev->Cookie);
         YQL_ENSURE(it != TakeInputChannelDataRequests.end());
 
@@ -680,21 +681,18 @@ private:
             }
         }
 
-        TInputChannelInfo* inputChannel = InputChannelsMap.FindPtr(it->second.ChannelId);
-        Y_ABORT_UNLESS(inputChannel);
-        inputChannel->FreeSpace = ev->Get()->FreeSpace;
-
         if (it->second.Ack) {
+            TInputChannelInfo* inputChannel = InputChannelsMap.FindPtr(it->second.ChannelId);
             Channels->SendChannelDataAck(it->second.ChannelId, inputChannel->FreeSpace);
         }
 
         TakeInputChannelDataRequests.erase(it);
 
-        ResumeExecution(EResumeSource::AsyncPopFinished);
+        ResumeExecution();
     }
 
     void SinkSend(ui64 index,
-                  NKikimr::NMiniKQL::TUnboxedValueBatch&& batch,
+                  NKikimr::NMiniKQL::TUnboxedValueVector&& batch,
                   TMaybe<NDqProto::TCheckpoint>&& checkpoint,
                   i64 size,
                   i64 checkpointSize,
@@ -705,7 +703,7 @@ private:
         auto dataWasSent = finished || changed;
         auto dataSize = size;
         auto it = SinksMap.find(outputIndex);
-        Y_ABORT_UNLESS(it != SinksMap.end());
+        Y_VERIFY(it != SinksMap.end());
 
         TAsyncOutputInfoBase& sinkInfo = it->second;
         sinkInfo.Finished = finished;
@@ -723,11 +721,11 @@ private:
 
         {
             auto guard = BindAllocator();
-            NKikimr::NMiniKQL::TUnboxedValueBatch data = std::move(batch);
+            NKikimr::NMiniKQL::TUnboxedValueVector data = std::move(batch);
             sinkInfo.AsyncOutput->SendData(std::move(data), size, std::move(checkpoint), finished);
         }
 
-        Y_ABORT_UNLESS(batch.empty());
+        Y_VERIFY(batch.empty());
         CA_LOG_T("Sink " << outputIndex << ": sent " << dataSize << " bytes of data and " << checkpointSize << " bytes of checkpoint barrier");
 
         CA_LOG_T("Drain sink " << outputIndex
@@ -746,7 +744,7 @@ private:
         return MkqlMemoryLimit;
     }
 
-    const TDqMemoryQuota::TProfileStats* GetMemoryProfileStats() const override {
+    const TDqMemoryQuota::TProfileStats* GetProfileStats() const override {
         return &ProfileStats;
     }
 
@@ -764,7 +762,7 @@ private:
     }
 
     void InjectBarrierToOutputs(const NDqProto::TCheckpoint&) override {
-        Y_ABORT_UNLESS(CheckpointingMode != NDqProto::CHECKPOINTING_MODE_DISABLED);
+        Y_VERIFY(CheckpointingMode != NDqProto::CHECKPOINTING_MODE_DISABLED);
         // already done in task_runner_actor
     }
 
@@ -779,7 +777,7 @@ private:
     template <class TEvPtr>
     void ForwardToCheckpoints(TEvPtr&& ev) {
         auto* x = reinterpret_cast<TAutoPtr<NActors::IEventHandle>*>(&ev);
-        Checkpoints->Receive(*x);
+        Checkpoints->Receive(*x, TActivationContext::AsActorContext());
         ev = nullptr;
     }
 
@@ -787,7 +785,7 @@ private:
         if (TypeEnv) {
             ForwardToCheckpoints(std::move(ev));
         } else {
-            Y_ABORT_UNLESS(!DeferredInjectCheckpointEvent);
+            Y_VERIFY(!DeferredInjectCheckpointEvent);
             DeferredInjectCheckpointEvent = std::move(ev);
         }
     }
@@ -796,7 +794,7 @@ private:
         if (TypeEnv) {
             ForwardToCheckpoints(std::move(ev));
         } else {
-            Y_ABORT_UNLESS(!DeferredRestoreFromCheckpointEvent);
+            Y_VERIFY(!DeferredRestoreFromCheckpointEvent);
             DeferredRestoreFromCheckpointEvent = std::move(ev);
         }
     }
@@ -806,7 +804,7 @@ private:
     }
 
     void AskCpuQuota() {
-        Y_ABORT_UNLESS(!CpuTimeQuotaAsked);
+        Y_VERIFY(!CpuTimeQuotaAsked);
         if (CpuTimeSpent >= MIN_QUOTED_CPU_TIME) {
             CA_LOG_T("Ask CPU quota: " << CpuTimeSpent.MilliSeconds() << "ms");
             if (CpuTime) {
@@ -822,54 +820,27 @@ private:
         }
     }
 
-    void AskContinueRun(TMaybe<NDqProto::TCheckpoint>&& checkpointRequest, bool checkpointOnly) {
-        Y_ABORT_UNLESS(!checkpointOnly || !ContinueRunEvent);
-        if (!ContinueRunEvent) {
-            ContinueRunStartWaitTime = TInstant::Now();
-            ContinueRunEvent = std::make_unique<NTaskRunnerActor::TEvContinueRun>();
-            ContinueRunEvent->SinkIds = GetIds(SinksMap);
-            ContinueRunEvent->InputTransformIds = GetIds(InputTransformsMap);
-        }
-        ContinueRunEvent->CheckpointOnly = checkpointOnly;
-        if (TMaybe<TInstant> watermarkRequest = GetWatermarkRequest()) {
-            if (!ContinueRunEvent->WatermarkRequest) {
-                ContinueRunEvent->WatermarkRequest.ConstructInPlace();
-                ContinueRunEvent->WatermarkRequest->Watermark = *watermarkRequest;
-
-                ContinueRunEvent->WatermarkRequest->ChannelIds.reserve(OutputChannelsMap.size());
-                for (const auto& [channelId, info] : OutputChannelsMap) {
-                    if (info.WatermarksMode != NDqProto::EWatermarksMode::WATERMARKS_MODE_DISABLED) {
-                        ContinueRunEvent->WatermarkRequest->ChannelIds.emplace_back(channelId);
-                    }
-                }
-            } else {
-                ContinueRunEvent->WatermarkRequest->Watermark = Max(ContinueRunEvent->WatermarkRequest->Watermark, *watermarkRequest);
-            }
-        }
-        if (checkpointRequest) {
-            if (!ContinueRunEvent->CheckpointRequest) {
-                ContinueRunEvent->CheckpointRequest.ConstructInPlace(GetIds(OutputChannelsMap), GetIds(SinksMap), *checkpointRequest);
-            } else {
-                Y_ABORT_UNLESS(ContinueRunEvent->CheckpointRequest->Checkpoint.GetGeneration() == checkpointRequest->GetGeneration());
-                Y_ABORT_UNLESS(ContinueRunEvent->CheckpointRequest->Checkpoint.GetId() == checkpointRequest->GetId());
-            }
-        }
+    void AskContinueRun(std::unique_ptr<NTaskRunnerActor::TEvContinueRun> continueRunEvent) {
+        continueRunEvent->SinkIds = GetIds(SinksMap);
+        continueRunEvent->InputTransformIds = GetIds(InputTransformsMap);
 
         if (!UseCpuQuota()) {
-            Send(TaskRunnerActorId, ContinueRunEvent.release());
+            Send(TaskRunnerActorId, continueRunEvent.release());
             return;
         }
 
+        ContinueRunEvents.emplace_back(std::move(continueRunEvent), TInstant::Now());
         ProcessContinueRun();
     }
 
     void ProcessContinueRun() {
-        if (ContinueRunEvent && !CpuTimeQuotaAsked && !ContinueRunInflight) {
-            Send(TaskRunnerActorId, ContinueRunEvent.release());
+        if (!ContinueRunEvents.empty() && !CpuTimeQuotaAsked && !ContinueRunInflight) {
+            Send(TaskRunnerActorId, ContinueRunEvents.front().first.release());
             if (CpuTimeQuotaWaitDelay) {
-                const TDuration quotaWaitDelay = TInstant::Now() - ContinueRunStartWaitTime;
+                const TDuration quotaWaitDelay = TInstant::Now() - ContinueRunEvents.front().second;
                 CpuTimeQuotaWaitDelay->Collect(quotaWaitDelay.MilliSeconds());
             }
+            ContinueRunEvents.pop_front();
             ContinueRunInflight = true;
         }
     }
@@ -935,8 +906,8 @@ private:
     // Cpu quota
     TActorId QuoterServiceActorId;
     TInstant CpuTimeQuotaAsked;
-    std::unique_ptr<NTaskRunnerActor::TEvContinueRun> ContinueRunEvent;
-    TInstant ContinueRunStartWaitTime;
+    TDuration CpuTimeSpent;
+    std::deque<std::pair<std::unique_ptr<NTaskRunnerActor::TEvContinueRun>, TInstant>> ContinueRunEvents;
     bool ContinueRunInflight = false;
     NMonitoring::THistogramPtr CpuTimeGetQuotaLatency;
     NMonitoring::THistogramPtr CpuTimeQuotaWaitDelay;
@@ -944,7 +915,7 @@ private:
 };
 
 
-IActor* CreateDqAsyncComputeActor(const TActorId& executerId, const TTxId& txId, NYql::NDqProto::TDqTask* task,
+IActor* CreateDqAsyncComputeActor(const TActorId& executerId, const TTxId& txId, NYql::NDqProto::TDqTask&& task,
     IDqAsyncIoFactory::TPtr asyncIoFactory,
     const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
     const TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits,
@@ -953,7 +924,7 @@ IActor* CreateDqAsyncComputeActor(const TActorId& executerId, const TTxId& txId,
     const TActorId& quoterServiceActorId,
     bool ownCounters)
 {
-    return new TDqAsyncComputeActor(executerId, txId, task, std::move(asyncIoFactory),
+    return new TDqAsyncComputeActor(executerId, txId, std::move(task), std::move(asyncIoFactory),
         functionRegistry, settings, memoryLimits, taskRunnerActorFactory, taskCounters, quoterServiceActorId, ownCounters);
 }
 

@@ -15,31 +15,24 @@ protected:
     THolder<TTempFileHandle> NetDataFile;
     THashMap<TString, NKikimr::NPersQueueTests::TPQTestClusterInfo> DataCenters;
     TString LocalDC = "dc1";
-    TTestServer Server;
-    TLog Log = CreateLogBackend("cerr", ELogPriority::TLOG_DEBUG);
-    size_t TopicPartitionsCount = 1;
+    TTestServer Server = TTestServer(false /* don't start */);
+
+    TLog Log = TLog("cerr");
 
 public:
-    SDKTestSetup(const TString& testCaseName, bool start = true,
-                 const TVector<NKikimrServices::EServiceKikimr>& logServices = TTestServer::LOGGED_SERVICES,
-                 NActors::NLog::EPriority logPriority = NActors::NLog::PRI_DEBUG,
-                 ui32 nodeCount = NKikimr::NPersQueueTests::PQ_DEFAULT_NODE_COUNT,
-                 size_t topicPartitionsCount = 1)
+    SDKTestSetup(const TString& testCaseName, bool start = true)
         : TestCaseName(testCaseName)
-        , Server(NKikimr::NPersQueueTests::PQSettings(), false, logServices, logPriority, Nothing())
-        , TopicPartitionsCount(topicPartitionsCount)
     {
-        InitOptions(nodeCount);
+        InitOptions();
         if (start) {
             Start();
         }
     }
 
-    void InitOptions(ui32 nodeCount = NKikimr::NPersQueueTests::PQ_DEFAULT_NODE_COUNT) {
+    void InitOptions() {
         Log.SetFormatter([testCaseName = TestCaseName](ELogPriority priority, TStringBuf message) {
             return TStringBuilder() << TInstant::Now() << " :" << testCaseName << " " << priority << ": " << message << Endl;
         });
-        Server.ServerSettings.SetNodeCount(nodeCount);
         Server.GrpcServerOptions.SetGRpcShutdownDeadline(TDuration::Max());
         // Default TTestServer value for 'MaxReadCookies' is 10. With this value the tests are flapping with two errors:
         // 1. 'got more than 10 unordered cookies to commit 12'
@@ -68,6 +61,7 @@ public:
 
     void Start(bool waitInit = true, bool addBrokenDatacenter = false) {
         Server.StartServer(false);
+        //Server.EnableLogs({NKikimrServices::PQ_WRITE_PROXY, NKikimrServices::PQ_READ_PROXY});
         Server.AnnoyingClient->InitRoot();
         if (DataCenters.empty()) {
             THashMap<TString, NKikimr::NPersQueueTests::TPQTestClusterInfo> dataCenters;
@@ -76,27 +70,25 @@ public:
                 dataCenters.emplace("dc2", NKikimr::NPersQueueTests::TPQTestClusterInfo{"dc2.logbroker.yandex.net", false});
             }
             Server.AnnoyingClient->InitDCs(dataCenters);
-            Server.AnnoyingClient->CheckClustersList(Server.CleverServer->GetRuntime(), true, dataCenters);
         } else {
             Server.AnnoyingClient->InitDCs(DataCenters, LocalDC);
-            Server.AnnoyingClient->CheckClustersList(Server.CleverServer->GetRuntime(), true, DataCenters);
         }
         Server.AnnoyingClient->InitSourceIds();
-        CreateTopic(GetTestTopic(), GetLocalCluster(), TopicPartitionsCount);
+        CreateTopic(GetTestTopic(), GetLocalCluster());
         if (waitInit) {
             Server.WaitInit(GetTestTopic());
         }
     }
 
-    static TString GetTestTopic() {
-        return "test-topic";
+    TString GetTestTopic() const {
+        return "topic1";
     }
 
-    static TString GetTestConsumer() {
-        return "shared/user";
+    TString GetTestClient() const {
+        return "test-reader";
     }
 
-    static TString GetTestMessageGroupId() {
+    TString GetTestMessageGroupId() const {
         return "test-message-group-id";
     }
 
@@ -104,27 +96,11 @@ public:
         return LocalDC;
     }
 
-    TString GetTestTopicPath() const
-    {
-        return Server.ServerSettings.PQConfig.GetRoot() + "/" + ::NPersQueue::BuildFullTopicName(GetTestTopic(), LocalDC);
-    }
-
     ui16 GetGrpcPort() const {
         return Server.GrpcPort;
     }
 
-    TSimpleSharedPtr<TPortManager> GetPortManager() {
-        return Server.PortManager;
-    }
-
-    std::unique_ptr<grpc::Server> StartGrpcService(const ui16 port, grpc::Service* service) {
-        grpc::ServerBuilder builder;
-        builder.AddListeningPort("[::]:" + ToString(port), grpc::InsecureServerCredentials()).RegisterService(service);
-        std::unique_ptr<grpc::Server> grpcServer(builder.BuildAndStart());
-        return grpcServer;
-    }
-
-    NYdbGrpc::TServerOptions& GetGrpcServerOptions() {
+    NGrpc::TServerOptions& GetGrpcServerOptions() {
         return Server.GrpcServerOptions;
     }
 
@@ -138,14 +114,6 @@ public:
 
     TLog& GetLog() {
         return Log;
-    }
-
-    TTestServer& GetServer() {
-        return Server;
-    }
-
-    NActors::TTestActorRuntime& GetRuntime() {
-        return *Server.CleverServer->GetRuntime();
     }
 
     template <class TConsumerOrProducer>
@@ -224,7 +192,6 @@ public:
             Server.AnnoyingClient->KickNodeInHive(Server.CleverServer->GetRuntime(), i);
         }
     }
-   
     void AllowTablets() {
         for (ui32 i = 0; i < Server.CleverServer->StaticNodes() + Server.CleverServer->DynamicNodes(); i++) {
             Server.AnnoyingClient->MarkNodeInHive(Server.CleverServer->GetRuntime(), i, true);
@@ -233,6 +200,12 @@ public:
 
     void CreateTopic(const TString& topic, const TString& cluster, size_t partitionsCount = 1) {
         Server.AnnoyingClient->CreateTopic(BuildFullTopicName(topic, cluster), partitionsCount);
+    }
+
+    void KillPqrb(const TString& topic, const TString& cluster) {
+        auto describeResult = Server.AnnoyingClient->Ls(TStringBuilder() << "/Root/PQ/" << BuildFullTopicName(topic, cluster));
+        UNIT_ASSERT_C(describeResult->Record.GetPathDescription().HasPersQueueGroup(), describeResult->Record);
+        Server.AnnoyingClient->KillTablet(*Server.CleverServer, describeResult->Record.GetPathDescription().GetPersQueueGroup().GetBalancerTabletID());
     }
 };
 }

@@ -2,9 +2,9 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/mind/dynamic_nameserver.h>
-#include <ydb/library/actors/dnsresolver/dnsresolver.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect_tcp_server.h>
+#include <library/cpp/actors/dnsresolver/dnsresolver.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect_tcp_server.h>
 #include <util/generic/xrange.h>
 
 namespace NActors {
@@ -64,10 +64,6 @@ namespace NActors {
             common->TechnicalSelfHostName = "::1";
             common->ClusterUUID = ClusterUUID;
             common->AcceptUUID = {ClusterUUID};
-
-            if (ICCommonSetupper) {
-                ICCommonSetupper(num, common);
-            }
 
             if (UseRealInterconnect) {
                 auto listener = new TInterconnectListenerTCP(nameNode.first, nameNode.second, common);

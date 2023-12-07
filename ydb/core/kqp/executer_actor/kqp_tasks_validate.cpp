@@ -35,11 +35,7 @@ private:
 
         if (channel.DstTask) {
             auto& dstTask = TasksGraph.GetTask(channel.DstTask);
-
-            auto& stageInfo = TasksGraph.GetStageInfo(dstTask.StageId);
-            auto& dstStage = stageInfo.Meta.GetStage(stageInfo.Id);
-
-            if (IsDataExec() && dstTask.Meta.ShardId && dstStage.SourcesSize() == 0) {
+            if (IsDataExec() && dstTask.Meta.ShardId) {
                 YQL_ENSURE(srcTask.Meta.ShardId, "Invalid channel from non-shard task to shard task"
                     << ", channelId: " << channelId
                     << ", srcTaskId: " << channel.SrcTask
@@ -76,6 +72,11 @@ private:
 
         if (task.Meta.Writes) {
             YQL_ENSURE(task.Outputs.size() == 1, "Read-write tasks should have single output.");
+        }
+
+        const auto& stageInfo = TasksGraph.GetStageInfo(task.StageId);
+        if (stageInfo.Meta.TableKind == ETableKind::Olap) {
+            YQL_ENSURE(!task.Meta.Writes, "OLAP writes are not supported yet");
         }
     }
 

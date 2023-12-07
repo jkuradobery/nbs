@@ -58,13 +58,13 @@ public:
     EResult Validate() {
         if (Info.Loaded)
             return EResult::Ok;
-        Y_ABORT_UNLESS(Engine);
+        Y_VERIFY(Engine);
         return Engine->Validate(Info);
     }
 
     EResult ReValidateKeys() {
-        Y_ABORT_UNLESS(Info.Loaded);
-        Y_ABORT_UNLESS(Engine);
+        Y_VERIFY(Info.Loaded);
+        Y_VERIFY(Engine);
         return Engine->ValidateKeys(Info);
     }
 
@@ -113,14 +113,12 @@ public:
     void ResetCollectedChanges();
 
     TVector<ui64> GetVolatileCommitTxIds() const;
-    const absl::flat_hash_set<ui64>& GetVolatileDependencies() const;
-    std::optional<ui64> GetVolatileChangeGroup() const;
-    bool GetVolatileCommitOrdered() const;
+    TVector<ui64> GetVolatileDependencies() const;
 
     void ResetCounters() { EngineHostCounters = TEngineHostCounters(); }
     const TEngineHostCounters& GetCounters() const { return EngineHostCounters; }
 
-    NKqp::TKqpTasksRunner& GetKqpTasksRunner(NKikimrTxDataShard::TKqpTransaction& tx);
+    NKqp::TKqpTasksRunner& GetKqpTasksRunner(const NKikimrTxDataShard::TKqpTransaction& tx);
     NMiniKQL::TKqpDatashardComputeContext& GetKqpComputeCtx();
 
 private:

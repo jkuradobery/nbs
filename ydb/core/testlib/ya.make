@@ -22,11 +22,11 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect
-    ydb/library/grpc/client
-    ydb/library/grpc/server
-    ydb/library/grpc/server/actors
+    library/cpp/actors/core
+    library/cpp/actors/interconnect
+    library/cpp/grpc/client
+    library/cpp/grpc/server
+    library/cpp/grpc/server/actors
     library/cpp/regex/pcre
     library/cpp/testing/gmock_in_unittest
     library/cpp/testing/unittest
@@ -42,17 +42,12 @@ PEERDIR(
     ydb/core/engine
     ydb/core/engine/minikql
     ydb/core/formats
-    ydb/core/fq/libs/init
-    ydb/core/fq/libs/mock
-    ydb/core/fq/libs/shared_resources
     ydb/core/grpc_services
     ydb/core/health_check
     ydb/core/kesus/proxy
     ydb/core/kesus/tablet
     ydb/core/keyvalue
     ydb/core/kqp
-    ydb/core/kqp/federated_query
-    ydb/core/kqp/finalize_script_service
     ydb/core/metering
     ydb/core/mind
     ydb/core/mind/address_classification
@@ -62,7 +57,6 @@ PEERDIR(
     ydb/core/persqueue
     ydb/core/protos
     ydb/core/security
-    ydb/core/statistics/aggregator
     ydb/core/sys_view/processor
     ydb/core/sys_view/service
     ydb/core/testlib/actors
@@ -76,12 +70,16 @@ PEERDIR(
     ydb/core/tx/sequenceproxy
     ydb/core/tx/sequenceshard
     ydb/core/tx/time_cast
+    ydb/core/yq/libs/audit/mock
+    ydb/core/yq/libs/init
+    ydb/core/yq/libs/mock
+    ydb/core/yq/libs/shared_resources
     ydb/library/aclib
     ydb/library/folder_service/mock
     ydb/library/mkql_proto/protos
     ydb/library/persqueue/topic_parser
     ydb/library/security
-    ydb/library/yql/minikql/comp_nodes/llvm
+    ydb/library/yql/minikql/comp_nodes
     ydb/library/yql/public/udf/service/exception_policy
     ydb/public/lib/base
     ydb/public/lib/deprecated/kicli
@@ -92,8 +90,6 @@ PEERDIR(
     ydb/services/cms
     ydb/services/datastreams
     ydb/services/discovery
-    ydb/services/ext_index/service
-    ydb/core/tx/conveyor/service
     ydb/services/fq
     ydb/services/kesus
     ydb/services/persqueue_cluster_discovery
@@ -104,6 +100,7 @@ PEERDIR(
     ydb/services/bg_tasks/ds_table
     ydb/services/bg_tasks
     ydb/services/ydb
+    ydb/services/yq
 
     ydb/core/http_proxy
 )

@@ -7,8 +7,6 @@ SRCS(
     compact_hash.h
     defs.h
     mkql_alloc.cpp
-    mkql_buffer.cpp
-    mkql_buffer.h
     mkql_function_metadata.cpp
     mkql_function_metadata.h
     mkql_function_registry.cpp
@@ -54,7 +52,7 @@ SRCS(
 PEERDIR(
     contrib/libs/apache/arrow
     contrib/libs/cctz/tzdata
-    ydb/library/actors/util
+    library/cpp/actors/util
     library/cpp/deprecated/enum_codegen
     library/cpp/enumbitset
     library/cpp/monlib/dynamic_counters
@@ -69,7 +67,6 @@ PEERDIR(
     ydb/library/yql/public/udf
     ydb/library/yql/public/udf/tz
     ydb/library/yql/utils
-    ydb/library/yql/core/sql_types
     ydb/library/uuid
     ydb/public/lib/scheme_types
 )
@@ -84,20 +81,6 @@ YQL_LAST_ABI_VERSION()
 
 END()
 
-RECURSE(
-    arrow
-    codegen
-    comp_nodes
-    computation
-    datetime
-    dom
-    invoke_builtins
-    jsonpath
-    perf
-    protobuf_udf
-)
-
 RECURSE_FOR_TESTS(
-    benchmark
     ut
 )

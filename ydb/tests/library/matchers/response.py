@@ -5,11 +5,11 @@ import six
 from hamcrest import all_of, has_property, has_properties
 from hamcrest.core.base_matcher import BaseMatcher
 
-import contrib.ydb.core.protos.msgbus_kv_pb2 as msgbus_kv
-from contrib.ydb.tests.library.common.msgbus_types import EReplyStatus, TStorageStatusFlags
-from contrib.ydb.tests.library.common.msgbus_types import MessageBusStatus
-from contrib.ydb.tests.library.matchers.collection import contains
-from contrib.ydb.tests.library.matchers.response_matchers import ProtobufWithStatusMatcher
+import ydb.core.protos.msgbus_kv_pb2 as msgbus_kv
+from ydb.tests.library.common.msgbus_types import EReplyStatus, TStorageStatusFlags
+from ydb.tests.library.common.msgbus_types import MessageBusStatus
+from ydb.tests.library.matchers.collection import contains
+from ydb.tests.library.matchers.response_matchers import ProtobufWithStatusMatcher
 
 
 def to_bytes(v):

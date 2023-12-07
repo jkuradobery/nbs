@@ -2,6 +2,8 @@ UNITTEST_FOR(ydb/services/datastreams)
 
 FORK_SUBTESTS()
 
+ENV(PERSQUEUE_NEW_SCHEMECACHE="true")
+
 SIZE(MEDIUM)
 
 TIMEOUT(600)
@@ -12,7 +14,7 @@ SRCS(
 
 PEERDIR(
     library/cpp/getopt
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/svnversion
     ydb/core/testlib/default
     ydb/services/datastreams

@@ -1,18 +1,13 @@
+#include <util/random/shuffle.h>
 #include "service_actor.h"
-
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
-#include <ydb/core/control/immediate_control_board_impl.h>
 #include <ydb/core/keyvalue/keyvalue_events.h>
-
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/time_provider/time_provider.h>
-
 #include <util/random/fast.h>
 #include <util/generic/queue.h>
-#include <util/random/shuffle.h>
 
 namespace NKikimr {
 class TKeyValueWriterLoadTestActor;
@@ -129,7 +124,6 @@ class TKeyValueWriterLoadTestActor : public TActorBootstrapped<TKeyValueWriterLo
     // Monitoring
     TIntrusivePtr<::NMonitoring::TDynamicCounters> LoadCounters;
     TInstant TestStartTime;
-    bool EarlyStop = false;
 
     ui64 TabletId;
     TActorId Pipe;
@@ -201,7 +195,6 @@ public:
             LOG_INFO_S(ctx, NKikimrServices::BS_LOAD_TEST, "Tag# " << Tag << " last TEvKeyValueResult, "
                     << " all workers is initialized, start test");
         }
-        EarlyStop = false;
         Connect(ctx);
     }
 
@@ -210,7 +203,6 @@ public:
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     void HandlePoisonPill(const TActorContext& ctx) {
-        EarlyStop = (TAppData::TimeProvider->Now() - TestStartTime).Seconds() < DurationSeconds;
         if (OwnerInitInProgress) {
             LOG_INFO_S(ctx, NKikimrServices::BS_LOAD_TEST, "Tag# " << Tag << " HandlePoisonPill, "
                     << "not all workers is initialized, so wait them to end initialization");
@@ -225,14 +217,9 @@ public:
         LOG_DEBUG_S(ctx, NKikimrServices::BS_LOAD_TEST, "Tag# " << Tag
                 << " TKeyValueWriterLoadTestActor StartDeathProcess called");
         Become(&TKeyValueWriterLoadTestActor::StateEndOfWork);
-        TIntrusivePtr<TEvLoad::TLoadReport> report = nullptr;
-        if (!EarlyStop) {
-            report.Reset(new TEvLoad::TLoadReport());
-            report->Duration = TDuration::Seconds(DurationSeconds);
-        }
-        const TString errorReason = EarlyStop ?
-            "Abort, stop signal received" : "OK, called StartDeathProcess";
-        ctx.Send(Parent, new TEvLoad::TEvLoadTestFinished(Tag, report, errorReason));
+        TIntrusivePtr<TEvLoad::TLoadReport> Report(new TEvLoad::TLoadReport());
+        Report->Duration = TDuration::Seconds(DurationSeconds);
+        ctx.Send(Parent, new TEvLoad::TEvLoadTestFinished(Tag, Report, "OK called StartDeathProcess"));
         NTabletPipe::CloseClient(SelfId(), Pipe);
         Die(ctx);
     }
@@ -287,7 +274,7 @@ public:
 
         auto now = TAppData::TimeProvider->Now();
         auto it = InFlightWrites.find(record.GetCookie());
-        Y_ABORT_UNLESS(it != InFlightWrites.end());
+        Y_VERIFY(it != InFlightWrites.end());
         const auto& stats = it->second;
         ResponseTimes.Increment((now - stats.SentTime).MicroSeconds());
         auto& worker = Workers[stats.WorkerIdx];

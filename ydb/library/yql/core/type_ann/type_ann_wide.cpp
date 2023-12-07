@@ -314,7 +314,7 @@ IGraphTransformer::TStatus WideCombinerWrapper(const TExprNode::TPtr& input, TEx
     }
 
     if (const auto& limit = input->Child(1U)->Content(); !limit.empty()) {
-        i64 memLimit = 0LL;
+        ui64 memLimit = 0ULL;
         if (!TryFromString(limit, memLimit)) {
             ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Child(1U)->Pos()), TStringBuilder() <<
                 "Bad memLimit value: " << limit));
@@ -625,8 +625,9 @@ IGraphTransformer::TStatus NarrowFlatMapWrapper(const TExprNode::TPtr& input, TE
     return IGraphTransformer::TStatus::Ok;
 }
 
-IGraphTransformer::TStatus WideTopWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    if (!EnsureArgsCount(*input, 3U, ctx.Expr)) {
+IGraphTransformer::TStatus WideToBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
+    Y_UNUSED(output);
+    if (!EnsureArgsCount(*input, 1U, ctx.Expr)) {
         return IGraphTransformer::TStatus::Error;
     }
 
@@ -634,81 +635,71 @@ IGraphTransformer::TStatus WideTopWrapper(const TExprNode::TPtr& input, TExprNod
         return IGraphTransformer::TStatus::Error;
     }
 
-    if (!EnsureSpecificDataType(*input->Child(1U), EDataSlot::Uint64, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
+    const auto multiType = input->Head().GetTypeAnn()->Cast<TFlowExprType>()->GetItemType()->Cast<TMultiExprType>();
+    TTypeAnnotationNode::TListType retMultiType;
+    for (const auto& type : multiType->GetItems()) {
+        if (type->IsBlockOrScalar()) {
+            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()), "Input type should not be a block or scalar"));
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        if (!EnsurePersistableType(input->Pos(), *type, ctx.Expr)) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        retMultiType.push_back(ctx.Expr.MakeType<TBlockExprType>(type));
     }
 
-    const auto& types = input->Head().GetTypeAnn()->Cast<TFlowExprType>()->GetItemType()->Cast<TMultiExprType>()->GetItems();
-    if (!ValidateWideTopKeys(input->Tail(), types, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    output = input;
-    input->SetTypeAnn(input->Head().GetTypeAnn());
+    retMultiType.push_back(ctx.Expr.MakeType<TScalarExprType>(ctx.Expr.MakeType<TDataExprType>(EDataSlot::Uint64)));
+    auto outputItemType = ctx.Expr.MakeType<TMultiExprType>(retMultiType);
+    input->SetTypeAnn(ctx.Expr.MakeType<TFlowExprType>(outputItemType));
     return IGraphTransformer::TStatus::Ok;
 }
 
-IGraphTransformer::TStatus WideSortWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
+IGraphTransformer::TStatus WideFromBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
     Y_UNUSED(output);
+    if (!EnsureArgsCount(*input, 1U, ctx.Expr)) {
+        return IGraphTransformer::TStatus::Error;
+    }
+
+    TTypeAnnotationNode::TListType retMultiType;
+    if (!EnsureWideFlowBlockType(input->Head(), retMultiType, ctx.Expr)) {
+        return IGraphTransformer::TStatus::Error;
+    }
+
+    YQL_ENSURE(!retMultiType.empty());
+    retMultiType.pop_back();
+    auto outputItemType = ctx.Expr.MakeType<TMultiExprType>(retMultiType);
+    input->SetTypeAnn(ctx.Expr.MakeType<TFlowExprType>(outputItemType));
+    return IGraphTransformer::TStatus::Ok;
+}
+
+IGraphTransformer::TStatus WideSkipTakeBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
     if (!EnsureArgsCount(*input, 2U, ctx.Expr)) {
         return IGraphTransformer::TStatus::Error;
     }
 
-    if (!EnsureWideFlowType(input->Head(), ctx.Expr)) {
+    TTypeAnnotationNode::TListType blockItemTypes;
+    if (!EnsureWideFlowBlockType(input->Head(), blockItemTypes, ctx.Expr)) {
         return IGraphTransformer::TStatus::Error;
     }
 
-    const auto& types = input->Head().GetTypeAnn()->Cast<TFlowExprType>()->GetItemType()->Cast<TMultiExprType>()->GetItems();
-    if (!ValidateWideTopKeys(input->Tail(), types, ctx.Expr)) {
+    output = input;
+    const TTypeAnnotationNode* expectedType = ctx.Expr.MakeType<TDataExprType>(EDataSlot::Uint64);
+    auto convertStatus = TryConvertTo(input->ChildRef(1), *expectedType, ctx.Expr);
+    if (convertStatus.Level == IGraphTransformer::TStatus::Error) {
+        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Child(1)->Pos()), "Can not convert argument to Uint64"));
         return IGraphTransformer::TStatus::Error;
+    }
+
+    if (convertStatus.Level != IGraphTransformer::TStatus::Ok) {
+        return convertStatus;
     }
 
     input->SetTypeAnn(input->Head().GetTypeAnn());
     return IGraphTransformer::TStatus::Ok;
 }
 
-bool ValidateWideTopKeys(TExprNode& keys, const TTypeAnnotationNode::TListType& types, TExprContext& ctx) {
-    if (!(EnsureTupleMinSize(keys, 1U, ctx) && EnsureTupleMaxSize(keys, types.size(), ctx))) {
-        return false;
-    }
-
-    std::unordered_set<ui32> indexes(keys.ChildrenSize());
-    for (const auto& item : keys.Children()) {
-        if (!EnsureTupleSize(*item, 2U, ctx)) {
-            return false;
-        }
-
-        if (!EnsureAtom(item->Head(), ctx)) {
-            return false;
-        }
-
-        if (ui32 index; TryFromString(item->Head().Content(), index)) {
-            if (index >= types.size()) {
-                ctx.AddError(TIssue(ctx.GetPosition(item->Head().Pos()),
-                    TStringBuilder() << "Index too large: " << index));
-                return false;
-            } else if (!indexes.emplace(index).second) {
-                ctx.AddError(TIssue(ctx.GetPosition(item->Head().Pos()),
-                    TStringBuilder() << "Duplicate index: " << index));
-                return false;
-            }
-
-            if (!EnsureComparableType(item->Pos(), *types[index], ctx)) {
-                return false;
-            }
-        } else {
-            ctx.AddError(TIssue(ctx.GetPosition(item->Head().Pos()),
-                TStringBuilder() << "Invalid index value: " << item->Head().Content()));
-            return false;
-        }
-
-        if (!EnsureSpecificDataType(item->Tail(), EDataSlot::Bool, ctx)) {
-            return false;
-        }
-    }
-
-    return true;
-}
 
 } // namespace NTypeAnnImpl
 }

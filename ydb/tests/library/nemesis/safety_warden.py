@@ -4,7 +4,7 @@ import functools
 import itertools
 import logging
 from abc import ABCMeta, abstractmethod
-from contrib.ydb.tests.library.nemesis.remote_execution import execute_command_with_output_on_hosts
+from ydb.tests.library.nemesis.remote_execution import execute_command_with_output_on_hosts
 
 
 logger = logging.getLogger()

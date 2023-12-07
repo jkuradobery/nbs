@@ -22,11 +22,9 @@
 #include <ydb/core/base/hive.h>
 #include <ydb/core/base/storage_pools.h>
 #include <ydb/core/base/subdomain.h>
-#include <ydb/core/base/channel_profiles.h>
 #include <ydb/core/base/tx_processing.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/cms/console/console.h>
-#include <ydb/core/external_sources/external_source_factory.h>
 #include <ydb/core/kesus/tablet/events.h>
 #include <ydb/core/persqueue/events/global.h>
 #include <ydb/core/protos/blockstore_config.pb.h>
@@ -34,7 +32,6 @@
 #include <ydb/core/protos/filestore_config.pb.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/sys_view/common/events.h>
-#include <ydb/core/statistics/events.h>
 #include <ydb/core/tablet/pipe_tracker.h>
 #include <ydb/core/tablet/tablet_counters.h>
 #include <ydb/core/tablet/tablet_pipe_client_cache.h>
@@ -214,9 +211,6 @@ public:
     THashMap<TPathId, TFileStoreInfo::TPtr> FileStoreInfos;
     THashMap<TPathId, TKesusInfo::TPtr> KesusInfos;
     THashMap<TPathId, TOlapStoreInfo::TPtr> OlapStores;
-    THashMap<TPathId, TExternalTableInfo::TPtr> ExternalTables;
-    THashMap<TPathId, TExternalDataSourceInfo::TPtr> ExternalDataSources;
-    THashMap<TPathId, TViewInfo::TPtr> Views;
 
     TTablesStorage ColumnTables;
 
@@ -266,9 +260,6 @@ public:
     bool EnableBorrowedSplitCompaction = false;
     bool EnableMoveIndex = true;
     bool EnableAlterDatabaseCreateHiveFirst = false;
-    bool EnablePQConfigTransactionsAtSchemeShard = false;
-    bool EnableStatistics = false;
-    bool EnableTablePgTypes = false;
 
     TShardDeleter ShardDeleter;
 
@@ -307,8 +298,6 @@ public:
 
     TActorId DelayedInitTenantDestination;
     TAutoPtr<TEvSchemeShard::TEvInitTenantSchemeShardResult> DelayedInitTenantReply;
-
-    NExternalSource::IExternalSourceFactory::TPtr ExternalSourceFactory{NExternalSource::CreateExternalSourceFactory({})};
 
     THolder<TProposeResponse> IgniteOperation(TProposeRequest& request, TOperationContext& context);
     THolder<TEvDataShard::TEvProposeTransaction> MakeDataShardProposal(const TPathId& pathId, const TOperationId& opId,
@@ -506,25 +495,13 @@ public:
 
     TShardIdx ReserveShardIdxs(ui64 count);
     TShardIdx NextShardIdx(const TShardIdx& shardIdx, ui64 inc) const;
-    template <typename T>
-    TShardIdx RegisterShardInfo(T&& shardInfo) {
-        return RegisterShardInfo(ReserveShardIdxs(1), std::forward<T>(shardInfo));
-    }
-
-    template <typename T>
-    TShardIdx RegisterShardInfo(const TShardIdx& shardIdx, T&& shardInfo) {
-        Y_ABORT_UNLESS(shardIdx.GetOwnerId() == TabletID());
-        const auto localId = ui64(shardIdx.GetLocalId());
-        Y_VERIFY_S(localId < NextLocalShardIdx, "shardIdx: " << shardIdx << " NextLocalShardIdx: " << NextLocalShardIdx);
-        Y_VERIFY_S(!ShardInfos.contains(shardIdx), "shardIdx: " << shardIdx << " already registered");
-        IncrementPathDbRefCount(shardInfo.PathId, "new shard created");
-        ShardInfos.emplace(shardIdx, std::forward<T>(shardInfo));
-        return shardIdx;
-    }
+    TShardIdx RegisterShardInfo(TShardInfo&& shardInfo);
+    TShardIdx RegisterShardInfo(const TShardInfo& shardInfo);
+    TShardIdx RegisterShardInfo(const TShardIdx& shardIdx, TShardInfo&& shardInfo);
+    TShardIdx RegisterShardInfo(const TShardIdx& shardIdx, const TShardInfo& shardInfo);
 
     TTxState& CreateTx(TOperationId opId, TTxState::ETxType txType, TPathId targetPath, TPathId sourcePath = InvalidPathId);
     TTxState* FindTx(TOperationId opId);
-    TTxState* FindTxSafe(TOperationId opId, const TTxState::ETxType& txType);
     void RemoveTx(const TActorContext &ctx, NIceDb::TNiceDb& db, TOperationId opId, TTxState* txState);
     static TPathElement::EPathState CalcPathState(TTxState::ETxType txType, TPathElement::EPathState oldState);
 
@@ -663,10 +640,6 @@ public:
     void PersistSubDomainSecurityStateVersion(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
     void PersistSubDomainPrivateShards(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
     void PersistDeleteSubDomainAlter(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
-    void PersistSubDomainAuditSettings(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
-    void PersistSubDomainAuditSettingsAlter(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
-    void PersistSubDomainServerlessComputeResourcesMode(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
-    void PersistSubDomainServerlessComputeResourcesModeAlter(NIceDb::TNiceDb& db, const TPathId& pathId, const TSubDomainInfo& subDomain);
     void PersistKesusInfo(NIceDb::TNiceDb& db, TPathId pathId, const TKesusInfo::TPtr);
     void PersistKesusVersion(NIceDb::TNiceDb& db, TPathId pathId, const TKesusInfo::TPtr);
     void PersistAddKesusAlter(NIceDb::TNiceDb& db, TPathId pathId, const TKesusInfo::TPtr);
@@ -727,17 +700,6 @@ public:
     void PersistInitState(NIceDb::TNiceDb& db);
 
     void PersistStorageBillingTime(NIceDb::TNiceDb& db);
-
-    // ExternalTable
-    void PersistExternalTable(NIceDb::TNiceDb &db, TPathId pathId, const TExternalTableInfo::TPtr externalTable);
-    void PersistRemoveExternalTable(NIceDb::TNiceDb& db, TPathId pathId);
-
-    // ExternalDataSource
-    void PersistExternalDataSource(NIceDb::TNiceDb &db, TPathId pathId, const TExternalDataSourceInfo::TPtr externalDataSource);
-    void PersistRemoveExternalDataSource(NIceDb::TNiceDb& db, TPathId pathId);
-
-    void PersistView(NIceDb::TNiceDb &db, TPathId pathId);
-    void PersistRemoveView(NIceDb::TNiceDb& db, TPathId pathId);
 
     TTabletId GetGlobalHive(const TActorContext& ctx) const;
 
@@ -890,8 +852,12 @@ public:
     struct TTxLogin;
     NTabletFlatExecutor::ITransaction* CreateTxLogin(TEvSchemeShard::TEvLogin::TPtr &ev);
 
-    template <EventBasePtr TEvPtr>
-    NTabletFlatExecutor::ITransaction* CreateTxOperationReply(TOperationId id, TEvPtr& ev);
+
+    template<class T> struct TTxOperationReply;
+#define DeclareCreateTxOperationReply(TEvType, TxType) \
+        NTabletFlatExecutor::ITransaction* CreateTxOperationReply(TOperationId id, TEvType::TPtr& ev);
+    SCHEMESHARD_INCOMING_EVENTS(DeclareCreateTxOperationReply)
+#undef DeclareCreateTxOperationReply
 
     void PublishToSchemeBoard(THashMap<TTxId, TDeque<TPathId>>&& paths, const TActorContext& ctx);
     void PublishToSchemeBoard(TTxId txId, TDeque<TPathId>&& paths, const TActorContext& ctx);
@@ -943,8 +909,6 @@ public:
 
     void Handle(TEvPrivate::TEvProgressOperation::TPtr &ev, const TActorContext &ctx);
 
-    void Handle(TEvPersQueue::TEvProposeTransactionAttachResult::TPtr& ev, const TActorContext& ctx);
-
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvTabletPipe::TEvServerConnected::TPtr &ev, const TActorContext &ctx);
@@ -955,7 +919,6 @@ public:
     void Handle(TEvHive::TEvDeleteTabletReply::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvPrivate::TEvSubscribeToShardDeletion::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvHive::TEvDeleteOwnerTabletsReply::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvHive::TEvUpdateTabletsObjectReply::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvPersQueue::TEvDropTabletReply::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvColumnShard::TEvProposeTransactionResult::TPtr& ev, const TActorContext& ctx);
     void Handle(NBackgroundTasks::TEvAddTaskResult::TPtr& ev, const TActorContext& ctx);
@@ -972,7 +935,6 @@ public:
     void Handle(TEvDataShard::TEvSchemaChanged::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvDataShard::TEvStateChanged::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvPersQueue::TEvUpdateConfigResponse::TPtr &ev, const TActorContext &ctx);
-    void Handle(TEvPersQueue::TEvProposeTransactionResult::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvBlobDepot::TEvApplyConfigResult::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvSubDomain::TEvConfigureStatus::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvBlockStore::TEvUpdateVolumeConfigResponse::TPtr& ev, const TActorContext& ctx);
@@ -999,6 +961,7 @@ public:
     void Handle(TEvTxProcessing::TEvPlanStep::TPtr &ev, const TActorContext &ctx);
 
     void Handle(TEvents::TEvUndelivered::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx);
     void Handle(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorContext& ctx);
 
     void Handle(TEvDataShard::TEvInitSplitMergeDestinationAck::TPtr& ev, const TActorContext& ctx);
@@ -1167,10 +1130,6 @@ public:
     void PersistBuildIndexIssue(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
     void PersistBuildIndexCancelRequest(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
 
-    void PersistBuildIndexAlterMainTableTxId(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
-    void PersistBuildIndexAlterMainTableTxStatus(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
-    void PersistBuildIndexAlterMainTableTxDone(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
-
     void PersistBuildIndexInitiateTxId(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
     void PersistBuildIndexInitiateTxStatus(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
     void PersistBuildIndexInitiateTxDone(NIceDb::TNiceDb& db, const TIndexBuildInfo::TPtr indexInfo);
@@ -1195,9 +1154,6 @@ public:
 
     struct TIndexBuilder {
         class TTxBase;
-
-        template<typename TRequest, typename TResponse>
-        class TTxSimple;
 
         class TTxCreate;
         struct TTxGet;
@@ -1260,24 +1216,6 @@ public:
         const TCdcStreamInfo::TShardStatus& status);
     void RemoveCdcStreamScanShardStatus(NIceDb::TNiceDb& db, const TPathId& streamPathId, const TShardIdx& shardIdx);
     // } // NCdcStreamScan
-
-    // statistics
-    TString PreSerializedStatisticsMapData;
-    std::unordered_map<ui32, size_t> StatNodes;
-    std::unordered_map<TActorId, ui32> StatNodePipes;
-
-    static constexpr size_t STAT_OPTIMIZE_N_FIRST_NODES = 2;
-    size_t StatFastBroadcastCounter = STAT_OPTIMIZE_N_FIRST_NODES;
-    bool StatFastCheckInFlight = false;
-    std::unordered_set<ui32> StatFastBroadcastNodes;
-
-    void Handle(TEvPrivate::TEvProcessStatistics::TPtr& ev, const TActorContext& ctx);
-    void Handle(TEvPrivate::TEvStatFastBroadcastCheck::TPtr& ev, const TActorContext& ctx);
-    void Handle(NStat::TEvStatistics::TEvRegisterNode::TPtr& ev, const TActorContext& ctx);
-    void GenerateStatisticsMap();
-    void BroadcastStatistics();
-    void BroadcastStatisticsFast();
-    void SendStatisticsToNode(ui32 nodeId);
 
 public:
     void ChangeStreamShardsCount(i64 delta) override;

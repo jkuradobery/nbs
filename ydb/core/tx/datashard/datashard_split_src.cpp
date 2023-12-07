@@ -38,14 +38,13 @@ public:
             // Persist split description
             TString splitDescr;
             bool serilaizeOk = Self->SrcSplitDescription->SerializeToString(&splitDescr);
-            Y_ABORT_UNLESS(serilaizeOk, "Failed to serialize split/merge description");
+            Y_VERIFY(serilaizeOk, "Failed to serialize split/merge description");
             db.Table<Schema::Sys>().Key(Schema::Sys_SrcSplitDescription).Update(NIceDb::TUpdate<Schema::Sys::Bytes>(splitDescr));
 
             Self->PersistSys(db, Schema::Sys_SrcSplitOpId, Self->SrcSplitOpId);
 
             Self->State = TShardState::SplitSrcWaitForNoTxInFlight;
             Self->PersistSys(db, Schema::Sys_State, Self->State);
-            Self->NotifyAllOverloadSubscribers();
 
             // Wake up immediate ops, so they abort as soon as possible
             for (const auto& kv : Self->Pipeline.GetImmediateOps()) {
@@ -55,7 +54,7 @@ public:
             }
         } else {
             // Check that this is the same split request
-            Y_ABORT_UNLESS(opId == Self->SrcSplitOpId,
+            Y_VERIFY(opId == Self->SrcSplitOpId,
                 "Datashard %" PRIu64 " got unexpected split request opId %" PRIu64 " while already executing split request opId %" PRIu64,
                 Self->TabletID(), opId, Self->SrcSplitOpId);
 
@@ -67,10 +66,10 @@ public:
                 SplitAlreadyFinished = false;
                 return true;
             } else if (Self->State == TShardState::SplitSrcSendingSnapshot) {
-                Y_ABORT_UNLESS(!Self->SplitSrcSnapshotSender.AllAcked(), "State should have changed at the moment when last ack was recevied");
+                Y_VERIFY(!Self->SplitSrcSnapshotSender.AllAcked(), "State should have changed at the moment when last ack was recevied");
                 // Do nothing because we are still waiting for acks from DSTs
             } else {
-                Y_ABORT_UNLESS(
+                Y_VERIFY(
                     Self->State == TShardState::SplitSrcWaitForPartitioningChanged ||
                     Self->State == TShardState::PreOffline ||
                     Self->State == TShardState::Offline);
@@ -128,7 +127,7 @@ public:
             return true;
         }
 
-        Y_ABORT_UNLESS(Self->TxInFly() == 0, "Currently split operation shouldn't start while there are in-flight transactions");
+        Y_VERIFY(Self->TxInFly() == 0, "Currently split operation shouldn't start while there are in-flight transactions");
 
         // We need to remove all locks first, making sure persistent uncommitted
         // changes are not borrowed by new shards. Otherwise those will become
@@ -146,7 +145,7 @@ public:
             }
             Self->SysLocksTable().ApplyLocks();
             auto countAfter = Self->SysLocksTable().GetLocks().size();
-            Y_ABORT_UNLESS(countAfter < countBefore, "Expected to erase at least one lock");
+            Y_VERIFY(countAfter < countBefore, "Expected to erase at least one lock");
             Self->Execute(Self->CreateTxStartSplit(), ctx);
             return true;
         }
@@ -171,7 +170,7 @@ public:
                     return false; \
             } \
             if (isStrictCheck) { \
-                Y_ABORT_UNLESS(str.empty(), #table " table is not empty when starting Split at tablet %" PRIu64 " : \n%s", Self->TabletID(), str.Str().data()); \
+                Y_VERIFY(str.empty(), #table " table is not empty when starting Split at tablet %" PRIu64 " : \n%s", Self->TabletID(), str.Str().data()); \
             } else if (!str.empty()) { \
                 LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, \
                      #table " table is not empty when starting Split at tablet " << Self->TabletID() << " : " << str.Str()); \
@@ -252,7 +251,7 @@ public:
         ui64 opId = Self->SrcSplitOpId;
         LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, Self->TabletID() << " snapshot complete for split OpId " << opId);
 
-        Y_ABORT_UNLESS(Self->State == TShardState::SplitSrcMakeSnapshot, "Datashard in unexpected state %s", DatashardStateName(Self->State).data());
+        Y_VERIFY(Self->State == TShardState::SplitSrcMakeSnapshot, "Datashard in unexpected state %s", DatashardStateName(Self->State).data());
 
         txc.Env.ClearSnapshot(*SnapContext);
 
@@ -277,7 +276,7 @@ public:
             snapshot->SetOperationCookie(opId);
 
             // Fill user table scheme
-            Y_ABORT_UNLESS(Self->TableInfos.size() == 1, "Support for more than 1 user table in a datashard is not implemented here");
+            Y_VERIFY(Self->TableInfos.size() == 1, "Support for more than 1 user table in a datashard is not implemented here");
             const TUserTable& tableInfo = *Self->TableInfos.begin()->second;
             tableInfo.GetSchema(*snapshot->MutableUserTableScheme());
 
@@ -416,7 +415,6 @@ public:
         LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, Self->TabletID() << " Sending snapshots from src for split OpId " << Self->SrcSplitOpId);
         Self->SplitSrcSnapshotSender.DoSend(ctx);
         if (ChangeExchangeSplit) {
-            Self->KillChangeSender(ctx);
             Self->ChangeExchangeSplitter.DoSplit(ctx);
         }
     }
@@ -501,11 +499,11 @@ public:
     TTxType GetTxType() const override { return TXTYPE_SPLIT_PARTITIONING_CHANGED; }
 
     bool Execute(TTransactionContext& txc, const TActorContext&) override {
-        Y_ABORT_UNLESS(!Self->ChangesQueue && Self->ChangeSenderActivator.AllAcked());
+        Y_VERIFY(!Self->ChangesQueue && Self->ChangeSenderActivator.AllAcked());
 
         // TODO: At this point Src should start rejecting all new Tx with SchemaChanged status
         if (Self->State != TShardState::SplitSrcWaitForPartitioningChanged) {
-            Y_ABORT_UNLESS(Self->State == TShardState::PreOffline || Self->State == TShardState::Offline,
+            Y_VERIFY(Self->State == TShardState::PreOffline || Self->State == TShardState::Offline,
                 "Unexpected TEvSplitPartitioningChanged at datashard %" PRIu64 " state %s",
                 Self->TabletID(), DatashardStateName(Self->State).data());
 

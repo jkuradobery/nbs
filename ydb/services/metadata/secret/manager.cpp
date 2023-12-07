@@ -5,15 +5,14 @@
 
 namespace NKikimr::NMetadata::NSecret {
 
-void TAccessManager::DoPrepareObjectsBeforeModification(std::vector<TAccess>&& patchedObjects, NModifications::IAlterPreparationController<TAccess>::TPtr controller,
-    const TInternalModificationContext& context) const {
+void TAccessManager::DoPrepareObjectsBeforeModification(std::vector<TAccess>&& patchedObjects, NModifications::IAlterPreparationController<TAccess>::TPtr controller, const NModifications::IOperationsManager::TModificationContext& context) const {
     if (context.GetActivityType() == IOperationsManager::EActivityType::Alter) {
         controller->OnPreparationProblem("access object cannot be modified");
         return;
     }
-    if (!!context.GetExternalData().GetUserToken()) {
+    if (!!context.GetUserToken()) {
         for (auto&& i : patchedObjects) {
-            if (i.GetOwnerUserId() != context.GetExternalData().GetUserToken()->GetUserSID()) {
+            if (i.GetOwnerUserId() != context.GetUserToken()->GetUserSID()) {
                 controller->OnPreparationProblem("no permissions for modify secret access");
                 return;
             }
@@ -22,43 +21,40 @@ void TAccessManager::DoPrepareObjectsBeforeModification(std::vector<TAccess>&& p
     TActivationContext::Register(new TAccessPreparationActor(std::move(patchedObjects), controller, context));
 }
 
-NModifications::TOperationParsingResult TAccessManager::DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings,
-    TInternalModificationContext& context) const {
+NModifications::TOperationParsingResult TAccessManager::DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings, const NModifications::IOperationsManager::TModificationContext& context) const {
     NInternal::TTableRecord result;
     TStringBuf sb(settings.GetObjectId().data(), settings.GetObjectId().size());
     TStringBuf l;
     TStringBuf r;
     if (!sb.TrySplit(':', l, r)) {
-        return TConclusionStatus::Fail("incorrect objectId format (secretId:accessSID)");
+        return "incorrect objectId format (secretId:accessSID)";
     }
     result.SetColumn(TAccess::TDecoder::SecretId, NInternal::TYDBValue::Utf8(l));
     result.SetColumn(TAccess::TDecoder::AccessSID, NInternal::TYDBValue::Utf8(r));
-    if (!context.GetExternalData().GetUserToken()) {
-        auto fValue = settings.GetFeaturesExtractor().Extract(TAccess::TDecoder::OwnerUserId);
-        if (fValue) {
-            result.SetColumn(TAccess::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(*fValue));
+    if (!context.GetUserToken()) {
+        auto it = settings.GetFeatures().find(TAccess::TDecoder::OwnerUserId);
+        if (it != settings.GetFeatures().end()) {
+            result.SetColumn(TAccess::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(it->second));
         } else {
-            return TConclusionStatus::Fail("OwnerUserId not defined");
+            return "OwnerUserId not defined";
         }
     } else {
-        result.SetColumn(TAccess::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(context.GetExternalData().GetUserToken()->GetUserSID()));
+        result.SetColumn(TAccess::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(context.GetUserToken()->GetUserSID()));
     }
     return result;
 }
 
-NModifications::TOperationParsingResult TSecretManager::DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings,
-    TInternalModificationContext& context) const {
-    static const TString ExtraPathSymbolsAllowed = "!\"#$%&'()*+,-.:;<=>?@[\\]^_`{|}~";
+NModifications::TOperationParsingResult TSecretManager::DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings, const NModifications::IOperationsManager::TModificationContext& context) const {
     NInternal::TTableRecord result;
-    if (!context.GetExternalData().GetUserToken()) {
-        auto fValue = settings.GetFeaturesExtractor().Extract(TSecret::TDecoder::OwnerUserId);
-        if (fValue) {
-            result.SetColumn(TSecret::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(*fValue));
+    if (!context.GetUserToken()) {
+        auto it = settings.GetFeatures().find(TSecret::TDecoder::OwnerUserId);
+        if (it != settings.GetFeatures().end()) {
+            result.SetColumn(TSecret::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(it->second));
         } else {
-            return TConclusionStatus::Fail("OwnerUserId not defined");
+            return "OwnerUserId not defined";
         }
     } else {
-        result.SetColumn(TSecret::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(context.GetExternalData().GetUserToken()->GetUserSID()));
+        result.SetColumn(TSecret::TDecoder::OwnerUserId, NInternal::TYDBValue::Utf8(context.GetUserToken()->GetUserSID()));
     }
     for (auto&& c : settings.GetObjectId()) {
         if (c >= '0' && c <= '9') {
@@ -70,28 +66,27 @@ NModifications::TOperationParsingResult TSecretManager::DoBuildPatchFromSettings
         if (c >= 'A' && c <= 'Z') {
             continue;
         }
-        if (ExtraPathSymbolsAllowed.Contains(c)) {
+        if (c == '_') {
             continue;
         }
-        return TConclusionStatus::Fail("incorrect character for secret id: '" + TString(c) + "'");
+        return "incorrect character for secret id: '" + TString(c) + "'";
     }
     {
         result.SetColumn(TSecret::TDecoder::SecretId, NInternal::TYDBValue::Utf8(settings.GetObjectId()));
     }
     {
-        auto fValue = settings.GetFeaturesExtractor().Extract(TSecret::TDecoder::Value);
-        if (fValue) {
-            result.SetColumn(TSecret::TDecoder::Value, NInternal::TYDBValue::Utf8(*fValue));
+        auto it = settings.GetFeatures().find(TSecret::TDecoder::Value);
+        if (it != settings.GetFeatures().end()) {
+            result.SetColumn(TSecret::TDecoder::Value, NInternal::TYDBValue::Utf8(it->second));
         }
     }
     return result;
 }
 
-void TSecretManager::DoPrepareObjectsBeforeModification(std::vector<TSecret>&& patchedObjects, NModifications::IAlterPreparationController<TSecret>::TPtr controller,
-    const TInternalModificationContext& context) const {
-    if (!!context.GetExternalData().GetUserToken()) {
+void TSecretManager::DoPrepareObjectsBeforeModification(std::vector<TSecret>&& patchedObjects, NModifications::IAlterPreparationController<TSecret>::TPtr controller, const NModifications::IOperationsManager::TModificationContext& context) const {
+    if (!!context.GetUserToken()) {
         for (auto&& i : patchedObjects) {
-            if (i.GetOwnerUserId() != context.GetExternalData().GetUserToken()->GetUserSID()) {
+            if (i.GetOwnerUserId() != context.GetUserToken()->GetUserSID()) {
                 controller->OnPreparationProblem("no permissions for modify secrets");
                 return;
             }

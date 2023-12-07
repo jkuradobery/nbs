@@ -8,7 +8,7 @@
 
 #include <ydb/core/tx/schemeshard/schemeshard_import.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/ptr.h>
 #include <util/string/builder.h>
@@ -63,9 +63,6 @@ public:
 
     void Bootstrap(const TActorContext&) {
         const auto& request = *(this->GetProtoRequest());
-        if (request.operation_params().has_forget_after() && request.operation_params().operation_mode() != Ydb::Operations::OperationParams::SYNC) {
-            return this->Reply(StatusIds::UNSUPPORTED, TIssuesIds::DEFAULT_ERROR, "forget_after is not supported for this type of operation");
-        }
 
         if (request.settings().items().empty()) {
             return this->Reply(StatusIds::BAD_REQUEST, TIssuesIds::DEFAULT_ERROR, "Items are not set");
@@ -79,7 +76,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvImport::TEvCreateImportResponse, Handle);
         default:
-            return this->StateBase(ev);
+            return this->StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -90,8 +87,8 @@ public:
     using TImportRPC::TImportRPC;
 };
 
-void DoImportFromS3Request(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TImportFromS3RPC(p.release()));
+void DoImportFromS3Request(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TImportFromS3RPC(p.release()));
 }
 
 } // namespace NGRpcService

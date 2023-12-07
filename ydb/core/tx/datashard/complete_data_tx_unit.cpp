@@ -2,11 +2,8 @@
 #include "datashard_impl.h"
 #include "datashard_pipeline.h"
 #include "execution_unit_ctors.h"
-#include "probes.h"
 
 #include <ydb/core/engine/minikql/minikql_engine_host.h>
-
-LWTRACE_USING(DATASHARD_PROVIDER)
 
 namespace NKikimr {
 namespace NDataShard {
@@ -69,7 +66,7 @@ EExecutionStatus TCompleteOperationUnit::Execute(TOperation::TPtr op,
     // TODO: prepared txs may be cancelled until planned, in which case we may
     // end up with a dangling snapshot reference. Such references would have
     // to be handled in a restart-safe manner too.
-    Y_DEBUG_ABORT_UNLESS(!op->HasAcquiredSnapshotKey());
+    Y_VERIFY_DEBUG(!op->HasAcquiredSnapshotKey());
 
     return EExecutionStatus::DelayComplete;
 }
@@ -99,10 +96,8 @@ void TCompleteOperationUnit::CompleteOperation(TOperation::TPtr op,
 
         DataShard.FillExecutionStats(op->GetExecutionProfile(), *result);
 
-        if (!gSkipRepliesFailPoint.Check(DataShard.TabletID(), op->GetTxId())) {
-            result->Orbit = std::move(op->Orbit);
+        if (!gSkipRepliesFailPoint.Check(DataShard.TabletID(), op->GetTxId()))
             DataShard.SendResult(ctx, result, op->GetTarget(), op->GetStep(), op->GetTxId());
-        }
     }
 
     Pipeline.RemoveCompletingOp(op);
@@ -122,7 +117,6 @@ void TCompleteOperationUnit::Complete(TOperation::TPtr op,
         DataShard.NotifySchemeshard(ctx, op->GetTxId());
 
     DataShard.EnqueueChangeRecords(std::move(op->ChangeRecords()));
-    DataShard.EmitHeartbeats(ctx);
 
     if (op->HasOutputData()) {
         const auto& outReadSets = op->OutReadSets();

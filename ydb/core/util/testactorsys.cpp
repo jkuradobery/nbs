@@ -4,54 +4,9 @@
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/base/tablet_resolver.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <library/cpp/time_provider/time_provider.h>
-#include <ydb/core/control/immediate_control_board_impl.h>
-#include <ydb/core/grpc_services/grpc_helper.h>
-#include <ydb/core/base/feature_flags.h>
-#include <ydb/core/base/nameservice.h>
-#include <ydb/core/base/channel_profiles.h>
-#include <ydb/core/base/domain.h>
-
-#include <util/generic/singleton.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 namespace NKikimr {
-
-class TActorNameTracker {
-public:
-    static TActorNameTracker& GetInstance() {
-        auto* instance = Singleton<TActorNameTracker>();
-        return *instance;
-    }
-
-    void Register(const TActorId& actorId, const TString& name) {
-        TGuard<TMutex> guard{Mutex};
-        NameByActorIdString[actorId] = name + actorId.ToString();
-    }
-
-    TString GetName(const TActorId& actorId) const {
-        TGuard<TMutex> guard{Mutex};
-        auto it = NameByActorIdString.find(actorId);
-        if (it == NameByActorIdString.end()) {
-            return "[unknown_actor]" + actorId.ToString();
-        }
-
-        return it->second;
-    }
-
-private:
-    THashMap<TActorId, TString> NameByActorIdString;
-    TMutex Mutex;
-
-};
-
-void RegisterActorName(const TActorId& actorId, const TString& name) {
-    TActorNameTracker::GetInstance().Register(actorId, name);
-}
-
-TString GetRegisteredActorName(const TActorId& actorId) {
-    return TActorNameTracker::GetInstance().GetName(actorId);
-}
 
 class TTestExecutorPool : public IExecutorPool {
     TTestActorSystem *Context;
@@ -65,11 +20,11 @@ public:
     {}
 
     ui32 GetReadyActivation(TWorkerContext& /*wctx*/, ui64 /*revolvingCounter*/) override {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     void ReclaimMailbox(TMailboxType::EType /*mailboxType*/, ui32 /*hint*/, NActors::TWorkerId /*workerId*/, ui64 /*revolvingCounter*/) override {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     TMailboxHeader *ResolveMailbox(ui32 hint) override {
@@ -106,15 +61,15 @@ public:
     }
 
     void ScheduleActivation(ui32 /*activation*/) override {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     void SpecificScheduleActivation(ui32 /*activation*/) override {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     void ScheduleActivationEx(ui32 /*activation*/, ui64 /*revolvingCounter*/) override {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     TActorId Register(IActor* actor, TMailboxType::EType /*mailboxType*/, ui64 /*revolvingCounter*/, const TActorId& parentId) override {
@@ -142,7 +97,7 @@ public:
     }
 
     TAffinity* Affinity() const override {
-        Y_ABORT();
+        Y_FAIL();
     }
 };
 

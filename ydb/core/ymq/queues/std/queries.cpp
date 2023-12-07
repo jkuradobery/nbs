@@ -556,11 +556,8 @@ const char* const InternalGetQueueAttributesQuery = R"__(
             'VisibilityTimeout
             'ShowDetailedCountersDeadline))
 
-        (let attrsRead (SelectRow attrsTable attrsRow attrsSelect))
-
         (return (AsList
-            (SetResult 'queueExists (Exists attrsRead))
-            (SetResult 'attrs attrsRead)))
+            (SetResult 'attrs (SelectRow attrsTable attrsRow attrsSelect))))
     )
 )__";
 
@@ -1108,8 +1105,7 @@ const char* const GetOldestMessageTimestampMetricsQuery = R"__(
             '('SentTimestamp timeFrom (Uint64 '18446744073709551615))
             '('Offset (Uint64 '0) (Uint64 '18446744073709551615))))
         (let sentIdxSelect '(
-            'SentTimestamp
-            'Offset))
+            'SentTimestamp))
         (let selectResult (SelectRange sentTsIdx sentIdxRange sentIdxSelect '('('"ItemsLimit" (Uint64 '1)))))
         (let messages (Member selectResult 'List))
 
@@ -1173,21 +1169,37 @@ const char* const LoadInflyQuery = R"__(
             )__" STATE_KEYS_PARAM R"__(
         ))
         (let stateFields '(
-            'InflyVersion
-            'InflyCount
-            'MessageCount
-            'ReadOffset
-            'CreatedTimestamp    
-        ))
+            'InflyVersion))
         (let state (SelectRow stateTable stateRow stateFields))
 
         (return (Extend
             (AsList (SetResult 'inflyVersion (Coalesce (Member state 'InflyVersion) (Uint64 '0))))
-            (AsList (SetResult 'inflyCount (Member state 'InflyCount)))
-            (AsList (SetResult 'messageCount (Member state 'MessageCount)))
-            (AsList (SetResult 'readOffset (Member state 'ReadOffset)))
-            (AsList (SetResult 'createdTimestamp (Member state 'CreatedTimestamp)))
             (AsList (SetResult 'infly infly))))
+    )
+)__";
+
+const char* const GetStateQuery = R"__(
+    (
+        (let queueIdNumber      (Parameter 'QUEUE_ID_NUMBER (DataType 'Uint64)))
+        (let queueIdNumberHash  (Parameter 'QUEUE_ID_NUMBER_HASH (DataType 'Uint64)))
+        (let shard              (Parameter 'SHARD  (DataType ')__" SHARD_TYPE_PARAM R"__()))
+
+        (let stateTable ')__" QUEUE_TABLES_FOLDER_PARAM R"__(/State)
+
+        (let state (block '(
+            (let row '(
+                )__" STATE_KEYS_PARAM R"__(
+            ))
+            (let fields '(
+                'InflyCount
+                'MessageCount
+                'ReadOffset
+                'WriteOffset
+                'CreatedTimestamp))
+            (return (SelectRow stateTable row fields)))))
+
+        (return (AsList
+            (SetResult 'state state)))
     )
 )__";
 
@@ -1290,31 +1302,6 @@ const char* const GetMessageCountMetricsQuery = R"__(
     )
 )__";
 
-
-const char* const GetStateQuery = R"__(
-    (
-        (let queueIdNumber      (Parameter 'QUEUE_ID_NUMBER (DataType 'Uint64)))
-        (let queueIdNumberHash  (Parameter 'QUEUE_ID_NUMBER_HASH (DataType 'Uint64)))
-
-        (let stateTable ')__" QUEUE_TABLES_FOLDER_PARAM R"__(/State)
-
-        (let stateRange '(
-            )__" ALL_SHARDS_RANGE_PARAM R"__(
-        ))
-        (let stateSelect '(
-            ')__" SHARD_COLUMN_NAME_PARAM R"__(
-            'MessageCount
-            'InflyCount
-            'InflyVersion
-            'CreatedTimestamp
-            'RetentionBoundary))
-
-        (let stateRead (Member (SelectRange stateTable stateRange stateSelect '()) 'List))
-        (return (AsList (SetResult 'state stateRead)))
-    )
-)__";
-
-
 const char* const GetQueuesListQuery = R"__(
     (
         (let fromUser  (Parameter 'FROM_USER  (DataType 'Utf8String)))
@@ -1354,46 +1341,46 @@ const char* const GetQueuesListQuery = R"__(
 
 const char* GetStdQueryById(size_t id) {
     switch (id) {
-    case DELETE_MESSAGE_ID:
+    case DELETE_MESSAGE_ID: // 0
         return DeleteMessageQuery;
-    case WRITE_MESSAGE_ID:
+    case WRITE_MESSAGE_ID: // 3
         return WriteMessageQuery;
-    case PURGE_QUEUE_ID:
+    case PURGE_QUEUE_ID: // 4
         return PurgeQueueQuery;
-    case CHANGE_VISIBILITY_ID:
+    case CHANGE_VISIBILITY_ID: // 5
         return ChangeMessageVisibilityQuery;
-    case LIST_QUEUES_ID:
+    case LIST_QUEUES_ID: // 8
         return ListQueuesQuery;
-    case SET_QUEUE_ATTRIBUTES_ID:
+    case SET_QUEUE_ATTRIBUTES_ID: // 9
         return SetQueueAttributesQuery;
-    case SET_RETENTION_ID:
+    case SET_RETENTION_ID: // 10
         return SetRetentionQuery;
-    case LOAD_MESSAGES_ID:
+    case LOAD_MESSAGES_ID: // 11
         return LoadMessageQuery;
-    case INTERNAL_GET_QUEUE_ATTRIBUTES_ID:
+    case INTERNAL_GET_QUEUE_ATTRIBUTES_ID: // 12
         return InternalGetQueueAttributesQuery;
-    case PURGE_QUEUE_STAGE2_ID:
+    case PURGE_QUEUE_STAGE2_ID: // 13
         return PurgeQueueStage2Query;
-    case GET_OLDEST_MESSAGE_TIMESTAMP_METRIC_ID:
+    case GET_OLDEST_MESSAGE_TIMESTAMP_METRIC_ID: // 15
         return GetOldestMessageTimestampMetricsQuery;
-    case GET_RETENTION_OFFSET_ID:
+    case GET_RETENTION_OFFSET_ID: // 16
         return GetRetentionOffsetQuery;
-    case LOAD_INFLY_ID:
+    case LOAD_INFLY_ID: // 17
         return LoadInflyQuery;
-    case ADD_MESSAGES_TO_INFLY_ID:
+    case ADD_MESSAGES_TO_INFLY_ID: // 18
         return AddMessagesToInflyQuery;
-    case LIST_DEAD_LETTER_SOURCE_QUEUES_ID:
-        return ListDeadLetterSourceQueuesQuery;
-    case LOAD_OR_REDRIVE_MESSAGE_ID:
-        return LoadOrRedriveMessageQuery;
-    case GET_USER_SETTINGS_ID:
-        return GetUserSettingsQuery;
-    case GET_QUEUES_LIST_ID:
-        return GetQueuesListQuery;
-    case GET_MESSAGE_COUNT_METRIC_ID:
-        return GetMessageCountMetricsQuery;
-    case GET_STATE_ID:
+    case GET_STATE_ID: // 19
         return GetStateQuery;
+    case LIST_DEAD_LETTER_SOURCE_QUEUES_ID: // 20
+        return ListDeadLetterSourceQueuesQuery;
+    case LOAD_OR_REDRIVE_MESSAGE_ID: // 21
+        return LoadOrRedriveMessageQuery;
+    case GET_USER_SETTINGS_ID: // 23
+        return GetUserSettingsQuery;
+    case GET_QUEUES_LIST_ID: // 24
+        return GetQueuesListQuery;
+    case GET_MESSAGE_COUNT_METRIC_ID: // 14
+        return GetMessageCountMetricsQuery;
     }
     return nullptr;
 }

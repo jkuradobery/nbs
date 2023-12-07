@@ -72,6 +72,10 @@ TExprBase RemoveDuplicateKeyFromInput(const TExprBase& input, const TKikimrTable
 
 } // namespace
 
+TExprNode::TPtr MakeMessage(TStringBuf message, TPositionHandle pos, TExprContext& ctx) {
+    return ctx.NewCallable(pos, "Utf8", { ctx.NewAtom(pos, message) });
+}
+
 TMaybe<TCondenseInputResult> CondenseInput(const TExprBase& input, TExprContext& ctx) {
     TVector<TExprBase> stageInputs;
     TVector<TCoArgument> stageArguments;
@@ -98,37 +102,57 @@ TMaybe<TCondenseInputResult> CondenseInput(const TExprBase& input, TExprContext&
     stageInputs.push_back(input);
     stageArguments.push_back(arg);
 
-    auto squeeze = Build<TCoSqueezeToList>(ctx, input.Pos())
-        .Stream(arg)
+    auto condense = Build<TCoCondense>(ctx, input.Pos())
+        .Input(arg)
+        .State<TCoList>()
+            .ListType<TCoTypeOf>()
+                .Value(input)
+                .Build()
+            .Build()
+        .SwitchHandler()
+            .Args({"item", "state"})
+            .Body(MakeBool<false>(input.Pos(), ctx))
+            .Build()
+        .UpdateHandler()
+            .Args({"item", "state"})
+            .Body<TCoAppend>()
+                .List("state")
+                .Item("item")
+                .Build()
+            .Build()
         .Done();
 
     return TCondenseInputResult {
-        .Stream = squeeze,
+        .Stream = condense,
         .StageInputs = stageInputs,
         .StageArgs = stageArguments
     };
 }
 
-TCondenseInputResult DeduplicateInput(const TCondenseInputResult& condenseResult, const TKikimrTableDescription& table,
+TMaybe<TCondenseInputResult> CondenseAndDeduplicateInput(const TExprBase& input, const TKikimrTableDescription& table,
     TExprContext& ctx)
 {
-    auto pos = condenseResult.Stream.Pos();
-    auto listArg = TCoArgument(ctx.NewArgument(pos, "list_arg"));
+    auto condenseResult = CondenseInput(input, ctx);
+    if (!condenseResult) {
+        return {};
+    }
 
-    auto deduplicated = Build<TCoFlatMap>(ctx, pos)
-        .Input(condenseResult.Stream)
+    auto listArg = TCoArgument(ctx.NewArgument(input.Pos(), "list_arg"));
+
+    auto deduplicated = Build<TCoFlatMap>(ctx, input.Pos())
+        .Input(condenseResult->Stream)
         .Lambda()
             .Args({listArg})
             .Body<TCoJust>()
-                .Input(RemoveDuplicateKeyFromInput(listArg, table, pos, ctx))
+                .Input(RemoveDuplicateKeyFromInput(listArg, table, input.Pos(), ctx))
                 .Build()
             .Build()
         .Done();
 
     return TCondenseInputResult {
         .Stream = deduplicated,
-        .StageInputs = condenseResult.StageInputs,
-        .StageArgs = condenseResult.StageArgs
+        .StageInputs = condenseResult->StageInputs,
+        .StageArgs = condenseResult->StageArgs
     };
 }
 
@@ -146,7 +170,7 @@ TMaybe<TCondenseInputResult> CondenseInputToDictByPk(const TExprBase& input, con
             .Args({"row_list"})
             .Body<TCoToDict>()
                 .List("row_list")
-                .KeySelector(MakeTableKeySelector(table.Metadata, input.Pos(), ctx))
+                .KeySelector(MakeTableKeySelector(table, input.Pos(), ctx))
                 .PayloadSelector(payloadSelector)
                 .Settings()
                     .Add().Build("One")
@@ -163,39 +187,11 @@ TMaybe<TCondenseInputResult> CondenseInputToDictByPk(const TExprBase& input, con
     };
 }
 
-TCoLambda MakeTableKeySelector(const TKikimrTableMetadataPtr meta, TPositionHandle pos, TExprContext& ctx) {
+TCoLambda MakeTableKeySelector(const TKikimrTableDescription& table, TPositionHandle pos, TExprContext& ctx) {
     auto keySelectorArg = TCoArgument(ctx.NewArgument(pos, "key_selector"));
 
     TVector<TExprBase> keyTuples;
-    keyTuples.reserve(meta->KeyColumnNames.size());
-    for (const auto& key : meta->KeyColumnNames) {
-        auto tuple = Build<TCoNameValueTuple>(ctx, pos)
-            .Name().Build(key)
-            .Value<TCoMember>()
-                .Struct(keySelectorArg)
-                .Name().Build(key)
-                .Build()
-            .Done();
-
-        keyTuples.emplace_back(tuple);
-    }
-
-    return Build<TCoLambda>(ctx, pos)
-        .Args({keySelectorArg})
-        .Body<TCoAsStruct>()
-            .Add(keyTuples)
-            .Build()
-        .Done();
-}
-
-NYql::NNodes::TCoLambda MakeIndexPrefixKeySelector(const NYql::TIndexDescription& indexDesc, NYql::TPositionHandle pos,
-    NYql::TExprContext& ctx)
-{
-    auto keySelectorArg = TCoArgument(ctx.NewArgument(pos, "fk_selector"));
-
-    TVector<TExprBase> keyTuples;
-    keyTuples.reserve(indexDesc.KeyColumns.size());
-    for (const auto& key : indexDesc.KeyColumns) {
+    for (const auto& key : table.Metadata->KeyColumnNames) {
         auto tuple = Build<TCoNameValueTuple>(ctx, pos)
             .Name().Build(key)
             .Value<TCoMember>()

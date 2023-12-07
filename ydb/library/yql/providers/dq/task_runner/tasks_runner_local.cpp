@@ -1,7 +1,7 @@
 #include "tasks_runner_local.h"
 #include "file_cache.h"
 
-#include <ydb/library/yql/providers/dq/counters/task_counters.h>
+#include <ydb/library/yql/providers/dq/counters/counters.h>
 #include <ydb/library/yql/dq/runtime/dq_input_channel.h>
 #include <ydb/library/yql/dq/runtime/dq_output_channel.h>
 #include <ydb/library/yql/minikql/invoke_builtins/mkql_builtins.h>
@@ -15,6 +15,7 @@
 
 #include <library/cpp/yson/node/node.h>
 #include <library/cpp/yson/node/node_io.h>
+#include <library/cpp/svnversion/svnversion.h>
 
 #include <util/system/env.h>
 #include <util/stream/file.h>
@@ -26,16 +27,27 @@ namespace NYql::NTaskRunnerProxy {
 using namespace NKikimr;
 using namespace NDq;
 
+#define ADD_COUNTER(name) \
+    if (stats->name) { \
+        QueryStat.AddCounter(QueryStat.GetCounterName("TaskRunner", labels, #name), stats->name); \
+    }
+
+#define ADD_TIME_COUNTER(name) \
+    if (stats->name) { \
+        QueryStat.AddTimeCounter(QueryStat.GetCounterName("TaskRunner", labels, #name), stats->name); \
+    }
+
 class TLocalInputChannel: public IInputChannel {
 public:
-    TLocalInputChannel(const IDqInputChannel::TPtr& channel, ui64 taskId, ui32 stageId, TTaskCounters* queryStat)
+    TLocalInputChannel(const IDqInputChannel::TPtr& channel, ui64 taskId, ui64 channelId, TCounters* queryStat)
         : TaskId(taskId)
-        , StageId(stageId)
+        , ChannelId(channelId)
         , Channel(channel)
         , QueryStat(*queryStat)
-    {}
+        , Stats(channelId)
+    { }
 
-    void Push(TDqSerializedBatch&& data) override {
+    void Push(NDqProto::TData&& data) override {
         Channel->Push(std::move(data));
     }
 
@@ -51,28 +63,30 @@ public:
 private:
     void UpdateInputChannelStats()
     {
-        QueryStat.AddInputChannelStats(Channel->GetPushStats(), Channel->GetPopStats(), TaskId, StageId);
+        QueryStat.AddInputChannelStats(*Channel->GetStats(), Stats, TaskId, ChannelId);
     }
 
     ui64 TaskId;
-    ui32 StageId;
+    ui64 ChannelId;
     IDqInputChannel::TPtr Channel;
-    TTaskCounters& QueryStat;
+    TCounters& QueryStat;
+    TDqInputChannelStats Stats;
 };
 
 class TLocalOutputChannel : public IOutputChannel {
 public:
-    TLocalOutputChannel(const IDqOutputChannel::TPtr channel, ui64 taskId, ui32 stageId, TTaskCounters* queryStat)
+    TLocalOutputChannel(const IDqOutputChannel::TPtr channel, ui64 taskId, ui64 channelId, TCounters* queryStat)
         : TaskId(taskId)
-        , StageId(stageId)
+        , ChannelId(channelId)
         , Channel(channel)
         , QueryStat(*queryStat)
-    {}
+        , Stats(channelId)
+    { }
 
     [[nodiscard]]
-    NDqProto::TPopResponse Pop(TDqSerializedBatch& data) override {
+    NDqProto::TPopResponse Pop(NDqProto::TData& data, ui64 bytes) override {
         NDqProto::TPopResponse response;
-        response.SetResult(Channel->Pop(data));
+        response.SetResult(Channel->Pop(data, bytes));
         if (Channel->IsFinished()) {
             UpdateOutputChannelStats();
             QueryStat.FlushCounters(response);
@@ -87,18 +101,19 @@ public:
 private:
     void UpdateOutputChannelStats()
     {
-        QueryStat.AddOutputChannelStats(Channel->GetPushStats(), Channel->GetPopStats(), TaskId, StageId);
+        QueryStat.AddOutputChannelStats(*Channel->GetStats(), Stats, TaskId, ChannelId);
     }
 
     ui64 TaskId;
-    ui32 StageId;
+    ui64 ChannelId;
     IDqOutputChannel::TPtr Channel;
-    TTaskCounters& QueryStat;
+    TCounters& QueryStat;
+    TDqOutputChannelStats Stats;
 };
 
 class TLocalTaskRunner: public ITaskRunner {
 public:
-    TLocalTaskRunner(const NDq::TDqTaskSettings& task, TIntrusivePtr<IDqTaskRunner> runner)
+    TLocalTaskRunner(const NDqProto::TDqTask& task, TIntrusivePtr<IDqTaskRunner> runner)
         : Task(task)
         , Runner(runner)
     { }
@@ -114,10 +129,9 @@ public:
         return Task.GetId();
     }
 
-    NYql::NDqProto::TPrepareResponse Prepare(const NDq::TDqTaskRunnerMemoryLimits& limits) override {
+    NYql::NDqProto::TPrepareResponse Prepare() override {
         NYql::NDqProto::TPrepareResponse ret;
-        TDqTaskRunnerExecutionContextDefault ctx;
-        Runner->Prepare(Task, limits, ctx);
+        Runner->Prepare(Task, DefaultMemoryLimits());
         return ret;
     }
 
@@ -134,15 +148,15 @@ public:
     }
 
     IInputChannel::TPtr GetInputChannel(ui64 channelId) override {
-        return new TLocalInputChannel(Runner->GetInputChannel(channelId), Task.GetId(), Task.GetStageId(), &QueryStat);
+        return new TLocalInputChannel(Runner->GetInputChannel(channelId), Task.GetId(), channelId, &QueryStat);
     }
 
     IOutputChannel::TPtr GetOutputChannel(ui64 channelId) override {
-        return new TLocalOutputChannel(Runner->GetOutputChannel(channelId), Task.GetId(), Task.GetStageId(), &QueryStat);
+        return new TLocalOutputChannel(Runner->GetOutputChannel(channelId), Task.GetId(), channelId, &QueryStat);
     }
 
-    IDqAsyncInputBuffer* GetSource(ui64 index) override {
-        return Runner->GetSource(index).Get();
+    IDqAsyncInputBuffer::TPtr GetSource(ui64 index) override {
+        return Runner->GetSource(index);
     }
 
     IDqAsyncOutputBuffer::TPtr GetSink(ui64 index) override {
@@ -151,10 +165,6 @@ public:
 
     const THashMap<TString,TString>& GetTaskParams() const override {
         return Runner->GetTaskParams();
-    }
-
-    const TVector<TString>& GetReadRanges() const override {
-        return Runner->GetReadRanges();
     }
 
     const THashMap<TString,TString>& GetSecureParams() const override {
@@ -183,12 +193,13 @@ public:
 
 private:
     void UpdateStats() {
-        QueryStat.AddTaskRunnerStats(*Runner->GetStats(), Task.GetId(), Task.GetStageId());
+        QueryStat.AddTaskRunnerStats(*Runner->GetStats(), Stats, Task.GetId());
     }
 
-    NDq::TDqTaskSettings Task;
+    NDqProto::TDqTask Task;
     TIntrusivePtr<IDqTaskRunner> Runner;
-    TTaskCounters QueryStat;
+    TCounters QueryStat;
+    TDqTaskRunnerStats Stats;
 };
 
 /*______________________________________________________________________________________________*/
@@ -241,34 +252,24 @@ public:
         , TerminateOnError(terminateOnError)
     { }
 
-    ITaskRunner::TPtr GetOld(const TDqTaskSettings& task, const TString& traceId) override {
-        return new TLocalTaskRunner(task, Get(task, NDqProto::DQ_STATS_MODE_BASIC, traceId));
+    ITaskRunner::TPtr GetOld(const NDqProto::TDqTask& task, const TString& traceId) override {
+        return new TLocalTaskRunner(task, Get(task, traceId));
     }
 
-    TIntrusivePtr<NDq::IDqTaskRunner> Get(const TDqTaskSettings& task, NDqProto::EDqStatsMode statsMode, const TString& traceId) override {
+    TIntrusivePtr<NDq::IDqTaskRunner> Get(const NDqProto::TDqTask& task, const TString& traceId) override {
         Y_UNUSED(traceId);
         NDq::TDqTaskRunnerSettings settings;
         settings.TerminateOnError = TerminateOnError;
-        settings.StatsMode = statsMode;
+        settings.CollectBasicStats = true;
+        settings.CollectProfileStats = true;
+        settings.AllowGeneratorsInUnboxedValues = true;
 
         Yql::DqsProto::TTaskMeta taskMeta;
         task.GetMeta().UnpackTo(&taskMeta);
 
         for (const auto& s : taskMeta.GetSettings()) {
-            if ("OptLLVM" == s.GetName()) {
+            if ("OptLLVM" == s.GetName())
                 settings.OptLLVM = s.GetValue();
-            }
-            if ("TaskRunnerStats" == s.GetName()) {
-                if ("Disable" == s.GetValue()) {
-                    settings.StatsMode = NDqProto::DQ_STATS_MODE_NONE;
-                } else if ("Basic" == s.GetValue()) {
-                    settings.StatsMode = NDqProto::DQ_STATS_MODE_BASIC;
-                } else if ("Full" == s.GetValue()) {
-                    settings.StatsMode = NDqProto::DQ_STATS_MODE_FULL;
-                } else if ("Profile" == s.GetValue()) {
-                    settings.StatsMode = NDqProto::DQ_STATS_MODE_PROFILE;
-                }
-            }
         }
         for (const auto& x : taskMeta.GetSecureParams()) {
             settings.SecureParams[x.first] = x.second;
@@ -276,10 +277,6 @@ public:
 
         for (const auto& x : taskMeta.GetTaskParams()) {
             settings.TaskParams[x.first] = x.second;
-        }
-
-        for (const auto& readRange : taskMeta.GetReadRanges()) {
-            settings.ReadRanges.push_back(readRange);
         }
         auto ctx = ExecutionContext;
         ctx.FuncProvider = TaskTransformFactory(settings.TaskParams, ctx.FuncRegistry);

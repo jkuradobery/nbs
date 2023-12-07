@@ -1,12 +1,10 @@
 #include "msgbus_servicereq.h"
 #include "grpc_server.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/nameservice.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/mind/node_broker.h>
 #include <ydb/core/kqp/common/kqp.h>
@@ -25,7 +23,7 @@ class TNodeRegistrationActor : public TActorBootstrapped<TNodeRegistrationActor>
 
     struct TNodeAuthorizationResult {
         bool IsAuthorized = false;
-        bool IsCertificateUsed = false;
+        bool IsCertififateUsed = false;
 
         operator bool() const {
             return IsAuthorized;
@@ -90,7 +88,7 @@ public:
         if (Request.HasPath()) {
             request->Record.SetPath(Request.GetPath());
         }
-        request->Record.SetAuthorizedByCertificate(nodeAuthorizationResult.IsCertificateUsed);
+        request->Record.SetAuthorizedByCertificate(nodeAuthorizationResult.IsCertififateUsed);
 
         NTabletPipe::SendData(ctx, NodeBrokerPipe, request.Release());
 
@@ -187,7 +185,7 @@ public:
 
 private:
     TNodeAuthorizationResult IsNodeAuthorized() {
-        TNodeAuthorizationResult result {.IsAuthorized = false, .IsCertificateUsed = false};
+        TNodeAuthorizationResult result {.IsAuthorized = false, .IsCertififateUsed = false};
         auto* appdata = AppData();
         if (appdata && appdata->FeatureFlags.GetEnableDynamicNodeAuthorization() && DynamicNodeAuthorizationParams) {
             const auto& nodeAuthValues = FindClientCert();
@@ -214,7 +212,7 @@ private:
                 Response.MutableStatus()->SetReason("Cannot authorize node with host: " + host);
                 return result;
             }
-            result.IsCertificateUsed = true;
+            result.IsCertififateUsed = true;
         }
         result.IsAuthorized = true;
         return result;;

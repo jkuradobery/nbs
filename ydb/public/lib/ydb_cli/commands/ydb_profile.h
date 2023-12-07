@@ -6,22 +6,12 @@
 namespace NYdb {
 namespace NConsoleClient {
 
+std::shared_ptr<IProfileManager> CreateYdbProfileManager(const TString& ydbDir);
+
 class TCommandConfig : public TClientCommandTree {
 public:
     TCommandConfig();
     virtual void Config(TConfig& config) override;
-};
-
-class TCommandConnectionInfo : public TClientCommand {
-public:
-    TCommandConnectionInfo();
-		
-    virtual void Config(TConfig& config) override;
-    virtual int Run(TConfig& config) override;
-
-private:
-    static void PrintInfo(TConfig& config);
-    static void PrintVerboseInfo(TConfig& config);
 };
 
 class TCommandProfile : public TClientCommandTree {
@@ -43,7 +33,7 @@ protected:
                      TConfig& config, bool interactive, bool cmdLine);
 
     TString ProfileName, Endpoint, Database, TokenFile, YcTokenFile, SaKeyFile,
-            IamTokenFile, IamEndpoint, User, PasswordFile, CaCertsFile;
+            IamTokenFile, IamEndpoint, User, PasswordFile;
 
     bool UseMetadataCredentials = false;
     bool AnonymousAuth = false;
@@ -140,7 +130,6 @@ private:
     bool NoDatabase = false;
     bool NoAuth = false;
     bool NoIamEndpoint = false;
-    bool NoCaCertsFile = false;
 };
 
 class TCommandReplaceProfile : public TCommandProfileCommon {
@@ -149,8 +138,6 @@ public:
     virtual void Config(TConfig& config) override;
     virtual void Parse(TConfig& config) override;
     virtual int Run(TConfig& config) override;
-private:
-    bool Force = false;
 };
 
 }

@@ -1,6 +1,5 @@
 #pragma once
 #include <util/system/types.h>
-#include <ydb/library/yql/public/udf/arrow/bit_util.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -22,18 +21,6 @@ inline ui8 LoadByteUnaligned(const ui8* bitmap, size_t bitmapOffset) {
     ui32 second = bitmap[byteOffset + (bit != 0)];
 
     return (first >> bit) | ui8(second << (8 - bit));
-}
-
-template<typename T>
-inline T SelectArg(ui8 isFirst, T first, T second) {
-    static_assert(std::is_arithmetic<T>::value);
-    if constexpr (std::is_floating_point<T>::value) {
-        return isFirst ? first : second;
-    } else {
-        // isFirst == 1 -> mask 0xFF..FF, isFirst == 0 -> mask 0x00..00
-        T mask = -T(isFirst);
-        return (first & mask) | (second & ~mask);
-    }
 }
 
 inline ui8 CompressByte(ui8 x, ui8 m) {
@@ -83,8 +70,48 @@ inline size_t GetSparseBitmapPopCount(const ui8* src, size_t len) {
     return result;
 }
 
-using NYql::NUdf::CompressSparseBitmap;
-using NYql::NUdf::CompressSparseBitmapNegate;
+namespace {
+template<bool Negate>
+inline void CompressSparseImpl(ui8* dst, const ui8* srcSparse, size_t len) {
+    while (len >= 8) {
+        ui8 result = 0;
+        result |= (*srcSparse++ & 1u) << 0;
+        result |= (*srcSparse++ & 1u) << 1;
+        result |= (*srcSparse++ & 1u) << 2;
+        result |= (*srcSparse++ & 1u) << 3;
+        result |= (*srcSparse++ & 1u) << 4;
+        result |= (*srcSparse++ & 1u) << 5;
+        result |= (*srcSparse++ & 1u) << 6;
+        result |= (*srcSparse++ & 1u) << 7;
+        if constexpr (Negate) {
+            *dst++ = ~result;
+        } else {
+            *dst++ = result;
+        }
+        len -= 8;
+    }
+    if (len) {
+        ui8 result = 0;
+        for (ui8 i = 0; i < len; ++i) {
+            result |= (*srcSparse++ & 1u) << i;
+        }
+        if constexpr (Negate) {
+            *dst++ = ~result;
+        } else {
+            *dst++ = result;
+        }
+    }
+}
+
+} // namespace
+
+inline void CompressSparseBitmap(ui8* dst, const ui8* srcSparse, size_t len) {
+    return CompressSparseImpl<false>(dst, srcSparse, len);
+}
+
+inline void CompressSparseBitmapNegate(ui8* dst, const ui8* srcSparse, size_t len) {
+    return CompressSparseImpl<true>(dst, srcSparse, len);
+}
 
 inline void NegateSparseBitmap(ui8* dst, const ui8* src, size_t len) {
     while (len--) {
@@ -155,8 +182,24 @@ inline size_t CompressBitmap(const ui8* src, size_t srcOffset,
     return dstOffset;
 }
 
-using NYql::NUdf::CompressAsSparseBitmap;
-using NYql::NUdf::CompressArray;
+template<typename T>
+inline T* CompressArray(const T* src, const ui8* sparseBitmap, T* dst, size_t count) {
+    while (count--) {
+        *dst = *src++;
+        dst += *sparseBitmap++;
+    }
+    return dst;
+}
+
+inline ui8* CompressAsSparseBitmap(const ui8* src, size_t srcOffset, const ui8* sparseBitmap, ui8* dst, size_t count) {
+    while (count--) {
+        ui8 inputBit = (src[srcOffset >> 3] >> (srcOffset & 7)) & 1;
+        *dst = inputBit;
+        ++srcOffset;
+        dst += *sparseBitmap++;
+    }
+    return dst;
+}
 
 } // namespace NMiniKQL
 } // namespace NKikimr

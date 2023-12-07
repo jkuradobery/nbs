@@ -28,7 +28,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto done = BasicBlock::Create(context, "done", ctx.Func);
 
@@ -95,14 +95,13 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
         const auto done = BasicBlock::Create(context, "done", ctx.Func);
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto result = PHINode::Create(valueType, NewNodes.size() + 2U, "result", done);
+        const auto result = PHINode::Create(Type::getInt128Ty(context), NewNodes.size() + 2U, "result", done);
 
         BranchInst::Create(init, work, IsInvalid(statePtr, block), block);
 
@@ -131,7 +130,7 @@ public:
         {
             block = work;
 
-            const auto state = new LoadInst(valueType, statePtr, "state", block);
+            const auto state = new LoadInst(statePtr, "state", block);
             const auto index = GetterFor<ui32>(state, context, block);
             result->addIncoming(GetFinish(context), block);
             const auto choise = SwitchInst::Create(index, done, NewNodes.size(), block);
@@ -190,7 +189,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
@@ -229,7 +228,7 @@ public:
         {
             block = work;
 
-            const auto state = new LoadInst(Type::getInt128Ty(context), statePtr, "state", block);
+            const auto state = new LoadInst(statePtr, "state", block);
             const auto index = GetterFor<ui32>(state, context, block);
             result->addIncoming(ConstantInt::get(resultType, static_cast<i32>(EFetchResult::Finish)), block);
             const auto choise = SwitchInst::Create(index, done, NewNodes.size(), block);
@@ -255,17 +254,16 @@ public:
             slice.reserve(allGetters.size());
             std::transform(allGetters.begin(), allGetters.end(), std::back_inserter(slice), [j = idx++](TGettersList& list) { return std::move(list[j]);});
             return [index, slice = std::move(slice)](const TCodegenContext& ctx, BasicBlock*& block) {
-                auto& context = ctx.Codegen.GetContext();
+                auto& context = ctx.Codegen->GetContext();
 
                 const auto stub = BasicBlock::Create(context, "stub", ctx.Func);
                 const auto done = BasicBlock::Create(context, "done", ctx.Func);
                 new UnreachableInst(context, stub);
 
-                const auto valueType = Type::getInt128Ty(context);
-                const auto res = PHINode::Create(valueType, slice.size(), "res", done);
+                const auto res = PHINode::Create(Type::getInt128Ty(context), slice.size(), "res", done);
 
-                const auto statePtr = GetElementPtrInst::CreateInBounds(valueType, ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), index)}, "state_ptr", block);
-                const auto state = new LoadInst(valueType, statePtr, "state", block);
+                const auto statePtr = GetElementPtrInst::CreateInBounds(ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), index)}, "state_ptr", block);
+                const auto state = new LoadInst(statePtr, "state", block);
                 const auto trunc = GetterFor<ui32>(state, context, block);
 
                 const auto choise = SwitchInst::Create(trunc, stub, slice.size(), block);

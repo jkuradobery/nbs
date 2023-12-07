@@ -3,12 +3,12 @@
 #include <ydb/core/protos/grpc.pb.h>
 
 #include <util/datetime/base.h>
-#include <ydb/library/grpc/client/grpc_common.h>
+#include <library/cpp/grpc/client/grpc_common.h>
 
 namespace NKikimr {
     namespace NGRpcProxy {
 
-        using TGRpcClientConfig = NYdbGrpc::TGRpcClientConfig;
+        using TGRpcClientConfig = NGrpc::TGRpcClientConfig;
 
         using TGrpcError = std::pair<TString, int>;
 

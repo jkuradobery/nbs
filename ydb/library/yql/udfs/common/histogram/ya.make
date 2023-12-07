@@ -1,4 +1,4 @@
-YQL_UDF_CONTRIB(histogram_udf)
+YQL_UDF(histogram_udf)
 
 YQL_ABI_VERSION(
     2
@@ -15,7 +15,3 @@ PEERDIR(
 )
 
 END()
-
-RECURSE_FOR_TESTS(
-    test
-)

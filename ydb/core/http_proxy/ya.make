@@ -23,12 +23,11 @@ SRCS(
 
 PEERDIR(
     contrib/restricted/nlohmann_json
-    ydb/library/actors/http
-    ydb/library/actors/core
+    library/cpp/actors/http
+    library/cpp/actors/core
     ydb/core/base
     ydb/core/protos
     ydb/core/grpc_services/local_rpc
-    ydb/core/security
     ydb/library/yql/public/issue
     ydb/library/http_proxy/authorization
     ydb/library/http_proxy/error
@@ -41,7 +40,6 @@ PEERDIR(
     ydb/public/sdk/cpp/client/iam_private
     ydb/services/datastreams
     ydb/services/persqueue_v1/actors
-    ydb/public/api/grpc
     ydb/public/api/protos
 )
 

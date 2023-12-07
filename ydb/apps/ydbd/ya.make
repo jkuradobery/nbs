@@ -10,12 +10,6 @@ ELSE()
     ENDIF()
 ENDIF()
 
-
-IF (OS_DARWIN)
-    STRIP()
-    NO_SPLIT_DWARF()
-ENDIF()
-
 IF (OS_WINDOWS)
     CFLAGS(
         -DKIKIMR_DISABLE_S3_OPS
@@ -25,6 +19,8 @@ ENDIF()
 SRCS(
     export.cpp
     export.h
+    sqs.cpp
+    sqs.h
     main.cpp
 )
 
@@ -38,8 +34,7 @@ PEERDIR(
     ydb/core/driver_lib/run
     ydb/core/protos
     ydb/core/security
-    ydb/core/ymq/actor
-    ydb/core/ymq/base
+    ydb/core/yq/libs/audit/mock
     ydb/library/folder_service/mock
     ydb/library/keys
     ydb/library/pdisk_io
@@ -47,7 +42,6 @@ PEERDIR(
     ydb/library/yql/parser/pg_wrapper
     ydb/library/yql/sql/pg
     ydb/library/yql/udfs/common/clickhouse/client
-    ydb/library/yql/udfs/common/compress_base
     ydb/library/yql/udfs/common/datetime
     ydb/library/yql/udfs/common/datetime2
     ydb/library/yql/udfs/common/digest
@@ -78,7 +72,7 @@ CHECK_DEPENDENT_DIRS(
     ALLOW_ONLY
     PEERDIRS
     arc/api/public
-    build/internal/platform
+    build/external_resources/antlr3
     build/platform
     certs
     contrib
@@ -93,6 +87,14 @@ CHECK_DEPENDENT_DIRS(
 )
 
 YQL_LAST_ABI_VERSION()
+
+IF (OPENSOURCE)
+    RESTRICT_LICENSES(
+        DENY REQUIRE_DISCLOSURE FORBIDDEN PROTESTWARE
+        # DTCC-553
+        EXCEPT contrib/libs/linux-headers
+    )
+ENDIF()
 
 END()
 

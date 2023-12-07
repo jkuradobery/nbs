@@ -4,12 +4,7 @@ FORK_SUBTESTS(MODULO)
 
 SPLIT_FACTOR(20)
 
-REQUIREMENTS(
-    cpu:4
-    ram:32
-)
-
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(3600)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -19,9 +14,19 @@ ELSE()
 ENDIF()
 
 PEERDIR(
+    library/cpp/actors/core
+    library/cpp/getopt
+    library/cpp/svnversion
+    ydb/core/base
+    ydb/core/blobstorage/base
     ydb/core/blobstorage/dsproxy
-#    ydb/core/blobstorage/ut_vdisk/lib
+    ydb/core/blobstorage/groupinfo
+    ydb/core/blobstorage/ut_vdisk/lib
+    ydb/core/blobstorage/vdisk/common
+    ydb/core/blobstorage/vdisk/query
     ydb/core/testlib/default
+    ydb/core/testlib/actors
+    ydb/core/testlib/basics
 )
 
 YQL_LAST_ABI_VERSION()
@@ -34,8 +39,10 @@ SRCS(
     dsproxy_counters_ut.cpp
 )
 
-IF (BUILD_TYPE != "DEBUG")
+
+IF (BUILD_TYPE == "RELEASE")
     SRCS(
+        dsproxy_fault_tolerance_ut.cpp
         dsproxy_get_ut.cpp
     )
 ELSE ()

@@ -5,16 +5,15 @@
 #include <ydb/library/yql/providers/dq/actors/compute_actor.h>
 #include <ydb/library/yql/providers/dq/actors/worker_actor.h>
 #include <ydb/library/yql/providers/dq/runtime/runtime_data.h>
-#include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor_impl.h>
 #include <ydb/library/yql/dq/common/dq_resource_quoter.h>
 
 #include <ydb/library/yql/utils/failure_injector/failure_injector.h>
 #include <ydb/library/yql/utils/log/log.h>
 
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 #include "worker_manager_common.h"
 
@@ -38,32 +37,6 @@ union TDqLocalResourceId {
 
 static_assert(sizeof(TDqLocalResourceId) == 8);
 
-struct TMemoryQuotaManager : public NYql::NDq::TGuaranteeQuotaManager {
-
-    TMemoryQuotaManager(std::shared_ptr<NDq::TResourceQuoter> nodeQuoter, const NDq::TTxId& txId, ui64 limit)
-        : NYql::NDq::TGuaranteeQuotaManager(limit, limit)
-        , NodeQuoter(nodeQuoter)
-        , TxId(txId) {
-    }
-
-    ~TMemoryQuotaManager() override {
-        if (Limit) {
-            NodeQuoter->Free(TxId, 0, Limit);
-        }
-    }
-
-    bool AllocateExtraQuota(ui64 extraSize) override {
-        return NodeQuoter->Allocate(TxId, 0, extraSize);
-    }
-
-    void FreeExtraQuota(ui64 extraSize) override {
-        NodeQuoter->Free(TxId, 0, extraSize);
-    }
-
-    std::shared_ptr<NDq::TResourceQuoter> NodeQuoter;
-    NDq::TTxId TxId;
-};
-
 class TLocalWorkerManager: public TWorkerManagerCommon<TLocalWorkerManager> {
 
 public:
@@ -72,7 +45,6 @@ public:
     TLocalWorkerManager(const TLocalWorkerManagerOptions& options)
         : TWorkerManagerCommon<TLocalWorkerManager>(&TLocalWorkerManager::Handler)
         , Options(options)
-        , TaskCounters(Options.Counters.TaskCounters)
         , MemoryQuoter(std::make_shared<NDq::TResourceQuoter>(Options.MkqlTotalMemoryLimit))
     {
         Options.Counters.MkqlMemoryLimit->Set(Options.MkqlTotalMemoryLimit);
@@ -82,6 +54,16 @@ public:
             limitCounter->Set(limit);
             allocatedCounter->Set(allocated);
         });
+
+        AllocateMemoryFn = [quoter = MemoryQuoter](const auto& txId, ui64, ui64 size) {
+            // mem per task is not tracked yet
+            return quoter->Allocate(txId, 0, size);
+        };
+
+        FreeMemoryFn = [quoter = MemoryQuoter](const auto& txId, ui64, ui64 size) {
+            // mem per task is not tracked yet
+            quoter->Free(txId, 0, size);
+        };
     }
 
 private:
@@ -174,7 +156,7 @@ private:
 
     void OnUndelivered(TEvents::TEvUndelivered::TPtr& ev)
     {
-        Y_ABORT_UNLESS(ev->Get()->Reason == TEvents::TEvUndelivered::Disconnected
+        Y_VERIFY(ev->Get()->Reason == TEvents::TEvUndelivered::Disconnected
             || ev->Get()->Reason == TEvents::TEvUndelivered::ReasonActorUnknown);
 
         YQL_CLOG(DEBUG, ProviderDq) << "Undelivered " << ev->Sender;
@@ -231,28 +213,9 @@ private:
 
         auto traceId = ev->Get()->Record.GetTraceId();
         auto count = ev->Get()->Record.GetCount();
-        Y_ABORT_UNLESS(count > 0);
+        Y_VERIFY(count > 0);
 
-        auto& tasks = *ev->Get()->Record.MutableTask();
-
-        ui64 totalInitialTaskMemoryLimit = 0;
-        std::vector<ui64> quotas;
-        if (createComputeActor) {
-            Y_ABORT_UNLESS(static_cast<int>(tasks.size()) == static_cast<int>(count));
-            quotas.reserve(count);
-            for (auto& task : tasks) {
-                auto taskLimit = task.GetInitialTaskMemoryLimit();
-                if (taskLimit == 0) {
-                    taskLimit = Options.MkqlInitialMemoryLimit;
-                }
-                quotas.push_back(taskLimit);
-                totalInitialTaskMemoryLimit += taskLimit;
-            }
-        } else {
-            totalInitialTaskMemoryLimit = count * Options.MkqlInitialMemoryLimit;
-        }
-
-        bool canAllocate = MemoryQuoter->Allocate(traceId, 0, totalInitialTaskMemoryLimit);
+        bool canAllocate = MemoryQuoter->Allocate(traceId, 0, count * Options.MkqlInitialMemoryLimit);
         if (!canAllocate) {
             Send(ev->Sender, MakeHolder<TEvAllocateWorkersResponse>("Not enough memory to allocate tasks", NYql::NDqProto::StatusIds::OVERLOADED), 0, ev->Cookie);
             return;
@@ -269,13 +232,18 @@ private:
                     TInstant::Now() + TDuration::MilliSeconds(ev->Get()->Record.GetFreeWorkerAfterMs());
             }
 
+            auto& tasks = *ev->Get()->Record.MutableTask();
+
+            if (createComputeActor) {
+                Y_VERIFY(static_cast<int>(tasks.size()) == static_cast<int>(count));
+            }
             auto resultId = ActorIdFromProto(ev->Get()->Record.GetResultActorId());
             ::NMonitoring::TDynamicCounterPtr taskCounters;
 
-            if (createComputeActor && TaskCounters) {
+            if (createComputeActor && Options.DqTaskCounters) {
                 auto& info = TaskCountersMap[traceId];
                 if (!info.TaskCounters) {
-                    info.TaskCounters = TaskCounters->GetSubgroup("operation", traceId);
+                    info.TaskCounters = Options.DqTaskCounters->GetSubgroup("operation", traceId);
                 }
                 info.ReferenceCount += count;
                 taskCounters = info.TaskCounters;
@@ -286,24 +254,23 @@ private:
 
                 if (createComputeActor) {
                     YQL_CLOG(DEBUG, ProviderDq) << "Create compute actor: " << computeActorType;
-                    NYql::NDqProto::TDqTask* taskPtr = &(tasks[i]);
+
                     actor.Reset(NYql::CreateComputeActor(
                         Options,
-                        std::make_shared<TMemoryQuotaManager>(MemoryQuoter, allocationInfo.TxId, quotas[i]),
+                        Options.MkqlTotalMemoryLimit ? AllocateMemoryFn : nullptr,
+                        Options.MkqlTotalMemoryLimit ? FreeMemoryFn : nullptr,
                         resultId,
                         traceId,
-                        taskPtr,
+                        std::move(tasks[i]),
                         computeActorType,
                         Options.TaskRunnerActorFactory,
-                        taskCounters,
-                        ev->Get()->Record.GetStatsMode()));
+                        taskCounters));
                 } else {
                     actor.Reset(CreateWorkerActor(
                         Options.RuntimeData,
                         traceId,
                         Options.TaskRunnerActorFactory,
-                        Options.AsyncIoFactory,
-                        Options.UseSpilling));
+                        Options.AsyncIoFactory));
                 }
                 allocationInfo.WorkerActors.emplace_back(RegisterChild(
                     actor.Release(), createComputeActor ? NYql::NDq::TEvDq::TEvAbortExecution::Unavailable("Aborted by LWM").Release() : nullptr
@@ -331,20 +298,6 @@ private:
         Send(ev->Sender, response.Release());
     }
 
-    void DropTaskCounters(const auto& info) {
-        auto traceId = std::get<TString>(info.TxId);
-        if (auto it = TaskCountersMap.find(traceId); it != TaskCountersMap.end()) {
-            if (it->second.ReferenceCount <= info.WorkerActors.size()) {
-                if (TaskCounters) {
-                    TaskCounters->RemoveSubgroup("operation", traceId);
-                }
-                TaskCountersMap.erase(it);
-            } else {
-                it->second.ReferenceCount -= info.WorkerActors.size();
-            }
-        }
-    }
-
     void FreeGroup(ui64 id, NActors::TActorId sender = NActors::TActorId()) {
         YQL_CLOG(DEBUG, ProviderDq) << "Free Group " << id;
         auto it = AllocatedWorkers.find(id);
@@ -358,8 +311,19 @@ private:
                 YQL_CLOG(ERROR, ProviderDq) << "Free Group " << id << " mismatched alloc-free senders: " << it->second.Sender << " and " << sender << " TxId: " << it->second.TxId;
             }
 
-            if (Options.DropTaskCountersOnFinish) {
-                DropTaskCounters(it->second);
+            MemoryQuoter->Free(it->second.TxId, 0);
+
+            auto traceId = std::get<TString>(it->second.TxId);
+            auto itt = TaskCountersMap.find(traceId);
+            if (itt != TaskCountersMap.end()) {
+                if (itt->second.ReferenceCount <= it->second.WorkerActors.size()) {
+                    if (Options.DqTaskCounters) {
+                        Options.DqTaskCounters->RemoveSubgroup("operation", traceId);
+                    }
+                    TaskCountersMap.erase(itt);
+                } else {
+                    itt->second.ReferenceCount -= it->second.WorkerActors.size();
+                }
             }
 
             Options.Counters.ActiveWorkers->Sub(it->second.WorkerActors.size());
@@ -382,7 +346,6 @@ private:
     }
 
     TLocalWorkerManagerOptions Options;
-    NMonitoring::TDynamicCounterPtr TaskCounters;
 
     struct TAllocationInfo {
         TVector<NActors::TActorId> WorkerActors;
@@ -395,6 +358,8 @@ private:
 
     TRusage Rusage;
 
+    NDq::TAllocateMemoryCallback AllocateMemoryFn;
+    NDq::TFreeMemoryCallback FreeMemoryFn;
     std::shared_ptr<NDq::TResourceQuoter> MemoryQuoter;
 
     struct TCountersInfo {

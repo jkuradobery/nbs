@@ -5,7 +5,7 @@
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_pdiskctx.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_defrag.h>
-#include <ydb/library/actors/wilson/wilson_span.h>
+#include <library/cpp/actors/wilson/wilson_span.h>
 
 namespace NKikimr {
 
@@ -23,8 +23,6 @@ namespace NKikimr {
         const NKikimrBlobStorage::EPutHandleClass HandleClass;
         std::unique_ptr<TEvBlobStorage::TEvVPutResult> Result;
         NProtoBuf::RepeatedPtrField<NKikimrBlobStorage::TEvVPut::TExtraBlockCheck> ExtraBlockChecks;
-
-        mutable NLWTrace::TOrbit Orbit;
 
         TEvHullWriteHugeBlob(const TActorId &senderId,
                              ui64 cookie,
@@ -224,7 +222,6 @@ namespace NKikimr {
         const TString LocalRecoveryInfoDbg;
         NMonGroup::TLsmHullGroup LsmHullGroup;
         NMonGroup::TDskOutOfSpaceGroup DskOutOfSpaceGroup;
-        const bool IsReadOnlyVDisk;
 
         THugeKeeperCtx(
                 TIntrusivePtr<TVDiskContext> vctx,
@@ -233,8 +230,7 @@ namespace NKikimr {
                 TActorId skeletonId,
                 TActorId loggerId,
                 TActorId logCutterId,
-                const TString &localRecoveryInfoDbg,
-                bool isReadOnlyVDisk);
+                const TString &localRecoveryInfoDbg);
         ~THugeKeeperCtx();
     };
 

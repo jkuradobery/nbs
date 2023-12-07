@@ -7,31 +7,28 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/ymq/queues/common/key_hashes.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <util/random/random.h>
-#include <util/generic/guid.h>
 
 namespace NKikimr::NSQS {
 
-TDuration RandomRetentionPeriod() {
-    const TDuration minPeriod = TDuration::MilliSeconds(Cfg().GetMinMessageRetentionPeriodMs());
-    return minPeriod + TDuration::MilliSeconds(RandomNumber<ui32>(minPeriod.MilliSeconds() / 2));
-}
-
-TRetentionActor::TRetentionActor(const TQueuePath& queuePath, ui32 tablesFormat, const TActorId& queueLeader, bool useCPUOptimization)
+TRetentionActor::TRetentionActor(const TQueuePath& queuePath, ui32 tablesFormat, const TActorId& queueLeader)
     : QueuePath_(queuePath)
     , TablesFormat_(tablesFormat)
     , RequestId_(CreateGuidAsString())
     , QueueLeader_(queueLeader)
-    , UseCPUOptimization_(useCPUOptimization)
 {}
 
 void TRetentionActor::Bootstrap() {
     RLOG_SQS_INFO("Bootstrap retention actor for queue " << TLogQueueName(QueuePath_));
     Become(&TThis::StateFunc);
-    if (!UseCPUOptimization_) {
-        Schedule(RandomRetentionPeriod(), new TEvWakeup());
-    }
+    Schedule(RandomRetentionPeriod(), new TEvWakeup());
+}
+
+TDuration TRetentionActor::RandomRetentionPeriod() const {
+    const TDuration minPeriod = TDuration::MilliSeconds(Cfg().GetMinMessageRetentionPeriodMs());
+    return minPeriod +
+        TDuration::MilliSeconds(RandomNumber<ui32>(minPeriod.MilliSeconds() / 2));
 }
 
 void TRetentionActor::SetRetentionBoundary() {
@@ -60,9 +57,7 @@ void TRetentionActor::SetRetentionBoundary() {
             RLOG_SQS_ERROR("Failed to set retention boundary for queue " << TLogQueueName(QueuePath_));
         }
 
-        if (!UseCPUOptimization_) {
-            Schedule(RandomRetentionPeriod(), new TEvWakeup());
-        }
+        Schedule(RandomRetentionPeriod(), new TEvWakeup());
     };
 
     TExecutorBuilder(SelfId(), RequestId_)

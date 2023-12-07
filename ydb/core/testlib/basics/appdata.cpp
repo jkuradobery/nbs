@@ -43,6 +43,7 @@ namespace NKikimr {
         app->PQConfig.SetBalancerMetadataRetryTimeoutSec(1);
         app->PQConfig.SetClustersUpdateTimeoutSec(1);
         app->PQConfig.SetCheckACL(true);
+        app->StaticBlobStorageConfig->CopyFrom(BSConf);
         if (NetDataSourceUrl) {
             auto& updaterConfig = *app->NetClassifierConfig.MutableUpdaterConfig();
             updaterConfig.SetNetDataSourceUrl(NetDataSourceUrl);
@@ -53,7 +54,6 @@ namespace NKikimr {
         app->CompactionConfig = CompactionConfig;
         app->HiveConfig = HiveConfig;
         app->DataShardConfig = DataShardConfig;
-        app->ColumnShardConfig = ColumnShardConfig;
         app->SchemeShardConfig = SchemeShardConfig;
         app->MeteringConfig = MeteringConfig;
         app->AwsCompatibilityConfig = AwsCompatibilityConfig;

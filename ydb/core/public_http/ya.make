@@ -12,17 +12,17 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/http
+    library/cpp/actors/core
+    library/cpp/actors/http
     library/cpp/protobuf/json
     library/cpp/resource
     ydb/core/base
-    ydb/core/fq/libs/result_formatter
-    ydb/core/grpc_services/local_rpc
     ydb/core/http_proxy
+    ydb/core/grpc_services/local_rpc
     ydb/core/protos
     ydb/core/public_http/protos
     ydb/core/viewer/json
+    ydb/core/yq/libs/result_formatter
     ydb/library/yql/public/issue
     ydb/public/sdk/cpp/client/ydb_types
 

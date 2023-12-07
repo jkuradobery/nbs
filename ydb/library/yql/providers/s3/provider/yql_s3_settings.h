@@ -16,14 +16,6 @@ struct TS3Settings {
     NCommon::TConfSetting<ui64, false> BlockSizeMemoryLimit;
     NCommon::TConfSetting<ui64, false> SerializeMemoryLimit; // Total serialization memory limit for all current blocks for all patition keys. Reachable in case of many but small partitions.
     NCommon::TConfSetting<ui64, false> InFlightMemoryLimit; // Maximum memory used by one sink.
-    NCommon::TConfSetting<ui64, false> JsonListSizeLimit; // Limit of elements count in json list written to S3 file. Default: 10'000. Max: 100'000.
-    NCommon::TConfSetting<ui64, false> ArrowParallelRowGroupCount; // Number of parquet row groups to read in parallel, min == 1
-    NCommon::TConfSetting<bool, false> ArrowRowGroupReordering;    // Allow to push rows from file in any order, default false, but usually it is OK
-    NCommon::TConfSetting<ui64, false> ParallelDownloadCount;      // Number of files to read in parallel, min == 1
-    NCommon::TConfSetting<bool, false> UseBlocksSource;            // Deprecated and has to be removed after config cleanup
-    NCommon::TConfSetting<bool, false> AtomicUploadCommit;         // Commit each file independently, w/o transaction semantic over all files
-    NCommon::TConfSetting<bool, false> UseConcurrentDirectoryLister;
-    NCommon::TConfSetting<ui64, false> MaxDiscoveryFilesPerDirectory;
 };
 
 struct TS3ClusterSettings {
@@ -44,24 +36,13 @@ struct TS3Configuration : public TS3Settings, public NCommon::TSettingDispatcher
     THashMap<TString, TString> Tokens;
     std::unordered_map<TString, TS3ClusterSettings> Clusters;
 
-    ui64 FileSizeLimit = 0;
-    ui64 BlockFileSizeLimit = 0;
+    ui64 FileSizeLimit;
     std::unordered_map<TString, ui64> FormatSizeLimits;
-    ui64 MaxFilesPerQuery = 0;
-    ui64 MaxDiscoveryFilesPerQuery = 0;
-    ui64 MaxDirectoriesAndFilesPerQuery = 0;
-    ui64 MinDesiredDirectoriesOfFilesPerQuery = 0;
-    ui64 MaxReadSizePerQuery = 0;
-    ui64 MaxInflightListsPerQuery = 0;
-    ui64 ListingCallbackThreadCount = 0;
-    ui64 ListingCallbackPerThreadQueueSize = 0;
-    ui64 RegexpCacheSize = 0;
-    bool AllowLocalFiles = false;
-    bool AllowConcurrentListings = false;
-    ui64 GeneratorPathsLimit = 0;
-    bool WriteThroughDqIntegration = false;
-    ui64 MaxListingResultSizePerPhysicalPartition;
-    bool AllowAtomicUploadCommit = true;
+    ui64 MaxFilesPerQuery;
+    ui64 MaxDiscoveryFilesPerQuery;
+    ui64 MaxReadSizePerQuery;
+    ui64 MaxInflightListsPerQuery;
+    bool AllowLocalFiles;
 };
 
 } // NYql

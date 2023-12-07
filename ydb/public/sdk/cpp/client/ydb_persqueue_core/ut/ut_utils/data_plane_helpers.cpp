@@ -50,8 +50,7 @@ namespace NKikimr::NPersQueueTests {
         const TString& sourceId,
         std::optional<ui32> partitionGroup,
         std::optional<TString> codec,
-        std::optional<bool> reconnectOnFailure,
-        THashMap<TString, TString> sessionMeta
+        std::optional<bool> reconnectOnFailure
     ) {
         auto settings = TWriteSessionSettings().Path(topic).MessageGroupId(sourceId);
         if (partitionGroup) settings.PartitionGroupId(*partitionGroup);
@@ -65,7 +64,6 @@ namespace NKikimr::NPersQueueTests {
                 settings.Codec(ECodec::LZOP);
         }
         settings.MaxMemoryUsage(1024*1024*1024*1024ll);
-        settings.Meta_.Fields = sessionMeta;
         return CreateSimpleWriter(driver, settings);
     }
 

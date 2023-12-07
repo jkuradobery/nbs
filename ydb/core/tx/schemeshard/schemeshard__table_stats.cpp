@@ -283,14 +283,14 @@ bool TTxStoreTableStats::PersistSingleStats(const TPathId& pathId,
         const ui64 partitionIdx = shardToPartition.at(shardIdx);
         const auto& partitions = table->GetPartitions();
 
-        Y_ABORT_UNLESS(partitionIdx < partitions.size());
+        Y_VERIFY(partitionIdx < partitions.size());
         auto& shardInfo = partitions.at(partitionIdx);
         auto& lag = shardInfo.LastCondEraseLag;
 
         if (lag) {
             Self->TabletCounters->Percentile()[COUNTER_NUM_SHARDS_BY_TTL_LAG].DecrementFor(lag->Seconds());
         } else {
-            Y_DEBUG_ABORT_UNLESS(false);
+            Y_VERIFY_DEBUG(false);
         }
 
         const auto now = ctx.Now();
@@ -332,6 +332,7 @@ bool TTxStoreTableStats::PersistSingleStats(const TPathId& pathId,
 
         return false;
     }
+
     if (rec.GetShardState() != NKikimrTxDataShard::Ready) {
         return true;
     }
@@ -393,7 +394,7 @@ void TTxStoreTableStats::Complete(const TActorContext& ctx) {
     MergeOpSideEffects.ApplyOnComplete(Self, ctx);
 
     for (auto& m: PendingMessages) {
-        Y_ABORT_UNLESS(m.Event);
+        Y_VERIFY(m.Event);
         ctx.Send(m.Actor, m.Event.Release());
     }
 
@@ -427,7 +428,7 @@ void TSchemeShard::Handle(TEvDataShard::TEvPeriodicTableStats::TPtr& ev, const T
                                                      << " cpuUsage " << tabletMetrics.GetCPU()/10000.0);
 
     TStatsId statsId(pathId, datashardId);
-
+    
     switch(TableStatsQueue.Add(statsId, ev.Release())) {
         case READY:
             ExecuteTableStatsBatch(ctx);
@@ -438,7 +439,7 @@ void TSchemeShard::Handle(TEvDataShard::TEvPeriodicTableStats::TPtr& ev, const T
             break;
 
         default:
-          Y_ABORT("Unknown batch status");
+          Y_FAIL("Unknown batch status");
     }
 }
 

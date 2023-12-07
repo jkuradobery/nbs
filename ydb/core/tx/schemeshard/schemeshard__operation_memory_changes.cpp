@@ -5,13 +5,13 @@ namespace NKikimr::NSchemeShard {
 
 template <typename I, typename C, typename H>
 static void GrabNew(const I& id, const C& cont, H& holder) {
-    Y_ABORT_UNLESS(!cont.contains(id));
+    Y_VERIFY(!cont.contains(id));
     holder.emplace(id, nullptr);
 }
 
 template <typename T, typename I, typename C, typename H>
 static void Grab(const I& id, const C& cont, H& holder) {
-    Y_ABORT_UNLESS(cont.contains(id));
+    Y_VERIFY(cont.contains(id));
     holder.emplace(id, new T(*cont.at(id)));
 }
 
@@ -40,7 +40,7 @@ void TMemoryChanges::GrabNewShard(TSchemeShard*, const TShardIdx& shardId) {
 }
 
 void TMemoryChanges::GrabShard(TSchemeShard *ss, const TShardIdx &shardId) {
-    Y_ABORT_UNLESS(ss->ShardInfos.contains(shardId));
+    Y_VERIFY(ss->ShardInfos.contains(shardId));
 
     const auto& shard = ss->ShardInfos.at(shardId);
     Shards.emplace(shardId, MakeHolder<TShardInfo>(shard));
@@ -67,35 +67,19 @@ void TMemoryChanges::GrabCdcStream(TSchemeShard* ss, const TPathId& pathId) {
 }
 
 void TMemoryChanges::GrabNewTableSnapshot(TSchemeShard* ss, const TPathId& pathId, TTxId snapshotTxId) {
-    Y_ABORT_UNLESS(!ss->TablesWithSnapshots.contains(pathId));
+    Y_VERIFY(!ss->TablesWithSnapshots.contains(pathId));
     TablesWithSnapshots.emplace(pathId, snapshotTxId);
 }
 
 void TMemoryChanges::GrabNewLongLock(TSchemeShard* ss, const TPathId& pathId) {
-    Y_ABORT_UNLESS(!ss->LockedPaths.contains(pathId));
+    Y_VERIFY(!ss->LockedPaths.contains(pathId));
     LockedPaths.emplace(pathId, InvalidTxId); // will be removed on UnDo()
 }
 
 void TMemoryChanges::GrabLongLock(TSchemeShard* ss, const TPathId& pathId, TTxId lockTxId) {
-    Y_ABORT_UNLESS(ss->LockedPaths.contains(pathId));
-    Y_ABORT_UNLESS(ss->LockedPaths.at(pathId) == lockTxId);
+    Y_VERIFY(ss->LockedPaths.contains(pathId));
+    Y_VERIFY(ss->LockedPaths.at(pathId) == lockTxId);
     LockedPaths.emplace(pathId, lockTxId); // will be restored on UnDo()
-}
-
-void TMemoryChanges::GrabExternalTable(TSchemeShard* ss, const TPathId& pathId) {
-    Grab<TExternalTableInfo>(pathId, ss->ExternalTables, ExternalTables);
-}
-
-void TMemoryChanges::GrabExternalDataSource(TSchemeShard* ss, const TPathId& pathId) {
-    Grab<TExternalDataSourceInfo>(pathId, ss->ExternalDataSources, ExternalDataSources);
-}
-
-void TMemoryChanges::GrabNewView(TSchemeShard* ss, const TPathId& pathId) {
-    GrabNew(pathId, ss->Views, Views);
-}
-
-void TMemoryChanges::GrabView(TSchemeShard* ss, const TPathId& pathId) {
-    Grab<TViewInfo>(pathId, ss->Views, Views);
 }
 
 void TMemoryChanges::UnDo(TSchemeShard* ss) {
@@ -193,39 +177,9 @@ void TMemoryChanges::UnDo(TSchemeShard* ss) {
         if (!elem) {
             ss->TxInFlight.erase(id);
         } else {
-            Y_ABORT("No such cases are exist");
+            Y_FAIL("No such cases are exist");
         }
         TxStates.pop();
-    }
-
-    while (ExternalTables) {
-        const auto& [id, elem] = ExternalTables.top();
-        if (elem) {
-            ss->ExternalTables[id] = elem;
-        } else {
-            ss->ExternalTables.erase(id);
-        }
-        ExternalTables.pop();
-    }
-
-    while (ExternalDataSources) {
-        const auto& [id, elem] = ExternalDataSources.top();
-        if (elem) {
-            ss->ExternalDataSources[id] = elem;
-        } else {
-            ss->ExternalDataSources.erase(id);
-        }
-        ExternalDataSources.pop();
-    }
-
-    while (Views) {
-        const auto& [id, elem] = Views.top();
-        if (elem) {
-            ss->Views[id] = elem;
-        } else {
-            ss->Views.erase(id);
-        }
-        Views.pop();
     }
 }
 

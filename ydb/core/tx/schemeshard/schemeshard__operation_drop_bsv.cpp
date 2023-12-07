@@ -12,6 +12,44 @@ constexpr char RateLimiterCapacityAttrName[] = "drop_blockstore_volume_rate_limi
 using namespace NKikimr;
 using namespace NSchemeShard;
 
+class TDeleteParts: public TSubOperationState {
+private:
+    TOperationId OperationId;
+
+    TString DebugHint() const override {
+        return TStringBuilder()
+                << "TDropBlockStoreVolume TDeleteParts"
+                << ", operationId: " << OperationId;
+    }
+
+public:
+    TDeleteParts(TOperationId id)
+        : OperationId(id)
+    {
+        IgnoreMessages(DebugHint(), {});
+    }
+
+    bool ProgressState(TOperationContext& context) override {
+        TTabletId ssId = context.SS->SelfTabletId();
+
+        LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                   DebugHint() << " ProgressState"
+                               << ", at schemeshard: " << ssId);
+
+        TTxState* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState->TxType == TTxState::TxDropBlockStoreVolume);
+
+        // Initiate asynchronous deletion of all shards
+        for (auto shard : txState->Shards) {
+            context.OnComplete.DeleteShard(shard.Idx);
+        }
+
+        NIceDb::TNiceDb db(context.GetDB());
+        context.SS->ChangeTxState(db, OperationId, TTxState::Propose);
+        return true;
+    }
+};
+
 class TPropose: public TSubOperationState {
 private:
     TOperationId OperationId;
@@ -39,7 +77,7 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropBlockStoreVolume);
+        Y_VERIFY(txState->TxType == TTxState::TxDropBlockStoreVolume);
 
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
@@ -47,7 +85,7 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -97,8 +135,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropBlockStoreVolume);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropBlockStoreVolume);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -180,7 +218,7 @@ public:
         }
 
         TBlockStoreVolumeInfo::TPtr volume = context.SS->BlockStoreVolumes.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(volume);
+        Y_VERIFY(volume);
 
         {
             const NKikimrSchemeOp::TDropBlockStoreVolume& dropParams = Transaction.GetDropBlockStoreVolume();
@@ -287,11 +325,31 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropBlockStoreVolume");
+        Y_FAIL("no AbortPropose for TDropBlockStoreVolume");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
-        AbortUnsafeDropOperation(OperationId, forceDropTxId, context);
+        LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                     "TDropBlockStorageVolume AbortUnsafe"
+                         << ", opId: " << OperationId
+                         << ", forceDropId: " << forceDropTxId
+                         << ", at schemeshard: " << context.SS->TabletID());
+
+        TTxState* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState);
+
+        TPathId pathId = txState->TargetPathId;
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
+        TPathElement::TPtr path = context.SS->PathsById.at(pathId);
+        Y_VERIFY(path);
+
+        if (path->Dropped()) {
+            for (auto shard : txState->Shards) {
+                context.OnComplete.DeleteShard(shard.Idx);
+            }
+        }
+
+        context.OnComplete.DoneOperation(OperationId);
     }
 };
 
@@ -299,12 +357,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateDropBSV(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateDropBSV(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TDropBlockStoreVolume>(id, tx);
 }
 
-ISubOperation::TPtr CreateDropBSV(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateDropBSV(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropBlockStoreVolume>(id, state);
 }
 

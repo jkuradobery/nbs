@@ -13,23 +13,6 @@ namespace NOperationId {
 
 using namespace NUri;
 
-static const TString QueryIdPrefix = "ydb://preparedqueryid/4?id=";
-
-TString FormatPreparedQueryIdCompat(const TString& in) {
-    return QueryIdPrefix + in;
-}
-
-bool DecodePreparedQueryIdCompat(const TString& in, TString& out) {
-    if (in.size() <= QueryIdPrefix.size()) {
-        ythrow yexception() << "Unable to parse input string";
-    }
-    if (in.compare(0, QueryIdPrefix.size(), QueryIdPrefix) == 0) {
-        out = in.substr(QueryIdPrefix.size());
-        return true;
-    }
-    return false;
-}
-
 TString ProtoToString(const Ydb::TOperationId& proto) {
     using namespace ::google::protobuf;
     const Reflection& reflection = *proto.GetReflection();
@@ -59,11 +42,8 @@ TString ProtoToString(const Ydb::TOperationId& proto) {
         case Ydb::TOperationId::BUILD_INDEX:
             res << "ydb://buildindex";
             break;
-        case Ydb::TOperationId::SCRIPT_EXECUTION:
-            res << "ydb://scriptexec";
-            break;
         default:
-            Y_ABORT_UNLESS(false, "unexpected kind");
+            Y_VERIFY(false, "unexpected kind");
     }
     // According to protobuf documentation:
     // Fields (both normal fields and extension fields) will be listed ordered by field number,
@@ -94,7 +74,7 @@ TString ProtoToString(const Ydb::TOperationId& proto) {
                         res << reflection.GetEnumValue(proto, field);
                     break;
                     default:
-                        Y_ABORT_UNLESS(false, "unexpected protobuf field type");
+                        Y_VERIFY(false, "unexpected protobuf field type");
                     break;
                 }
             }
@@ -186,10 +166,6 @@ Ydb::TOperationId::EKind ParseKind(const TStringBuf value) {
 
     if (value.StartsWith("buildindex")) {
         return Ydb::TOperationId::BUILD_INDEX;
-    }
-
-    if (value.StartsWith("scriptexec")) {
-        return Ydb::TOperationId::SCRIPT_EXECUTION;
     }
 
     return Ydb::TOperationId::UNUSED;

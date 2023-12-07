@@ -2,7 +2,7 @@
 #include <ydb/core/blobstorage/vdisk/hullop/blobstorage_hull.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_response.h>
 #include <ydb/core/blobstorage/vdisk/common/circlebufresize.h>
-#include <ydb/library/wilson_ids/wilson.h>
+#include <ydb/core/base/wilson.h>
 
 namespace NKikimr {
 
@@ -296,19 +296,19 @@ namespace NKikimr {
         }
 
         intptr_t Put(ILoggedRec *rec) {
-            Y_DEBUG_ABORT_UNLESS(rec);
+            Y_VERIFY_DEBUG(rec);
             intptr_t id = ++Counter;
             Queue.Push(TItem(id, rec));
             return id;
         }
 
         ILoggedRec *Extract(intptr_t id) {
-            Y_ABORT_UNLESS((id == Extracted + 1) && !Queue.Empty(), "id# %" PRIu64 " Extracted# %" PRIu64, id, Extracted);
+            Y_VERIFY((id == Extracted + 1) && !Queue.Empty(), "id# %" PRIu64 " Extracted# %" PRIu64, id, Extracted);
             Extracted = id;
 
             TItem item = Queue.Top();
             Queue.Pop();
-            Y_ABORT_UNLESS(item.first == id);
+            Y_VERIFY(item.first == id);
             return item.second;
         }
 

@@ -1,9 +1,6 @@
 #pragma once
 
 #include <ydb/public/sdk/cpp/client/ydb_params/params.h>
-#include <ydb/public/sdk/cpp/client/ydb_query/client.h>
-#include <ydb/public/sdk/cpp/client/ydb_table/table.h>
-#include <ydb/public/sdk/cpp/client/ydb_value/value.h>
 
 #include <list>
 #include <map>
@@ -17,22 +14,13 @@ struct TQueryInfo {
         , Params(NYdb::TParamsBuilder().Build())
     {}
 
-    TQueryInfo(const std::string& query, const NYdb::TParams&& params, bool useBulk = false)
+    TQueryInfo(const std::string& query, const NYdb::TParams&& params)
         : Query(query)
         , Params(std::move(params))
-        , UseReadRows(useBulk)
     {}
 
     std::string Query;
     NYdb::TParams Params;
-    bool UseReadRows = false;
-    TString TablePath;
-    std::optional<NYdb::TValue> KeyToRead;
-    std::optional<NYdb::NTable::TAlterTableSettings> AlterTable;
-
-    std::optional<std::function<void(NYdb::NTable::TReadRowsResult)>> ReadRowsResultCallback;
-    std::optional<std::function<void(NYdb::NTable::TDataQueryResult)>> DataQueryResultCallback;
-    std::optional<std::function<void(NYdb::NQuery::TExecuteQueryResult)>> GenericQueryResultCallback;
 };
 
 using TQueryInfoList = std::list<TQueryInfo>;

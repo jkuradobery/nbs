@@ -3,7 +3,7 @@
 namespace NKikimr {
 
     static TLogger ActorSystemLogger(TActorSystem *as) {
-        Y_ABORT_UNLESS(as);
+        Y_VERIFY(as);
         auto logger = [as] (NLog::EPriority p, NLog::EComponent c, const TString &s) {
             LOG_LOG(*as, p, c, s);
         };
@@ -58,10 +58,9 @@ namespace NKikimr {
         , ReplNodeRequestQuoter(std::move(replNodeRequestQuoter))
         , ReplNodeResponseQuoter(std::move(replNodeResponseQuoter))
         , OutOfSpaceState(Top->GetTotalVDisksNum(), Top->GetOrderNumber(ShortSelfVDisk))
-        , CostMonGroup(vdiskCounters, "subsystem", "cost")
         , Logger(as ? ActorSystemLogger(as) : DevNullLogger())
     {
-        Y_ABORT_UNLESS(!VDiskLogPrefix.empty());
+        Y_VERIFY(!VDiskLogPrefix.empty());
     }
 
     TString TVDiskContext::FormatMessage(

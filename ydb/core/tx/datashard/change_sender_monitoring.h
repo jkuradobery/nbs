@@ -1,23 +1,12 @@
 #pragma once
 
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 
-#include <util/generic/maybe.h>
+#include <util/string/printf.h>
 
 namespace NKikimr::NDataShard {
-
-template <typename T>
-static void Link(IOutputStream& str, const TStringBuf path, const T& title) {
-    HTML(str) {
-        HREF(path) {
-            str << title;
-        }
-    }
-}
-
-TString TabletPath(ui64 tabletId);
 
 template <typename T>
 void Header(IOutputStream& str, const T& title, ui64 tabletId) {
@@ -27,7 +16,7 @@ void Header(IOutputStream& str, const T& title, ui64 tabletId) {
                 str << title;
                 SMALL() {
                     str << "&nbsp;";
-                    HREF(TabletPath(tabletId)) {
+                    HREF(Sprintf("app?TabletID=%" PRIu64, tabletId)) {
                         str << tabletId;
                     }
                 }
@@ -41,14 +30,6 @@ static void TermDesc(IOutputStream& str, const TStringBuf term, const T& desc) {
     HTML(str) {
         DT() { str << term; }
         DD() { str << desc; }
-    }
-}
-
-template <typename T>
-static void TermDescLink(IOutputStream& str, const TStringBuf term, const T& desc, const TStringBuf path) {
-    HTML(str) {
-        DT() { str << term; }
-        DD() { Link(str, path, desc); }
     }
 }
 

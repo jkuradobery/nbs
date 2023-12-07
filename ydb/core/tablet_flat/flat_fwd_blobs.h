@@ -25,7 +25,7 @@ namespace NFwd {
         {
             Tags.resize(Frames->Stats().Tags.size(), 0);
 
-            Y_ABORT_UNLESS(Edge.size() == Tags.size(), "Invalid edges vector");
+            Y_VERIFY(Edge.size() == Tags.size(), "Invalid edges vector");
         }
 
         ~TBlobs()
@@ -35,7 +35,7 @@ namespace NFwd {
 
         TResult Handle(IPageLoadingQueue *head, ui32 ref, ui64 lower) noexcept override
         {
-            Y_ABORT_UNLESS(ref >= Lower, "Cannot handle backward blob reads");
+            Y_VERIFY(ref >= Lower, "Cannot handle backward blob reads");
 
             auto again = (std::exchange(Tags.at(FrameTo(ref)), 1) == 0);
 
@@ -59,11 +59,11 @@ namespace NFwd {
         {
             for (auto &one: loaded) {
                 if (!Pages || one.PageId < Pages.front().PageId) {
-                    Y_ABORT("Blobs fwd cache got page below queue");
+                    Y_FAIL("Blobs fwd cache got page below queue");
                 } else if (one.PageId > Pages.back().PageId) {
-                    Y_ABORT("Blobs fwd cache got page above queue");
+                    Y_FAIL("Blobs fwd cache got page above queue");
                 } else if (one.Data.size() > OnFetch) {
-                    Y_ABORT("Blobs fwd cache ahead counters is out of sync");
+                    Y_FAIL("Blobs fwd cache ahead counters is out of sync");
                 }
 
                 Stat.Saved += one.Data.size();
@@ -101,7 +101,7 @@ namespace NFwd {
             } else {
                 auto it = std::lower_bound(Pages.begin(), end, ref);
 
-                Y_ABORT_UNLESS(it != end && it->PageId == ref);
+                Y_VERIFY(it != end && it->PageId == ref);
 
                 return *it;
             }
@@ -115,7 +115,7 @@ namespace NFwd {
                 return FrameTo(ref, Frames->Relation(ref));
             } else {
                 const auto &page = Lookup(ref);
-                Y_ABORT_UNLESS(page.Size < Max<ui32>(), "Unexpected huge page");
+                Y_VERIFY(page.Size < Max<ui32>(), "Unexpected huge page");
 
                 i16 refer = ref - page.Refer; /* back to relative refer */
 
@@ -138,7 +138,7 @@ namespace NFwd {
             while (Grow != Max<TPageId>() && (Grow < Upper || until())) {
                 const auto next = Propagate(Grow);
 
-                Y_ABORT_UNLESS(Grow < next, "Unexpected frame upper boundary");
+                Y_VERIFY(Grow < next, "Unexpected frame upper boundary");
 
                 Grow = (next < Max<TPageId>() ? Grow : next);
 
@@ -149,9 +149,9 @@ namespace NFwd {
                     if (!Tags.at(page.Tag) || page.Size >= Edge.at(page.Tag) || !Filter.Has(rel.Row)) {
                         /* Page doesn't fits to load criteria   */
                     } else if (page.Fetch == EFetch::None) {
-                        auto size = head->AddToQueue(Grow, EPage::Opaque);
+                        auto size = head->AddToQueue(Grow, ui16(EPage::Opaque));
 
-                        Y_ABORT_UNLESS(size == page.Size, "Inconsistent page sizez");
+                        Y_VERIFY(size == page.Size, "Inconsistent page sizez");
 
                         page.Fetch = EFetch::Wait;
                         Stat.Fetch += page.Size;
@@ -168,7 +168,7 @@ namespace NFwd {
             if (Pages && base <= Pages.back().PageId) {
                 return Lookup(base).Refer;
             } else if (Pages && base != Lower && base - Pages.back().PageId != 1) {
-                Y_ABORT("Cannot do so long jumps around of frames");
+                Y_FAIL("Cannot do so long jumps around of frames");
             } else {
                 const auto end = Frames->Relation(base).AbsRef(base);
 
@@ -193,7 +193,7 @@ namespace NFwd {
                 if (page.PageId >= until) {
                     break;
                 } else if (page.Size == 0) {
-                    Y_ABORT("Dropping page that hasn't been propagated");
+                    Y_FAIL("Dropping page that hasn't been propagated");
                 } else if (auto size = page.Release().size()) {
                     OnHold -= size;
 

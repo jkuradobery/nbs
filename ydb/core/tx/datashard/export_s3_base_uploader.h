@@ -8,13 +8,12 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/wrappers/s3_storage_config.h>
 #include <ydb/core/wrappers/s3_wrapper.h>
 #include <ydb/core/wrappers/events/common.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <library/cpp/random_provider/random_provider.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/buffer.h>
 #include <util/generic/maybe.h>
@@ -22,8 +21,6 @@
 #include <util/generic/string.h>
 #include <util/string/builder.h>
 #include <util/string/cast.h>
-
-#include <google/protobuf/text_format.h>
 
 namespace NKikimr {
 namespace NDataShard {
@@ -45,7 +42,7 @@ class TS3UploaderBase: public TActorBootstrapped<TDerived>
 
 protected:
     void Restart() {
-        Y_ABORT_UNLESS(ProxyResolved);
+        Y_VERIFY(ProxyResolved);
 
         MultiPart = false;
         Last = false;
@@ -57,9 +54,9 @@ protected:
 
         Client = this->RegisterWithSameMailbox(NWrappers::CreateS3Wrapper(ExternalStorageConfig->ConstructStorageOperator()));
 
-        if (!MetadataUploaded) {
-            UploadMetadata();
-        } else if (!SchemeUploaded) {
+        if (!SchemeUploaded) {
+            this->Become(&TDerived::StateUploadScheme);
+
             UploadScheme();
         } else {
             this->Become(&TDerived::StateUploadData);
@@ -73,7 +70,7 @@ protected:
     }
 
     void UploadScheme() {
-        Y_ABORT_UNLESS(!SchemeUploaded);
+        Y_VERIFY(!SchemeUploaded);
 
         if (!Scheme) {
             return Finish(false, "Cannot infer scheme");
@@ -85,21 +82,6 @@ protected:
             .WithKey(Settings.GetSchemeKey())
             .WithStorageClass(Settings.GetStorageClass());
         this->Send(Client, new TEvExternalStorage::TEvPutObjectRequest(request, std::move(Buffer)));
-
-        this->Become(&TDerived::StateUploadScheme);
-    }
-
-    void UploadMetadata() {
-        Y_ABORT_UNLESS(!MetadataUploaded);
-
-        Buffer = std::move(Metadata);
-
-        auto request = Aws::S3::Model::PutObjectRequest()
-            .WithKey(Settings.GetMetadataKey())
-            .WithStorageClass(Settings.GetStorageClass());
-        this->Send(Client, new TEvExternalStorage::TEvPutObjectRequest(request, std::move(Buffer)));
-
-        this->Become(&TDerived::StateUploadMetadata);
     }
 
     void HandleScheme(TEvExternalStorage::TEvPutObjectResponse::TPtr& ev) {
@@ -122,22 +104,6 @@ protected:
         this->Become(&TDerived::StateUploadData);
     }
 
-    void HandleMetadata(TEvExternalStorage::TEvPutObjectResponse::TPtr& ev) {
-        const auto& result = ev->Get()->Result;
-
-        EXPORT_LOG_D("HandleMetadata TEvExternalStorage::TEvPutObjectResponse"
-            << ": self# " << this->SelfId()
-            << ", result# " << result);
-
-        if (!CheckResult(result, TStringBuf("PutObject (metadata)"))) {
-            return;
-        }
-
-        MetadataUploaded = true;
-
-        UploadScheme();
-    }
-
     void Handle(TEvExportScan::TEvReady::TPtr& ev) {
         EXPORT_LOG_D("Handle TEvExportScan::TEvReady"
             << ": self# " << this->SelfId()
@@ -149,7 +115,7 @@ protected:
             return PassAway();
         }
 
-        if (ProxyResolved && SchemeUploaded && MetadataUploaded) {
+        if (ProxyResolved && SchemeUploaded) {
             this->Send(Scanner, new TEvExportScan::TEvFeed());
         }
     }
@@ -337,7 +303,7 @@ protected:
             UploadId.Clear(); // force getting info after restart
             Retry();
         } else {
-            Y_ABORT_UNLESS(Error);
+            Y_VERIFY(Error);
             Error = TStringBuilder() << *Error << " Additionally, 'AbortMultipartUpload' has failed: "
                 << error.GetMessage();
             PassAway();
@@ -439,8 +405,7 @@ public:
     explicit TS3UploaderBase(
             const TActorId& dataShard, ui64 txId,
             const NKikimrSchemeOp::TBackupTask& task,
-            TMaybe<Ydb::Table::CreateTableRequest>&& scheme,
-            TString&& metadata)
+            TMaybe<Ydb::Table::CreateTableRequest>&& scheme)
         : ExternalStorageConfig(new NWrappers::NExternalStorage::TS3ExternalStorageConfig(task.GetS3Settings()))
         , Settings(TS3Settings::FromBackupTask(task))
         , DataFormat(NBackupRestoreTraits::EDataFormat::Csv)
@@ -448,12 +413,10 @@ public:
         , DataShard(dataShard)
         , TxId(txId)
         , Scheme(std::move(scheme))
-        , Metadata(std::move(metadata))
         , Retries(task.GetNumberOfRetries())
         , Attempt(0)
         , Delay(TDuration::Minutes(1))
         , SchemeUploaded(task.GetShardNum() == 0 ? false : true)
-        , MetadataUploaded(task.GetShardNum() == 0 ? false : true)
     {
     }
 
@@ -483,15 +446,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvExternalStorage::TEvPutObjectResponse, HandleScheme);
         default:
-            return StateBase(ev);
-        }
-    }
-
-    STATEFN(StateUploadMetadata) {
-        switch (ev->GetTypeRewrite()) {
-            hFunc(TEvExternalStorage::TEvPutObjectResponse, HandleMetadata);
-        default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -506,7 +461,7 @@ public:
             hFunc(TEvExternalStorage::TEvCompleteMultipartUploadResponse, Handle);
             hFunc(TEvExternalStorage::TEvAbortMultipartUploadResponse, Handle);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -521,7 +476,6 @@ private:
     const TActorId DataShard;
     const ui64 TxId;
     const TMaybe<Ydb::Table::CreateTableRequest> Scheme;
-    const TString Metadata;
 
     const ui32 Retries;
     ui32 Attempt;
@@ -529,7 +483,6 @@ private:
     TActorId Client;
     TDuration Delay;
     bool SchemeUploaded;
-    bool MetadataUploaded;
     bool MultiPart;
     bool Last;
 

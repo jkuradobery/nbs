@@ -1,4 +1,3 @@
-#include "db_metadata_cache.h"
 #include "service_monitoring.h"
 
 #include "rpc_kqp_base.h"
@@ -8,9 +7,9 @@
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <library/cpp/digest/old_crc/crc.h>
 
 #include <util/random/shuffle.h>
@@ -30,56 +29,29 @@ class TSelfCheckRPC : public TRpcRequestActor<TSelfCheckRPC, TEvSelfCheckRequest
 public:
     using TRpcRequestActor::TRpcRequestActor;
 
-    std::optional<Ydb::Monitoring::SelfCheckResult> Result;
+    THolder<NHealthCheck::TEvSelfCheckResult> Result;
     Ydb::StatusIds_StatusCode Status = Ydb::StatusIds::SUCCESS;
 
-    void SendHealthCheckRequest() {
+    void Bootstrap() {
         THolder<NHealthCheck::TEvSelfCheckRequest> request = MakeHolder<NHealthCheck::TEvSelfCheckRequest>();
         request->Request = *GetProtoRequest();
         if (Request->GetDatabaseName()) {
             request->Database = Request->GetDatabaseName().GetRef();
         }
         Send(NHealthCheck::MakeHealthCheckID(), request.Release());
-        Become(&TThis::StateWaitHealthCheck);
+        Become(&TThis::StateWait);
     }
 
-    void Bootstrap() {
-        if (GetProtoRequest()->do_not_cache() || !Request->GetDatabaseName()) {
-            SendHealthCheckRequest();
-        } else {
-            auto domainInfo = AppData()->DomainsInfo->Domains.begin()->second;
-            RegisterWithSameMailbox(CreateBoardLookupActor(MakeDatabaseMetadataCacheBoardPath(Request->GetDatabaseName().GetRef()),
-                                                           SelfId(),
-                                                           domainInfo->DefaultStateStorageGroup,
-                                                           EBoardLookupMode::Second));
-            Become(&TThis::StateResolve);
-        }
-    }
-
-    STATEFN(StateWaitHealthCheck) {
+    STATEFN(StateWait) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvents::TEvUndelivered, Handle);
             hFunc(NHealthCheck::TEvSelfCheckResult, Handle);
         }
     }
 
-    STATEFN(StateWaitCache) {
-        switch (ev->GetTypeRewrite()) {
-            hFunc(NHealthCheck::TEvSelfCheckResultProto, Handle);
-            cFunc(TEvents::TSystem::Undelivered, SendHealthCheckRequest);
-            cFunc(TEvents::TSystem::Wakeup, SendHealthCheckRequest);
-        }
-    }
-
-    STATEFN(StateResolve) {
-        switch(ev->GetTypeRewrite()) {
-            hFunc(TEvStateStorage::TEvBoardInfo, Handle);
-        }
-    }
-
     void Handle(NHealthCheck::TEvSelfCheckResult::TPtr& ev) {
         Status = Ydb::StatusIds::SUCCESS;
-        Result = std::move(ev->Get()->Result);
+        Result = ev->Release();
         ReplyAndPassAway();
     }
 
@@ -88,39 +60,20 @@ public:
         ReplyAndPassAway();
     }
 
-    void Handle(NHealthCheck::TEvSelfCheckResultProto::TPtr& ev) {
-        Status = Ydb::StatusIds::SUCCESS;
-        Result = std::move(ev->Get()->Record);
-        NHealthCheck::RemoveUnrequestedEntries(*Result, *GetProtoRequest());
-        ReplyAndPassAway();
-    }
-
-    void Handle(TEvStateStorage::TEvBoardInfo::TPtr& ev) {
-        std::optional<TActorId> cache = ResolveActiveDatabaseMetadataCache(ev->Get()->InfoEntries);
-        if (cache) {
-            auto request = MakeHolder<NHealthCheck::TEvSelfCheckRequestProto>();
-            request->Record = *GetProtoRequest();
-            Send(*cache, request.Release());
-            Become(&TThis::StateWaitCache, TDuration::Minutes(1), new TEvents::TEvWakeup);
-        } else {
-            SendHealthCheckRequest();
-        }
-    }
-
     void ReplyAndPassAway() {
         TResponse response;
         Ydb::Operations::Operation& operation = *response.mutable_operation();
         operation.set_ready(true);
         operation.set_status(Status);
         if (Result) {
-            operation.mutable_result()->PackFrom(*Result);
+            operation.mutable_result()->PackFrom(Result->Result);
         }
         return Reply(response);
     }
 };
 
-void DoSelfCheckRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TSelfCheckRPC(p.release()));
+void DoSelfCheckRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TSelfCheckRPC(p.release()));
 }
 
 class TNodeCheckRPC : public TRpcRequestActor<TNodeCheckRPC, TEvNodeCheckRequest, true> {
@@ -167,11 +120,11 @@ public:
     }
 };
 
-// void DoNodeCheckRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-//     f.RegisterActor(new TNodeCheckRPC(p.release()));
+// void DoNodeCheckRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+//     TActivationContext::AsActorContext().Register(new TNodeCheckRPC(p.release()));
 // }
 
-void TGRpcRequestProxyHandleMethods::Handle(TEvNodeCheckRequest::TPtr& ev, const TActorContext& ctx) {
+void TGRpcRequestProxy::Handle(TEvNodeCheckRequest::TPtr& ev, const TActorContext& ctx) {
     ctx.Register(new TNodeCheckRPC(ev->Release().Release()));
 }
 

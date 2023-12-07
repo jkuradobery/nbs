@@ -1,11 +1,8 @@
 LIBRARY()
 
-INCLUDE(${ARCADIA_ROOT}/library/cpp/yt/ya_cpp.make.inc)
-
 PEERDIR(
     library/cpp/yt/assert
     library/cpp/yt/malloc
-    library/cpp/yt/misc
 )
 
 CHECK_DEPENDENT_DIRS(

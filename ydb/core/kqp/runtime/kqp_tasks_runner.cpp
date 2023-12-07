@@ -22,24 +22,22 @@ using namespace NYql;
 using namespace NDq;
 
 IDqOutputConsumer::TPtr KqpBuildOutputConsumer(const NDqProto::TTaskOutput& outputDesc, const TType* type,
-    NUdf::IApplyContext* applyCtx, const TTypeEnvironment& typeEnv, const NKikimr::NMiniKQL::THolderFactory& holderFactory,
-    TVector<IDqOutput::TPtr>&& outputs)
+    NUdf::IApplyContext* applyCtx, const TTypeEnvironment& typeEnv, TVector<IDqOutput::TPtr>&& outputs)
 {
     switch (outputDesc.GetTypeCase()) {
         case NDqProto::TTaskOutput::kRangePartition: {
             TVector<NScheme::TTypeInfo> keyColumnTypeInfos;
             keyColumnTypeInfos.reserve(outputDesc.GetRangePartition().GetKeyColumns().size());
+            TVector<TType*> keyColumnTypes;
             TVector<ui32> keyColumnIndices;
-            TVector<TColumnInfo> keyColumns;
-            GetColumnsInfo(type, outputDesc.GetRangePartition().GetKeyColumns(), keyColumns);
-            YQL_ENSURE(!keyColumns.empty());
-            for (auto& info : keyColumns) {
+            GetColumnsInfo(type, outputDesc.GetRangePartition().GetKeyColumns(), keyColumnTypes, keyColumnIndices);
+            YQL_ENSURE(!keyColumnTypes.empty());
+            std::transform(keyColumnTypes.begin(), keyColumnTypes.end(), back_inserter(keyColumnTypeInfos), [](const auto& tyPtr) {
                 // TODO: support pg types
-                YQL_ENSURE(info.Type->GetKind() == NKikimr::NMiniKQL::TType::EKind::Data);
-                auto dataTypeId = static_cast<NKikimr::NMiniKQL::TDataType&>(*info.Type).GetSchemeType();
-                keyColumnTypeInfos.emplace_back(NScheme::TTypeInfo((NScheme::TTypeId)dataTypeId));
-                keyColumnIndices.emplace_back(info.Index);
-            }
+                YQL_ENSURE(tyPtr->GetKind() == NKikimr::NMiniKQL::TType::EKind::Data);
+                auto dataTypeId = static_cast<NKikimr::NMiniKQL::TDataType&>(*tyPtr).GetSchemeType();
+                return NScheme::TTypeInfo((NScheme::TTypeId)dataTypeId);
+            });
 
             TVector<TKqpRangePartition> partitions;
             partitions.reserve(outputDesc.GetRangePartition().PartitionsSize());
@@ -63,7 +61,7 @@ IDqOutputConsumer::TPtr KqpBuildOutputConsumer(const NDqProto::TTaskOutput& outp
         }
 
         default: {
-            return DqBuildOutputConsumer(outputDesc, type, typeEnv, holderFactory, std::move(outputs));
+            return DqBuildOutputConsumer(outputDesc, type, typeEnv, std::move(outputs));
         }
     }
 }
@@ -75,7 +73,7 @@ TIntrusivePtr<IDqTaskRunner> CreateKqpTaskRunner(const TDqTaskRunnerContext& exe
 }
 
 
-TKqpTasksRunner::TKqpTasksRunner(google::protobuf::RepeatedPtrField<NDqProto::TDqTask>&& tasks,
+TKqpTasksRunner::TKqpTasksRunner(const google::protobuf::RepeatedPtrField<NDqProto::TDqTask>& tasks,
     const TDqTaskRunnerContext& execCtx, const TDqTaskRunnerSettings& settings, const TLogFunc& logFunc)
     : LogFunc(logFunc)
     , Alloc(execCtx.Alloc)
@@ -90,14 +88,13 @@ TKqpTasksRunner::TKqpTasksRunner(google::protobuf::RepeatedPtrField<NDqProto::TD
 
     auto guard = execCtx.TypeEnv->BindAllocator();
     try {
-        for (auto&& task : tasks) {
-            ui64 taskId = task.GetId();
+        for (auto& task : tasks) {
             auto runner = CreateKqpTaskRunner(execCtx, settings, logFunc);
             if (auto* stats = runner->GetStats()) {
-                Stats.emplace(taskId, stats);
+                Stats.emplace(task.GetId(), stats);
             }
-            TaskRunners.emplace(taskId, std::move(runner));
-            Tasks.emplace(taskId, &task);
+            TaskRunners.emplace(task.GetId(), std::move(runner));
+            Tasks.emplace(task.GetId(), &task);
         }
     } catch (const TMemoryLimitExceededException&) {
         TaskRunners.clear();
@@ -122,9 +119,7 @@ void TKqpTasksRunner::Prepare(const TDqTaskRunnerMemoryLimits& memoryLimits, con
 
     for (auto& [taskId, taskRunner] : TaskRunners) {
         ComputeCtx->SetCurrentTaskId(taskId);
-        auto it = Tasks.find(taskId);
-        Y_ABORT_UNLESS(it != Tasks.end());
-        taskRunner->Prepare(it->second, memoryLimits, execCtx);
+        taskRunner->Prepare(*Tasks[taskId], memoryLimits, execCtx);
     }
 
     ComputeCtx->SetCurrentTaskId(std::numeric_limits<ui64>::max());
@@ -199,11 +194,8 @@ std::pair<bool, bool> TKqpTasksRunner::TransferData(ui64 fromTask, ui64 fromChan
     bool finished = false;
 
     // todo: transfer data as-is from input- to output- channel (KIKIMR-10658)
-    for (;;) {
-        NDq::TDqSerializedBatch data;
-        if (!src->Pop(data)) {
-            break;
-        }
+    NDqProto::TData data;
+    if (src->Pop(data, std::numeric_limits<ui64>::max())) {
         transferred = true;
         dst->Push(std::move(data));
     }
@@ -230,8 +222,8 @@ const IDqTaskRunner& TKqpTasksRunner::GetTaskRunner(ui64 taskId) const {
     return **task;
 }
 
-const NYql::NDq::TDqTaskSettings& TKqpTasksRunner::GetTask(ui64 taskId) const {
-    return Tasks.at(taskId);
+const NYql::NDqProto::TDqTask& TKqpTasksRunner::GetTask(ui64 taskId) const {
+    return *Tasks.at(taskId);
 }
 
 TGuard<NMiniKQL::TScopedAlloc> TKqpTasksRunner::BindAllocator(TMaybe<ui64> memoryLimit) {
@@ -241,10 +233,10 @@ TGuard<NMiniKQL::TScopedAlloc> TKqpTasksRunner::BindAllocator(TMaybe<ui64> memor
     return TGuard(*Alloc);
 }
 
-TIntrusivePtr<TKqpTasksRunner> CreateKqpTasksRunner(google::protobuf::RepeatedPtrField<NDqProto::TDqTask>&& tasks,
+TIntrusivePtr<TKqpTasksRunner> CreateKqpTasksRunner(const google::protobuf::RepeatedPtrField<NDqProto::TDqTask>& tasks,
     const TDqTaskRunnerContext& execCtx, const TDqTaskRunnerSettings& settings, const TLogFunc& logFunc)
 {
-    return new TKqpTasksRunner(std::move(tasks), execCtx, settings, logFunc);
+    return new TKqpTasksRunner(tasks, execCtx, settings, logFunc);
 }
 
 } // namespace NKqp

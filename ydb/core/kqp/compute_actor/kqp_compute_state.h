@@ -29,20 +29,66 @@ public:
     void ResetRetry();
 };
 
+class TShardCostsState: public TCommonRetriesState {
+public:
+    using TReadData = NKikimrTxDataShard::TKqpTransaction::TScanTaskMeta::TReadOpMeta;
+private:
+    const ui32 ScanId;
+    const TReadData* ReadData;
+public:
+    using TPtr = std::shared_ptr<TShardCostsState>;
+    const NKikimrTxDataShard::TKqpTransaction::TScanTaskMeta::TReadOpMeta& GetReadData() const {
+        return *ReadData;
+    }
+
+    static TVector<TSerializedTableRange> BuildSerializedTableRanges(const TReadData& readData) {
+        TVector<TSerializedTableRange> resultLocal;
+        resultLocal.reserve(readData.GetKeyRanges().size());
+        for (const auto& range : readData.GetKeyRanges()) {
+            auto& sr = resultLocal.emplace_back(TSerializedTableRange(range));
+            if (!range.HasTo()) {
+                sr.To = sr.From;
+                sr.FromInclusive = sr.ToInclusive = true;
+            }
+        }
+        Y_VERIFY_DEBUG(!resultLocal.empty());
+        return resultLocal;
+    }
+
+
+    ui32 GetScanId() const {
+        return ScanId;
+    }
+
+    ui64 GetShardId() const {
+        return ReadData->GetShardId();
+    }
+
+    TShardCostsState(const ui32 scanId, const NKikimrTxDataShard::TKqpTransaction::TScanTaskMeta::TReadOpMeta* readData)
+        : ScanId(scanId)
+        , ReadData(readData)
+    {
+
+    }
+};
+
 struct TShardState: public TCommonRetriesState {
     using TPtr = std::shared_ptr<TShardState>;
     const ui64 TabletId;
+    const ui32 ScannerIdx = 0;
     TSmallVec<TSerializedTableRange> Ranges;
     EShardState State = EShardState::Initial;
     ui32 Generation = 0;
     bool SubscribedOnTablet = false;
     TActorId ActorId;
     TOwnedCellVec LastKey;
-    std::optional<ui32> AvailablePacks;
 
     TString PrintLastKey(TConstArrayRef<NScheme::TTypeInfo> keyTypes) const;
 
-    TShardState(const ui64 tabletId);
+    TShardState(const ui64 tabletId, const ui32 scanIdx)
+        : TabletId(tabletId)
+        , ScannerIdx(scanIdx) {
+    }
 
     TString ToString(TConstArrayRef<NScheme::TTypeInfo> keyTypes) const;
     const TSmallVec<TSerializedTableRange> GetScanRanges(TConstArrayRef<NScheme::TTypeInfo> keyTypes) const;

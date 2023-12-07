@@ -3,11 +3,9 @@
 #include <ydb/public/sdk/cpp/client/draft/ydb_long_tx.h>
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/tx/long_tx_service/public/types.h>
-#include <ydb/core/tx/sharding/sharding.h>
-#include <ydb/core/formats/arrow/arrow_helpers.h>
+#include <ydb/core/formats/arrow_helpers.h>
+#include <ydb/core/formats/sharding.h>
 #include <ydb/library/aclib/aclib.h>
-#include <ydb/core/formats/arrow/serializer/full.h>
-#include <ydb/core/formats/arrow/serializer/batch_only.h>
 
 using namespace NYdb;
 
@@ -18,24 +16,36 @@ static const constexpr char* TestTablePath = TTestOlap::TablePath;
 
 TString TestBlob() {
     auto batch = TTestOlap::SampleBatch();
-    return NArrow::NSerialization::TFullDataSerializer(arrow::ipc::IpcWriteOptions::Defaults()).Serialize(batch);
+    int64_t size;
+    auto status = arrow::ipc::GetRecordBatchSize(*batch, &size);
+    Y_VERIFY(status.ok());
+
+    TString buf;
+    buf.resize(size);
+    auto writer = arrow::Buffer::GetWriter(arrow::MutableBuffer::Wrap(&buf[0], size));
+    Y_VERIFY(writer.ok());
+
+    // UNCOMPRESSED
+    status = SerializeRecordBatch(*batch, arrow::ipc::IpcWriteOptions::Defaults(), (*writer).get());
+    Y_VERIFY(status.ok());
+    return buf;
 }
 
 TVector<std::shared_ptr<arrow::RecordBatch>> SplitData(const TString& data, ui32 numBatches) {
-    auto batch = NArrow::NSerialization::TFullDataDeserializer().Deserialize(data);
-    UNIT_ASSERT(batch.ok());
+    std::shared_ptr<arrow::RecordBatch> batch = NArrow::DeserializeBatch(data, TTestOlap::ArrowSchema());
+    Y_VERIFY(batch);
 
-    NSharding::TLogsSharding sharding(numBatches, { "timestamp", "uid" }, numBatches);
-    std::vector<ui32> rowSharding = sharding.MakeSharding(*batch);
-    Y_ABORT_UNLESS(rowSharding.size() == (size_t)batch->get()->num_rows());
+    NArrow::TLogsSharding sharding(numBatches);
+    std::vector<ui32> rowSharding = sharding.MakeSharding(batch, {"timestamp", "uid"});
+    Y_VERIFY(rowSharding.size() == (size_t)batch->num_rows());
 
-    std::vector<std::shared_ptr<arrow::RecordBatch>> sharded = NArrow::ShardingSplit(*batch, rowSharding, numBatches);
-    Y_ABORT_UNLESS(sharded.size() == numBatches);
+    std::vector<std::shared_ptr<arrow::RecordBatch>> sharded = NArrow::ShardingSplit(batch, rowSharding, numBatches);
+    Y_VERIFY(sharded.size() == numBatches);
 
     TVector<std::shared_ptr<arrow::RecordBatch>> out;
     for (size_t i = 0; i < numBatches; ++i) {
         if (sharded[i]) {
-            Y_ABORT_UNLESS(sharded[i]->ValidateFull().ok());
+            Y_VERIFY(sharded[i]->ValidateFull().ok());
             out.emplace_back(sharded[i]);
         }
     }
@@ -47,7 +57,7 @@ bool EqualBatches(const TString& x, const TString& y) {
     auto schema = TTestOlap::ArrowSchema();
     std::shared_ptr<arrow::RecordBatch> batchX = NArrow::DeserializeBatch(x, schema);
     std::shared_ptr<arrow::RecordBatch> batchY = NArrow::DeserializeBatch(y, schema);
-    Y_ABORT_UNLESS(batchX && batchY);
+    Y_VERIFY(batchX && batchY);
     if ((batchX->num_columns() != batchY->num_columns()) ||
         (batchX->num_rows() != batchY->num_rows())) {
         Cerr << __FILE__ << ':' << __LINE__ << " "
@@ -59,7 +69,7 @@ bool EqualBatches(const TString& x, const TString& y) {
     for (auto& column : schema->field_names()) {
         auto filedX = batchX->schema()->GetFieldByName(column);
         auto filedY = batchY->schema()->GetFieldByName(column);
-        Y_ABORT_UNLESS(filedX->type()->id() == filedY->type()->id());
+        Y_VERIFY(filedX->type()->id() == filedY->type()->id());
 
         auto arrX = batchX->GetColumnByName(column);
         auto arrY = batchY->GetColumnByName(column);
@@ -214,9 +224,7 @@ Y_UNIT_TEST_SUITE(YdbLongTx) {
         }
 
         // Write
-        auto batch = TTestOlap::SampleBatch(false, 10000);
-        const TString data = NArrow::NSerialization::TFullDataSerializer(arrow::ipc::IpcWriteOptions::Defaults()).Serialize(batch);
-
+        TString data = TestBlob();
         {
             NLongTx::TLongTxBeginResult resBeginTx = client.BeginWriteTx().GetValueSync();
             UNIT_ASSERT_VALUES_EQUAL(resBeginTx.Status().GetStatus(), EStatus::SUCCESS);
@@ -234,8 +242,8 @@ Y_UNIT_TEST_SUITE(YdbLongTx) {
         // Read after write
         auto sharded = SplitData(data, 2);
         UNIT_ASSERT_VALUES_EQUAL(sharded.size(), 2);
-        UNIT_ASSERT_VALUES_EQUAL(sharded[0]->num_rows(), 4990);
-        UNIT_ASSERT_VALUES_EQUAL(sharded[1]->num_rows(), 5010);
+        UNIT_ASSERT_VALUES_EQUAL(sharded[0]->num_rows(), 54);
+        UNIT_ASSERT_VALUES_EQUAL(sharded[1]->num_rows(), 46);
 
         TVector<TString> expected;
         for (auto batch : sharded) {
@@ -287,8 +295,8 @@ Y_UNIT_TEST_SUITE(YdbLongTx) {
 
             TString txId = resBeginTx.GetResult().tx_id();
             NLongTxService::TLongTxId parsed;
-            Y_ABORT_UNLESS(parsed.ParseString(txId));
-            Y_ABORT_UNLESS(parsed.Snapshot.Step > 0);
+            Y_VERIFY(parsed.ParseString(txId));
+            Y_VERIFY(parsed.Snapshot.Step > 0);
             parsed.Snapshot.Step += 2000; // 2 seconds in the future
             futureTxId = parsed.ToString();
             // Cerr << "Future txId " << futureTxId << Endl;
@@ -316,12 +324,7 @@ Y_UNIT_TEST_SUITE(YdbLongTx) {
         {
             NLongTx::TLongTxReadResult resRead = futureRead.GetValueSync();
             UNIT_ASSERT_VALUES_EQUAL(resRead.Status().GetStatus(), EStatus::SUCCESS);
-
-            auto inputBatch = NArrow::NSerialization::TFullDataDeserializer().Deserialize(data);
-            UNIT_ASSERT(inputBatch.ok());
-            auto readBatch = NArrow::NSerialization::TBatchPayloadDeserializer(inputBatch->get()->schema()).Deserialize(resRead.GetResult().data().data());
-            UNIT_ASSERT(readBatch.ok());
-            UNIT_ASSERT_VALUES_EQUAL(readBatch->get()->ToString(), inputBatch->get()->ToString());
+            UNIT_ASSERT_VALUES_EQUAL(resRead.GetResult().data().data(), data);
         }
     }
 

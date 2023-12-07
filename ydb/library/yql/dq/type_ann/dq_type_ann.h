@@ -8,8 +8,7 @@
 namespace NYql::NDq {
 
 IGraphTransformer::TStatus AnnotateDqStage(const TExprNode::TPtr& input, TExprContext& ctx);
-IGraphTransformer::TStatus AnnotateDqPhyLength(const TExprNode::TPtr& node, TExprContext& ctx);
-IGraphTransformer::TStatus AnnotateDqPhyStage(const TExprNode::TPtr & input, TExprContext & ctx);
+IGraphTransformer::TStatus AnnotateDqPhyStage(const TExprNode::TPtr& input, TExprContext& ctx);
 IGraphTransformer::TStatus AnnotateDqOutput(const TExprNode::TPtr& input, TExprContext& ctx);
 IGraphTransformer::TStatus AnnotateDqCnHashShuffle(const TExprNode::TPtr& input, TExprContext& ctx);
 IGraphTransformer::TStatus AnnotateDqCnValue(const TExprNode::TPtr& input, TExprContext& ctx);
@@ -32,48 +31,6 @@ THolder<IGraphTransformer> CreateDqTypeAnnotationTransformer(NYql::TTypeAnnotati
 bool IsTypeSupportedInMergeCn(EDataSlot type);
 bool IsTypeSupportedInMergeCn(const TDataExprType* dataType);
 bool IsMergeConnectionApplicable(const TVector<const TTypeAnnotationNode*>& sortKeyTypes);
-
-struct TDqStageSettings {
-    static constexpr TStringBuf LogicalIdSettingName = "_logical_id";
-    static constexpr TStringBuf IdSettingName = "_id";
-    static constexpr TStringBuf PartitionModeSettingName = "_partition_mode";
-    static constexpr TStringBuf WideChannelsSettingName = "_wide_channels";
-    static constexpr TStringBuf BlockStatusSettingName = "_block_status";
-
-    ui64 LogicalId = 0;
-    TString Id;
-
-    enum class EPartitionMode {
-        Default     /* "default" */,
-        Single      /* "single" */,
-        Aggregate   /* "aggregate" */,
-    };
-
-    EPartitionMode PartitionMode = EPartitionMode::Default;
-
-    bool WideChannels = false;
-    const TStructExprType* OutputNarrowType = nullptr;
-
-    enum class EBlockStatus {
-        None,
-        Partial,
-        Full,
-    };
-
-    TMaybe<EBlockStatus> BlockStatus;
-
-    TDqStageSettings& SetPartitionMode(EPartitionMode mode) { PartitionMode = mode; return *this; }
-    TDqStageSettings& SetWideChannels(const TStructExprType& narrowType) { WideChannels = true; OutputNarrowType = &narrowType; return *this; }
-    TDqStageSettings& SetBlockStatus(EBlockStatus status) { BlockStatus = status; return *this; }
-
-    static TDqStageSettings New(const NNodes::TDqStageBase& node);
-    static TDqStageSettings New();
-
-    static TDqStageSettings Parse(const NNodes::TDqStageBase& node);
-    static bool Validate(const TExprNode& stage, TExprContext& ctx);
-    NNodes::TCoNameValueTupleList BuildNode(TExprContext& ctx, TPositionHandle pos) const;
-};
-
 
 TString PrintDqStageOnly(const NNodes::TDqStageBase& stage, TExprContext& ctx);
 

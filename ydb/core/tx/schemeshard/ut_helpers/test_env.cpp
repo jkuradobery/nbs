@@ -33,13 +33,14 @@ public:
           , TTabletExecutedFlat(info, tablet,  new NMiniKQL::TMiniKQLFactory)
     {}
 
-    void DefaultSignalTabletActive(const TActorContext&) override {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext& ctx) override {
         Become(&TThis::StateWork);
-        SignalTabletActive(ctx);
+
+        while (!InitialEventsQueue.empty()) {
+            TAutoPtr<IEventHandle>& ev = InitialEventsQueue.front();
+            ctx.ExecutorThread.Send(ev.Release());
+            InitialEventsQueue.pop_front();
+        }
     }
 
     void OnDetach(const TActorContext& ctx) override {
@@ -51,15 +52,26 @@ public:
         Die(ctx);
     }
 
+    void Enqueue(STFUNC_SIG) override {
+        Y_UNUSED(ctx);
+        InitialEventsQueue.push_back(ev);
+    }
+
     STFUNC(StateInit) {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
+            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
             HFunc(TEvBlockStore::TEvUpdateVolumeConfig, Handle);
-        default:
-            HandleDefaultEvents(ev, SelfId());
+            HFunc(TEvents::TEvPoisonPill, Handle);
+        }
+    }
+
+    STFUNC(StateBroken) {
+        switch (ev->GetTypeRewrite()) {
+            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
         }
     }
 
@@ -73,6 +85,15 @@ private:
         response->Record.SetStatus(NKikimrBlockStore::OK);
         ctx.Send(ev->Sender, response.Release());
     }
+
+    void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx) {
+        Y_UNUSED(ev);
+        Become(&TThis::StateBroken);
+        ctx.Send(Tablet(), new TEvents::TEvPoisonPill());
+    }
+
+private:
+    TDeque<TAutoPtr<IEventHandle>> InitialEventsQueue;
 };
 
 class TFakeFileStore : public TActor<TFakeFileStore>, public NTabletFlatExecutor::TTabletExecutedFlat {
@@ -82,13 +103,14 @@ public:
         , TTabletExecutedFlat(info, tablet,  new NMiniKQL::TMiniKQLFactory)
     {}
 
-    void DefaultSignalTabletActive(const TActorContext&) override {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext& ctx) override {
         Become(&TThis::StateWork);
-        SignalTabletActive(ctx);
+
+        while (!InitialEventsQueue.empty()) {
+            TAutoPtr<IEventHandle>& ev = InitialEventsQueue.front();
+            ctx.ExecutorThread.Send(ev.Release());
+            InitialEventsQueue.pop_front();
+        }
     }
 
     void OnDetach(const TActorContext& ctx) override {
@@ -100,15 +122,26 @@ public:
         Die(ctx);
     }
 
+    void Enqueue(STFUNC_SIG) override {
+        Y_UNUSED(ctx);
+        InitialEventsQueue.push_back(ev);
+    }
+
     STFUNC(StateInit) {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
+            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
             HFunc(TEvFileStore::TEvUpdateConfig, Handle);
-        default:
-            HandleDefaultEvents(ev, SelfId());
+            HFunc(TEvents::TEvPoisonPill, Handle);
+        }
+    }
+
+    STFUNC(StateBroken) {
+        switch (ev->GetTypeRewrite()) {
+            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead);
         }
     }
 
@@ -122,6 +155,15 @@ private:
         response->Record.SetStatus(NKikimrFileStore::OK);
         ctx.Send(ev->Sender, response.Release());
     }
+
+    void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx) {
+        Y_UNUSED(ev);
+        Become(&TThis::StateBroken);
+        ctx.Send(Tablet(), new TEvents::TEvPoisonPill());
+    }
+
+private:
+    TDeque<TAutoPtr<IEventHandle>> InitialEventsQueue;
 };
 
 class TFakeConfigDispatcher : public TActor<TFakeConfigDispatcher> {
@@ -152,7 +194,7 @@ public:
     {}
 
 private:
-    void StateWork(TAutoPtr<NActors::IEventHandle> &ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle> &ev, const NActors::TActorContext &ctx) {
         switch (ev->GetTypeRewrite()) {
         HFunc(TEvTabletPipe::TEvClientConnected, Handle);
         HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
@@ -174,37 +216,27 @@ private:
     }
 
     void DoHandleDisconnect(TActorId pipeClient, const TActorContext &ctx) {
-        const auto found = PipeToTx.find(pipeClient);
-        if (found != PipeToTx.end()) {
-            const auto pipeActor = found->first;
-            const auto txId = found->second;
-
-            LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                        "tests -- TTxNotificationSubscriber for txId " << txId << ": disconnected from schemeshard, resend EvNotifyTxCompletion");
-
-            // Remove entry from the tx-pipe mapping. Pipe actor has already died.
-            PipeToTx.erase(pipeActor);
-            TxToPipe.erase(txId);
-
-            // Recreate pipe to schemeshard and resend notification request for txId
-            SendToSchemeshard(txId, ctx);
+        if (pipeClient == SchemeShardPipe) {
+            SchemeShardPipe = TActorId();
+            // Resend all
+            for (const auto& w : SchemeTxWaiters) {
+                SendToSchemeshard(w.first, ctx);
+            }
         }
     }
 
     void Handle(TEvSchemeShard::TEvNotifyTxCompletion::TPtr &ev, const TActorContext &ctx) {
         ui64 txId = ev->Get()->Record.GetTxId();
-
         LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                    "tests -- TTxNotificationSubscriber for txId " << txId << ": send EvNotifyTxCompletion");
+                    "tests -- TTxNotificationSubscriber got TEvNotifyTxCompletion"
+                    << ", txId: " << txId);
 
-        // Add txId, add waiter, recreate pipe and send notification request
-
-        SchemeTxWaiters[txId].insert(ev->Sender);
-
-        if (TxToPipe.contains(txId)) {
-            DropTxPipe(txId, ctx);
+        if (SchemeTxWaiters.contains(txId)) {
+            return;
         }
 
+        // Save TxId, forward to schemeshard
+        SchemeTxWaiters[txId].insert(ev->Sender);
         SendToSchemeshard(txId, ctx);
     }
 
@@ -212,79 +244,41 @@ private:
         ui64 txId = ev->Get()->Record.GetTxId();
 
         LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                    "tests -- TTxNotificationSubscriber for txId " << txId << ": got EvNotifyTxCompletionResult");
+                    "tests -- TTxNotificationSubscriber got TEvNotifyTxCompletionResult"
+                    << ", txId: " << txId);
 
         if (!SchemeTxWaiters.contains(txId))
             return;
 
-        // Notify all waiters, forget txId, drop pipe
-
+        // Notify all waiters and forget TxId
         for (TActorId waiter : SchemeTxWaiters[txId]) {
             LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-                        "tests -- TTxNotificationSubscriber for txId " << txId <<": satisfy waiter " << waiter);
+                        "tests -- TTxNotificationSubscriber satisfy subscriber"
+                        << ", waiter: " << waiter
+                        << ", txId: " << txId);
             ctx.Send(waiter, new TEvSchemeShard::TEvNotifyTxCompletionResult(txId));
         }
         SchemeTxWaiters.erase(txId);
-
-        DropTxPipe(txId, ctx);
-    }
-
-    void DropTxPipe(ui64 txId, const TActorContext &ctx) {
-        // Remove entry from the tx-pipe mapping
-        auto pipeActor = TxToPipe.at(txId);
-        PipeToTx.erase(pipeActor);
-        TxToPipe.erase(txId);
-
-        // Destroy pipe actor
-        NTabletPipe::CloseClient(ctx, pipeActor);
     }
 
     void SendToSchemeshard(ui64 txId, const TActorContext &ctx) {
-        LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-            "tests -- TTxNotificationSubscriber, SendToSchemeshard, txId " << txId);
-
-        // NOTE: the only reason why we should send every EvNotifyTxCompletion to schemeshard
-        // with a separate pipe is to avoid out-of-order reception of 2 events on the schemeshard side:
-        // 1. ModifyScheme -- that starts operation/Tx
-        // 2. NotifyTxCompletion -- that subscribes to that operation completion
-        //
-        // Helper methods (Async...()) our tests use, send every new ModifyScheme through TabletResolver
-        // (with ForwardToTablet()) and if TestWaitNotification() does not use TabletResolver
-        // (in some way or another) to send every new NotifyTxCompletion, then NotifyTxCompletion could be quicker
-        // and on the schemeshard side NotifyTxCompletion could be processed before ModifyScheme registers as an operation.
-        // Which will allow test to proceed before operation actually will have complete.
-        // Been there, caught that in flaky tests.
-        //
-        // Event sending paths for ModifyScheme and NotifyTxCompletion should provide sequential delivery.
-        // Pipe creation also uses TabletResolver. Hence: new pipe for every NotifyTxCompletion.
-
-        auto pipe = ctx.Register(NTabletPipe::CreateClient(ctx.SelfID, SchemeshardTabletId, GetPipeConfigWithRetries()));
-        NTabletPipe::SendData(ctx, pipe, new TEvSchemeShard::TEvNotifyTxCompletion(txId));
-
-        // Add entry to the tx-pipe mapping
-        TxToPipe[txId] = pipe;
-        PipeToTx[pipe] = txId;
+        if (!SchemeShardPipe) {
+            SchemeShardPipe = ctx.Register(NTabletPipe::CreateClient(ctx.SelfID, SchemeshardTabletId, GetPipeConfigWithRetries()));
+        }
+        NTabletPipe::SendData(ctx, SchemeShardPipe, new TEvSchemeShard::TEvNotifyTxCompletion(txId));
     }
 
     void Handle(TEvents::TEvPoisonPill::TPtr, const TActorContext &ctx) {
-        // Destroy pipe actors
-        for (auto& [pipeActor, _] : PipeToTx) {
-            NTabletPipe::CloseClient(ctx, pipeActor);
+        if (SchemeShardPipe) {
+            NTabletPipe::CloseClient(ctx, SchemeShardPipe);
         }
-        // Cleanup tx-pipe mapping
-        PipeToTx.clear();
-        TxToPipe.clear();
-
         Die(ctx);
     }
 
 private:
     ui64 SchemeshardTabletId;
-    // txId to waiters map
+    TActorId SchemeShardPipe;
     THashMap<ui64, THashSet<TActorId>> SchemeTxWaiters;
-    // txId to/from pipe-to-schemeshard mapping
-    THashMap<ui64, TActorId> TxToPipe;
-    THashMap<TActorId, ui64> PipeToTx;
 };
 
 
@@ -303,7 +297,7 @@ private:
             HFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
             HFunc(NMetering::TEvMetering::TEvWriteMeteringJson, HandleWriteMeteringJson);
         default:
-            HandleUnexpectedEvent(ev);
+            HandleUnexpectedEvent(ev, ctx);
             break;
         }
     }
@@ -329,10 +323,12 @@ private:
 
     void HandleUnexpectedEvent(STFUNC_SIG)
     {
-        ALOG_DEBUG(NKikimrServices::FLAT_TX_SCHEMESHARD,
+        Y_UNUSED(ctx);
+
+        LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                     "TFakeMetering:"
                         << " unhandled event type: " << ev->GetTypeRewrite()
-                        << " event: " << ev->ToString());
+                        << " event: " << (ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?"));
     }
 
 private:
@@ -351,7 +347,7 @@ private:
     using TPreSerializedMessage = std::pair<ui32, TIntrusivePtr<TEventSerializedData>>; // ui32 it's a type
 
 private:
-    void StateWork(TAutoPtr<NActors::IEventHandle> &ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle> &ev, const NActors::TActorContext &ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
@@ -478,8 +474,8 @@ private:
     TPreSerializedMessage GetSerializedMessage(TAutoPtr<IEventBase> message) {
         TAllocChunkSerializer serializer;
         const bool success = message->SerializeToArcadiaStream(&serializer);
-        Y_ABORT_UNLESS(success);
-        TIntrusivePtr<TEventSerializedData> data = serializer.Release(message->CreateSerializationInfo());
+        Y_VERIFY(success);
+        TIntrusivePtr<TEventSerializedData> data = serializer.Release(message->IsExtendedFormat());
         return TPreSerializedMessage(message->Type(), data);
     }
 
@@ -492,14 +488,18 @@ private:
 
 
 // Globally enable/disable log batching at datashard creation time in test
-NSchemeShardUT_Private::TTestWithReboots::TDatashardLogBatchingSwitch::TDatashardLogBatchingSwitch(bool newVal) {
-    PrevVal = NKikimr::NDataShard::gAllowLogBatchingDefaultValue;
-    NKikimr::NDataShard::gAllowLogBatchingDefaultValue = newVal;
-}
+struct TDatashardLogBatchingSwitch {
+    explicit TDatashardLogBatchingSwitch(bool newVal) {
+        PrevVal = NKikimr::NDataShard::gAllowLogBatchingDefaultValue;
+        NKikimr::NDataShard::gAllowLogBatchingDefaultValue = newVal;
+    }
 
-NSchemeShardUT_Private::TTestWithReboots::TDatashardLogBatchingSwitch::~TDatashardLogBatchingSwitch() {
-    NKikimr::NDataShard::gAllowLogBatchingDefaultValue = PrevVal;
-}
+    ~TDatashardLogBatchingSwitch() {
+        NKikimr::NDataShard::gAllowLogBatchingDefaultValue = PrevVal;
+    }
+private:
+    bool PrevVal;
+};
 
 NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTestEnvOptions& opts, TSchemeShardFactory ssFactory, std::shared_ptr<NKikimr::NDataShard::IExportFactory> dsExportFactory)
     : SchemeShardFactory(ssFactory)
@@ -520,6 +520,7 @@ NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTe
     app.SetEnablePersistentPartitionStats(opts.EnablePersistentPartitionStats_);
     app.SetAllowUpdateChannelsBindingOfSolomonPartitions(opts.AllowUpdateChannelsBindingOfSolomonPartitions_);
     app.SetEnableNotNullColumns(opts.EnableNotNullColumns_);
+    app.SetEnableOlapSchemaOperations(opts.EnableOlapSchemaOperations_);
     app.SetEnableProtoSourceIdInfo(opts.EnableProtoSourceIdInfo_);
     app.SetEnablePqBilling(opts.EnablePqBilling_);
     app.SetEnableBackgroundCompaction(opts.EnableBackgroundCompaction_);
@@ -530,13 +531,7 @@ NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTe
     app.SetEnableNotNullDataColumns(opts.EnableNotNullDataColumns_);
     app.SetEnableAlterDatabaseCreateHiveFirst(opts.EnableAlterDatabaseCreateHiveFirst_);
     app.SetEnableTopicDiskSubDomainQuota(opts.EnableTopicDiskSubDomainQuota_);
-    app.SetEnablePQConfigTransactionsAtSchemeShard(opts.EnablePQConfigTransactionsAtSchemeShard_);
-    app.SetEnableTopicSplitMerge(opts.EnableTopicSplitMerge_);
     app.SetEnableChangefeedDynamoDBStreamsFormat(opts.EnableChangefeedDynamoDBStreamsFormat_);
-    app.SetEnableChangefeedDebeziumJsonFormat(opts.EnableChangefeedDebeziumJsonFormat_);
-    app.SetEnableTablePgTypes(opts.EnableTablePgTypes_);
-
-    app.ColumnShardConfig.SetDisabledOnSchemeShard(false);
 
     if (opts.DisableStatsBatching_.value_or(false)) {
         app.SchemeShardConfig.SetStatsMaxBatchSize(0);
@@ -566,11 +561,6 @@ NSchemeShardUT_Private::TTestEnv::TTestEnv(TTestActorRuntime& runtime, const TTe
             runtime.RegisterService(NConsole::MakeConfigsDispatcherID(runtime.GetNodeId(node)),
                 runtime.Register(new TFakeConfigDispatcher(), node), node);
         }
-    }
-
-    if (opts.InitYdbDriver_) {
-        YdbDriver = MakeHolder<NYdb::TDriver>(NYdb::TDriverConfig());
-        runtime.GetAppData().YdbDriver = YdbDriver.Get();
     }
 
     TActorId sender = runtime.AllocateEdgeActor();
@@ -747,13 +737,13 @@ void NSchemeShardUT_Private::TTestEnv::TestWaitNotification(NActors::TTestActorR
     TestWaitNotification(runtime, ids, schemeshardId);
 }
 
-void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, TSet<ui64> tabletIds, ui64 hive) {
+void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, TSet<ui64> tabletIds) {
     TActorId sender = runtime.AllocateEdgeActor();
 
     for (ui64 tabletId : tabletIds) {
         Cerr << "wait until " << tabletId << " is deleted" << Endl;
         auto ev = new TEvFakeHive::TEvSubscribeToTabletDeletion(tabletId);
-        ForwardToTablet(runtime, hive, sender, ev);
+        ForwardToTablet(runtime, TTestTxConfig::Hive, sender, ev);
     }
 
     TAutoPtr<IEventHandle> handle;
@@ -769,8 +759,8 @@ void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActo
     }
 }
 
-void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, ui64 tabletId, ui64 hive) {
-    TestWaitTabletDeletion(runtime, TSet<ui64>{tabletId}, hive);
+void NSchemeShardUT_Private::TTestEnv::TestWaitTabletDeletion(NActors::TTestActorRuntime &runtime, ui64 tabletId) {
+    TestWaitTabletDeletion(runtime, TSet<ui64>{tabletId});
 }
 
 void NSchemeShardUT_Private::TTestEnv::TestWaitShardDeletion(NActors::TTestActorRuntime &runtime, ui64 schemeShard, TSet<TShardIdx> shardIds) {
@@ -1019,7 +1009,7 @@ void NSchemeShardUT_Private::TTestWithReboots::Prepare(const TString &dispatchNa
 
 void NSchemeShardUT_Private::TTestWithReboots::EnableTabletResolverScheduling(ui32 nodeIdx) {
     auto actorId = Runtime->GetLocalServiceId(MakeTabletResolverID(), nodeIdx);
-    Y_ABORT_UNLESS(actorId);
+    Y_VERIFY(actorId);
     Runtime->EnableScheduleForActor(actorId);
 }
 

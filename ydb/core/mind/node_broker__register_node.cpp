@@ -56,7 +56,7 @@ public:
 
         if (rec.HasPath() && ScopeId == NActors::TScopeId()) {
             return Error(TStatus::ERROR,
-                         TStringBuilder() << "Cannot resolve scope id for path " << rec.GetPath(),
+                         TStringBuilder() << "Cannot resolve scope id for path" << rec.GetPath(),
                          ctx);
         }
 
@@ -78,9 +78,10 @@ public:
                              TStringBuilder() << "Another location is registered for "
                              << host << ":" << port,
                              ctx);
-            } else if (node.Location != loc) {
+            } else if (node.Location != loc || node.LegacyUpdatePending) {
                 node.Location = loc;
                 Self->DbUpdateNodeLocation(node, txc);
+                node.LegacyUpdatePending = false;
             }
 
             if (!node.IsFixed() && rec.GetFixedNodeId()) {
@@ -104,7 +105,7 @@ public:
         NodeId = Self->FreeIds.FirstNonZeroBit();
         Self->FreeIds.Reset(NodeId);
 
-        Node = MakeHolder<TNodeInfo>(NodeId, rec.GetAddress(), host, rec.GetResolveHost(), port, loc);
+        Node = MakeHolder<TNodeInfo>(NodeId, rec.GetAddress(), host, rec.GetResolveHost(), port, loc, false);
         Node->AuthorizedByCertificate = rec.GetAuthorizedByCertificate();
         Node->Lease = 1;
         Node->Expire = expire;
@@ -130,7 +131,7 @@ public:
         else if (FixNodeId)
             Self->FixNodeId(Self->Nodes.at(NodeId));
 
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
         // With all modifications applied we may fill node info.
         if (Response->Record.GetStatus().GetCode() == TStatus::OK)
             Self->FillNodeInfo(Self->Nodes.at(NodeId), *Response->Record.MutableNode());

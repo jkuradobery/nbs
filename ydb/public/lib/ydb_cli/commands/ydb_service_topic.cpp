@@ -77,16 +77,31 @@ namespace NYdb::NConsoleClient {
         bool IsStreamingFormat(EMessagingFormat format) {
             return format == EMessagingFormat::NewlineDelimited || format == EMessagingFormat::Concatenated;
         }
+
+        ELogPriority VerbosityLevelToELogPriority(TClientCommand::TConfig::EVerbosityLevel lvl) {
+            switch (lvl) {
+                case TClientCommand::TConfig::EVerbosityLevel::NONE:
+                    return ELogPriority::TLOG_EMERG;
+                case TClientCommand::TConfig::EVerbosityLevel::DEBUG:
+                    return ELogPriority::TLOG_DEBUG;
+                case TClientCommand::TConfig::EVerbosityLevel::INFO:
+                    return ELogPriority::TLOG_INFO;
+                case TClientCommand::TConfig::EVerbosityLevel::WARN:
+                    return ELogPriority::TLOG_WARNING;
+                default:
+                    return ELogPriority::TLOG_EMERG;
+            }
+        }
     } // namespace
 
-
+    namespace {
         TString PrepareAllowedCodecsDescription(const TString& descriptionPrefix, const TVector<NTopic::ECodec>& codecs) {
             TStringStream description;
             description << descriptionPrefix << ". Available codecs: ";
             NColorizer::TColors colors = NColorizer::AutoColors(Cout);
             for (const auto& codec : codecs) {
                 auto findResult = CodecsDescriptions.find(codec);
-                Y_ABORT_UNLESS(findResult != CodecsDescriptions.end(),
+                Y_VERIFY(findResult != CodecsDescriptions.end(),
                          "Couldn't find description for %s codec", (TStringBuilder() << codec).c_str());
                 description << "\n  " << colors.BoldColor() << codec << colors.OldColor()
                             << "\n    " << findResult->second;
@@ -94,34 +109,32 @@ namespace NYdb::NConsoleClient {
 
             return description.Str();
         }
-        
-namespace {
-            NTopic::ECodec ParseCodec(const TString& codecStr, const TVector<NTopic::ECodec>& allowedCodecs) {
-                auto exists = ExistingCodecs.find(to_lower(codecStr));
-                if (exists == ExistingCodecs.end()) {
-                    throw TMisuseException() << "Codec " << codecStr << " is not available for this command";
-                }
 
-                if (std::find(allowedCodecs.begin(), allowedCodecs.end(), exists->second) == allowedCodecs.end()) {
-                    throw TMisuseException() << "Codec " << codecStr << " is not available for this command";
-                }
-
-                return exists->second;
+        NTopic::ECodec ParseCodec(const TString& codecStr, const TVector<NTopic::ECodec>& allowedCodecs) {
+            auto exists = ExistingCodecs.find(to_lower(codecStr));
+            if (exists == ExistingCodecs.end()) {
+                throw TMisuseException() << "Codec " << codecStr << " is not available for this command";
             }
+
+            if (std::find(allowedCodecs.begin(), allowedCodecs.end(), exists->second) == allowedCodecs.end()) {
+                throw TMisuseException() << "Codec " << codecStr << " is not available for this command";
+            }
+
+            return exists->second;
         }
+    }
 
     void TCommandWithSupportedCodecs::AddAllowedCodecs(TClientCommand::TConfig& config, const TVector<NYdb::NTopic::ECodec>& supportedCodecs) {
         TString description = PrepareAllowedCodecsDescription("Comma-separated list of supported codecs", supportedCodecs);
         config.Opts->AddLongOption("supported-codecs", description)
             .RequiredArgument("STRING")
-            .StoreResult(&SupportedCodecsStr_)
-            .DefaultValue((TStringBuilder() << NTopic::ECodec::RAW));
+            .StoreResult(&SupportedCodecsStr_);
         AllowedCodecs_ = supportedCodecs;
     }
 
     void TCommandWithSupportedCodecs::ParseCodecs() {
         if (SupportedCodecsStr_.empty()) {
-            throw TMisuseException() << "You can't specify empty set of codecs";
+            return;
         }
 
         TVector<NTopic::ECodec> parsedCodecs;
@@ -141,7 +154,7 @@ namespace {
         NColorizer::TColors colors = NColorizer::AutoColors(Cout);
         for (const auto& mode: ExistingMeteringModes) {
             auto findResult = MeteringModesDescriptions.find(mode.second);
-            Y_ABORT_UNLESS(findResult != MeteringModesDescriptions.end(),
+            Y_VERIFY(findResult != MeteringModesDescriptions.end(),
                      "Couldn't find description for %s metering mode", (TStringBuilder() << mode.second).c_str());
             description << "\n  " << colors.BoldColor() << mode.first << colors.OldColor()
                         << "\n    " << findResult->second;
@@ -208,7 +221,7 @@ namespace {
             .Optional()
             .StoreResult(&RetentionStorageMb_);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "New topic path");
         AddAllowedCodecs(config, AllowedCodecs);
         AddAllowedMeteringModes(config);
     }
@@ -228,14 +241,19 @@ namespace {
         settings.PartitioningSettings(PartitionsCount_, PartitionsCount_);
         settings.PartitionWriteBurstBytes(PartitionWriteSpeedKbps_ * 1_KB);
         settings.PartitionWriteSpeedBytesPerSecond(PartitionWriteSpeedKbps_ * 1_KB);
-        settings.SetSupportedCodecs(GetCodecs());
+        const auto codecs = GetCodecs();
+        if (!codecs.empty()) {
+            settings.SetSupportedCodecs(codecs);
+        } else {
+            settings.SetSupportedCodecs(AllowedCodecs);
+        }
 
         if (GetMeteringMode() != NTopic::EMeteringMode::Unspecified) {
             settings.MeteringMode(GetMeteringMode());
         }
 
         settings.RetentionPeriod(TDuration::Hours(RetentionPeriodHours_));
-        settings.RetentionStorageMb(RetentionStorageMb_);
+        settings.RetentionStorageMb(RetentionStorageMb_ / 1_MB);
 
         auto status = topicClient.CreateTopic(TopicName, settings).GetValueSync();
         ThrowOnError(status);
@@ -260,7 +278,7 @@ namespace {
             .Optional()
             .StoreResult(&RetentionStorageMb_);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "Topic to alter");
         AddAllowedCodecs(config, AllowedCodecs);
         AddAllowedMeteringModes(config);
     }
@@ -309,9 +327,6 @@ namespace {
         TDriver driver = CreateDriver(config);
         NYdb::NTopic::TTopicClient topicClient(driver);
 
-        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
-        ThrowOnError(topicDescription);
-
         auto describeResult = topicClient.DescribeTopic(TopicName).GetValueSync();
         ThrowOnError(describeResult);
 
@@ -333,15 +348,12 @@ namespace {
     void TCommandTopicDrop::Config(TConfig& config) {
         TYdbCommand::Config(config);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "Topic which will be dropped");
     }
 
     int TCommandTopicDrop::Run(TConfig& config) {
         TDriver driver = CreateDriver(config);
         NTopic::TTopicClient topicClient(driver);
-
-        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
-        ThrowOnError(topicDescription);
 
         auto settings = NYdb::NTopic::TDropTopicSettings();
         TStatus status = topicClient.DropTopic(TopicName, settings).GetValueSync();
@@ -353,14 +365,7 @@ namespace {
         : TClientCommandTree("consumer", {}, "Consumer operations") {
         AddCommand(std::make_unique<TCommandTopicConsumerAdd>());
         AddCommand(std::make_unique<TCommandTopicConsumerDrop>());
-        AddCommand(std::make_unique<TCommandTopicConsumerOffset>());
     }
-
-    TCommandTopicConsumerOffset::TCommandTopicConsumerOffset()
-        : TClientCommandTree("offset", {}, "Consumer offset operations") {
-        AddCommand(std::make_unique<TCommandTopicConsumerCommitOffset>());
-    }
-
 
     TCommandTopicConsumerAdd::TCommandTopicConsumerAdd()
         : TYdbCommand("add", {}, "Consumer add operation") {
@@ -375,7 +380,7 @@ namespace {
             .Optional()
             .StoreResult(&StartingMessageTimestamp_);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "topic for which consumer will be added");
         AddAllowedCodecs(config, AllowedCodecs);
     }
 
@@ -388,9 +393,6 @@ namespace {
     int TCommandTopicConsumerAdd::Run(TConfig& config) {
         TDriver driver = CreateDriver(config);
         NTopic::TTopicClient topicClient(driver);
-
-        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
-        ThrowOnError(topicDescription);
 
         NYdb::NTopic::TAlterTopicSettings readRuleSettings = NYdb::NTopic::TAlterTopicSettings();
         NYdb::NTopic::TConsumerSettings<NYdb::NTopic::TAlterTopicSettings> consumerSettings(readRuleSettings);
@@ -421,7 +423,7 @@ namespace {
             .Required()
             .StoreResult(&ConsumerName_);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "Topic from which consumer will be dropped");
     }
 
     void TCommandTopicConsumerDrop::Parse(TConfig& config) {
@@ -433,67 +435,10 @@ namespace {
         TDriver driver = CreateDriver(config);
         NYdb::NTopic::TTopicClient topicClient(driver);
 
-        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
-        ThrowOnError(topicDescription);
-
-        auto consumers = topicDescription.GetTopicDescription().GetConsumers();
-        if (!std::any_of(consumers.begin(), consumers.end(), [&](const auto& consumer) { return consumer.GetConsumerName() == ConsumerName_; }))
-        {
-            throw TMisuseException() << "Topic '" << TopicName << "' doesn't have a consumer '" << ConsumerName_ << "'.\n";
-            return EXIT_FAILURE;
-        }
-
         NYdb::NTopic::TAlterTopicSettings removeReadRuleSettings = NYdb::NTopic::TAlterTopicSettings();
         removeReadRuleSettings.AppendDropConsumers(ConsumerName_);
 
         TStatus status = topicClient.AlterTopic(TopicName, removeReadRuleSettings).GetValueSync();
-        ThrowOnError(status);
-        return EXIT_SUCCESS;
-    }
-
-
-    TCommandTopicConsumerCommitOffset::TCommandTopicConsumerCommitOffset()
-        : TYdbCommand("commit", {}, "Commit offset for consumer") {
-    }
-
-    void TCommandTopicConsumerCommitOffset::Config(TConfig& config) {
-        TYdbCommand::Config(config);
-        config.Opts->AddLongOption("consumer", "Consumer which offset will be changed")
-            .Required()
-            .StoreResult(&ConsumerName_);
-
-        config.Opts->AddLongOption("partition", "Partition which offset will be changed")
-            .Required()
-            .StoreResult(&PartitionId_);
-
-        config.Opts->AddLongOption("offset", "Partition offset will be set for desired consumer")
-            .Required()
-            .StoreResult(&Offset_);
-
-        config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
-    }
-
-    void TCommandTopicConsumerCommitOffset::Parse(TConfig& config) {
-        TYdbCommand::Parse(config);
-        ParseTopicName(config, 0);
-    }
-
-    int TCommandTopicConsumerCommitOffset::Run(TConfig& config) {
-        TDriver driver = CreateDriver(config);
-        NYdb::NTopic::TTopicClient topicClient(driver);
-
-        auto topicDescription = topicClient.DescribeTopic(TopicName, {}).GetValueSync();
-        ThrowOnError(topicDescription);
-
-        auto consumers = topicDescription.GetTopicDescription().GetConsumers();
-        if (!std::any_of(consumers.begin(), consumers.end(), [&](const auto& consumer) { return consumer.GetConsumerName() == ConsumerName_; }))
-        {
-            throw TMisuseException() << "Topic '" << TopicName << "' doesn't have a consumer '" << ConsumerName_ << "'.\n";
-            return EXIT_FAILURE;
-        }
-
-        TStatus status = topicClient.CommitOffset(TopicName, PartitionId_, ConsumerName_, Offset_).GetValueSync();
         ThrowOnError(status);
         return EXIT_SUCCESS;
     }
@@ -553,7 +498,7 @@ namespace {
     void TCommandTopicRead::Config(TConfig& config) {
         TYdbCommand::Config(config);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "Topic to read data from");
 
         AddMessagingFormats(config, {
                                EMessagingFormat::SingleMessage,
@@ -590,9 +535,6 @@ namespace {
         config.Opts->AddLongOption("timestamp", "Timestamp from which messages will be read. If not specified, messages are read from the last commit point for the chosen consumer.")
             .Optional()
             .StoreResult(&Timestamp_);
-        config.Opts->AddLongOption("partition-ids", "Comma separated list of partition ids to read from. If not specified, messages are read from all partitions.")
-            .Optional()
-            .SplitHandler(&PartitionIds_, ',');
 
         AddAllowedMetadataFields(config);
         AddTransform(config);
@@ -653,10 +595,6 @@ namespace {
         // TODO(shmel1k@): partition can be added here.
         NTopic::TTopicReadSettings readSettings;
         readSettings.Path(TopicName);
-        for (ui64 id : PartitionIds_) {
-            readSettings.AppendPartitionIds(id);
-        }
-
         settings.AppendTopics(std::move(readSettings));
         return settings;
     }
@@ -673,9 +611,8 @@ namespace {
         ValidateConfig();
 
         auto driver =
-            std::make_unique<TDriver>(CreateDriver(config, CreateLogBackend("cerr", TClientCommand::TConfig::VerbosityLevelToELogPriority(config.VerbosityLevel))));
+            std::make_unique<TDriver>(CreateDriver(config, CreateLogBackend("cerr", VerbosityLevelToELogPriority(config.VerbosityLevel))));
         NTopic::TTopicClient topicClient(*driver);
-
         auto readSession = topicClient.CreateReadSession(PrepareReadSessionSettings());
 
         {
@@ -737,7 +674,7 @@ namespace {
     void TCommandTopicWrite::Config(TConfig& config) {
         TYdbCommand::Config(config);
         config.Opts->SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<topic-path>", "Topic path");
+        SetFreeArgTitle(0, "<topic-path>", "Topic to write data");
 
         AddMessagingFormats(config, {
                                     EMessagingFormat::NewlineDelimited,
@@ -802,7 +739,7 @@ namespace {
         SetInterruptHandlers();
 
         auto driver =
-            std::make_unique<TDriver>(CreateDriver(config, CreateLogBackend("cerr", TClientCommand::TConfig::VerbosityLevelToELogPriority(config.VerbosityLevel))));
+            std::make_unique<TDriver>(CreateDriver(config, CreateLogBackend("cerr", VerbosityLevelToELogPriority(config.VerbosityLevel))));
         NTopic::TTopicClient topicClient(*driver);
 
         {

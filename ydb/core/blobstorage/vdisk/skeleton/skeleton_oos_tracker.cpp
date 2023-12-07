@@ -18,7 +18,6 @@ namespace NKikimr {
         TPDiskCtxPtr PDiskCtx;
         const TDuration DskTrackerInterval;
         NMonGroup::TDskOutOfSpaceGroup MonGroup;
-        NMonGroup::TCostGroup CostGroup;
         // how many 'wait intervals' we spent in 'bad' zones
         ui64 YellowZonePeriods = 0;
         ui64 OrangeZonePeriods = 0;
@@ -81,7 +80,7 @@ namespace NKikimr {
 
             CHECK_PDISK_RESPONSE(VCtx, ev, ctx);
 
-            Y_ABORT_UNLESS(msg->Status == NKikimrProto::OK, "Expected OK from PDisk on every TEvCheckSpace request, "
+            Y_VERIFY(msg->Status == NKikimrProto::OK, "Expected OK from PDisk on every TEvCheckSpace request, "
                      "but got Status# %s", NKikimrProto::EReplyStatus_Name(msg->Status).data());
 
             TotalChunks = msg->TotalChunks;
@@ -91,16 +90,14 @@ namespace NKikimr {
             VCtx->OutOfSpaceState.UpdateLocalUsedChunks(msg->UsedChunks);
             MonGroup.DskTotalBytes() = msg->TotalChunks * PDiskCtx->Dsk->ChunkSize;
             MonGroup.DskFreeBytes() = msg->FreeChunks * PDiskCtx->Dsk->ChunkSize;
-            if (msg->NumSlots > 0) {
-                CostGroup.DiskTimeAvailableNs() = 1'000'000'000ull / msg->NumSlots;
-            }
+            MonGroup.DskUsedBytes() = msg->UsedChunks * PDiskCtx->Dsk->ChunkSize;
 
             Become(&TThis::WaitFunc);
             ctx.Schedule(DskTrackerInterval, new TEvents::TEvWakeup());
         }
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_DEBUG_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::DskSpaceTrackerId);
+            Y_VERIFY_DEBUG(ev->Get()->SubRequestId == TDbMon::DskSpaceTrackerId);
             TStringStream str;
             auto oosStatus = VCtx->OutOfSpaceState.GetGlobalStatusFlags();
 
@@ -202,7 +199,6 @@ namespace NKikimr {
             , PDiskCtx(pdiskCtx)
             , DskTrackerInterval(dskTrackerInterval)
             , MonGroup(VCtx->VDiskCounters, "subsystem", "outofspace")
-            , CostGroup(VCtx->VDiskCounters, "subsystem", "cost")
         {}
     };
 

@@ -6,8 +6,6 @@
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/minikql/mkql_type_builder.h>
 
-#include <ydb/library/yql/utils/sort.h>
-
 #include <algorithm>
 #include <iterator>
 
@@ -160,11 +158,11 @@ public:
         return tmp;
     }
 
-    bool operator==(const TGatherIterator& rhs) const& {
+    bool operator==(const TGatherIterator& rhs) {
         return First == rhs.First;
     }
 
-    bool operator!=(const TGatherIterator& rhs) const& {
+    bool operator!=(const TGatherIterator& rhs) {
         return First != rhs.First;
     }
 
@@ -199,8 +197,8 @@ struct TCompareDescr {
         const TVector<NUdf::ICompare::TPtr>& comparators)
         : KeySchemeTypes(std::move(keySchemeTypes))
         , KeyTypes(PrepareKeyTypesByScheme(KeySchemeTypes))
-        , Comparators(comparators)
         , Encoders(mutables)
+        , Comparators(comparators)
     {}
 
     static TKeyPayloadPairVector::value_type::first_type& Set(TKeyPayloadPairVector::value_type& item) { return item.first; }
@@ -220,6 +218,7 @@ struct TCompareDescr {
                     const auto& right = Get(y);
 
                     for (ui32 i = 0; i < KeyTypes.size(); ++i) {
+                        const auto& keyType = KeyTypes[i];
                         const auto& leftElem = left.GetElement(i);
                         const auto& rightElem = right.GetElement(i);
                         const bool asc = ascending.GetElement(i).Get<bool>();
@@ -449,7 +448,7 @@ public:
         return result;
     }
 
-    void PerformInplace(TComputationContext&, ui32 size, NUdf::TUnboxedValue* keys, NUdf::TUnboxedValue* items, const TComparator& comparator) const {
+    void PerformInplace(TComputationContext& ctx, ui32 size, NUdf::TUnboxedValue* keys, NUdf::TUnboxedValue* items, const TComparator& comparator) const {
         AlgorithmInplace(TGatherIterator(keys, items), TGatherIterator(keys, items) + size, comparator);
     }
 
@@ -498,7 +497,7 @@ public:
         Y_UNUSED(keys);
         Y_UNUSED(items);
         Y_UNUSED(comparator);
-        Y_ABORT("Not supported");
+        Y_FAIL("Not supported");
     }
 
 private:
@@ -602,7 +601,7 @@ public:
             });
 
             Description.Prepare(ctx, items);
-            NYql::FastNthElement(items.begin(), items.begin() + count - 1U, items.end(), Description.MakeComparator<TKeyPayloadPairVector>(ascending));
+            std::nth_element(items.begin(), items.begin() + count - 1U, items.end(), Description.MakeComparator<TKeyPayloadPairVector>(ascending));
             items.resize(count);
 
             NUdf::TUnboxedValue *inplace = nullptr;
@@ -751,11 +750,11 @@ IComputationNode* WrapSort(TCallable& callable, const TComputationNodeFactoryCon
 }
 
 IComputationNode* WrapTop(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    return WrapNthAlgo(&NYql::FastNthElement<TKeyPayloadPairVector::iterator, TComparator>, callable, ctx);
+    return WrapNthAlgo(&std::nth_element<TKeyPayloadPairVector::iterator, TComparator>, callable, ctx);
 }
 
 IComputationNode* WrapTopSort(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    return WrapNthAlgo(&NYql::FastPartialSort<TKeyPayloadPairVector::iterator, TComparator>, callable, ctx);
+    return WrapNthAlgo(&std::partial_sort<TKeyPayloadPairVector::iterator, TComparator>, callable, ctx);
 }
 
 IComputationNode* WrapKeepTop(TCallable& callable, const TComputationNodeFactoryContext& ctx) {

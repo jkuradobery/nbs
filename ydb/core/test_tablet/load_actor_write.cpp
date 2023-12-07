@@ -4,11 +4,12 @@
 namespace NKikimr::NTestShard {
 
     void TLoadActor::GenerateKeyValue(TString *key, TString *value, bool *isInline) {
-        const size_t len = GenerateRandomSize(Settings.GetSizes(), isInline);
-        const ui64 id = RandomNumber<ui64>();
-        const ui64 seed = RandomNumber<ui64>();
-        *key = TStringBuilder() << len << ',' << seed << ',' << id;
-        *value = FastGenDataForLZ4(len, seed);
+        const size_t len = GenerateRandomSize(Settings.GetSizes(), isInline) + sizeof(ui64);
+        ui64 seed = TAppData::RandomProvider->GenRand64();
+        TString data = FastGenDataForLZ4(len, seed);
+        memcpy(data.Detach(), &seed, Min(data.size(), sizeof(seed)));
+        *key = HashForValue(data);
+        *value = std::move(data);
     }
 
     void TLoadActor::IssueWrite() {
@@ -22,11 +23,7 @@ namespace NKikimr::NTestShard {
         auto& r = ev->Record;
         auto *write = r.AddCmdWrite();
         write->SetKey(key);
-        if (RandomNumber(2u)) {
-            write->SetPayloadId(ev->AddPayload(TRope(value)));
-        } else {
-            write->SetValue(value);
-        }
+        write->SetValue(value);
         if (isInline) {
             write->SetStorageChannel(NKikimrClient::TKeyValueRequest::INLINE);
         }
@@ -34,11 +31,11 @@ namespace NKikimr::NTestShard {
         STLOG(PRI_INFO, TEST_SHARD, TS12, "writing data", (TabletId, TabletId), (Key, key), (Size, value.size()));
 
         auto [wifIt, wifInserted] = WritesInFlight.try_emplace(r.GetCookie(), key);
-        Y_ABORT_UNLESS(wifInserted);
-        Y_ABORT_UNLESS(wifIt->second.KeysInQuery.size() == 1);
+        Y_VERIFY(wifInserted);
+        Y_VERIFY(wifIt->second.KeysInQuery.size() == 1);
 
         auto [it, inserted] = Keys.try_emplace(key, value.size());
-        Y_ABORT_UNLESS(inserted);
+        Y_VERIFY(inserted);
         RegisterTransition(*it, ::NTestShard::TStateServer::ABSENT, ::NTestShard::TStateServer::WRITE_PENDING, std::move(ev));
 
         ++KeysWritten;
@@ -51,8 +48,8 @@ namespace NKikimr::NTestShard {
             const TDuration latency = TDuration::Seconds(info.Timer.Passed());
             STLOG(PRI_DEBUG, TEST_SHARD, TS29, "data written", (TabletId, TabletId), (Key, info.KeysInQuery),
                 (Latency, latency));
-            WriteLatency.Add(TActivationContext::Monotonic(), latency);
-            Y_ABORT_UNLESS(info.KeysInQuery.size() == (size_t)results.size(), "%zu/%d", info.KeysInQuery.size(), results.size());
+            WriteLatency.Add(latency);
+            Y_VERIFY(info.KeysInQuery.size() == (size_t)results.size(), "%zu/%d", info.KeysInQuery.size(), results.size());
             for (size_t i = 0; i < info.KeysInQuery.size(); ++i) {
                 const auto& res = results[i];
                 Y_VERIFY_S(res.GetStatus() == NKikimrProto::OK, "TabletId# " << TabletId << " CmdWrite failed Status# "

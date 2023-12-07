@@ -6,7 +6,6 @@
 #include "blobstorage_pdisk_request_id.h"
 
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
-#include <ydb/core/control/immediate_control_board_impl.h>
 #include <ydb/core/protos/blobstorage.pb.h>
 #include <ydb/core/blobstorage/crypto/secured_block.h>
 #include <ydb/library/schlab/schine/job_kind.h>
@@ -46,7 +45,7 @@ TPDisk::TPDisk(const TIntrusivePtr<TPDiskConfig> cfg, const TIntrusivePtr<::NMon
     , BlockDevice(CreateRealBlockDevice(cfg->GetDevicePath(), cfg->PDiskId, Mon,
                     HPCyclesMs(ReorderingMs), DriveModel.SeekTimeNs(), cfg->DeviceInFlight,
                     TDeviceMode::LockFile | (cfg->UseSpdkNvmeDriver ? TDeviceMode::UseSpdk : 0),
-                    cfg->MaxQueuedCompletionActions, cfg->SectorMap, this))
+                    cfg->MaxQueuedCompletionActions, cfg->SectorMap))
     , Cfg(cfg)
     , CreationTime(TInstant::Now())
     , ExpectedSlotCount(cfg->ExpectedSlotCount)
@@ -66,10 +65,8 @@ TPDisk::TPDisk(const TIntrusivePtr<TPDiskConfig> cfg, const TIntrusivePtr<::NMon
     if (Cfg->SectorMap) {
         auto diskModeParams = Cfg->SectorMap->GetDiskModeParams();
         if (diskModeParams) {
-            SectorMapFirstSectorReadRate = TControlWrapper(diskModeParams->FirstSectorReadRate, 0, 100000ull * 1024 * 1024);
-            SectorMapLastSectorReadRate = TControlWrapper(diskModeParams->LastSectorReadRate, 0, 100000ull * 1024 * 1024);
-            SectorMapFirstSectorWriteRate = TControlWrapper(diskModeParams->FirstSectorWriteRate, 0, 100000ull * 1024 * 1024);
-            SectorMapLastSectorWriteRate = TControlWrapper(diskModeParams->LastSectorWriteRate, 0, 100000ull * 1024 * 1024);
+            SectorMapFirstSectorRate = TControlWrapper(diskModeParams->FirstSectorRate, 0, 100000ull * 1024 * 1024);
+            SectorMapLastSectorRate = TControlWrapper(diskModeParams->LastSectorRate, 0, 100000ull * 1024 * 1024);
             SectorMapSeekSleepMicroSeconds = TControlWrapper(diskModeParams->SeekSleepMicroSeconds, 0, 100ul * 1000 * 1000);
         }
     }
@@ -121,11 +118,11 @@ TCheckDiskFormatResult TPDisk::ReadChunk0Format(ui8* formatSectors, const NPDisk
     TGuard<TMutex> guard(StateMutex);
 
     Format.SectorSize = FormatSectorSize;
-    ui32 mainKeySize = mainKey.Keys.size();
+    ui32 mainKeySize = mainKey.size();
 
     for (ui32 k = 0; k < mainKeySize; ++k) {
         TPDiskStreamCypher cypher(true); // Format record is always encrypted
-        cypher.SetKey(mainKey.Keys[k]);
+        cypher.SetKey(mainKey[k]);
 
         ui32 lastGoodIdx = (ui32)-1;
         bool isBad[ReplicationFactor];
@@ -176,7 +173,7 @@ TCheckDiskFormatResult TPDisk::ReadChunk0Format(ui8* formatSectors, const NPDisk
                 for (ui32 i = 0; i < ReplicationFactor; ++i) {
                     if (isBad[i]) {
                         TBuffer* buffer = BufferPool->Pop();
-                        Y_ABORT_UNLESS(FormatSectorSize <= buffer->Size());
+                        Y_VERIFY(FormatSectorSize <= buffer->Size());
                         memcpy(buffer->Data(), formatSector, FormatSectorSize);
                         ui64 targetOffset = i * FormatSectorSize;
                         LOG_INFO_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << (ui32)PDiskId
@@ -285,7 +282,7 @@ TString TPDisk::StartupOwnerInfo() {
 
 TPDisk::~TPDisk() {
     TPDisk::Stop();
-    Y_ABORT_UNLESS(InputQueue.GetWaitingSize() == 0);
+    Y_VERIFY(InputQueue.GetWaitingSize() == 0);
 }
 
 void TPDisk::Stop() {
@@ -411,7 +408,7 @@ bool ParseSectorOffset(const TDiskFormat& format, TActorSystem *actorSystem, ui3
         ui64 &outSectorIdx, ui64 &outLastSectorIdx, ui64 &outSectorOffset) {
     const ui64 chunkSizeUsableSectors = format.ChunkSize / format.SectorSize;
     const ui64 sectorPayloadSize = format.SectorPayloadSize();
-    Y_ABORT_UNLESS(sectorPayloadSize > 0);
+    Y_VERIFY(sectorPayloadSize > 0);
     ui64 lastSectorIdx = (offset + size + sectorPayloadSize - 1) / sectorPayloadSize - 1;
     outLastSectorIdx = lastSectorIdx;
 
@@ -458,7 +455,7 @@ void TPDisk::CheckLogCanary(ui8* sectorData, ui32 chunkIdx, ui64 sectorIdx) cons
 
 TLogPosition TPDisk::LogPosition(TChunkIdx chunkIdx, ui64 sectorIdx, ui64 offsetInSector) const {
     ui64 offsetBytes = sectorIdx * Format.SectorSize + offsetInSector;
-    Y_ABORT_UNLESS(offsetBytes <= Max<ui32>());
+    Y_VERIFY(offsetBytes <= Max<ui32>());
     return {chunkIdx, static_cast<ui32>(offsetBytes)};
 }
 
@@ -534,7 +531,7 @@ bool TPDisk::ReleaseUnusedLogChunks(TCompletionEventSender *completion) {
         return true;
     // Case 2: Chunks to be deleted located in the middle of LogChunksList
     } else if (gapStart && gapEnd) {
-        Y_ABORT_UNLESS(KIKIMR_PDISK_ENABLE_CUT_LOG_FROM_THE_MIDDLE);
+        Y_VERIFY(KIKIMR_PDISK_ENABLE_CUT_LOG_FROM_THE_MIDDLE);
         IsLogChunksReleaseInflight = true;
         Mon.SplicedLogChunks->Add(chunksToRelease.size());
         completion->Req = THolder<TRequestBase>(ReqCreator.CreateFromArgs<TReleaseChunks>(*gapStart, *gapEnd, std::move(chunksToRelease)));
@@ -695,15 +692,8 @@ void TPDisk::AskVDisksToCutLogs(TOwner ownerFilter, bool doForce) {
         } else {
             InsaneLogChunks = 0;
         }
-
-        struct TChunkCutInfoPerOwner {
-            size_t ChunksToCut = 0;
-            size_t FirstLogChunkNumber = 0;
-            ui64 Lsn = 0;
-        };
-
-        TMap<TOwner, TChunkCutInfoPerOwner> cutLogInfoForOwner;
-
+        TMap<TOwner, ui64> lsnForOwner;
+        TMap<TOwner, size_t> countForOwner;
         {
             size_t logChunkNumber = 0;
             // LogChunks grows at the end() and cut from the begin()
@@ -712,21 +702,16 @@ void TPDisk::AskVDisksToCutLogs(TOwner ownerFilter, bool doForce) {
                 TVector<TLogChunkInfo::TLsnRange> &ownerLsnRange = chunkIt->OwnerLsnRange;
                 for (ui32 chunkOwner = 0; chunkOwner < ownerLsnRange.size(); ++chunkOwner) {
                     if (ownerLsnRange[chunkOwner].IsPresent) {
-                        auto &cutLogInfo = cutLogInfoForOwner[chunkOwner];
-
                         if (logChunkNumber <= logChunkCount - cutThreshold) {
-                            cutLogInfo.Lsn = ownerLsnRange[chunkOwner].LastLsn;
-                            cutLogInfo.ChunksToCut++;
+                            lsnForOwner[chunkOwner] = ownerLsnRange[chunkOwner].LastLsn;
                         } else if (ownerFilter != OwnerSystem) {
-                            // Prevent cuts with lsn = 0.
-                            if (cutLogInfo.Lsn == 0) {
-                                cutLogInfo.Lsn = ownerLsnRange[chunkOwner].LastLsn;
-                                cutLogInfo.ChunksToCut++;
+                            // Prevent cuts with lsn = 0
+                            if (lsnForOwner.find(chunkOwner) == lsnForOwner.end()) {
+                                lsnForOwner[chunkOwner] = ownerLsnRange[chunkOwner].LastLsn;
                             }
                         }
-
-                        if (cutLogInfo.FirstLogChunkNumber == 0) {
-                            cutLogInfo.FirstLogChunkNumber = logChunkNumber;
+                        if (countForOwner[chunkOwner] == 0) {
+                            countForOwner[chunkOwner] = logChunkNumber;
                         }
                     }
                 }
@@ -734,46 +719,30 @@ void TPDisk::AskVDisksToCutLogs(TOwner ownerFilter, bool doForce) {
         }
         TInstant now = TInstant::Now();
         if (ownerFilter == OwnerSystem) {
-            for (auto it = cutLogInfoForOwner.begin(); it != cutLogInfoForOwner.end(); ++it) {
+            for (auto it = lsnForOwner.begin(); it != lsnForOwner.end(); ++it) {
                 TOwner chunkOwner = it->first;
-                auto &cutLogInfo = it->second;
-                
-                if (cutLogInfo.Lsn == 0) {
-                    // Prevent cuts with lsn = 0.
-                    continue;
-                }
-
-                ui64 lsn = cutLogInfo.Lsn + 1;
-
+                ui64 lsn = it->second + 1;
                 if (chunkOwner < OwnerEndUser) {
-                    auto &data = OwnerData[chunkOwner];
-
-                    if (data.CutLogId) {
-                        auto ownedLogChunks = cutLogInfo.FirstLogChunkNumber ? logChunkCount - cutLogInfo.FirstLogChunkNumber : 0;
-
-                        TOwnerRound chunkOwnerRound = data.OwnerRound;
+                    if (OwnerData[chunkOwner].CutLogId) {
+                        TOwnerRound chunkOwnerRound = OwnerData[chunkOwner].OwnerRound;
                         THolder<NPDisk::TEvCutLog> cutLog(new NPDisk::TEvCutLog(chunkOwner, chunkOwnerRound, lsn,
                                     logChunkCount,
-                                    cutLogInfo.FirstLogChunkNumber ? logChunkCount - cutLogInfo.FirstLogChunkNumber : 0,
+                                    countForOwner[chunkOwner] ? logChunkCount - countForOwner[chunkOwner] : 0,
                                     (InsaneLogChunks + cutThreshold) / 2, InsaneLogChunks));
                         LOG_DEBUG_S(*ActorSystem, NKikimrServices::BS_PDISK,
                                 "PDiskId# " << (ui32)PDiskId
-                                << " Send CutLog to# " << data.CutLogId.ToString().data()
+                                << " Send CutLog to# " << OwnerData[chunkOwner].CutLogId.ToString().data()
                                 << " ownerId#" << ui32(chunkOwner)
                                 << " cutLog# " << cutLog->ToString()
                                 << " Marker# BPD67");
                         Y_VERIFY_S(cutLog->FreeUpToLsn, "Error! Should not ask to cut log at 0 lsn."
                                 "PDiskId# " << (ui32)PDiskId
-                                << " Send CutLog to# " << data.CutLogId.ToString().data()
+                                << " Send CutLog to# " << OwnerData[chunkOwner].CutLogId.ToString().data()
                                 << " ownerId#" << ui32(chunkOwner)
                                 << " cutLog# " << cutLog->ToString());
-                        ActorSystem->Send(new IEventHandle(data.CutLogId, PDiskActor, cutLog.Release(),
+                        ActorSystem->Send(new IEventHandle(OwnerData[chunkOwner].CutLogId, PDiskActor, cutLog.Release(),
                                     IEventHandle::FlagTrackDelivery, 0));
-                        data.AskedFreeUpToLsn = lsn;
-                        data.AskedToCutLogAt = now;
-                        data.AskedLogChunkToCut = cutLogInfo.ChunksToCut;
-                        data.LogChunkCountBeforeCut = ownedLogChunks;
-                        // ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(data.OperationLog, "System owner asked to cut log, OwnerId# " << chunkOwner);
+                        OwnerData[chunkOwner].AskedToCutLogAt = now;
                     } else {
                         LOG_INFO_S(*ActorSystem, NKikimrServices::BS_PDISK,
                                 "PDiskId# " << (ui32)PDiskId
@@ -782,30 +751,18 @@ void TPDisk::AskVDisksToCutLogs(TOwner ownerFilter, bool doForce) {
                 }
             }
         } else if (ownerFilter < OwnerEndUser) {
-            auto it = cutLogInfoForOwner.find(ownerFilter);
-            if (it != cutLogInfoForOwner.end()) {
-                auto &cutLogInfo = it->second;
-
-                if (cutLogInfo.Lsn == 0) {
-                    // Prevent cuts with lsn = 0.
-                    return;
-                }
-
-                ui64 lsn = cutLogInfo.Lsn + 1;
-
-                auto &data = OwnerData[ownerFilter];
-
-                TOwnerRound chunkOwnerRound = data.OwnerRound;
-                if (data.CutLogId) {
-                    auto ownedLogChunks = cutLogInfo.FirstLogChunkNumber ? logChunkCount - cutLogInfo.FirstLogChunkNumber : 0;
-
+            auto it = lsnForOwner.find(ownerFilter);
+            if (it != lsnForOwner.end()) {
+                ui64 lsn = it->second + 1;
+                TOwnerRound chunkOwnerRound = OwnerData[ownerFilter].OwnerRound;
+                if (OwnerData[ownerFilter].CutLogId) {
                     THolder<NPDisk::TEvCutLog> cutLog(new NPDisk::TEvCutLog(ownerFilter, chunkOwnerRound, lsn,
                                 logChunkCount,
-                                ownedLogChunks,
+                                countForOwner[ownerFilter] ? logChunkCount - countForOwner[ownerFilter] : 0,
                                 (InsaneLogChunks + cutThreshold) / 2, InsaneLogChunks));
                     LOG_DEBUG_S(*ActorSystem, NKikimrServices::BS_PDISK,
                             "PDiskId# " << (ui32)PDiskId
-                            << " Send CutLog to# " << data.CutLogId.ToString().data()
+                            << " Send CutLog to# " << OwnerData[ownerFilter].CutLogId.ToString().data()
                             << " ownerId#" << ui32(ownerFilter)
                             << " cutLog# " << cutLog->ToString()
                             << " Marker# BPD68");
@@ -821,18 +778,14 @@ void TPDisk::AskVDisksToCutLogs(TOwner ownerFilter, bool doForce) {
                         str << "}";
                         Y_VERIFY_S(cutLog->FreeUpToLsn, "Error! Should not ask to cut log at 0 lsn."
                                 "PDiskId# " << (ui32)PDiskId
-                                << " Send CutLog to# " << data.CutLogId.ToString().data()
+                                << " Send CutLog to# " << OwnerData[ownerFilter].CutLogId.ToString().data()
                                 << " ownerId#" << ui32(ownerFilter)
                                 << " cutLog# " << cutLog->ToString()
                                 << " LogChunks# " << str.Str());
                     }
-                    ActorSystem->Send(new IEventHandle(data.CutLogId, PDiskActor, cutLog.Release(),
+                    ActorSystem->Send(new IEventHandle(OwnerData[ownerFilter].CutLogId, PDiskActor, cutLog.Release(),
                                 IEventHandle::FlagTrackDelivery, 0));
-                    data.AskedFreeUpToLsn = lsn;
-                    data.AskedToCutLogAt = now;
-                    data.AskedLogChunkToCut = cutLogInfo.ChunksToCut;
-                    data.LogChunkCountBeforeCut = ownedLogChunks;
-                    // ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(data.OperationLog, "User owner asked to cut log, OwnerId# " << ownerFilter);
+                    OwnerData[ownerFilter].AskedToCutLogAt = now;
                 } else {
                     LOG_INFO_S(*ActorSystem, NKikimrServices::BS_PDISK,
                             "PDiskId# " << (ui32)PDiskId
@@ -851,14 +804,14 @@ bool TPDisk::ChunkWritePiece(TChunkWrite *evChunkWrite, ui32 pieceShift, ui32 pi
         return true;
     }
     TGuard<TMutex> guard(StateMutex);
-    Y_ABORT_UNLESS(pieceShift % Format.SectorPayloadSize() == 0);
+    Y_VERIFY(pieceShift % Format.SectorPayloadSize() == 0);
     Y_VERIFY_S(pieceSize % Format.SectorPayloadSize() == 0 || pieceShift + pieceSize == evChunkWrite->TotalSize,
         "pieceShift# " << pieceShift << " pieceSize# " << pieceSize
         << " evChunkWrite->TotalSize# " << evChunkWrite->TotalSize);
 
     ui32 chunkIdx = evChunkWrite->ChunkIdx;
 
-    Y_ABORT_UNLESS(chunkIdx != 0);
+    Y_VERIFY(chunkIdx != 0);
 
 
     ui64 desiredSectorIdx = 0;
@@ -888,7 +841,7 @@ bool TPDisk::ChunkWritePiece(TChunkWrite *evChunkWrite, ui32 pieceShift, ui32 pi
             pieceShift, pieceSize);
 
     ui32 bytesAvailable = pieceSize;
-    Y_ABORT_UNLESS(evChunkWrite->BytesWritten == pieceShift);
+    Y_VERIFY(evChunkWrite->BytesWritten == pieceShift);
     const ui32 count = evChunkWrite->PartsPtr->Size();
     for (ui32 partIdx = evChunkWrite->CurrentPart; partIdx < count; ++partIdx) {
         ui32 remainingPartSize = (*evChunkWrite->PartsPtr)[partIdx].second - evChunkWrite->CurrentPartOffset;
@@ -912,7 +865,7 @@ bool TPDisk::ChunkWritePiece(TChunkWrite *evChunkWrite, ui32 pieceShift, ui32 pi
             evChunkWrite->CurrentPart = partIdx;
             return false;
         } else {
-            Y_ABORT_UNLESS(remainingPartSize);
+            Y_VERIFY(remainingPartSize);
             ui32 sizeToWrite = remainingPartSize;
             bytesAvailable -= remainingPartSize;
             ui8 *data = (ui8*)(*evChunkWrite->PartsPtr)[partIdx].first;
@@ -929,7 +882,7 @@ bool TPDisk::ChunkWritePiece(TChunkWrite *evChunkWrite, ui32 pieceShift, ui32 pi
             evChunkWrite->BytesWritten += sizeToWrite;
         }
     }
-    Y_ABORT_UNLESS(evChunkWrite->RemainingSize == 0);
+    Y_VERIFY(evChunkWrite->RemainingSize == 0);
 
     LOG_DEBUG_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << (ui32)PDiskId
             << " chunkIdx# " << (ui32)chunkIdx
@@ -953,16 +906,15 @@ bool TPDisk::ChunkWritePiece(TChunkWrite *evChunkWrite, ui32 pieceShift, ui32 pi
 
 void TPDisk::SendChunkWriteError(TChunkWrite &chunkWrite, const TString &errorReason,
         NKikimrProto::EReplyStatus status) {
-    Y_DEBUG_ABORT_UNLESS(errorReason);
-    Y_DEBUG_ABORT_UNLESS(status != NKikimrProto::OK);
+    Y_VERIFY_DEBUG(errorReason);
+    Y_VERIFY_DEBUG(status != NKikimrProto::OK);
     LOG_ERROR_S(*ActorSystem, NKikimrServices::BS_PDISK, errorReason);
-    Y_ABORT_UNLESS(!chunkWrite.IsReplied);
+    Y_VERIFY(!chunkWrite.IsReplied);
     NPDisk::TStatusFlags flags = status == NKikimrProto::OUT_OF_SPACE
         ? NotEnoughDiskSpaceStatusFlags(chunkWrite.Owner, chunkWrite.OwnerGroupType)
         : GetStatusFlags(chunkWrite.Owner, chunkWrite.OwnerGroupType);
-    auto ev = std::make_unique<NPDisk::TEvChunkWriteResult>(status, chunkWrite.ChunkIdx, chunkWrite.Cookie, flags, errorReason);
-    ev->Orbit = std::move(chunkWrite.Orbit);
-    ActorSystem->Send(chunkWrite.Sender, ev.release());
+    ActorSystem->Send(chunkWrite.Sender, new NPDisk::TEvChunkWriteResult(status,
+        chunkWrite.ChunkIdx, chunkWrite.Cookie, flags, errorReason));
     Mon.GetWriteCounter(chunkWrite.PriorityClass)->CountResponse();
     chunkWrite.IsReplied = true;
 }
@@ -973,7 +925,7 @@ void TPDisk::SendChunkWriteError(TChunkWrite &chunkWrite, const TString &errorRe
 
 void TPDisk::SendChunkReadError(const TIntrusivePtr<TChunkRead>& read, TStringStream& error, NKikimrProto::EReplyStatus status) {
     error << " for ownerId# " << read->Owner << " can't read chunkIdx# " << read->ChunkIdx;
-    Y_ABORT_UNLESS(status != NKikimrProto::OK);
+    Y_VERIFY(status != NKikimrProto::OK);
     LOG_ERROR_S(*ActorSystem, NKikimrServices::BS_PDISK, error.Str());
 
     THolder<NPDisk::TEvChunkReadResult> result = MakeHolder<NPDisk::TEvChunkReadResult>(status,
@@ -998,7 +950,7 @@ TPDisk::EChunkReadPieceResult TPDisk::ChunkReadPiece(TIntrusivePtr<TChunkRead> &
         bytesToRead = sectorsToRead * Format.SectorSize;
     }
 
-    Y_ABORT_UNLESS(sectorsToRead);
+    Y_VERIFY(sectorsToRead);
 
     if (reallyReadDiskBytes) {
         *reallyReadDiskBytes = bytesToRead;
@@ -1009,7 +961,7 @@ TPDisk::EChunkReadPieceResult TPDisk::ChunkReadPiece(TIntrusivePtr<TChunkRead> &
     ui64 sectorOffset;
     bool isOk = ParseSectorOffset(Format, ActorSystem, PDiskId,
             read->Offset, read->Size, firstSector, lastSector, sectorOffset);
-    Y_ABORT_UNLESS(isOk);
+    Y_VERIFY(isOk);
 
     ui64 currentSectorOffset = (ui64)read->CurrentSector * (ui64)Format.SectorSize;
     bool isTheFirstPart = read->CurrentSector == 0;
@@ -1039,7 +991,7 @@ TPDisk::EChunkReadPieceResult TPDisk::ChunkReadPiece(TIntrusivePtr<TChunkRead> &
     AtomicAdd(InFlightChunkRead, (ui64)bytesToRead);
 
     if (isTheLastPart) {
-        Y_ABORT_UNLESS(read->RemainingSize == 0);
+        Y_VERIFY(read->RemainingSize == 0);
     }
 
     ui64 footerTotalSize = sectorsToRead * sizeof(TDataSectorFooter);
@@ -1051,7 +1003,7 @@ TPDisk::EChunkReadPieceResult TPDisk::ChunkReadPiece(TIntrusivePtr<TChunkRead> &
     THolder<TCompletionChunkReadPart> completion(new TCompletionChunkReadPart(this, read, bytesToRead,
                 payloadBytesToRead, payloadOffset, read->FinalCompletion, isTheLastPart, Cfg->UseT1ha0HashInFooter));
     completion->CostNs = DriveModel.TimeForSizeNs(bytesToRead, read->ChunkIdx, TDriveModel::OP_TYPE_READ);
-    Y_ABORT_UNLESS(bytesToRead <= completion->GetBuffer()->Size());
+    Y_VERIFY(bytesToRead <= completion->GetBuffer()->Size());
     ui8 *data = completion->GetBuffer()->Data();
     BlockDevice->PreadAsync(data, bytesToRead, readOffset, completion.Release(),
             read->ReqId, &read->TraceId);
@@ -1146,7 +1098,7 @@ std::unique_ptr<TEvChunkLockResult> TPDisk::ChunkLockFromQuota(TOwner owner, NKi
     ui32 number = Keeper.ColorFlagLimit(owner, color);
     ui32 used = Keeper.GetOwnerUsed(owner);
     if (number <= used) {
-        LOG_ERROR_S(*ActorSystem, NKikimrServices::BS_PDISK,
+        LOG_ERROR_S(*ActorSystem, NKikimrServices::BS_PDISK, 
             "Can't lock chunks by color# " << TPDiskSpaceColor_Name(color) <<
             ", this space color flag is already raised. Marker# BPD33");
         return std::unique_ptr<TEvChunkLockResult>(new NPDisk::TEvChunkLockResult(NKikimrProto::ERROR,
@@ -1219,7 +1171,7 @@ void TPDisk::ChunkLock(TChunkLock &evChunkLock) {
     } else {
         result.reset(ChunkLockFromQuota(owner, evChunkLock.Color).release());
     }
-
+    
     LOG_INFO(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# %" PRIu32 " Locked %" PRIu32 \
         " chunks from owner# " PRIu32, (ui32)PDiskId, (ui32)result->LockedChunks.size(), (ui32)owner);
 
@@ -1308,7 +1260,7 @@ void TPDisk::ChunkUnlock(TChunkUnlock &evChunkUnlock) {
 TVector<TChunkIdx> TPDisk::AllocateChunkForOwner(const TRequestBase *req, const ui32 count, TString &errorReason) {
     // chunkIdx = 0 is deprecated and will not be soon removed
     TGuard<TMutex> guard(StateMutex);
-    Y_DEBUG_ABORT_UNLESS(IsOwnerUser(req->Owner));
+    Y_VERIFY_DEBUG(IsOwnerUser(req->Owner));
 
     const ui32 sharedFree = Keeper.GetFreeChunkCount() - 1;
     i64 ownerFree = Keeper.GetOwnerFree(req->Owner);
@@ -1480,7 +1432,7 @@ void TPDisk::ChunkForget(TChunkForget &evChunkForget) {
                         LOG_INFO(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# %" PRIu32 " chunkIdx# %" PRIu32
                                 " forgotten, ownerId# %" PRIu32 " -> %" PRIu32,
                                 (ui32)PDiskId, (ui32)chunkIdx, (ui32)state.OwnerId, (ui32)OwnerUnallocated);
-                        Y_ABORT_UNLESS(state.OwnerId == evChunkForget.Owner);
+                        Y_VERIFY(state.OwnerId == evChunkForget.Owner);
                         Mon.UncommitedDataChunks->Dec();
                         state.OwnerId = OwnerUnallocated;
                         state.CommitState = TChunkState::FREE;
@@ -1617,7 +1569,7 @@ void TPDisk::CommitLogChunks(TCommitLogChunks &req) {
     for (auto it = req.CommitedLogChunks.begin(); it != req.CommitedLogChunks.end(); ++it) {
         Y_VERIFY_S(ChunkState[*it].OwnerId == OwnerSystem, "Unexpected chunkIdx# " << *it << " ownerId# "
                 << (ui32)ChunkState[*it].OwnerId << " in CommitLogChunks PDiskId# " << PDiskId);
-        Y_DEBUG_ABORT_UNLESS(ChunkState[*it].CommitState == TChunkState::LOG_RESERVED);
+        Y_VERIFY_DEBUG(ChunkState[*it].CommitState == TChunkState::LOG_RESERVED);
         ChunkState[*it].CommitState = TChunkState::LOG_COMMITTED;
     }
 }
@@ -1647,7 +1599,7 @@ void TPDisk::WriteApplyFormatRecord(TDiskFormat format, const TKey &mainKey) {
             // Fill first bytes with magic pattern
             ui64 *formatBegin = reinterpret_cast<ui64*>(&format);
             ui64 *formatMagicEnd = reinterpret_cast<ui64*>((ui8*)&format + MagicIncompleteFormatSize);
-            Y_ABORT_UNLESS((ui8*)formatMagicEnd - (ui8*)formatBegin <= (intptr_t)sizeof(format));
+            Y_VERIFY((ui8*)formatMagicEnd - (ui8*)formatBegin <= (intptr_t)sizeof(format));
             Fill(formatBegin, formatMagicEnd, MagicIncompleteFormat);
         }
         formatWriter.Write(&format, sizeof(TDiskFormat), TReqId(TReqId::WriteApplyFormatRecordWrite, 0), {});
@@ -1789,11 +1741,6 @@ bool TPDisk::YardInitForKnownVDisk(TYardInit &evYardInit, TOwner owner) {
     TVDiskID vDiskId = evYardInit.VDiskIdWOGeneration();
 
     TOwnerData &ownerData = OwnerData[owner];
-    ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(ownerData.OperationLog, "YardInitForKnownVDisk, OwnerId# " << owner
-            << ", evYardInit# " << evYardInit.ToString());
-
-    TFirstUncommitted firstUncommitted = CommonLogger->FirstUncommitted.load();
-    ownerData.LogEndPosition = TOwnerData::TLogEndPosition(firstUncommitted.ChunkIdx, firstUncommitted.SectorIdx);
 
     ownerData.OwnerRound = evYardInit.OwnerRound;
     TOwnerRound ownerRound = evYardInit.OwnerRound;
@@ -1897,8 +1844,6 @@ bool TPDisk::YardInitStart(TYardInit &evYardInit) {
             << " ownerData.HaveRequestsInFlight()# " << ownerData.HaveRequestsInFlight()
             << " Marker# BPD56");
     // Update round and wait for all pending requests of old owner to finish
-    ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(ownerData.OperationLog, "YardInitStart, OwnerId# "
-            << owner << ", new OwnerRound# " << evYardInit.OwnerRound);
     ownerData.OwnerRound = evYardInit.OwnerRound;
     return true;
 }
@@ -1921,23 +1866,22 @@ void TPDisk::YardInitFinish(TYardInit &evYardInit) {
         // TODO(cthulhu): don't allocate more owners than expected
         Keeper.AddOwner(owner, vDiskId);
 
-        TOwnerData& ownerData = OwnerData[owner];
-        ownerData.Reset(false);
+        OwnerData[owner].Reset(false);
+
         // A new owner is created.
 
         AtomicIncrement(TotalOwners);
-        ownerData.VDiskId = vDiskId;
-        Y_ABORT_UNLESS(SysLogFirstNoncesToKeep.FirstNonceToKeep[owner] <= SysLogRecord.Nonces.Value[NonceLog]);
+        OwnerData[owner].VDiskId = vDiskId;
+        Y_VERIFY(SysLogFirstNoncesToKeep.FirstNonceToKeep[owner] <= SysLogRecord.Nonces.Value[NonceLog]);
         SysLogFirstNoncesToKeep.FirstNonceToKeep[owner] = SysLogRecord.Nonces.Value[NonceLog];
-        ownerData.CutLogId = evYardInit.CutLogId;
-        ownerData.WhiteboardProxyId = evYardInit.WhiteboardProxyId;
-        ownerData.VDiskSlotId = evYardInit.SlotId;
-        ownerData.OwnerRound = evYardInit.OwnerRound;
+        OwnerData[owner].CutLogId = evYardInit.CutLogId;
+        OwnerData[owner].WhiteboardProxyId = evYardInit.WhiteboardProxyId;
+        OwnerData[owner].VDiskSlotId = evYardInit.SlotId;
+        OwnerData[owner].OwnerRound = evYardInit.OwnerRound;
         VDiskOwners[vDiskId] = owner;
-        ownerData.Status = TOwnerData::VDISK_STATUS_SENT_INIT;
+        OwnerData[owner].Status = TOwnerData::VDISK_STATUS_SENT_INIT;
         SysLogRecord.OwnerVDisks[owner] = vDiskId;
-        ownerRound = ownerData.OwnerRound;
-        ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(ownerData.OperationLog, "YardInitFinish, OwnerId# " << owner);
+        ownerRound = OwnerData[owner].OwnerRound;
 
         AddCbsSet(owner);
 
@@ -1945,8 +1889,8 @@ void TPDisk::YardInitFinish(TYardInit &evYardInit) {
                 << " new owner is created. ownerId# " << owner
                 << " vDiskId# " << vDiskId.ToStringWOGeneration()
                 << " FirstNonceToKeep# " << SysLogFirstNoncesToKeep.FirstNonceToKeep[owner]
-                << " CutLogId# " << ownerData.CutLogId
-                << " ownerRound# " << ownerData.OwnerRound
+                << " CutLogId# " << OwnerData[owner].CutLogId
+                << " ownerRound# " << OwnerData[owner].OwnerRound
                 << " Marker# BPD02");
 
         AskVDisksToCutLogs(OwnerSystem, false);
@@ -2077,8 +2021,6 @@ void TPDisk::KillOwner(TOwner owner, TOwnerRound killOwnerRound, TCompletionEven
                 if (state.CommitState == TChunkState::DATA_ON_QUARANTINE) {
                     if (!pushedOwnerIntoQuarantine) {
                         pushedOwnerIntoQuarantine = true;
-                        ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(OwnerData[owner].OperationLog, "KillOwner(), Add owner to quarantine, "
-                                << "CommitState# DATA_ON_QUARANTINE, OwnerId# " << owner);
                         QuarantineOwners.push_back(owner);
                         LOG_NOTICE_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << PDiskId
                                 << " push ownerId# " << owner
@@ -2114,7 +2056,6 @@ void TPDisk::KillOwner(TOwner owner, TOwnerRound killOwnerRound, TCompletionEven
 
                     if (!pushedOwnerIntoQuarantine) {
                         pushedOwnerIntoQuarantine = true;
-                        ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(OwnerData[owner].OperationLog, "KillOwner(), Add owner to quarantine, OwnerId# " << owner);
                         QuarantineOwners.push_back(owner);
                         LOG_NOTICE_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << PDiskId
                                 << " push ownerId# " << owner << " into quarantine");
@@ -2124,17 +2065,7 @@ void TPDisk::KillOwner(TOwner owner, TOwnerRound killOwnerRound, TCompletionEven
                 }
             }
         }
-        if (!pushedOwnerIntoQuarantine && OwnerData[owner].HaveRequestsInFlight()) {
-            pushedOwnerIntoQuarantine = true;
-            ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(OwnerData[owner].OperationLog, "KillOwner(), Add owner to quarantine, "
-                    << "HaveRequestsInFlight, OwnerId# " << owner);
-            QuarantineOwners.push_back(owner);
-            LOG_NOTICE_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << PDiskId
-                    << " push ownerId# " << owner
-                    << " into quarantine as there are requests in flight");
-        }
         if (!pushedOwnerIntoQuarantine) {
-            ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(OwnerData[owner].OperationLog, "KillOwner(), Remove owner without quarantine, OwnerId# " << owner);
             Keeper.RemoveOwner(owner);
             LOG_NOTICE_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << PDiskId
                     << " removed ownerId# " << owner << " from chunks Keeper");
@@ -2145,7 +2076,7 @@ void TPDisk::KillOwner(TOwner owner, TOwnerRound killOwnerRound, TCompletionEven
         auto it = LogChunks.begin();
         while (it != LogChunks.end()) {
             if (it->OwnerLsnRange.size() > owner && it->OwnerLsnRange[owner].IsPresent) {
-                Y_ABORT_UNLESS(it->CurrentUserCount > 0);
+                Y_VERIFY(it->CurrentUserCount > 0);
                 it->CurrentUserCount--;
                 it->OwnerLsnRange[owner].IsPresent = false;
                 it->OwnerLsnRange[owner].FirstLsn = 0;
@@ -2162,7 +2093,7 @@ void TPDisk::KillOwner(TOwner owner, TOwnerRound killOwnerRound, TCompletionEven
                                       // TODO(cthulhu): Replace with VERIFY.
         SysLogRecord.OwnerVDisks[owner] = TVDiskID::InvalidId;
 
-        Y_ABORT_UNLESS(AtomicGet(TotalOwners) > 0);
+        Y_VERIFY(AtomicGet(TotalOwners) > 0);
         AtomicDecrement(TotalOwners);
 
         TOwnerRound ownerRound = OwnerData[owner].OwnerRound;
@@ -2274,7 +2205,7 @@ void TPDisk::ProcessChunkReadQueue() {
             case ERequestType::RequestChunkReadPiece:
             {
                 TChunkReadPiece *piece = static_cast<TChunkReadPiece*>(req.Get());
-                Y_ABORT_UNLESS(!piece->SelfPointer);
+                Y_VERIFY(!piece->SelfPointer);
                 TIntrusivePtr<TChunkRead> &read = piece->ChunkRead;
                 TReqId reqId = read->ReqId;
                 ui32 chunkIdx = read->ChunkIdx;
@@ -2337,7 +2268,7 @@ void TPDisk::TrimAllUntrimmedChunks() {
 }
 
 void TPDisk::ProcessChunkTrimQueue() {
-    Y_ABORT_UNLESS(JointChunkTrims.size() <= 1);
+    Y_VERIFY(JointChunkTrims.size() <= 1);
     for (auto it = JointChunkTrims.begin(); it != JointChunkTrims.end(); ++it) {
         TChunkTrim *trim = (*it);
         ui64 chunkOffset = Format.ChunkSize * ui64(trim->ChunkIdx);
@@ -2384,13 +2315,9 @@ void TPDisk::ClearQuarantineChunks() {
 
     {
         const auto it = std::partition(QuarantineOwners.begin(), QuarantineOwners.end(), [&] (TOwner i) {
-            return Keeper.GetOwnerUsed(i) || OwnerData[i].HaveRequestsInFlight();
+            return Keeper.GetOwnerUsed(i);
         });
         for (auto delIt = it; delIt != QuarantineOwners.end(); ++delIt) {
-            ADD_RECORD_WITH_TIMESTAMP_TO_OPERATION_LOG(OwnerData[*delIt].OperationLog, "Remove owner from quarantine, OwnerId# " << *delIt);
-            TOwnerRound ownerRound = OwnerData[*delIt].OwnerRound;
-            OwnerData[*delIt].Reset(false);
-            OwnerData[*delIt].OwnerRound = ownerRound;
             Keeper.RemoveOwner(*delIt);
             LOG_NOTICE_S(*ActorSystem, NKikimrServices::BS_PDISK, "PDiskId# " << PDiskId
                     << " removed ownerId# " << *delIt << " from chunks Keeper through QuarantineOwners");
@@ -2606,18 +2533,15 @@ bool TPDisk::Initialize(TActorSystem *actorSystem, const TActorId &pDiskActor) {
             if (Cfg->SectorMap) {
                 auto diskModeParams = Cfg->SectorMap->GetDiskModeParams();
                 if (diskModeParams) {
-                    REGISTER_LOCAL_CONTROL(SectorMapFirstSectorReadRate);
-                    REGISTER_LOCAL_CONTROL(SectorMapLastSectorReadRate);
-                    REGISTER_LOCAL_CONTROL(SectorMapFirstSectorWriteRate);
-                    REGISTER_LOCAL_CONTROL(SectorMapLastSectorWriteRate);
+                    REGISTER_LOCAL_CONTROL(SectorMapFirstSectorRate);
+                    REGISTER_LOCAL_CONTROL(SectorMapLastSectorRate);
                     REGISTER_LOCAL_CONTROL(SectorMapSeekSleepMicroSeconds);
 
-                    LastSectorReadRateControlName = TStringBuilder() << "PDisk_" << PDiskId << "_SectorMapLastSectorReadRate";
-                    LastSectorWriteRateControlName = TStringBuilder() << "PDisk_" << PDiskId << "_SectorMapLastSectorWriteRate";
+                    LastSectorRateControlName = TStringBuilder() << "PDisk_" << PDiskId << "_SectorMapLastSectorRate";
                 }
             }
         }
-        Y_ABORT_UNLESS(BlockDevice);
+        Y_VERIFY(BlockDevice);
         BlockDevice->Initialize(actorSystem, PDiskActor);
         ActorSystem = actorSystem;
         ReqCreator.SetActorSystem(actorSystem);
@@ -2737,7 +2661,7 @@ NKikimrProto::EReplyStatus TPDisk::ValidateRequest(TLogWrite *logWrite, TStringS
 }
 
 void TPDisk::PrepareLogError(TLogWrite *logWrite, TStringStream& err, NKikimrProto::EReplyStatus status) {
-    Y_DEBUG_ABORT_UNLESS(status != NKikimrProto::OK);
+    Y_VERIFY_DEBUG(status != NKikimrProto::OK);
     if (logWrite->Result && logWrite->Result->Status != NKikimrProto::OK) {
         return;
     }
@@ -2865,7 +2789,7 @@ bool TPDisk::PreprocessRequest(TRequestBase *request) {
             ownerData.ReadThroughput.Increment(read->Size, ActorSystem->Timestamp());
             request->JobKind = NSchLab::JobKindRead;
 
-            Y_ABORT_UNLESS(read->FinalCompletion == nullptr);
+            Y_VERIFY(read->FinalCompletion == nullptr);
 
 
             ++state.OperationsInProgress;
@@ -2917,7 +2841,7 @@ bool TPDisk::PreprocessRequest(TRequestBase *request) {
                      delete request;
                      return false;
                  } else {
-                     Y_DEBUG_ABORT_UNLESS(chunks.size() == 1);
+                     Y_VERIFY_DEBUG(chunks.size() == 1);
                      ev.ChunkIdx = chunks.front();
                  }
             }
@@ -2947,9 +2871,9 @@ bool TPDisk::PreprocessRequest(TRequestBase *request) {
             request->JobKind = NSchLab::JobKindWrite;
 
 
-            auto result = std::make_unique<TEvChunkWriteResult>(NKikimrProto::OK, ev.ChunkIdx, ev.Cookie,
-                        GetStatusFlags(ev.Owner, ev.OwnerGroupType), TString());
-            result->Orbit = std::move(ev.Orbit);
+            THolder<TEvChunkWriteResult> result(
+                    new TEvChunkWriteResult(NKikimrProto::OK, ev.ChunkIdx, ev.Cookie,
+                        GetStatusFlags(ev.Owner, ev.OwnerGroupType), TString()));
 
             ++state.OperationsInProgress;
             ++ownerData.InFlight->ChunkWrites;
@@ -2957,7 +2881,7 @@ bool TPDisk::PreprocessRequest(TRequestBase *request) {
                 --state.OperationsInProgress;
                 --inFlight->ChunkWrites;
             };
-            ev.Completion = MakeHolder<TCompletionChunkWrite>(ev.Sender, result.release(), &Mon, PDiskId,
+            ev.Completion = MakeHolder<TCompletionChunkWrite>(ev.Sender, result.Release(), &Mon, PDiskId,
                     ev.CreationTime, ev.TotalSize, ev.PriorityClass, std::move(onDestroy), ev.ReqId);
 
             return true;
@@ -3108,7 +3032,7 @@ bool TPDisk::PreprocessRequest(TRequestBase *request) {
             delete request;
             return false;
         default:
-            Y_ABORT();
+            Y_FAIL();
             break;
     }
     return true;
@@ -3321,7 +3245,7 @@ void TPDisk::ProcessPausedQueue() {
 
             if (ev->Action == NPDisk::TEvYardControl::ActionPause) {
                 if (PreprocessRequest(ev)) {
-                    Y_ABORT();
+                    Y_FAIL();
                 }
                 break;
             }
@@ -3609,24 +3533,15 @@ void TPDisk::Update() {
     if (Cfg->SectorMap) {
         auto diskModeParams = Cfg->SectorMap->GetDiskModeParams();
         if (diskModeParams) {
-            TAtomic prevValue;
-
-            diskModeParams->FirstSectorReadRate.store(SectorMapFirstSectorReadRate);
-            if (SectorMapFirstSectorReadRate < SectorMapLastSectorReadRate) {
-                ActorSystem->AppData<TAppData>()->Icb->SetValue(LastSectorReadRateControlName, SectorMapFirstSectorReadRate, prevValue);
-                diskModeParams->LastSectorReadRate.store(SectorMapFirstSectorReadRate);
+            diskModeParams->FirstSectorRate.store(SectorMapFirstSectorRate);
+            if (SectorMapFirstSectorRate < SectorMapLastSectorRate) {
+                TAtomic prevValue;
+                ActorSystem->AppData<TAppData>()->Icb->SetValue(LastSectorRateControlName, SectorMapFirstSectorRate, prevValue);
+                diskModeParams->LastSectorRate.store(SectorMapFirstSectorRate);
             } else {
-                diskModeParams->LastSectorReadRate.store(SectorMapLastSectorReadRate);
+                diskModeParams->LastSectorRate.store(SectorMapLastSectorRate);
             }
-
-            diskModeParams->FirstSectorWriteRate.store(SectorMapFirstSectorWriteRate);
-            if (SectorMapFirstSectorWriteRate < SectorMapLastSectorWriteRate) {
-                ActorSystem->AppData<TAppData>()->Icb->SetValue(LastSectorWriteRateControlName, SectorMapFirstSectorWriteRate, prevValue);
-                diskModeParams->LastSectorWriteRate.store(SectorMapFirstSectorWriteRate);
-            } else {
-                diskModeParams->LastSectorWriteRate.store(SectorMapLastSectorWriteRate);
-            }
-
+            
             diskModeParams->SeekSleepMicroSeconds.store(SectorMapSeekSleepMicroSeconds);
         }
     }

@@ -4,9 +4,9 @@
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/set.h>
 
@@ -50,7 +50,7 @@ public:
         for (ui64 tabletId : ShardIds) {
             LOG_T("Send request about tabletId: " << tabletId);
             bool sent = Send(TabletResolver, new TEvPipeCache::TEvGetTabletNode(tabletId));
-            Y_DEBUG_ABORT_UNLESS(sent);
+            Y_VERIFY_DEBUG(sent);
         }
 
         Become(&TKqpShardsResolver::ResolveState);

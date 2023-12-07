@@ -1,8 +1,7 @@
-#include <ydb/library/yql/parser/pg_wrapper/interface/raw_parser.h>
-
-#include "arena_ctx.h"
+#include "parser.h"
 
 #include <util/generic/scope.h>
+#include <util/memory/segmented_string_pool.h>
 #include <fcntl.h>
 #include <stdint.h>
 
@@ -13,31 +12,23 @@
 
 #define TypeName PG_TypeName
 #define SortBy PG_SortBy
-#define Sort PG_Sort
-#define Unique PG_Unique
 #undef SIZEOF_SIZE_T
 extern "C" {
 #include "postgres.h"
-#include "access/session.h"
-#include "access/xact.h"
 #include "mb/pg_wchar.h"
 #include "nodes/pg_list.h"
 #include "nodes/parsenodes.h"
 #include "nodes/value.h"
 #include "parser/parser.h"
-#include "utils/guc.h"
 #include "utils/palloc.h"
 #include "utils/memutils.h"
 #include "utils/memdebug.h"
 #include "utils/resowner.h"
-#include "utils/timestamp.h"
 #include "port/pg_bitutils.h"
 #include "port/pg_crc32c.h"
 #include "postmaster/postmaster.h"
 #include "storage/latch.h"
-#include "storage/proc.h"
 #include "miscadmin.h"
-#include "tcop/tcopprot.h"
 #include "thread_inits.h"
 #undef Abs
 #undef Min
@@ -61,9 +52,7 @@ extern "C" {
 
 extern __thread Latch LocalLatchData;
 extern void destroy_timezone_hashtable();
-extern void destroy_typecache_hashtable();
 extern void free_current_locale_conv();
-extern void RE_cleanup_cache();
 const char *progname;
 
 #define STDERR_BUFFER_LEN 4096
@@ -167,6 +156,73 @@ void pg_query_free_error(PgQueryError *error) {
     free(error);
 }
 
+struct TAlloc {
+    segmented_string_pool Pool;
+};
+
+__thread TAlloc* CurrentAlloc;
+
+void *MyAllocSetAlloc(MemoryContext context, Size size) {
+    auto fullSize = size + MAXIMUM_ALIGNOF - 1 + sizeof(void*);
+    auto ptr = CurrentAlloc->Pool.Allocate(fullSize);
+    auto aligned = (void*)MAXALIGN(ptr + sizeof(void*));
+    *(MemoryContext *)(((char *)aligned) - sizeof(void *)) = context;
+    return aligned;
+}
+
+void MyAllocSetFree(MemoryContext context, void* pointer) {
+}
+
+void* MyAllocSetRealloc(MemoryContext context, void* pointer, Size size) {
+    if (!size) {
+        return nullptr;
+    }
+
+    void* ret = MyAllocSetAlloc(context, size);
+    if (pointer) {
+        memmove(ret, pointer, size);
+    }
+
+    return ret;
+}
+
+void MyAllocSetReset(MemoryContext context) {
+}
+
+void MyAllocSetDelete(MemoryContext context) {
+}
+
+Size MyAllocSetGetChunkSpace(MemoryContext context, void* pointer) {
+    return 0;
+}
+
+bool MyAllocSetIsEmpty(MemoryContext context) {
+    return false;
+}
+
+void MyAllocSetStats(MemoryContext context,
+    MemoryStatsPrintFunc printfunc, void *passthru,
+    MemoryContextCounters *totals,
+    bool print_to_stderr) {
+}
+
+void MyAllocSetCheck(MemoryContext context) {
+}
+
+const MemoryContextMethods MyMethods = {
+    MyAllocSetAlloc,
+    MyAllocSetFree,
+    MyAllocSetRealloc,
+    MyAllocSetReset,
+    MyAllocSetDelete,
+    MyAllocSetGetChunkSpace,
+    MyAllocSetIsEmpty,
+    MyAllocSetStats
+#ifdef MEMORY_CONTEXT_CHECKING
+    ,MyAllocSetCheck
+#endif
+};
+
 }
 
 namespace NYql {
@@ -185,12 +241,27 @@ void PGParse(const TString& input, IPGParseEvents& events) {
 
     PgQueryInternalParsetreeAndError parsetree_and_error;
 
-    TArenaMemoryContext arena;
+    auto prevCurrentMemoryContext = CurrentMemoryContext;
     auto prevErrorContext = ErrorContext;
+
+    CurrentMemoryContext = (MemoryContext)malloc(sizeof(MemoryContextData));
+    MemoryContextCreate(CurrentMemoryContext,
+        T_AllocSetContext,
+        &MyMethods,
+        nullptr,
+        "parser");
     ErrorContext = CurrentMemoryContext;
 
     Y_DEFER {
+        free(CurrentMemoryContext);
+        CurrentMemoryContext = prevCurrentMemoryContext;
         ErrorContext = prevErrorContext;
+    };
+
+    TAlloc alloc;
+    CurrentAlloc = &alloc;
+    Y_DEFER {
+        CurrentAlloc = nullptr;
     };
 
     parsetree_and_error = pg_query_raw_parse(input.c_str());
@@ -210,7 +281,7 @@ void PGParse(const TString& input, IPGParseEvents& events) {
             walker.Advance(input[i]);
         }
 
-        events.OnError(TIssue(position, "ERROR:  " + TString(parsetree_and_error.error->message) + "\n"));
+        events.OnError(TIssue(position, TString(parsetree_and_error.error->message)));
     } else {
         events.OnResult(parsetree_and_error.tree);
     }
@@ -231,41 +302,23 @@ extern "C" void setup_pg_thread_cleanup() {
     struct TThreadCleanup {
         ~TThreadCleanup() {
             destroy_timezone_hashtable();
-            destroy_typecache_hashtable();
-            RE_cleanup_cache();
-
             free_current_locale_conv();
             ResourceOwnerDelete(CurrentResourceOwner);
             MemoryContextDelete(TopMemoryContext);
-            free(MyProc);
         }
     };
 
     static thread_local TThreadCleanup ThreadCleanup;
-    Log_error_verbosity = PGERROR_DEFAULT;
     SetDatabaseEncoding(PG_UTF8);
-    SetClientEncoding(PG_UTF8);
-    InitializeClientEncoding();
     MemoryContextInit();
     auto owner = ResourceOwnerCreate(NULL, "TopTransaction");
     TopTransactionResourceOwner = owner;
     CurTransactionResourceOwner = owner;
     CurrentResourceOwner = owner;
 
-    MyProcPid = getpid();
-    MyStartTimestamp = GetCurrentTimestamp();
-    MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
-
+    InitProcessGlobals();
     InitializeLatchSupport();
     MyLatch = &LocalLatchData;
     InitLatch(MyLatch);
     InitializeLatchWaitSet();
-
-    MyProc = (PGPROC*)malloc(sizeof(PGPROC));
-    Zero(*MyProc);
-    StartTransactionCommand();
-
-    InitializeSession();
-    work_mem = MAX_KILOBYTES; // a way to postpone spilling for tuple stores
-    assign_max_stack_depth(1024, nullptr);
 };

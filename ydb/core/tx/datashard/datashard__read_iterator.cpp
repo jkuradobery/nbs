@@ -1,19 +1,13 @@
-#include "datashard_failpoints.h"
 #include "datashard_impl.h"
 #include "datashard_read_operation.h"
 #include "setup_sys_locks.h"
 #include "datashard_locks_db.h"
-#include "probes.h"
 
-#include <ydb/core/formats/arrow/arrow_batch_builder.h>
-
-#include <ydb/library/actors/core/monotonic_provider.h>
+#include <ydb/core/formats/arrow_batch_builder.h>
 
 #include <util/system/hp_timer.h>
 
 #include <utility>
-
-LWTRACE_USING(DATASHARD_PROVIDER)
 
 namespace NKikimr::NDataShard {
 
@@ -25,7 +19,7 @@ constexpr ui64 MinRowsPerCheck = 1000;
 
 class TRowCountBlockBuilder : public IBlockBuilder {
 public:
-    bool Start(const std::vector<std::pair<TString, NScheme::TTypeInfo>>&, ui64, ui64, TString&) override
+    bool Start(const TVector<std::pair<TString, NScheme::TTypeInfo>>&, ui64, ui64, TString&) override
     {
         return true;
     }
@@ -48,10 +42,11 @@ private:
     }
 };
 
+
 class TCellBlockBuilder : public IBlockBuilder {
 public:
     bool Start(
-        const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns,
+        const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns,
         ui64 maxRowsInBlock,
         ui64 maxBytesInBlock,
         TString& err) override
@@ -66,8 +61,8 @@ public:
     void AddRow(const TDbTupleRef& key, const TDbTupleRef& value) override {
         Y_UNUSED(key);
 
-        size_t DataSize = Batch.Append(value.Cells());
-        BytesCount += DataSize;
+        Rows.emplace_back(value.Cells());
+        BytesCount += Rows.back().DataSize();
     }
 
     TString Finish() override {
@@ -77,15 +72,12 @@ public:
     size_t Bytes() const override { return BytesCount; }
 
 public:
-    void FlushBatch(TOwnedCellVecBatch & result) {
-        result = std::move(Batch);
-        Batch = {};
-    }
+    TVector<TOwnedCellVec> FlushBatch() { return std::move(Rows); }
 
 private:
-    std::vector<std::pair<TString, NScheme::TTypeInfo>> Columns;
+    TVector<std::pair<TString, NScheme::TTypeInfo>> Columns;
 
-    TOwnedCellVecBatch Batch;
+    TVector<TOwnedCellVec> Rows;
     ui64 BytesCount = 0;
 
     std::unique_ptr<IBlockBuilder> Clone() const override {
@@ -198,10 +190,10 @@ std::pair<std::unique_ptr<IBlockBuilder>, TString> CreateBlockBuilder(
     }
 
     switch (state.Format) {
-    case NKikimrDataEvents::FORMAT_ARROW:
+    case NKikimrTxDataShard::ARROW:
         blockBuilder.reset(new NArrow::TArrowBatchBuilder());
         break;
-    case NKikimrDataEvents::FORMAT_CELLVEC:
+    case NKikimrTxDataShard::CELLVEC:
         blockBuilder.reset(new TCellBlockBuilder());
         break;
     default:
@@ -249,17 +241,17 @@ TSerializedCellVec ExtendWithNulls(
     }
 
     extendedCells.resize(columnCount, TCell());
-    return TSerializedCellVec(extendedCells);
+    return TSerializedCellVec(TSerializedCellVec::Serialize(extendedCells));
 }
 
-ui64 ResetRowSkips(NTable::TIteratorStats& stats)
+ui64 ResetRowStats(NTable::TIteratorStats& stats)
 {
     return std::exchange(stats.DeletedRowSkips, 0UL) +
         std::exchange(stats.InvisibleRowSkips, 0UL);
 }
 
 // nota that reader captures state reference and must be used only
-// after checking that state is still alive, i.e. read can be aborted
+// after checking that state is still alife, i.e. read can be aborted
 // between Execute() and Complete()
 class TReader {
     const TReadIteratorState& State;
@@ -274,15 +266,12 @@ class TReader {
 
     ui32 FirstUnprocessedQuery; // must be unsigned
     TString LastProcessedKey;
-    bool LastProcessedKeyErased = false;
 
     ui64 RowsRead = 0;
-    ui64 RowsProcessed = 0;
     ui64 RowsSinceLastCheck = 0;
 
     ui64 BytesInResult = 0;
 
-    ui64 DeletedRowSkips = 0;
     ui64 InvisibleRowSkips = 0;
     bool HadInconsistentResult_ = false;
 
@@ -332,17 +321,17 @@ public:
         if (Y_UNLIKELY(FirstUnprocessedQuery == State.FirstUnprocessedQuery && State.LastProcessedKey)) {
             if (!State.Reverse) {
                 keyFromCells = TSerializedCellVec(State.LastProcessedKey);
-                fromInclusive = State.LastProcessedKeyErased;
+                fromInclusive = false;
 
                 keyToCells = range.To;
                 toInclusive = range.ToInclusive;
             } else {
                 // reverse
                 keyFromCells = range.From;
-                fromInclusive = range.FromInclusive;
+                fromInclusive = true;
 
                 keyToCells = TSerializedCellVec(State.LastProcessedKey);
-                toInclusive = State.LastProcessedKeyErased;
+                toInclusive = false;
             }
         } else {
             keyFromCells = range.From;
@@ -373,7 +362,7 @@ public:
             result = IterateRange(iter.Get(), ctx);
         }
 
-        if (result == EReadStatus::NeedData && !(RowsProcessed && CanResume())) {
+        if (result == EReadStatus::NeedData) {
             if (LastProcessedKey) {
                 keyFromCells = TSerializedCellVec(LastProcessedKey);
                 const auto keyFrom = ToRawTypeValue(keyFromCells, TableInfo, false);
@@ -394,7 +383,7 @@ public:
         size_t keyIndex)
     {
         if (keyCells.GetCells().size() != TableInfo.KeyColumnCount) {
-            // key prefix, treat it as range [prefix, null, null] - [prefix, +inf, +inf]
+            // key prefix, treat it as range [prefix, 0, 0] - [prefix, +inf, +inf]
             TSerializedTableRange range;
             range.From = State.Keys[keyIndex];
             range.To = keyCells;
@@ -417,18 +406,15 @@ public:
         rowState.Init(State.Columns.size());
         NTable::TSelectStats stats;
         auto ready = txc.DB.Select(TableInfo.LocalTid, key, State.Columns, rowState, stats, 0, State.ReadVersion, GetReadTxMap(), GetReadTxObserver());
+        RowsSinceLastCheck += 1 + stats.InvisibleRowSkips;
+        InvisibleRowSkips += stats.InvisibleRowSkips;
         if (ready == NTable::EReady::Page) {
             return EReadStatus::NeedData;
         }
 
-        InvisibleRowSkips += stats.InvisibleRowSkips;
-        RowsSinceLastCheck += 1 + stats.InvisibleRowSkips;
-        RowsProcessed += 1 + stats.InvisibleRowSkips;
-
         Self->GetKeyAccessSampler()->AddSample(TableId, keyCells.GetCells());
 
         if (ready == NTable::EReady::Gone) {
-            ++DeletedRowSkips;
             return EReadStatus::Done;
         }
 
@@ -441,45 +427,6 @@ public:
         ++RowsRead;
 
         return EReadStatus::Done;
-    }
-
-    bool PrechargeKey(
-        TTransactionContext& txc,
-        const TSerializedCellVec& keyCells)
-    {
-        if (keyCells.GetCells().size() != TableInfo.KeyColumnCount) {
-            // key prefix, treat it as range [prefix, null, null] - [prefix, +inf, +inf]
-            auto minKey = ToRawTypeValue(keyCells, TableInfo, true);
-            auto maxKey = ToRawTypeValue(keyCells, TableInfo, false);
-            return Precharge(txc.DB, minKey, maxKey, State.Reverse);
-        } else {
-            auto key = ToRawTypeValue(keyCells, TableInfo, true);
-            return Precharge(txc.DB, key, key, State.Reverse);
-        }
-    }
-
-    bool PrechargeKeysAfter(
-        TTransactionContext& txc,
-        ui32 queryIndex)
-    {
-        ui64 rowsLeft = GetRowsLeft();
-
-        bool ready = true;
-        while (rowsLeft > 0) {
-            if (!State.Reverse) {
-                ++queryIndex;
-            } else {
-                --queryIndex;
-            }
-            if (!(queryIndex < State.Request->Keys.size())) {
-                break;
-            }
-            if (!PrechargeKey(txc, State.Request->Keys[queryIndex])) {
-                ready = false;
-            }
-            --rowsLeft;
-        }
-        return ready;
     }
 
     // TODO: merge ReadRanges and ReadKeys to single template Read?
@@ -504,11 +451,8 @@ public:
             case EReadStatus::StoppedByLimit:
                 return true;
             case EReadStatus::NeedData:
-                if (RowsProcessed && CanResume())
+                if (RowsRead && CanResume())
                     return true;
-
-                // Note: ReadRange has already precharged current range and
-                //       we don't precharge multiple ranges as opposed to keys
                 return false;
             }
 
@@ -541,10 +485,8 @@ public:
             case EReadStatus::StoppedByLimit:
                 return true;
             case EReadStatus::NeedData:
-                if (RowsProcessed && CanResume())
+                if (RowsRead && CanResume())
                     return true;
-
-                PrechargeKeysAfter(txc, FirstUnprocessedQuery);
                 return false;
             }
 
@@ -600,12 +542,7 @@ public:
         return false;
     }
 
-    /**
-     * Fills the result and returns true when it is useful, false when it may be omitted
-     */
-    bool FillResult(TEvDataShard::TEvReadResult& result, TReadIteratorState& state) {
-        bool useful = false;
-
+    void FillResult(TEvDataShard::TEvReadResult& result, TReadIteratorState& state) {
         auto& record = result.Record;
         record.MutableStatus()->SetCode(Ydb::StatusIds::SUCCESS);
 
@@ -619,29 +556,14 @@ public:
 
         if (HasUnreadQueries()) {
             if (OutOfQuota()) {
-                useful = true;
                 Self->IncCounter(COUNTER_READ_ITERATOR_NO_QUOTA);
                 record.SetLimitReached(true);
             } else if (HasMaxRowsInResult()) {
-                useful = true;
                 Self->IncCounter(COUNTER_READ_ITERATOR_MAX_ROWS_REACHED);
             } else {
-                // FIXME: we could flush due to page faults
                 Self->IncCounter(COUNTER_READ_ITERATOR_MAX_TIME_REACHED);
             }
-
-            NKikimrTxDataShard::TReadContinuationToken continuationToken;
-            continuationToken.SetFirstUnprocessedQuery(FirstUnprocessedQuery);
-
-            // note that when LastProcessedKey set then
-            // FirstUnprocessedQuery is definitely partially read range
-            if (LastProcessedKey)
-                continuationToken.SetLastProcessedKey(LastProcessedKey);
-
-            bool res = continuationToken.SerializeToString(record.MutableContinuationToken());
-            Y_ASSERT(res);
         } else {
-            useful = true;
             state.IsFinished = true;
             record.SetFinished(true);
             auto fullDelta = now - State.StartTs;
@@ -657,13 +579,12 @@ public:
 
         Self->IncCounter(COUNTER_READ_ITERATOR_ROWS_READ, RowsRead);
         if (!isKeysRequest) {
-            Self->IncCounter(COUNTER_ENGINE_HOST_SELECT_RANGE_ROW_SKIPS, DeletedRowSkips);
+            Self->IncCounter(COUNTER_ENGINE_HOST_SELECT_RANGE_ROW_SKIPS, InvisibleRowSkips);
             Self->IncCounter(COUNTER_ENGINE_HOST_SELECT_RANGE_ROWS, RowsRead);
             Self->IncCounter(COUNTER_RANGE_READ_ROWS_PER_REQUEST, RowsRead);
         }
 
         if (RowsRead) {
-            useful = true;
             record.SetRowCount(RowsRead);
         }
 
@@ -681,16 +602,14 @@ public:
             }
 
             switch (State.Format) {
-            case NKikimrDataEvents::FORMAT_ARROW: {
+            case NKikimrTxDataShard::ARROW: {
                 auto& arrowBuilder = static_cast<NArrow::TArrowBatchBuilder&>(BlockBuilder);
                 result.SetArrowBatch(arrowBuilder.FlushBatch(false));
                 break;
             }
-            case NKikimrDataEvents::FORMAT_CELLVEC: {
+            case NKikimrTxDataShard::CELLVEC: {
                 auto& cellBuilder = static_cast<TCellBlockBuilder&>(BlockBuilder);
-                TOwnedCellVecBatch batch;
-                cellBuilder.FlushBatch(batch);
-                result.SetBatch(std::move(batch));
+                result.SetRows(cellBuilder.FlushBatch());
                 break;
             }
             default: {
@@ -709,17 +628,23 @@ public:
             record.MutableSnapshot()->SetTxId(State.ReadVersion.TxId);
         }
 
-        return useful;
+        NKikimrTxDataShard::TReadContinuationToken continuationToken;
+        continuationToken.SetFirstUnprocessedQuery(FirstUnprocessedQuery);
+
+        // note that when LastProcessedKey set then
+        // FirstUnprocessedQuery is definitely partially read range
+        if (LastProcessedKey)
+            continuationToken.SetLastProcessedKey(LastProcessedKey);
+
+        bool res = continuationToken.SerializeToString(record.MutableContinuationToken());
+        Y_ASSERT(res);
     }
 
-    void UpdateState(TReadIteratorState& state, bool sentResult) {
+    void UpdateState(TReadIteratorState& state) {
         state.TotalRows += RowsRead;
         state.FirstUnprocessedQuery = FirstUnprocessedQuery;
         state.LastProcessedKey = LastProcessedKey;
-        state.LastProcessedKeyErased = LastProcessedKeyErased;
-        if (sentResult) {
-            state.ConsumeSeqNo(RowsRead, BytesInResult);
-        }
+        state.ConsumeSeqNo(RowsRead, BytesInResult);
     }
 
     ui64 GetRowsRead() const { return RowsRead; }
@@ -780,36 +705,24 @@ private:
         return OutOfQuota() || HasMaxRowsInResult() || ShouldStopByElapsedTime();
     }
 
-    ui64 GetRowsLeft() {
-        ui64 rowsLeft = Max<ui64>();
-
-        if (CanResume()) {
-            Y_ASSERT(RowsRead <= State.Quota.Rows);
-            rowsLeft = State.Quota.Rows - RowsRead;
-        }
-
-        return Min(rowsLeft, GetTotalRowsLeft());
-    }
-
-    ui64 GetBytesLeft() {
-        ui64 bytesLeft = Max<ui64>();
-
-        if (CanResume()) {
-            Y_ASSERT(BlockBuilder.Bytes() <= State.Quota.Bytes);
-            bytesLeft = State.Quota.Bytes - BlockBuilder.Bytes();
-        }
-
-        return bytesLeft;
-    }
-
     bool Precharge(
         NTable::TDatabase& db,
         NTable::TRawVals keyFrom,
         NTable::TRawVals keyTo,
         bool reverse)
     {
-        ui64 rowsLeft = GetRowsLeft();
-        ui64 bytesLeft = GetBytesLeft();
+        ui64 rowsLeft = Max<ui64>();
+        ui64 bytesLeft = Max<ui64>();
+
+        if (CanResume()) {
+            Y_ASSERT(RowsRead < State.Quota.Rows);
+            Y_ASSERT(BlockBuilder.Bytes() < State.Quota.Bytes);
+
+            rowsLeft = State.Quota.Rows - RowsRead;
+            bytesLeft = State.Quota.Bytes - BlockBuilder.Bytes();
+        }
+
+        rowsLeft = Min(rowsLeft, GetTotalRowsLeft());
 
         auto direction = reverse ? NTable::EDirection::Reverse : NTable::EDirection::Forward;
         return db.Precharge(TableInfo.LocalTid,
@@ -826,21 +739,10 @@ private:
     template <typename TIterator>
     EReadStatus IterateRange(TIterator* iter, const TActorContext& ctx) {
         Y_UNUSED(ctx);
-
-        auto keyAccessSampler = Self->GetKeyAccessSampler();
-
-        bool advanced = false;
         while (iter->Next(NTable::ENext::Data) == NTable::EReady::Data) {
-            advanced = true;
-            DeletedRowSkips += iter->Stats.DeletedRowSkips;
-            InvisibleRowSkips += iter->Stats.InvisibleRowSkips;
-
             TDbTupleRef rowKey = iter->GetKey();
 
-            keyAccessSampler->AddSample(TableId, rowKey.Cells());
-            const ui64 processedRecords = 1 + ResetRowSkips(iter->Stats);
-            RowsSinceLastCheck += processedRecords;
-            RowsProcessed += processedRecords;
+            LastProcessedKey = TSerializedCellVec::Serialize(rowKey.Cells());
 
             TDbTupleRef rowValues = iter->GetValues();
 
@@ -848,50 +750,33 @@ private:
             // rowValues and we don't have to add rowKey columns
             BlockBuilder.AddRow(TDbTupleRef(), rowValues);
             ++RowsRead;
+            InvisibleRowSkips += iter->Stats.InvisibleRowSkips;
+            RowsSinceLastCheck += 1 + ResetRowStats(iter->Stats);
+
+            Self->GetKeyAccessSampler()->AddSample(TableId, rowKey.Cells());
 
             if (ReachedTotalRowsLimit()) {
-                LastProcessedKey.clear();
-                return EReadStatus::Done;
+                break;
             }
 
             if (ShouldStop()) {
-                LastProcessedKey = TSerializedCellVec::Serialize(rowKey.Cells());
-                LastProcessedKeyErased = false;
                 return EReadStatus::StoppedByLimit;
             }
         }
 
-        // Note: when stopping due to page faults after an erased row we will
-        // reposition on that same row so erase cache can extend that cached
-        // erased range. When we don't observe any user-visible rows before a
-        // page fault we want to make sure we observe multiple deleted rows,
-        // which must be at least 2 (because we may resume from a known deleted
-        // row). When there are not enough rows we would prefer restarting in
-        // the same transaction, instead of starting a new one, in which case
-        // we will not update stats and will not update RowsProcessed.
-        auto lastKey = iter->GetKey().Cells();
-        if (lastKey && (advanced || iter->Stats.DeletedRowSkips >= 4) && iter->Last() == NTable::EReady::Page) {
-            LastProcessedKey = TSerializedCellVec::Serialize(lastKey);
-            LastProcessedKeyErased = iter->GetKeyState() == NTable::ERowOp::Erase;
-            advanced = true;
-        } else {
-            LastProcessedKey.clear();
-        }
-
-        // last iteration to Page or Gone might also have deleted or invisible rows
-        if (advanced || iter->Last() != NTable::EReady::Page) {
-            DeletedRowSkips += iter->Stats.DeletedRowSkips;
-            InvisibleRowSkips += iter->Stats.InvisibleRowSkips;
-            const ui64 processedRecords = ResetRowSkips(iter->Stats);
-            RowsSinceLastCheck += processedRecords;
-            RowsProcessed += processedRecords;
-        }
+        // last iteration to Page or Gone also might have deleted or invisible rows
+        InvisibleRowSkips += iter->Stats.InvisibleRowSkips;
+        RowsSinceLastCheck += ResetRowStats(iter->Stats);
 
         // TODO: consider restart when Page and too few data read
         // (how much is too few, less than user's limit?)
         if (iter->Last() == NTable::EReady::Page) {
             return EReadStatus::NeedData;
         }
+
+        // range fully read, no reason to keep LastProcessedKey
+        if (iter->Last() == NTable::EReady::Gone)
+            LastProcessedKey.clear();
 
         return EReadStatus::Done;
     }
@@ -925,8 +810,8 @@ private:
             bool needTxObserver = (
                 // We need tx observer when there are waiting volatile transactions
                 baseTxMap ||
-                // We need tx observer when there are active write locks
-                State.LockId && Self->SysLocksTable().HasWriteLocks(State.PathId));
+                // We need tx observer when current lock has uncommitted changes
+                State.LockId && Self->SysLocksTable().HasCurrentWriteLock(State.PathId));
 
             if (needTxObserver) {
                 if (State.LockId) {
@@ -1004,7 +889,7 @@ private:
     };
 
     void AddReadConflict(ui64 txId) {
-        Y_ABORT_UNLESS(State.LockId);
+        Y_VERIFY(State.LockId);
         // We have skipped uncommitted changes in txId, which would affect
         // the read result when it commits. Add a conflict edge that breaks
         // our lock when txId is committed.
@@ -1077,8 +962,8 @@ class TDataShard::TReadOperation : public TOperation, public IReadOperation {
     static constexpr ui32 Flags = NTxDataShard::TTxFlags::ReadOnly | NTxDataShard::TTxFlags::Immediate;
 
 public:
-    TReadOperation(TDataShard* ds, TInstant receivedAt, ui64 tieBreakerIndex, TEvDataShard::TEvRead::TPtr ev)
-        : TOperation(TBasicOpInfo(EOperationKind::ReadTx, Flags, 0, receivedAt, tieBreakerIndex))
+    TReadOperation(TDataShard* ds, ui64 txId, TInstant receivedAt, ui64 tieBreakerIndex, TEvDataShard::TEvRead::TPtr ev)
+        : TOperation(TBasicOpInfo(txId, EOperationKind::ReadTx, Flags, 0, receivedAt, tieBreakerIndex))
         , Self(ds)
         , Sender(ev->Sender)
         , Request(ev->Release().Release())
@@ -1086,8 +971,8 @@ public:
 
     void BuildExecutionPlan(bool loaded) override
     {
-        Y_ABORT_UNLESS(GetExecutionPlan().empty());
-        Y_ABORT_UNLESS(!loaded);
+        Y_VERIFY(GetExecutionPlan().empty());
+        Y_VERIFY(!loaded);
 
         TVector<EExecutionUnitKind> plan;
         plan.push_back(EExecutionUnitKind::CheckRead);
@@ -1109,7 +994,7 @@ public:
             // iterator has been aborted
             return EExecutionStatus::DelayComplete;
         }
-        Y_ABORT_UNLESS(it->second);
+        Y_VERIFY(it->second);
         auto& state = *it->second;
 
         if (Result->Record.HasStatus()) {
@@ -1117,7 +1002,7 @@ public:
             return EExecutionStatus::DelayComplete;
         }
 
-        Y_ABORT_UNLESS(state.State == TReadIteratorState::EState::Executing);
+        Y_VERIFY(state.State == TReadIteratorState::EState::Executing);
 
         ++ExecuteCount;
         LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, Self->TabletID() << " Execute read# " << ExecuteCount
@@ -1136,16 +1021,14 @@ public:
                     Result->Record,
                     Ydb::StatusIds::OVERLOADED,
                     TStringBuilder() << "Shard in state " << DatashardStateName(Self->State)
-                        << ", tablet id: " << Self->TabletID()
-                        << ", node# " << ctx.SelfID.NodeId());
+                        << ", tablet id: " << Self->TabletID());
                 return EExecutionStatus::DelayComplete;
             } else {
                 SetStatusError(
                     Result->Record,
                     Ydb::StatusIds::SCHEME_ERROR,
                     TStringBuilder() << "Shard in state " << DatashardStateName(Self->State)
-                        << ", will be deleted soon, tablet id: " << Self->TabletID()
-                        << ", node# " << ctx.SelfID.NodeId());
+                        << ", will be deleted soon, tablet id: " << Self->TabletID());
                 return EExecutionStatus::DelayComplete;
             }
         }
@@ -1157,8 +1040,7 @@ public:
                 Result->Record,
                 Ydb::StatusIds::OVERLOADED,
                 TStringBuilder() << "Shard in state " << DatashardStateName(Self->State)
-                    << ", tablet id: " << Self->TabletID()
-                    << ", node# " << ctx.SelfID.NodeId());
+                    << ", tablet id: " << Self->TabletID());
             return EExecutionStatus::DelayComplete;
         }
         case TShardState::Uninitialized:
@@ -1169,8 +1051,7 @@ public:
                 Result->Record,
                 Ydb::StatusIds::INTERNAL_ERROR,
                 TStringBuilder() << "Wrong shard state: " << DatashardStateName(Self->State)
-                    << ", tablet id: " << Self->TabletID()
-                    << ", node# " << ctx.SelfID.NodeId());
+                    << ", tablet id: " << Self->TabletID());
             return EExecutionStatus::DelayComplete;
         }
 
@@ -1185,8 +1066,7 @@ public:
                 SetStatusError(
                     Result->Record,
                     Ydb::StatusIds::NOT_FOUND,
-                    TStringBuilder() << "Unknown table id: " << tableId
-                    << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                    TStringBuilder() << "Unknown table id: " << tableId);
                 return EExecutionStatus::DelayComplete;
             }
             auto& userTableInfo = it->second;
@@ -1208,7 +1088,7 @@ public:
                 }
 
                 if (!snapshotFound) {
-                    bool isMvccReadable = state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
+                    bool isMvccReadable = !Self->IsFollower() && state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
                     if (!isMvccReadable) {
                         SetStatusError(
                             Result->Record,
@@ -1216,8 +1096,7 @@ public:
                             TStringBuilder() << "Table id " << tableId << " lost snapshot at "
                                 << state.ReadVersion << " shard " << Self->TabletID()
                                 << " with lowWatermark " << Self->GetSnapshotManager().GetLowWatermark()
-                                << (Self->IsFollower() ? " RO replica" : "")
-                                << " (node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                                << (Self->IsFollower() ? " RO replica" : ""));
                         return EExecutionStatus::DelayComplete;
                     }
                 }
@@ -1228,8 +1107,7 @@ public:
                     Result->Record,
                     Ydb::StatusIds::SCHEME_ERROR,
                     TStringBuilder() << "Schema changed, current " << userTableInfo->GetTableSchemaVersion()
-                        << ", requested table schemaversion " << state.SchemaVersion
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        << ", requested table schemaversion " << state.SchemaVersion);
                 return EExecutionStatus::DelayComplete;
             }
         }
@@ -1261,13 +1139,11 @@ public:
                     SetStatusError(
                         Result->Record,
                         Ydb::StatusIds::ABORTED,
-                        TStringBuilder() << "Transaction was already committed or aborted"
-                            << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        TStringBuilder() << "Transaction was already committed or aborted");
                     return EExecutionStatus::DelayComplete;
             }
         }
 
-        LWTRACK(ReadExecute, state.Orbit);
         if (!Read(txc, ctx, state))
             return EExecutionStatus::Restart;
 
@@ -1276,7 +1152,7 @@ public:
             for (ui64 txId : Reader->GetVolatileReadDependencies()) {
                 AddVolatileDependency(txId);
                 bool ok = Self->GetVolatileTxManager().AttachBlockedOperation(txId, GetTxId());
-                Y_ABORT_UNLESS(ok, "Unexpected failure to attach a blocked operation");
+                Y_VERIFY(ok, "Unexpected failure to attach a blocked operation");
             }
             Reader.reset();
             Result = MakeEvReadResult(ctx.SelfID.NodeId());
@@ -1285,51 +1161,31 @@ public:
 
         TDataShard::EPromotePostExecuteEdges readType = TDataShard::EPromotePostExecuteEdges::RepeatableRead;
 
-        if (state.IsHeadRead) {
+        if (state.IsHeadRead && !Self->IsFollower()) {
             bool hasError = !Result || Result->Record.HasStatus();
             if (!hasError && Reader->HasUnreadQueries()) {
-                // We failed to read everything in a single transaction
-                // We would prefer to return current result and continue reading,
-                // but we may have to retry at a different version or wait for
-                // additional dependencies before retrying.
+                // we failed to read all at once and also there might be dependency
+                // we need to wait for: after its execution we can read MVCC snapshot
                 state.IsHeadRead = false;
 
-                if (!Self->IsFollower()) {
-                    // Switch to repeatable read at the same version
-                    SetMvccSnapshot(state.ReadVersion, /* isRepeatable */ true);
+                // repeatable read
+                SetMvccSnapshot(state.ReadVersion, /* isRepeatable */ true);
 
-                    TStepOrder order(state.ReadVersion.Step, state.ReadVersion.TxId);
-                    const auto& plannedOps = Self->Pipeline.GetActivePlannedOps();
-                    auto it = plannedOps.lower_bound(order);
-                    if (it != plannedOps.end() && it->first == order) {
-                        if (!it->second->IsReadOnly()) {
-                            // we need to wait this op
-                            AddDependency(it->second);
+                TStepOrder order(state.ReadVersion.Step, state.ReadVersion.TxId);
+                const auto& plannedOps = Self->Pipeline.GetActivePlannedOps();
+                auto it = plannedOps.lower_bound(order);
+                if (it != plannedOps.end() && it->first == order) {
+                    if (!it->second->IsReadOnly()) {
+                        // we need to wait this op
+                        AddDependency(it->second);
 
-                            // Make sure current incomplete result will not be sent
-                            Result = MakeEvReadResult(ctx.SelfID.NodeId());
-
-                            return EExecutionStatus::Continue;
-                        }
-                    }
-                } else {
-                    auto [followerEdge, followerRepeatable] = Self->GetSnapshotManager().GetFollowerReadEdge();
-                    auto maxRepeatable = !followerEdge || followerRepeatable ? followerEdge : followerEdge.Prev();
-                    if (maxRepeatable >= Self->GetSnapshotManager().GetLowWatermark() && maxRepeatable < state.ReadVersion) {
-                        // We need to retry at a different version
-                        state.ReadVersion = maxRepeatable;
-                        SetMvccSnapshot(state.ReadVersion, /* isRepeatable */ true);
-
-                        // Make sure current incomplete result will not be sent
+                        // just for sanity: result should not contain anything at this step
                         Result = MakeEvReadResult(ctx.SelfID.NodeId());
-
-                        return EExecutionStatus::Reschedule;
+                        return EExecutionStatus::Continue;
                     }
                 }
-
-                // We will send current incomplete result and continue reading from snapshot
             } else {
-                // Either error or a complete result
+                // either error or full read done
                 readType = TDataShard::EPromotePostExecuteEdges::ReadOnly;
             }
         }
@@ -1370,13 +1226,18 @@ public:
             // iterator has been aborted
             return;
         }
-        Y_ABORT_UNLESS(it->second);
+        Y_VERIFY(it->second);
         auto& state = *it->second;
-        Y_ABORT_UNLESS(state.State == TReadIteratorState::EState::Init);
+        Y_VERIFY(state.State == TReadIteratorState::EState::Init);
 
         Result = MakeEvReadResult(ctx.SelfID.NodeId());
 
         const auto& record = Request->Record;
+
+        state.ReadId = record.GetReadId();
+        state.PathId = TPathId(
+            record.GetTableId().GetOwnerId(),
+            record.GetTableId().GetTableId());
 
         if (record.HasMaxRows())
             state.Quota.Rows = record.GetMaxRows();
@@ -1393,25 +1254,94 @@ public:
         if (record.HasTotalRowsLimit())
             state.TotalRowsLimit = record.GetTotalRowsLimit();
 
+        if (record.HasSnapshot()) {
+            state.ReadVersion.Step = record.GetSnapshot().GetStep();
+            state.ReadVersion.TxId = record.GetSnapshot().GetTxId();
+        }
+
         state.Reverse = record.GetReverse();
         if (state.Reverse) {
             state.FirstUnprocessedQuery = Request->Keys.size() + Request->Ranges.size() - 1;
         }
 
-        // Note: some checks already performed in TTxReadViaPipeline::Execute
         if (state.PathId.OwnerId != Self->TabletID()) {
             // owner is schemeshard, read user table
-            Y_ABORT_UNLESS(state.PathId.OwnerId == Self->GetPathOwnerId());
+            if (state.PathId.OwnerId != Self->GetPathOwnerId()) {
+                SetStatusError(
+                    Result->Record,
+                    Ydb::StatusIds::BAD_REQUEST,
+                    TStringBuilder() << "Requesting ownerId: " << state.PathId.OwnerId
+                        << ", tableId: " << state.PathId.LocalPathId
+                        << ", from wrong owner: " << Self->GetPathOwnerId());
+                return;
+            }
 
             const auto tableId = state.PathId.LocalPathId;
             auto it = Self->TableInfos.find(tableId);
-            Y_ABORT_UNLESS(it != Self->TableInfos.end());
+            if (it == Self->TableInfos.end()) {
+                SetStatusError(
+                    Result->Record,
+                    Ydb::StatusIds::NOT_FOUND,
+                    TStringBuilder() << "Unknown table id: " << tableId);
+                return;
+            }
 
             auto& userTableInfo = it->second;
             TableInfo = TShortTableInfo(userTableInfo);
 
-            Y_ABORT_UNLESS(!userTableInfo->IsBackup);
-            Y_ABORT_UNLESS(Self->IsMvccEnabled());
+            if (userTableInfo->IsBackup) {
+                SetStatusError(
+                    Result->Record,
+                    Ydb::StatusIds::BAD_REQUEST,
+                    "Can't read from a backup table");
+                return;
+            }
+
+            if (!state.ReadVersion.IsMax()) {
+                bool snapshotFound = false;
+                if (!state.IsHeadRead) {
+                    const ui64 ownerId = state.PathId.OwnerId;
+                    TSnapshotKey snapshotKey(
+                        ownerId,
+                        tableId,
+                        state.ReadVersion.Step,
+                        state.ReadVersion.TxId);
+
+                    if (Self->GetSnapshotManager().FindAvailable(snapshotKey)) {
+                        // TODO: do we need to acquire?
+                        SetUsingSnapshotFlag();
+                        snapshotFound = true;
+                    }
+                }
+
+                if (!snapshotFound) {
+                    if (Self->IsFollower()) {
+                        SetStatusError(
+                            Result->Record,
+                            Ydb::StatusIds::UNSUPPORTED,
+                            TStringBuilder() << "Table id " << tableId
+                                << " reading from snapshot "
+                                << state.ReadVersion
+                                << " is not supported on follower shard " << Self->TabletID());
+                        return;
+                    }
+
+                    bool isMvccReadable = !Self->IsFollower() && state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
+                    if (!isMvccReadable) {
+                        SetStatusError(
+                            Result->Record,
+                            Ydb::StatusIds::PRECONDITION_FAILED,
+                            TStringBuilder() << "Table id " << tableId << " has no snapshot at "
+                                << state.ReadVersion << " shard " << Self->TabletID()
+                                << " with lowWatermark " << Self->GetSnapshotManager().GetLowWatermark()
+                                << (Self->IsFollower() ? " RO replica" : ""));
+                        return;
+                    }
+
+                    bool isRepeatable = state.IsHeadRead ? false : true;
+                    SetMvccSnapshot(TRowVersion(state.ReadVersion.Step, state.ReadVersion.TxId), isRepeatable);
+                }
+            }
 
             state.SchemaVersion = userTableInfo->GetTableSchemaVersion();
             if (record.GetTableId().HasSchemaVersion()) {
@@ -1422,8 +1352,7 @@ public:
                         Result->Record,
                         Ydb::StatusIds::SCHEME_ERROR,
                         TStringBuilder() << "Wrong schemaversion " << record.GetTableId().GetSchemaVersion()
-                            << " requested, table schemaversion " << state.SchemaVersion
-                            << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                            << " requested, table schemaversion " << state.SchemaVersion);
                     return;
                  }
             }
@@ -1431,14 +1360,14 @@ public:
             userTableInfo->Stats.AccessTime = TAppData::TimeProvider->Now();
         } else {
             // DS is owner, read system table
+
             auto schema = txc.DB.GetRowScheme(state.PathId.LocalPathId);
             if (!schema) {
                 SetStatusError(
                     Result->Record,
                     Ydb::StatusIds::NOT_FOUND,
                     TStringBuilder() << "Failed to get scheme for table local id: "
-                        << state.PathId.LocalPathId
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        << state.PathId.LocalPathId);
                 return;
             }
             TableInfo = TShortTableInfo(state.PathId.LocalPathId, *schema);
@@ -1481,8 +1410,7 @@ public:
                 SetStatusError(
                     Result->Record,
                     Ydb::StatusIds::SCHEME_ERROR,
-                    TStringBuilder() << "Unknown column: " << col
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                    TStringBuilder() << "Unknown column: " << col);
                 return;
             }
 
@@ -1516,16 +1444,14 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(it->second);
+        Y_VERIFY(it->second);
         auto& state = *it->second;
 
         if (!Result) {
             LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, Self->TabletID() << " read iterator# " << readId
                 << " TReadOperation::Execute() finished without Result, aborting");
             Result = MakeEvReadResult(ctx.SelfID.NodeId());
-            SetStatusError(Result->Record, Ydb::StatusIds::ABORTED, TStringBuilder()
-                << "Iterator aborted"
-                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+            SetStatusError(Result->Record, Ydb::StatusIds::ABORTED, "Iterator aborted");
             Result->Record.SetReadId(readId.ReadId);
             Self->SendImmediateReadResult(Sender, Result.release(), 0, state.SessionId);
             Self->DeleteReadIterator(it);
@@ -1533,9 +1459,7 @@ public:
         }
 
         if (!Result->Record.HasStatus() && Reader && Reader->HadInconsistentResult()) {
-            SetStatusError(Result->Record, Ydb::StatusIds::ABORTED, TStringBuilder()
-                << "Read conflict with concurrent transaction"
-                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+            SetStatusError(Result->Record, Ydb::StatusIds::ABORTED, "Read conflict with concurrent transaction");
         }
 
         // error happened and status set
@@ -1561,16 +1485,8 @@ public:
             << ", total queries# " << Reader->GetQueriesCount()
             << ", firstUnprocessed# " << state.FirstUnprocessedQuery);
 
-        // Note: we only send useful non-empty results
-        if (!Reader->FillResult(*Result, state)) {
-            ResultSent = false;
-            return;
-        }
-
-        if (!gSkipReadIteratorResultFailPoint.Check(Self->TabletID())) {
-            LWTRACK(ReadSendResult, state.Orbit);
-            Self->SendImmediateReadResult(Sender, Result.release(), 0, state.SessionId);
-        }
+        Reader->FillResult(*Result, state);
+        Self->SendImmediateReadResult(Sender, Result.release(), 0, state.SessionId);
     }
 
     void Complete(const TActorContext& ctx) override {
@@ -1595,11 +1511,11 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(it->second);
+        Y_VERIFY(it->second);
 
         // note that we save the state only when there're unread queries
         if (Reader->HasUnreadQueries()) {
-            Reader->UpdateState(state, ResultSent);
+            Reader->UpdateState(state);
             if (!state.IsExhausted()) {
                 ctx.Send(
                     Self->SelfId(),
@@ -1626,8 +1542,7 @@ private:
                 SetStatusError(
                     Result->Record,
                     Ydb::StatusIds::NOT_FOUND,
-                    TStringBuilder() << "Unknown table id: " << state.PathId.LocalPathId
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                    TStringBuilder() << "Unknown table id: " << state.PathId.LocalPathId);
                 return true;
             }
             auto userTableInfo = it->second;
@@ -1638,8 +1553,7 @@ private:
                     Result->Record,
                     Ydb::StatusIds::SCHEME_ERROR,
                     TStringBuilder() << "Schema changed, current " << currentSchemaVersion
-                        << ", requested table schemaversion " << state.SchemaVersion
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        << ", requested table schemaversion " << state.SchemaVersion);
                 return true;
             }
 
@@ -1651,8 +1565,7 @@ private:
                     Result->Record,
                     Ydb::StatusIds::NOT_FOUND,
                     TStringBuilder() << "Failed to get scheme for table local id: "
-                        << state.PathId.LocalPathId
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        << state.PathId.LocalPathId);
                 return true;
             }
             TableInfo = TShortTableInfo(state.PathId.LocalPathId, *schema);
@@ -1674,7 +1587,7 @@ private:
             }
 
             if (!snapshotFound) {
-                bool isMvccReadable = state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
+                bool isMvccReadable = !Self->IsFollower() && state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
                 if (!isMvccReadable) {
                     SetStatusError(
                         Result->Record,
@@ -1682,8 +1595,7 @@ private:
                         TStringBuilder() << "Table id " << tableId << " lost snapshot at "
                             << state.ReadVersion << " shard " << Self->TabletID()
                             << " with lowWatermark " << Self->GetSnapshotManager().GetLowWatermark()
-                            << (Self->IsFollower() ? " RO replica" : "")
-                            << " (node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                            << (Self->IsFollower() ? " RO replica" : ""));
                     return true;
                 }
             }
@@ -1829,7 +1741,7 @@ private:
         auto locks = sysLocks.ApplyLocks();
 
         for (auto& lock : locks) {
-            NKikimrDataEvents::TLock* addLock;
+            NKikimrTxDataShard::TLock* addLock;
             if (lock.IsError()) {
                 addLock = Result->Record.AddBrokenTxLocks();
             } else {
@@ -1857,12 +1769,8 @@ class TDataShard::TTxReadViaPipeline : public NTabletFlatExecutor::TTransactionB
     TEvDataShard::TEvRead::TPtr Ev;
     TReadIteratorId ReadId;
 
-    // When we need to reply with an error
-    std::unique_ptr<TEvDataShard::TEvReadResult> Reply;
-
     TOperation::TPtr Op;
     TVector<EExecutionUnitKind> CompleteList;
-    bool WaitComplete = false;
 
 public:
     TTxReadViaPipeline(TDataShard* ds, TEvDataShard::TEvRead::TPtr ev)
@@ -1877,8 +1785,8 @@ public:
         LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, "TTxReadViaPipeline execute"
             << ": at tablet# " << Self->TabletID());
 
-        auto readIt = Self->ReadIterators.find(ReadId);
-        if (readIt == Self->ReadIterators.end() && !Op) {
+        auto it = Self->ReadIterators.find(ReadId);
+        if (it == Self->ReadIterators.end() && !Op) {
             // iterator aborted before we could start operation
             return true;
         }
@@ -1895,217 +1803,33 @@ public:
                 }
 
                 if (status != NKikimrTxDataShard::TError::OK) {
-                    Y_DEBUG_ABORT_UNLESS(!Op);
-                    if (Y_UNLIKELY(readIt == Self->ReadIterators.end())) {
+                    Y_VERIFY_DEBUG(!Op);
+                    if (Y_UNLIKELY(it == Self->ReadIterators.end())) {
                         // iterator already aborted
                         return true;
                     }
-                    ReplyError(
+                    auto result = MakeEvReadResult(ctx.SelfID.NodeId());
+                    SetStatusError(
+                        result->Record,
                         Ydb::StatusIds::INTERNAL_ERROR,
-                        TStringBuilder() << "Failed to sync follower: " << errMessage
-                            << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                        ctx.SelfID.NodeId());
+                        TStringBuilder() << "Failed to sync follower: " << errMessage);
+                    result->Record.SetReadId(ReadId.ReadId);
+                    SendViaSession(it->second->SessionId, ReadId.Sender, Self->SelfId(), result.release());
                     return true;
                 }
             }
 
             if (Ev) {
-                // We must perform some initialization in transaction (e.g. after a follower sync), but before the operation is built
-                Y_ABORT_UNLESS(readIt != Self->ReadIterators.end());
-                Y_ABORT_UNLESS(readIt->second);
-                auto& state = *readIt->second;
-                auto* request = Ev->Get();
-                const auto& record = request->Record;
-
-                Y_ABORT_UNLESS(state.State == TReadIteratorState::EState::Init);
-
-                bool setUsingSnapshotFlag = false;
-
-                // We assume that owner is schemeshard and it's a user table
-                if (state.PathId.OwnerId != Self->TabletID()) {
-                    if (state.PathId.OwnerId != Self->GetPathOwnerId()) {
-                        ReplyError(
-                            Ydb::StatusIds::BAD_REQUEST,
-                            TStringBuilder() << "Requesting ownerId: " << state.PathId.OwnerId
-                                << ", tableId: " << state.PathId.LocalPathId
-                                << ", from shard with owner: " << Self->GetPathOwnerId()
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-
-                    const auto tableId = state.PathId.LocalPathId;
-                    auto it = Self->TableInfos.find(tableId);
-                    if (it == Self->TableInfos.end()) {
-                        ReplyError(
-                            Ydb::StatusIds::NOT_FOUND,
-                            TStringBuilder() << "Unknown table id: " << tableId
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-
-                    auto& userTableInfo = it->second;
-                    if (userTableInfo->IsBackup) {
-                        ReplyError(
-                            Ydb::StatusIds::BAD_REQUEST,
-                            TStringBuilder() << "Can't read from a backup table"
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-
-                    if (!Self->IsMvccEnabled()) {
-                        ReplyError(
-                            Ydb::StatusIds::UNSUPPORTED,
-                            TStringBuilder() << "Cannot use read iterators without mvcc"
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-
-                    if (state.IsHeadRead) {
-                        // We want to try and choose a more specific non-repeatable snapshot
-                        if (Self->IsFollower()) {
-                            auto [followerEdge, followerRepeatable] = Self->GetSnapshotManager().GetFollowerReadEdge();
-                            // Note: during transition follower edge may be unitialized or lag behind
-                            // We assume we can use it when it's not before low watermark
-                            auto maxRepeatable = !followerEdge || followerRepeatable ? followerEdge : followerEdge.Prev();
-                            if (maxRepeatable >= Self->GetSnapshotManager().GetLowWatermark()) {
-                                state.ReadVersion = followerEdge;
-                                state.IsHeadRead = !followerRepeatable;
-                            }
-                        } else {
-                            state.ReadVersion = Self->GetMvccTxVersion(EMvccTxMode::ReadOnly);
-                        }
-                        if (!state.ReadVersion.IsMax()) {
-                            LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD,
-                                Self->TabletID() << " changed HEAD read to "
-                                << (state.IsHeadRead ? "non-repeatable" : "repeatable")
-                                << " " << state.ReadVersion);
-                        }
-                    } else {
-                        bool snapshotFound = false;
-
-                        const ui64 ownerId = state.PathId.OwnerId;
-                        TSnapshotKey snapshotKey(
-                            ownerId,
-                            tableId,
-                            state.ReadVersion.Step,
-                            state.ReadVersion.TxId);
-
-                        if (Self->GetSnapshotManager().FindAvailable(snapshotKey)) {
-                            // TODO: do we need to acquire?
-                            setUsingSnapshotFlag = true;
-                            snapshotFound = true;
-                        }
-
-                        if (!snapshotFound) {
-                            bool snapshotUnavailable = false;
-
-                            if (state.ReadVersion < Self->GetSnapshotManager().GetLowWatermark() || state.ReadVersion.Step == Max<ui64>()) {
-                                snapshotUnavailable = true;
-                            }
-
-                            if (Self->IsFollower()) {
-                                auto [followerEdge, followerRepeatable] = Self->GetSnapshotManager().GetFollowerReadEdge();
-                                auto maxRepeatable = !followerEdge || followerRepeatable ? followerEdge : followerEdge.Prev();
-                                if (state.ReadVersion > maxRepeatable) {
-                                    snapshotUnavailable = true;
-                                }
-                            } else {
-                                auto prioritizedMvccSnapshotReads = Self->GetEnablePrioritizedMvccSnapshotReads();
-                                TRowVersion unreadableEdge = Self->Pipeline.GetUnreadableEdge(prioritizedMvccSnapshotReads);
-                                if (state.ReadVersion >= unreadableEdge) {
-                                    LWTRACK(ReadWaitSnapshot, request->Orbit, state.ReadVersion.Step, state.ReadVersion.TxId);
-                                    Self->Pipeline.AddWaitingReadIterator(state.ReadVersion, std::move(Ev), ctx);
-                                    Self->DeleteReadIterator(readIt);
-                                    return true;
-                                }
-                            }
-
-                            if (snapshotUnavailable) {
-                                ReplyError(
-                                    Ydb::StatusIds::PRECONDITION_FAILED,
-                                    TStringBuilder() << "Table id " << tableId << " has no snapshot at "
-                                        << state.ReadVersion << " shard " << Self->TabletID()
-                                        << " with lowWatermark " << Self->GetSnapshotManager().GetLowWatermark()
-                                        << (Self->IsFollower() ? " RO replica" : "")
-                                        << " (node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                                    ctx.SelfID.NodeId());
-                                return true;
-                            }
-                        }
-                    }
-                } else {
-                    // Handle system table reads
-                    if (Self->IsFollower()) {
-                        ReplyError(
-                            Ydb::StatusIds::UNSUPPORTED,
-                            TStringBuilder() << "Followers don't support system table reads"
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-                    if (!state.IsHeadRead) {
-                        ReplyError(
-                            Ydb::StatusIds::BAD_REQUEST,
-                            TStringBuilder() << "Cannot read system table using snapshot " << state.ReadVersion
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-                    if (record.GetTableId().GetTableId() >= TDataShard::Schema::MinLocalTid) {
-                        ReplyError(
-                            Ydb::StatusIds::BAD_REQUEST,
-                            TStringBuilder() << "Cannot read from user tables using system tables"
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-                    if (record.GetResultFormat() != NKikimrDataEvents::FORMAT_CELLVEC) {
-                        ReplyError(
-                            Ydb::StatusIds::UNSUPPORTED,
-                            TStringBuilder() << "Unsupported result format "
-                                << (int)record.GetResultFormat() << " when reading from system tables"
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-                    if (record.GetTableId().HasSchemaVersion()) {
-                        ReplyError(
-                            Ydb::StatusIds::BAD_REQUEST,
-                            TStringBuilder() << "Cannot request system table at shard " << record.GetTableId().GetOwnerId()
-                                << ", localTid: " << record.GetTableId().GetTableId()
-                                << ", with schema: " << record.GetTableId().GetSchemaVersion()
-                                << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")",
-                            ctx.SelfID.NodeId());
-                        return true;
-                    }
-
-                    // We don't want this read to interact with other operations
-                    setUsingSnapshotFlag = true;
-                }
-
                 const ui64 tieBreaker = Self->NextTieBreakerIndex++;
-                Op = new TReadOperation(Self, ctx.Now(), tieBreaker, Ev);
+                Op = new TReadOperation(Self, tieBreaker, ctx.Now(), tieBreaker, Ev);
                 Op->BuildExecutionPlan(false);
                 Self->Pipeline.GetExecutionUnit(Op->GetCurrentUnit()).AddOperation(Op);
-
-                if (!state.ReadVersion.IsMax()) {
-                    Op->SetMvccSnapshot(
-                        TRowVersion(state.ReadVersion.Step, state.ReadVersion.TxId),
-                        /* repeatable = */ state.IsHeadRead ? false : true);
-                }
-                if (setUsingSnapshotFlag) {
-                    Op->SetUsingSnapshotFlag();
-                }
 
                 Ev = nullptr;
                 Op->IncrementInProgress();
             }
 
-            Y_ABORT_UNLESS(Op && Op->IsInProgress() && !Op->GetExecutionPlan().empty());
+            Y_VERIFY(Op && Op->IsInProgress() && !Op->GetExecutionPlan().empty());
 
             auto status = Self->Pipeline.RunExecutionPlan(Op, CompleteList, txc, ctx);
 
@@ -2122,16 +1846,12 @@ public:
                         Op->IncrementInProgress();
                         Self->ExecuteProgressTx(Op, ctx);
                     }
-                    Op->DecrementInProgress();
                     break;
 
                 case EExecutionStatus::Executed:
                 case EExecutionStatus::Continue:
-                    Op->DecrementInProgress();
-                    break;
-
                 case EExecutionStatus::WaitComplete:
-                    WaitComplete = true;
+                    // No special handling
                     break;
 
                 default:
@@ -2139,66 +1859,42 @@ public:
                             << *Op << " " << Op->GetKind() << " at " << Self->TabletID());
             }
 
-            if (WaitComplete || !CompleteList.empty()) {
-                // Keep operation active until we run the complete list
-            } else {
-                // Release operation as it's no longer needed
+            if (CompleteList.empty()) {
+                Op->DecrementInProgress();
                 Op = nullptr;
             }
 
             return true;
         } catch (const TSchemeErrorTabletException&) {
-            Y_ABORT();
+            Y_FAIL();
         } catch (const TMemoryLimitExceededException&) {
-            Y_ABORT("there must be no leaked exceptions: TMemoryLimitExceededException");
+            Y_FAIL("there must be no leaked exceptions: TMemoryLimitExceededException");
         } catch (const std::exception &e) {
-            Y_ABORT("there must be no leaked exceptions: %s", e.what());
+            Y_FAIL("there must be no leaked exceptions: %s", e.what());
         } catch (...) {
-            Y_ABORT("there must be no leaked exceptions");
+            Y_FAIL("there must be no leaked exceptions");
         }
-    }
-
-    void ReplyError(Ydb::StatusIds::StatusCode code, const TString& message, ui32 nodeId) {
-        Reply = MakeEvReadResult(nodeId);
-        SetStatusError(Reply->Record, code, message);
-        Reply->Record.SetReadId(ReadId.ReadId);
     }
 
     void Complete(const TActorContext& ctx) override {
         LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, "TTxReadViaPipeline(" << GetTxType() << ") Complete"
             << ": at tablet# " << Self->TabletID());
 
-        if (Reply) {
-            Y_ABORT_UNLESS(!Op);
-            auto it = Self->ReadIterators.find(ReadId);
-            if (it != Self->ReadIterators.end()) {
-                Y_ABORT_UNLESS(it->second);
-                auto& state = *it->second;
-                SendViaSession(state.SessionId, ReadId.Sender, Self->SelfId(), Reply.release());
-                Self->DeleteReadIterator(it);
-            }
-            return;
-        }
-
         if (!Op)
             return;
 
-        Y_ABORT_UNLESS(!Op->GetExecutionPlan().empty());
+        Y_VERIFY(!Op->GetExecutionPlan().empty());
         if (!CompleteList.empty()) {
             Self->Pipeline.RunCompleteList(Op, CompleteList, ctx);
         }
 
-        if (WaitComplete) {
-            Op->DecrementInProgress();
+        Op->DecrementInProgress();
 
-            if (!Op->IsInProgress() && !Op->IsExecutionPlanFinished()) {
-                Self->Pipeline.AddCandidateOp(Op);
+        if (!Op->IsInProgress() && !Op->IsExecutionPlanFinished())
+            Self->Pipeline.AddCandidateOp(Op);
 
-                if (Self->Pipeline.CanRunAnotherOp()) {
-                    Self->PlanQueue.Progress(ctx);
-                }
-            }
-        }
+        if (Self->Pipeline.CanRunAnotherOp())
+            Self->PlanQueue.Progress(ctx);
     }
 };
 
@@ -2250,8 +1946,7 @@ public:
                 SetStatusError(
                     Result->Record,
                     Ydb::StatusIds::NOT_FOUND,
-                    TStringBuilder() << "Unknown table id: " << state.PathId.LocalPathId
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                    TStringBuilder() << "Unknown table id: " << state.PathId.LocalPathId);
                 SendResult(ctx);
                 return true;
             }
@@ -2263,8 +1958,7 @@ public:
                     Result->Record,
                     Ydb::StatusIds::SCHEME_ERROR,
                     TStringBuilder() << "Schema changed, current " << currentSchemaVersion
-                        << ", requested table schemaversion " << state.SchemaVersion
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        << ", requested table schemaversion " << state.SchemaVersion);
                 SendResult(ctx);
                 return true;
             }
@@ -2277,8 +1971,7 @@ public:
                     Result->Record,
                     Ydb::StatusIds::NOT_FOUND,
                     TStringBuilder() << "Failed to get scheme for table local id: "
-                        << state.PathId.LocalPathId
-                        << " (shard# " << Self->TabletID() << " node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                        << state.PathId.LocalPathId);
                 SendResult(ctx);
                 return true;
             }
@@ -2301,7 +1994,7 @@ public:
             }
 
             if (!snapshotFound) {
-                bool isMvccReadable = state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
+                bool isMvccReadable = !Self->IsFollower() && state.ReadVersion >= Self->GetSnapshotManager().GetLowWatermark();
                 if (!isMvccReadable) {
                     SetStatusError(
                         Result->Record,
@@ -2309,8 +2002,7 @@ public:
                         TStringBuilder() << "Table id " << tableId << " lost snapshot at "
                             << state.ReadVersion << " shard " << Self->TabletID()
                             << " with lowWatermark " << Self->GetSnapshotManager().GetLowWatermark()
-                            << (Self->IsFollower() ? " RO replica" : "")
-                            << " (node# " << ctx.SelfID.NodeId() << " state# " << DatashardStateName(Self->State) << ")");
+                            << (Self->IsFollower() ? " RO replica" : ""));
                     SendResult(ctx);
                     return true;
                 }
@@ -2346,7 +2038,6 @@ public:
             AppData()->MonotonicTimeProvider->Now(),
             Self));
 
-        LWTRACK(ReadExecute, state.Orbit);
         if (Reader->Read(txc, ctx)) {
             // Retry later when dependencies are resolved
             if (!Reader->GetVolatileReadDependencies().empty()) {
@@ -2379,8 +2070,8 @@ public:
         const auto* request = Ev->Get();
         TReadIteratorId readId(request->Reader, request->ReadId);
         auto it = Self->ReadIterators.find(readId);
-        Y_ABORT_UNLESS(it != Self->ReadIterators.end());
-        Y_ABORT_UNLESS(it->second);
+        Y_VERIFY(it != Self->ReadIterators.end());
+        Y_VERIFY(it->second);
         auto& state = *it->second;
 
         if (!Result) {
@@ -2401,12 +2092,12 @@ public:
             if (!isBroken && (Reader->HadInvisibleRowSkips() || Reader->HadInconsistentResult())) {
                 sysLocks.BreakLock(state.Lock->GetLockId());
                 sysLocks.ApplyLocks();
-                Y_ABORT_UNLESS(state.Lock->IsBroken());
+                Y_VERIFY(state.Lock->IsBroken());
                 isBroken = true;
             }
 
             if (isBroken) {
-                NKikimrDataEvents::TLock *addLock = record.AddBrokenTxLocks();
+                NKikimrTxDataShard::TLock *addLock = record.AddBrokenTxLocks();
                 addLock->SetLockId(state.Lock->GetLockId());
                 addLock->SetDataShard(Self->TabletID());
                 addLock->SetGeneration(state.Lock->GetGeneration());
@@ -2427,7 +2118,7 @@ public:
             } else {
                 // Lock valid, apply conflict changes
                 auto locks = sysLocks.ApplyLocks();
-                Y_ABORT_UNLESS(locks.empty(), "ApplyLocks acquired unexpected locks");
+                Y_VERIFY(locks.empty(), "ApplyLocks acquired unexpected locks");
             }
         }
     }
@@ -2436,8 +2127,8 @@ public:
         const auto* request = Ev->Get();
         TReadIteratorId readId(request->Reader, request->ReadId);
         auto it = Self->ReadIterators.find(readId);
-        Y_ABORT_UNLESS(it != Self->ReadIterators.end());
-        Y_ABORT_UNLESS(it->second);
+        Y_VERIFY(it != Self->ReadIterators.end());
+        Y_VERIFY(it->second);
         auto& state = *it->second;
 
         if (!Result) {
@@ -2475,17 +2166,13 @@ public:
             << ", total queries# " << Reader->GetQueriesCount()
             << ", firstUnprocessed# " << state.FirstUnprocessedQuery);
 
-        // Note: we only send useful non-empty results
-        bool useful = Reader->FillResult(*Result, state);
-        if (useful) {
-            LWTRACK(ReadSendResult, state.Orbit);
-            Self->SendImmediateReadResult(request->Reader, Result.release(), 0, state.SessionId);
-        }
+        Reader->FillResult(*Result, state);
+        Self->SendImmediateReadResult(request->Reader, Result.release(), 0, state.SessionId);
 
         if (Reader->HasUnreadQueries()) {
             Y_ASSERT(it->second);
             auto& state = *it->second;
-            Reader->UpdateState(state, useful);
+            Reader->UpdateState(state);
             if (!state.IsExhausted()) {
                 ctx.Send(
                     Self->SelfId(),
@@ -2509,13 +2196,10 @@ void TDataShard::Handle(TEvDataShard::TEvRead::TPtr& ev, const TActorContext& ct
     const auto& record = request->Record;
     if (Y_UNLIKELY(!record.HasReadId())) {
         auto result = MakeEvReadResult(ctx.SelfID.NodeId());
-        SetStatusError(result->Record, Ydb::StatusIds::BAD_REQUEST,
-            TStringBuilder() << "Missing ReadId at shard " << TabletID());
+        SetStatusError(result->Record, Ydb::StatusIds::BAD_REQUEST, "Missing ReadId");
         ctx.Send(ev->Sender, result.release());
         return;
     }
-
-    LWTRACK(ReadRequest, request->Orbit, record.GetReadId());
 
     TReadIteratorId readId(ev->Sender, record.GetReadId());
     if (!Pipeline.HandleWaitingReadIterator(readId, request)) {
@@ -2536,30 +2220,20 @@ void TDataShard::Handle(TEvDataShard::TEvRead::TPtr& ev, const TActorContext& ct
     if (Y_UNLIKELY(Pipeline.HasWaitingReadIterator(readId) || ReadIterators.contains(readId))) {
         replyWithError(
             Ydb::StatusIds::ALREADY_EXISTS,
-            TStringBuilder() << "Request " << readId.ReadId << " already executing at shard " << TabletID());
+            TStringBuilder() << "Request " << readId.ReadId << " already executing");
         return;
     }
 
-    if (!IsStateNewReadAllowed()) {
+    if (!IsStateActive()) {
         replyWithError(
             Ydb::StatusIds::OVERLOADED,
-            TStringBuilder() << "Shard " << TabletID() << " is splitting/merging"
-                << " (node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+            TStringBuilder() << "Shard " << TabletID() << " is splitting/merging");
         return;
     }
 
     if (MediatorStateWaiting) {
-        LWTRACK(ReadWaitMediatorState, request->Orbit);
         Pipeline.RegisterWaitingReadIterator(readId, request);
         MediatorStateWaitingMsgs.emplace_back(ev.Release());
-        UpdateProposeQueueSize();
-        return;
-    }
-
-    if (Pipeline.HasProposeDelayers()) {
-        LWTRACK(ReadWaitProposeDelayers, request->Orbit);
-        Pipeline.RegisterWaitingReadIterator(readId, request);
-        DelayedProposeQueue.emplace_back().Reset(ev.Release());
         UpdateProposeQueueSize();
         return;
     }
@@ -2567,8 +2241,7 @@ void TDataShard::Handle(TEvDataShard::TEvRead::TPtr& ev, const TActorContext& ct
     if (Pipeline.HasDrop()) {
         replyWithError(
             Ydb::StatusIds::INTERNAL_ERROR,
-            TStringBuilder() << "Request " << readId.ReadId << " rejected, because pipeline is in process of drop"
-                << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+            TStringBuilder() << "Request " << readId.ReadId << " rejected, because pipeline is in process of drop");
         return;
     }
 
@@ -2578,55 +2251,145 @@ void TDataShard::Handle(TEvDataShard::TEvRead::TPtr& ev, const TActorContext& ct
     if (totalInFly > GetMaxTxInFly()) {
         replyWithError(
             Ydb::StatusIds::OVERLOADED,
-            TStringBuilder() << "Request " << readId.ReadId << " rejected, MaxTxInFly was exceeded"
-                << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+            TStringBuilder() << "Request " << readId.ReadId << " rejected, MaxTxInFly was exceeded");
         return;
     }
 
     if (!request->Keys.empty() && !request->Ranges.empty()) {
-        replyWithError(Ydb::StatusIds::BAD_REQUEST, TStringBuilder()
-            << "Both keys and ranges are forbidden"
-            << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+        replyWithError(Ydb::StatusIds::BAD_REQUEST, "Both keys and ranges are forbidden");
         return;
     }
 
     if (request->Keys.empty() && request->Ranges.empty()) {
-        replyWithError(Ydb::StatusIds::BAD_REQUEST, TStringBuilder()
-            << "Neither keys nor ranges specified"
-            << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+        replyWithError(Ydb::StatusIds::BAD_REQUEST, "Neither keys nor ranges");
         return;
     }
 
     if (record.HasProgram()) {
-        replyWithError(Ydb::StatusIds::BAD_REQUEST, TStringBuilder()
-            << "PushDown is not supported"
-            << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+        replyWithError(Ydb::StatusIds::BAD_REQUEST, "PushDown is not supported");
         return;
     }
 
     TRowVersion readVersion = TRowVersion::Max();
-    bool isHeadRead = true;
+    bool isHeadRead = false;
     if (record.HasSnapshot()) {
         readVersion.Step = record.GetSnapshot().GetStep();
         readVersion.TxId = record.GetSnapshot().GetTxId();
-        if (readVersion.Step == Max<ui64>()) {
+        if (readVersion.IsMax()) {
             replyWithError(
-                Ydb::StatusIds::UNSUPPORTED, TStringBuilder()
-                << "invalid snapshot value specified"
-                << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+                Ydb::StatusIds::UNSUPPORTED,
+                "invalid snapshot value specified");
             return;
         }
-        isHeadRead = false;
     }
 
-    if (MvccSwitchState == TSwitchState::SWITCHING) {
-        Pipeline.AddWaitingReadIterator(readVersion, std::move(ev), ctx);
-        return;
+    if (!IsFollower()) {
+        if (record.GetTableId().GetOwnerId() != TabletID()) {
+            // owner is schemeshard, read user table
+            if (readVersion.IsMax()) {
+                // transform a HEAD read into some non-repeatable snapshot
+                readVersion = GetMvccTxVersion(EMvccTxMode::ReadOnly, nullptr);
+                ev->Get()->Record.MutableSnapshot()->SetStep(readVersion.Step);
+                ev->Get()->Record.MutableSnapshot()->SetTxId(readVersion.TxId);
+                isHeadRead = true;
+                LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, TabletID() << " changed HEAD read into non-repeatable " << readVersion);
+            }
+
+            TSnapshotKey snapshotKey(
+                record.GetTableId().GetOwnerId(),
+                record.GetTableId().GetTableId(),
+                readVersion.Step,
+                readVersion.TxId);
+
+            bool snapshotFound = GetSnapshotManager().FindAvailable(snapshotKey);
+            if (!snapshotFound) {
+                // check if there is MVCC version and maybe wait
+                if (readVersion < GetSnapshotManager().GetLowWatermark()) {
+                    replyWithError(
+                        Ydb::StatusIds::PRECONDITION_FAILED,
+                        TStringBuilder() << "MVCC read " << readVersion
+                            << " bellow low watermark " << GetSnapshotManager().GetLowWatermark());
+                    return;
+                }
+
+                // MVCC read is possible, but nead to check MVCC state and if we need to wait
+
+                if (MvccSwitchState == TSwitchState::SWITCHING) {
+                    Pipeline.AddWaitingReadIterator(readVersion, std::move(ev), ctx);
+                    return;
+                }
+
+                auto prioritizedMvccSnapshotReads = GetEnablePrioritizedMvccSnapshotReads();
+                TRowVersion unreadableEdge = Pipeline.GetUnreadableEdge(prioritizedMvccSnapshotReads);
+                if (readVersion >= unreadableEdge) {
+                    Pipeline.AddWaitingReadIterator(readVersion, std::move(ev), ctx);
+                    return;
+                }
+
+                // we found proper MVCC snapshot
+                snapshotFound = true;
+            }
+
+            if (!snapshotFound) {
+                replyWithError(
+                    Ydb::StatusIds::NOT_FOUND,
+                    TStringBuilder() << "Neither regular nor MVCC snapshot for " << readVersion);
+                return;
+            }
+        } else {
+            // DS is owner, read system table
+            if (!readVersion.IsMax()) {
+                replyWithError(
+                    Ydb::StatusIds::BAD_REQUEST,
+                    TStringBuilder() << "Only HEAD read from sys tables is allowed");
+                return;
+            }
+
+            if (record.GetTableId().GetTableId() >= TDataShard::Schema::MinLocalTid) {
+                replyWithError(
+                    Ydb::StatusIds::BAD_REQUEST,
+                    TStringBuilder() << "Only sys tables can be read by localTid, table "
+                        << record.GetTableId().GetTableId());
+                return;
+            }
+
+            if (record.GetResultFormat() != NKikimrTxDataShard::CELLVEC) {
+                replyWithError(
+                    Ydb::StatusIds::BAD_REQUEST,
+                    TStringBuilder() << "Sys tables can be read only in cellvec format, but requested "
+                        << (int)NKikimrTxDataShard::CELLVEC);
+                return;
+            }
+
+            if (record.GetTableId().HasSchemaVersion()) {
+                replyWithError(
+                    Ydb::StatusIds::BAD_REQUEST,
+                    TStringBuilder() << "Requesting system stable owned " << record.GetTableId().GetOwnerId()
+                        << ", localTid: " << record.GetTableId().GetTableId()
+                        << ", with schema: " << record.GetTableId().GetSchemaVersion());
+                return;
+            }
+        }
+    } else {
+        if (record.GetTableId().GetOwnerId() == TabletID()) {
+            replyWithError(
+                Ydb::StatusIds::UNSUPPORTED,
+                "Systable reads on followers are not supported");
+            return;
+        }
+
+        // follower: we can't check snapshot version, because need to sync and to sync
+        // we need transaction
+        if (readVersion.IsMax()) {
+            isHeadRead = true;
+        }
     }
+
+    // Note: iterator is correct and ready to execute
 
     TActorId sessionId;
     if (readId.Sender.NodeId() != SelfId().NodeId()) {
-        Y_DEBUG_ABORT_UNLESS(ev->InterconnectSession);
+        Y_VERIFY_DEBUG(ev->InterconnectSession);
         THashMap<TActorId, TReadIteratorSession>::insert_ctx sessionsInsertCtx;
         auto itSession = ReadIteratorSessions.find(ev->InterconnectSession, sessionsInsertCtx);
         if (itSession == ReadIteratorSessions.end()) {
@@ -2644,10 +2407,7 @@ void TDataShard::Handle(TEvDataShard::TEvRead::TPtr& ev, const TActorContext& ct
 
     ReadIterators.emplace(
         readId,
-        new TReadIteratorState(
-            readId, TPathId(record.GetTableId().GetOwnerId(), record.GetTableId().GetTableId()),
-            sessionId, readVersion, isHeadRead,
-            AppData()->MonotonicTimeProvider->Now(), std::move(request->Orbit)));
+        new TReadIteratorState(sessionId, isHeadRead, AppData()->MonotonicTimeProvider->Now()));
 
     SetCounter(COUNTER_READ_ITERATORS_COUNT, ReadIterators.size());
 
@@ -2681,9 +2441,7 @@ void TDataShard::Handle(TEvDataShard::TEvReadAck::TPtr& ev, const TActorContext&
         LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, TabletID() << " ReadAck: " << record);
 
         auto result = MakeEvReadResult(ctx.SelfID.NodeId());
-        SetStatusError(result->Record, Ydb::StatusIds::BAD_REQUEST, TStringBuilder()
-            << "Missing mandatory fields in TEvReadAck"
-            << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")");
+        SetStatusError(result->Record, Ydb::StatusIds::BAD_REQUEST, "Missing mandatory fields in TEvReadAck");
         if (record.HasReadId())
             result->Record.SetReadId(record.GetReadId());
         ctx.Send(ev->Sender, result.release());
@@ -2708,13 +2466,10 @@ void TDataShard::Handle(TEvDataShard::TEvReadAck::TPtr& ev, const TActorContext&
         return;
     }
 
-    LWTRACK(ReadAck, state.Orbit);
-
     // We received ACK on message we hadn't sent yet
     if (state.SeqNo < record.GetSeqNo()) {
         auto issueStr = TStringBuilder() << TabletID() << " ReadAck from future: " << record.GetSeqNo()
-            << ", current seqNo# " << state.SeqNo
-            << " (shard# " << TabletID() << " node# " << SelfId().NodeId() << " state# " << DatashardStateName(State) << ")";
+            << ", current seqNo# " << state.SeqNo;
         LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, issueStr);
 
         auto result = MakeEvReadResult(ctx.SelfID.NodeId());
@@ -2758,7 +2513,7 @@ void TDataShard::Handle(TEvDataShard::TEvReadCancel::TPtr& ev, const TActorConte
 
     TReadIteratorId readId(ev->Sender, record.GetReadId());
     if (Pipeline.CancelWaitingReadIterator(readId)) {
-        Y_ABORT_UNLESS(!ReadIterators.contains(readId));
+        Y_VERIFY(!ReadIterators.contains(readId));
         return;
     }
 
@@ -2773,8 +2528,6 @@ void TDataShard::Handle(TEvDataShard::TEvReadCancel::TPtr& ev, const TActorConte
         IncCounter(COUNTER_READ_ITERATOR_LIFETIME_MS, delta.MilliSeconds());
         IncCounter(COUNTER_READ_ITERATOR_CANCEL);
     }
-
-    LWTRACK(ReadCancel, state->Orbit);
 
     DeleteReadIterator(it);
 }
@@ -2801,7 +2554,7 @@ void TDataShard::CancelReadIterators(Ydb::StatusIds::StatusCode code, const TStr
     }
 
     ReadIterators.clear();
-    UnsubscribeReadIteratorSessions(ctx);
+    ReadIteratorSessions.clear();
 
     SetCounter(COUNTER_READ_ITERATORS_COUNT, 0);
     SetCounter(COUNTER_READ_ITERATORS_EXHAUSTED_COUNT, 0);
@@ -2857,14 +2610,6 @@ void TDataShard::ReadIteratorsOnNodeDisconnected(const TActorId& sessionId, cons
     ReadIteratorSessions.erase(itSession);
     SetCounter(COUNTER_READ_ITERATORS_COUNT, ReadIterators.size());
     DecCounter(COUNTER_READ_ITERATORS_EXHAUSTED_COUNT, exhaustedCount);
-}
-
-void TDataShard::UnsubscribeReadIteratorSessions(const TActorContext& ctx) {
-    Y_UNUSED(ctx);
-    for (const auto& pr : ReadIteratorSessions) {
-        Send(pr.first, new TEvents::TEvUnsubscribe);
-    }
-    ReadIteratorSessions.clear();
 }
 
 } // NKikimr::NDataShard

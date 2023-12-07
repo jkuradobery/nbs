@@ -12,6 +12,6 @@ SRCS(
 END()
 
 RECURSE(
-    collect_issues
     gen
+    collect_issues
 )

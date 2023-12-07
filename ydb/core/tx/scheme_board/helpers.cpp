@@ -4,8 +4,8 @@
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/wire_format_lite.h>
 
-#include <ydb/library/actors/core/executor_thread.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/executor_thread.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <util/stream/format.h>
 
@@ -83,8 +83,8 @@ TSet<ui64> GetAbandonedSchemeShardIds(const NKikimrScheme::TEvDescribeSchemeResu
 
 TIntrusivePtr<TEventSerializedData> SerializeEvent(IEventBase* ev) {
     TAllocChunkSerializer serializer;
-    Y_ABORT_UNLESS(ev->SerializeToArcadiaStream(&serializer));
-    return serializer.Release(ev->CreateSerializationInfo());
+    Y_VERIFY(ev->SerializeToArcadiaStream(&serializer));
+    return serializer.Release(ev->IsExtendedFormat());
 }
 
 void MultiSend(const TVector<const TActorId*>& recipients, const TActorId& sender, TAutoPtr<IEventBase> ev, ui32 flags, ui64 cookie) {

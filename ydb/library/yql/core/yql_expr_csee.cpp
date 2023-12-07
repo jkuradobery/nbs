@@ -191,7 +191,7 @@ namespace {
                 }
                 case EDependencyScope::None:
                 case EDependencyScope::Mixed:
-                    Y_ABORT("Strange argument.");
+                    Y_FAIL("Strange argument.");
             }
             break;
         case TExprNode::World:
@@ -220,29 +220,17 @@ namespace {
         return hash;
     }
 
-    using TEqualResults = THashMap<std::pair<const TExprNode*, const TExprNode*>, bool>;
-    bool DoEqualNodes(const TExprNode& left, TLambdaFrame& currLeftFrame, const TExprNode& right, TLambdaFrame& currRightFrame,
-        TEqualResults& visited, const TColumnOrderStorage& coStore);
     bool EqualNodes(const TExprNode& left, TLambdaFrame& currLeftFrame, const TExprNode& right, TLambdaFrame& currRightFrame,
-        TEqualResults& visited, const TColumnOrderStorage& coStore)
+        TNodeSet& visited, const TColumnOrderStorage& coStore)
     {
         if (&left == &right) {
             return true;
         }
 
-        auto key = std::make_pair(&left, &right);
-        if (auto it = visited.find(key); it != visited.end()) {
-            return it->second;
+        if (!visited.emplace(&left).second) {
+            return true;
         }
 
-        bool res = DoEqualNodes(left, currLeftFrame, right, currRightFrame, visited, coStore);
-        visited[key] = res;
-        return res;
-    }
-
-    bool DoEqualNodes(const TExprNode& left, TLambdaFrame& currLeftFrame, const TExprNode& right, TLambdaFrame& currRightFrame,
-        TEqualResults& visited, const TColumnOrderStorage& coStore)
-    {
         if (left.Type() != right.Type()) {
             return false;
         }
@@ -362,24 +350,15 @@ namespace {
         return false;
     }
 
-    using TCompareResults = THashMap<std::pair<const TExprNode*, const TExprNode*>, int>;
-    int DoCompareNodes(const TExprNode& left, const TExprNode& right, TCompareResults& visited);
-    int CompareNodes(const TExprNode& left, const TExprNode& right, TCompareResults& visited) {
+    int CompareNodes(const TExprNode& left, const TExprNode& right, TNodeSet& visited) {
         if (&left == &right) {
             return 0;
         }
 
-        auto key = std::make_pair(&left, &right);
-        if (auto it = visited.find(key); it != visited.end()) {
-            return it->second;
+        if (!visited.emplace(&left).second) {
+            return 0;
         }
 
-        int res = DoCompareNodes(left, right, visited);
-        visited[key] = res;
-        return res;
-    }
-
-    int DoCompareNodes(const TExprNode& left, const TExprNode& right, TCompareResults& visited) {
         if (left.Type() != right.Type()) {
             return (int)left.Type() - (int)right.Type();
         }
@@ -513,7 +492,7 @@ namespace {
     }
 
     bool EqualNodes(const TExprNode& left, const TExprNode& right, const TColumnOrderStorage& coStore) {
-        TEqualResults visited;
+        TNodeSet visited;
         TLambdaFrame frame;
         return EqualNodes(left, frame, right, frame, visited, coStore);
     }
@@ -521,8 +500,7 @@ namespace {
     TExprNode::TPtr VisitNode(TExprNode& node, TExprNode* currentLambda, ui16 level,
         std::unordered_multimap<ui64, TExprNode*>& uniqueNodes,
         std::unordered_multimap<ui64, TExprNode*>& incompleteNodes,
-        TNodeMap<TExprNode*>& renames, const TColumnOrderStorage& coStore,
-        const TNodeSet& reachable) {
+        TNodeMap<TExprNode*>& renames, const TColumnOrderStorage& coStore) {
 
         if (node.Type() == TExprNode::Argument) {
             return nullptr;
@@ -537,13 +515,13 @@ namespace {
 
         if (node.Type() == TExprNode::Lambda) {
             for (ui32 i = 1U; i < node.ChildrenSize(); ++i) {
-                if (auto newNode = VisitNode(*node.Child(i), &node, level + 1U, uniqueNodes, incompleteNodes, renames, coStore, reachable)) {
+                if (auto newNode = VisitNode(*node.Child(i), &node, level + 1U, uniqueNodes, incompleteNodes, renames, coStore)) {
                     node.ChildRef(i) = std::move(newNode);
                 }
             }
         } else {
             for (ui32 i = 0; i < node.ChildrenSize(); ++i) {
-                if (auto newNode = VisitNode(*node.Child(i), currentLambda, level, uniqueNodes, incompleteNodes, renames, coStore, reachable)) {
+                if (auto newNode = VisitNode(*node.Child(i), currentLambda, level, uniqueNodes, incompleteNodes, renames, coStore)) {
                     node.ChildRef(i) = std::move(newNode);
                 }
             }
@@ -557,11 +535,6 @@ namespace {
             while (pair.second != iter) {
                 // search for duplicates
                 if (iter->second->Dead()) {
-                    iter = nodesSet.erase(iter);
-                    continue;
-                }
-
-                if (!reachable.contains(iter->second)) {
                     iter = nodesSet.erase(iter);
                     continue;
                 }
@@ -610,23 +583,17 @@ IGraphTransformer::TStatus EliminateCommonSubExpressions(const TExprNode::TPtr& 
 {
     YQL_PROFILE_SCOPE(DEBUG, forSubGraph ? "EliminateCommonSubExpressionsForSubGraph" : "EliminateCommonSubExpressions");
     output = input;
-    TNodeSet reachable;
-    VisitExpr(*output, [&](const TExprNode& node) {
-        reachable.emplace(&node);
-        return true;
-    });
-
     TNodeMap<TExprNode*> renames;
     //Cerr << "INPUT\n" << output->Dump() << "\n";
     std::unordered_multimap<ui64, TExprNode*> incompleteNodes;
-    const auto newNode = VisitNode(*output, nullptr, 0, ctx.UniqueNodes, incompleteNodes, renames, coStore, reachable);
+    const auto newNode = VisitNode(*output, nullptr, 0, ctx.UniqueNodes, incompleteNodes, renames, coStore);
     YQL_ENSURE(forSubGraph || !newNode);
     //Cerr << "OUTPUT\n" << output->Dump() << "\n";
     return IGraphTransformer::TStatus::Ok;
 }
 
 int CompareNodes(const TExprNode& left, const TExprNode& right) {
-    TCompareResults visited;
+    TNodeSet visited;
     return CompareNodes(left, right, visited);
 }
 

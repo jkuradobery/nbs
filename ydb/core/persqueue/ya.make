@@ -5,43 +5,32 @@ SRCS(
     blob.cpp
     cluster_tracker.cpp
     event_helpers.cpp
-    fetch_request_actor.cpp
     header.cpp
-    heartbeat.cpp
     metering_sink.cpp
     mirrorer.cpp
     mirrorer.h
     ownerinfo.cpp
-    partition_init.cpp
-    partition_monitoring.cpp
-    partition_read.cpp
-    partition_sourcemanager.cpp
-    partition_write.cpp
     partition.cpp
     percentile_counter.cpp
     pq.cpp
     pq_database.cpp
     pq_impl.cpp
     pq_l2_cache.cpp
-    pq_rl_helpers.cpp
     quota_tracker.cpp
     read_balancer.cpp
-    account_read_quoter.cpp
-    read_quoter.cpp
+    read_speed_limiter.cpp
     sourceid.cpp
     subscriber.cpp
-    transaction.cpp
     type_codecs_defs.cpp
     user_info.cpp
     utils.cpp
     write_meta.cpp
-    microseconds_sliding_window.cpp
 )
 
 GENERATE_ENUM_SERIALIZATION(sourceid.h)
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/html/pcdata
     library/cpp/json
     ydb/core/base

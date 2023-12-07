@@ -7,8 +7,9 @@
 namespace NKikimr::NCms {
 
 class TJsonProxyToggleConfigValidator : public TJsonProxyConsole<NConsole::TEvConsole::TEvToggleConfigValidatorRequest,
-                                                                 NConsole::TEvConsole::TEvToggleConfigValidatorResponse>
-{
+                                                                 NConsole::TEvConsole::TEvToggleConfigValidatorResponse> {
+private:
+
 public:
     TJsonProxyToggleConfigValidator(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyConsole<NConsole::TEvConsole::TEvToggleConfigValidatorRequest,
@@ -16,7 +17,8 @@ public:
     {
     }
 
-    TAutoPtr<TRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TRequest> PrepareRequest(const TActorContext &) override
+    {
         TAutoPtr<TRequest> request = new TRequest;
         const TCgiParameters& cgi = RequestEvent->Get()->Request.GetParams();
 

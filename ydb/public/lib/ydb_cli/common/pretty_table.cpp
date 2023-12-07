@@ -5,8 +5,6 @@
 #include <util/generic/xrange.h>
 #include <util/stream/format.h>
 
-#include <ydb/public/lib/ydb_cli/common/interactive.h>
-
 namespace NYdb {
 namespace NConsoleClient {
 
@@ -15,37 +13,12 @@ TPrettyTable::TRow::TRow(size_t nColumns)
 {
 }
 
-size_t TPrettyTable::TRow::ExtraBytes(TStringBuf data) const {
-    // counter of previously uncounted bytes
-    size_t extraBytes = 0;
-    for (char ch : data) {
-        size_t n = 0;
-        // if the first bit of the character is not 0, we met a multibyte
-        // counting the number of single bits at the beginning of a byte
-        while ((ch & 0x80) != 0) {
-            n++;
-            ch <<= 1;
-        }
-        // update counter
-        if (n != 0) {
-            extraBytes += n - 1;
-        }
-    }
-
-    return extraBytes;
-}
-
 size_t TPrettyTable::TRow::ColumnWidth(size_t columnIndex) const {
-    Y_ABORT_UNLESS(columnIndex < Columns.size());
+    Y_VERIFY(columnIndex < Columns.size());
 
     size_t width = 0;
-    TStringBuf data;
     for (const auto& line : Columns.at(columnIndex)) {
-        data = line;
-
-        size_t extraBytes = ExtraBytes(data);
-
-        width = Max(width, line.size() - extraBytes);
+        width = Max(width, line.size());
     }
 
     return width;
@@ -56,28 +29,23 @@ bool TPrettyTable::TRow::PrintColumns(IOutputStream& o, const TVector<size_t>& w
 
     for (size_t columnIndex : xrange(Columns.size())) {
         if (columnIndex == 0) {
-            o << "│ ";
+            o << "| ";
         } else {
-            o << " │ ";
+            o << " | ";
         }
 
-        if (size_t width = widths.at(columnIndex)) {
+        if (const size_t width = widths.at(columnIndex)) {
             const auto& column = Columns.at(columnIndex);
 
             TStringBuf data;
-            size_t extraBytes;
             size_t l = 0;
             for (const auto& line : column) {
                 data = line;
-                extraBytes = ExtraBytes(data);
                 while (data && l < lineNumber) {
-                    data.Skip(width + extraBytes);
+                    data.Skip(width);
                     ++l;
                 }
             }
-            extraBytes = ExtraBytes(data);
-            width += extraBytes;
-            
 
             if (data) {
                 o << RightPad(data.SubStr(0, width), width);
@@ -90,7 +58,7 @@ bool TPrettyTable::TRow::PrintColumns(IOutputStream& o, const TVector<size_t>& w
             }
         }
     }
-    o << " │" << Endl;
+    o << " |" << Endl;
 
     return next;
 }
@@ -100,13 +68,13 @@ bool TPrettyTable::TRow::HasFreeText() const {
 }
 
 void TPrettyTable::TRow::PrintFreeText(IOutputStream& o, size_t width) const {
-    Y_ABORT_UNLESS(HasFreeText());
+    Y_VERIFY(HasFreeText());
 
     for (auto& line : StringSplitter(Text).Split('\n')) {
         TStringBuf token = line.Token();
 
         while (token) {
-            o << "│ " << RightPad(token.SubStr(0, width), width) << " │" << Endl;
+            o << "| " << RightPad(token.SubStr(0, width), width) << " |" << Endl;
             token.Skip(width);
         }
     }
@@ -175,9 +143,7 @@ TVector<size_t> TPrettyTable::CalcWidths() const {
     }
 
     // adjust
-    auto terminalWidth = GetTerminalWidth();
-    size_t lineLength = terminalWidth ? *terminalWidth : Max<size_t>();
-    const size_t maxWidth = Max(Config.Width, lineLength) - ((Columns * 3) + 1);
+    const size_t maxWidth = Max(Config.Width, TermWidth()) - ((Columns * 3) + 1);
     size_t totalWidth = Accumulate(widths, (size_t)0);
     while (totalWidth > maxWidth) {
         auto it = MaxElement(widths.begin(), widths.end());

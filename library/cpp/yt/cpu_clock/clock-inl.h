@@ -11,21 +11,9 @@ namespace NYT {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-Y_FORCE_INLINE TCpuInstant GetCpuInstant()
+inline TCpuInstant GetCpuInstant()
 {
     return static_cast<TCpuInstant>(GetCycleCount());
-}
-
-Y_FORCE_INLINE TCpuInstant GetApproximateCpuInstant()
-{
-#if defined(_x86_64_)
-    ui32 hi, lo;
-    __asm__ __volatile__("rdtsc"
-                        : "=a"(lo), "=d"(hi));
-    return static_cast<TCpuInstant>(lo) | (static_cast<TCpuInstant>(hi) << 32);
-#else
-    return GetCpuInstant();
-#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -6,7 +6,6 @@ PEERDIR(
     ydb/public/sdk/cpp/client/ydb_driver
     ydb/public/sdk/cpp/client/ydb_scheme
     ydb/public/sdk/cpp/client/ydb_table
-    ydb/public/sdk/cpp/client/ydb_topic
     ydb/public/sdk/cpp/client/ydb_types/credentials
     ydb/public/sdk/cpp/client/ydb_types/credentials/login
 )

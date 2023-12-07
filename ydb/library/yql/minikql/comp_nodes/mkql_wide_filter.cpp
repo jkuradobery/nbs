@@ -18,7 +18,7 @@ protected:
         : Flow(flow)
         , Items(std::move(items))
         , Predicate(predicate)
-        , FilterByField(GetPasstroughtMap(TComputationNodePtrVector{Predicate}, Items).front())
+        , FilterByField(GetPasstroughtMap({Predicate}, Items).front())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {}
 
@@ -51,7 +51,7 @@ protected:
         std::conditional_t<ReplaceOriginalGetter, ICodegeneratorInlineWideNode::TGettersList, const ICodegeneratorInlineWideNode::TGettersList>& getters,
         BasicBlock*& block) const {
         if (FilterByField)
-            return CastInst::Create(Instruction::Trunc, getters[*FilterByField](ctx, block), Type::getInt1Ty(ctx.Codegen.GetContext()), "predicate", block);
+            return CastInst::Create(Instruction::Trunc, getters[*FilterByField](ctx, block), Type::getInt1Ty(ctx.Codegen->GetContext()), "predicate", block);
 
         for (auto i = 0U; i < Items.size(); ++i)
             if (Predicate == Items[i] || Items[i]->GetDependencesCount() > 0U) {
@@ -61,7 +61,7 @@ protected:
             }
 
         const auto pred = GetNodeValue(Predicate, ctx, block);
-        return CastInst::Create(Instruction::Trunc, pred, Type::getInt1Ty(ctx.Codegen.GetContext()), "predicate", block);
+        return CastInst::Create(Instruction::Trunc, pred, Type::getInt1Ty(ctx.Codegen->GetContext()), "predicate", block);
     }
 #endif
     IComputationWideFlowNode* const Flow;
@@ -98,7 +98,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto loop = BasicBlock::Create(context, "loop", ctx.Func);
 
@@ -169,7 +169,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto test = BasicBlock::Create(context, "test", ctx.Func);
@@ -191,7 +191,7 @@ public:
 
         block = test;
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto done = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, state, GetFalse(context), "done", block);
         result->addIncoming(ConstantInt::get(resultType, -1), block);
 
@@ -272,7 +272,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto resultType = Type::getInt32Ty(context);
 
@@ -284,7 +284,7 @@ public:
         const auto result = PHINode::Create(resultType, 4U, "result", done);
         result->addIncoming(ConstantInt::get(resultType, static_cast<i32>(EFetchResult::Finish)), block);
 
-        const auto state = new LoadInst(Type::getInt128Ty(context), statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto finished = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, state, GetTrue(context), "finished", block);
 
         BranchInst::Create(done, work, IsValid(statePtr, block), block);
@@ -354,7 +354,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto resultType = Type::getInt32Ty(context);
 
@@ -399,7 +399,7 @@ private:
 
 template<bool TakeOrSkip, bool Inclusive>
 IComputationNode* WrapWideWhile(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    const auto width = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType()));
+    const auto width = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() == width + 2U, "Expected 3 or more args.");
 
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
@@ -424,7 +424,7 @@ IComputationNode* WrapWideWhile(TCallable& callable, const TComputationNodeFacto
 }
 
 IComputationNode* WrapWideFilter(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    const auto width = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType()));
+    const auto width = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() == width + 2U || callable.GetInputsCount() == width + 3U, "Expected 3 or more args.");
 
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);

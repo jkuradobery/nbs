@@ -37,7 +37,6 @@ namespace NKikimr {
         TRopeArena Arena;
 
         struct TExDie {};
-        struct TExPoison {};
 
         struct TBlobOnDisk {
             TLogoBlobID Id;
@@ -86,7 +85,7 @@ namespace NKikimr {
     public:
         TScrubCoroImpl(TScrubContext::TPtr scrubCtx, NKikimrVDiskData::TScrubEntrypoint scrubEntrypoint,
             ui64 scrubEntrypointLsn);
-        void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev);
+        void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) override;
         void Handle(NMon::TEvHttpInfo::TPtr ev);
         void ForwardToBlobRecoveryActor(TAutoPtr<IEventHandle> ev);
 
@@ -127,13 +126,13 @@ namespace NKikimr {
         // PDISK INTERACTION
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-        std::optional<TRcBuf> Read(const TDiskPart& part);
+        std::optional<TString> Read(const TDiskPart& part);
         bool IsReadable(const TDiskPart& part);
         void Write(const TDiskPart& part, TString data);
 
         template<typename T>
         typename T::TPtr WaitForPDiskEvent() {
-            auto res = WaitForSpecificEvent<T>(&TScrubCoroImpl::ProcessUnexpectedEvent);
+            auto res = WaitForSpecificEvent<T>();
             if (res->Get()->Status == NKikimrProto::INVALID_ROUND) {
                 throw TExDie(); // this VDisk is dead and racing with newly created one, so we terminate the disk
             }

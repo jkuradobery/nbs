@@ -8,7 +8,8 @@ namespace NIceDb {
     class TNiceDb;
 }
 
-namespace NReplication::NController {
+namespace NReplication {
+namespace NController {
 
 class ISysParamLoader {
 public:
@@ -36,5 +37,6 @@ private:
 
 }; // TSysParams
 
-} // NReplication::NController
+} // NController
+} // NReplication
 } // NKikimr

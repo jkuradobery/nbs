@@ -1,24 +1,16 @@
 #pragma once
 #include <ydb/services/metadata/request/config.h>
-#include <ydb/services/metadata/request/request_actor_cb.h>
+#include <ydb/services/metadata/request/request_actor.h>
 
 namespace NKikimr::NMetadata::NInitializer {
 
 class TACLModifierConstructor;
 
-class IModifierExternalController {
-public:
-    using TPtr = std::shared_ptr<IModifierExternalController>;
-    virtual ~IModifierExternalController() = default;
-    virtual void OnModificationFinished(const TString& modificationId) = 0;
-    virtual void OnModificationFailed(const TString& errorMessage, const TString& modificationId) = 0;
-};
-
 class ITableModifier {
 private:
     YDB_READONLY_DEF(TString, ModificationId);
 protected:
-    virtual bool DoExecute(IModifierExternalController::TPtr externalController, const NRequest::TConfig& config) const = 0;
+    virtual bool DoExecute(const TActorId& resultCallbackId, const NRequest::TConfig& config) const = 0;
 public:
     using TPtr = std::shared_ptr<ITableModifier>;
     virtual ~ITableModifier() = default;
@@ -29,8 +21,8 @@ public:
 
     }
 
-    bool Execute(IModifierExternalController::TPtr externalController, const NRequest::TConfig& config) const {
-        return DoExecute(externalController, config);
+    bool Execute(const TActorId& resultCallbackId, const NRequest::TConfig& config) const {
+        return DoExecute(resultCallbackId, config);
     }
 };
 
@@ -40,29 +32,9 @@ private:
     using TBase = ITableModifier;
     YDB_READONLY_DEF(typename TDialogPolicy::TRequest, Request);
 protected:
-    class TAdapterController: public NRequest::IExternalController<TDialogPolicy> {
-    private:
-        IModifierExternalController::TPtr ExternalController;
-        const TString ModificationId;
-    public:
-        TAdapterController(IModifierExternalController::TPtr externalController, const TString& modificationId)
-            : ExternalController(externalController)
-            , ModificationId(modificationId)
-        {
-
-        }
-
-        virtual void OnRequestResult(typename TDialogPolicy::TResponse&& /*result*/) override {
-            ExternalController->OnModificationFinished(ModificationId);
-        }
-        virtual void OnRequestFailed(const TString& errorMessage) override {
-            ExternalController->OnModificationFailed(errorMessage, ModificationId);
-        }
-    };
-
-    virtual bool DoExecute(IModifierExternalController::TPtr externalController, const NRequest::TConfig& /*config*/) const override {
-        NRequest::TYDBOneRequestSender<TDialogPolicy> req(Request, NACLib::TSystemUsers::Metadata(), std::make_shared<TAdapterController>(externalController, GetModificationId()));
-        req.Start();
+    virtual bool DoExecute(const TActorId& resultCallbackId, const NRequest::TConfig& config) const override {
+        TActivationContext::ActorSystem()->Register(new NRequest::TYDBRequest<TDialogPolicy>(Request,
+            NACLib::TSystemUsers::Metadata(), resultCallbackId, config));
         return true;
     }
 public:
@@ -97,7 +69,7 @@ public:
 class IInitializerInput {
 public:
     using TPtr = std::shared_ptr<IInitializerInput>;
-    virtual void OnPreparationFinished(const TVector<ITableModifier::TPtr>& modifiers) = 0;
+    virtual void OnPreparationFinished(const TVector<ITableModifier::TPtr>& modifiers) const = 0;
     virtual void OnPreparationProblem(const TString& errorMessage) const = 0;
     virtual ~IInitializerInput() = default;
 };

@@ -1,9 +1,10 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
+#include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include "viewer.h"
 #include <ydb/core/viewer/json/json.h>
 #include <ydb/core/health_check/health_check.h>
@@ -155,22 +156,24 @@ public:
                 e->OnInt64(TInstant::Zero(), recordCounter.second);
                 e->OnMetricEnd();
             }
+        } else {
+            const auto *descriptor = Ydb::Monitoring::SelfCheck_Result_descriptor();
+            auto result = descriptor->FindValueByNumber(ev->Get()->Result.self_check_result())->name();
+            e->OnMetricBegin(EMetricType::IGAUGE);
+            {
+                e->OnLabelsBegin();
+                e->OnLabel("sensor", "ydb_healthcheck");
+                e->OnLabel("DOMAIN", domain->Name);
+                e->OnLabel("DATABASE", filterDatabase);
+                e->OnLabel("MESSAGE", result);
+                e->OnLabel("STATUS", result);
+                e->OnLabel("TYPE", "ALL");
+                e->OnLabelsEnd();
+            }
+            e->OnInt64(TInstant::Zero(), 1);
+            e->OnMetricEnd();
         }
-        const auto *descriptor = Ydb::Monitoring::SelfCheck_Result_descriptor();
-        auto result = descriptor->FindValueByNumber(ev->Get()->Result.self_check_result())->name();
-        e->OnMetricBegin(EMetricType::IGAUGE);
-        {
-            e->OnLabelsBegin();
-            e->OnLabel("sensor", "ydb_healthcheck");
-            e->OnLabel("DOMAIN", domain->Name);
-            e->OnLabel("DATABASE", filterDatabase);
-            e->OnLabel("MESSAGE", result);
-            e->OnLabel("STATUS", result);
-            e->OnLabel("TYPE", "ALL");
-            e->OnLabelsEnd();
-        }
-        e->OnInt64(TInstant::Zero(), 1);
-        e->OnMetricEnd();
+
         e->OnStreamEnd();
 
         ctx.Send(Event->Sender, new NMon::TEvHttpInfoRes(HTTPOKTEXT + ss.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));

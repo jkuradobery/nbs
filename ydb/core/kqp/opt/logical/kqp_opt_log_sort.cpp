@@ -11,12 +11,12 @@ using namespace NYql::NDq;
 using namespace NYql::NNodes;
 
 TExprBase KqpTopSortOverExtend(NNodes::TExprBase node, TExprContext& ctx, const TParentsMap& parents) {
-    if (!node.Maybe<TCoTopBase>().Input().Maybe<TCoExtend>()) {
+    if (!node.Maybe<TCoTopSort>().Input().Maybe<TCoExtend>()) {
         return node;
     }
 
-    auto topBase = node.Cast<TCoTopBase>();
-    auto extend = topBase.Input().Cast<TCoExtend>();
+    auto topSort = node.Cast<TCoTopSort>();
+    auto extend = topSort.Input().Cast<TCoExtend>();
 
     if (!IsSingleConsumer(extend, parents)) {
         return node;
@@ -25,12 +25,11 @@ TExprBase KqpTopSortOverExtend(NNodes::TExprBase node, TExprContext& ctx, const 
     TVector<TExprBase> inputs;
     inputs.reserve(extend.ArgCount());
     for (const auto& arg : extend) {
-        auto input = Build<TCoTopBase>(ctx, node.Pos())
-            .CallableName(node.Ref().Content())
+        auto input = Build<TCoTopSort>(ctx, node.Pos())
             .Input(arg)
-            .Count(topBase.Count())
-            .SortDirections(topBase.SortDirections())
-            .KeySelectorLambda(topBase.KeySelectorLambda())
+            .Count(topSort.Count())
+            .SortDirections(topSort.SortDirections())
+            .KeySelectorLambda(topSort.KeySelectorLambda())
             .Done();
 
         inputs.push_back(input);
@@ -42,10 +41,10 @@ TExprBase KqpTopSortOverExtend(NNodes::TExprBase node, TExprContext& ctx, const 
             .Input<TCoExtend>()
                 .Add(inputs)
                 .Build()
-            .SortDirections(topBase.SortDirections())
-            .KeySelectorLambda(topBase.KeySelectorLambda())
+            .SortDirections(topSort.SortDirections())
+            .KeySelectorLambda(topSort.KeySelectorLambda())
             .Build()
-        .Count(topBase.Count())
+        .Count(topSort.Count())
         .Done();
 }
 

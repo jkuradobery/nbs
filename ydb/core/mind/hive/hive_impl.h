@@ -1,6 +1,6 @@
 #pragma once
 #include <bitset>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 #include <ydb/core/base/hive.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/blobstorage.h>
@@ -27,11 +27,9 @@
 #include <ydb/core/sys_view/common/events.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
-#include <ydb/core/util/event_priority_queue.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <library/cpp/containers/ring_buffer/ring_buffer.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/queue.h>
 #include <util/random/random.h>
@@ -53,9 +51,8 @@
 #include "storage_pool_info.h"
 #include "sequencer.h"
 #include "boot_queue.h"
-#include "object_distribution.h"
 
-#define DEPRECATED_CTX (ActorContext())
+#define DEPRECATED_CTX (TlsActivationContext->ActorContextFor(SelfId()))
 #define DEPRECATED_NOW (TActivationContext::Now())
 
 template <typename T>
@@ -125,9 +122,7 @@ TResourceRawValues ResourceRawValuesFromMetrics(const NKikimrHive::TTabletMetric
 TString GetResourceValuesText(const NKikimrTabletBase::TMetrics& values);
 TString GetResourceValuesText(const TTabletInfo& tablet);
 TString GetResourceValuesText(const TResourceRawValues& values);
-NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values);
 TString GetResourceValuesText(const TResourceNormalizedValues& values);
-NJson::TJsonValue GetResourceValuesJson(const TResourceNormalizedValues& values);
 TString GetResourceValuesHtml(const TResourceRawValues& values);
 NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values);
 NJson::TJsonValue GetResourceValuesJson(const TResourceRawValues& values, const TResourceRawValues& maximum);
@@ -135,23 +130,18 @@ TString GetResourceValuesHtml(const NKikimrTabletBase::TMetrics& values);
 NJson::TJsonValue GetResourceValuesJson(const NKikimrTabletBase::TMetrics& values);
 ui64 GetReadThroughput(const NKikimrTabletBase::TMetrics& values);
 ui64 GetWriteThroughput(const NKikimrTabletBase::TMetrics& values);
-TString GetCounter(i64 counter, const TString& zero = "0");
-TString GetBytes(i64 bytes, const TString& zero = "0B");
-TString GetBytesPerSecond(i64 bytes, const TString& zero = "0B/s");
-TString GetTimes(i64 times, const TString& zero = "0.00%");
+TString GetCounter(ui64 counter, const TString& zero = "0");
+TString GetBytes(ui64 bytes, const TString& zero = "0B");
+TString GetBytesPerSecond(ui64 bytes, const TString& zero = "0B/s");
+TString GetTimes(ui64 times, const TString& zero = "0.00%");
 TString GetConditionalGreyString(const TString& str, bool condition);
 TString GetConditionalBoldString(const TString& str, bool condition);
 TString GetConditionalRedString(const TString& str, bool condition);
-TString GetValueWithColoredGlyph(double val, double maxVal);
 TString GetDataCenterName(ui64 dataCenterId);
 TString LongToShortTabletName(const TString& longTabletName);
 TString GetLocationString(const NActors::TNodeLocation& location);
 void MakeTabletTypeSet(std::vector<TTabletTypes::EType>& list);
 bool IsValidTabletType(TTabletTypes::EType type);
-bool IsValidObjectId(const TFullObjectId& objectId);
-TString GetRunningTabletsText(ui64 runningTablets, ui64 totalTablets, bool warmUp);
-bool IsResourceDrainingState(TTabletInfo::EVolatileState state);
-bool IsAliveState(TTabletInfo::EVolatileState state);
 
 class THive : public TActor<THive>, public TTabletExecutedFlat, public THiveSharedSettings {
 public:
@@ -169,7 +159,6 @@ protected:
     friend class TQueryMigrationWaitActor;
     friend class TReleaseTabletsWaitActor;
     friend class TDrainNodeWaitActor;
-    friend struct TNodeInfo;
 
     friend class TTxInitScheme;
     friend class TTxDeleteBase;
@@ -202,8 +191,6 @@ protected:
     friend class TTxMonEvent_ResumeTablet;
     friend class TTxMonEvent_InitMigration;
     friend class TTxMonEvent_QueryMigration;
-    friend class TTxMonEvent_RebalanceFromScratch;
-    friend class TTxMonEvent_ObjectStats;
     friend class TTxKillNode;
     friend class TTxLoadEverything;
     friend class TTxRestartTablet;
@@ -229,18 +216,15 @@ protected:
     friend class TTxSwitchDrainOff;
     friend class TTxTabletOwnersReply;
     friend class TTxRequestTabletOwners;
-    friend class TTxUpdateTabletsObject;
 
     friend class TDeleteTabletActor;
 
     friend struct TStoragePoolInfo;
 
-    bool IsItPossibleToStartBalancer(EBalancerType balancerType);
-    void StartHiveBalancer(TBalancerSettings&& settings);
+    void StartHiveBalancer(int maxMovements = 0, bool recheckOnFinish = false, const std::vector<TNodeId>& filterNodeIds = {});
     void StartHiveDrain(TNodeId nodeId, TDrainSettings settings);
     void StartHiveFill(TNodeId nodeId, const TActorId& initiator);
     void CreateEvMonitoring(NMon::TEvRemoteHttpInfo::TPtr& ev, const TActorContext& ctx);
-    NJson::TJsonValue GetBalancerProgressJson();
     ITransaction* CreateDeleteTablet(TEvHive::TEvDeleteTablet::TPtr& ev);
     ITransaction* CreateDeleteOwnerTablets(TEvHive::TEvDeleteOwnerTablets::TPtr& ev);
     ITransaction* CreateDeleteTabletResult(TEvTabletBase::TEvDeleteTabletResult::TPtr& ev);
@@ -289,7 +273,6 @@ protected:
     ITransaction* CreateSwitchDrainOff(TNodeId nodeId, TDrainSettings settings, NKikimrProto::EReplyStatus status, ui32 movements);
     ITransaction* CreateTabletOwnersReply(TEvHive::TEvTabletOwnersReply::TPtr event);
     ITransaction* CreateRequestTabletOwners(TEvHive::TEvRequestTabletOwners::TPtr event);
-    ITransaction* CreateUpdateTabletsObject(TEvHive::TEvUpdateTabletsObject::TPtr event);
 
 public:
     TDomainsView DomainsView;
@@ -322,7 +305,6 @@ protected:
     ui64 TabletsAlive = 0;
     ui32 DataCenters = 1;
     ui32 RegisteredDataCenters = 1;
-    TObjectDistributions ObjectDistributions;
 
     bool AreWeRootHive() const { return RootHiveId == HiveId; }
     bool AreWeSubDomainHive() const { return RootHiveId != HiveId; }
@@ -331,12 +313,12 @@ protected:
         NKikimrTabletBase::TMetrics Metrics;
         ui64 Counter = 0;
 
-        void IncreaseCount(ui64 value = 1) {
-            Counter += value;
+        void IncreaseCount() {
+            ++Counter;
         }
 
         void DecreaseCount() {
-            Y_ABORT_UNLESS(Counter > 0);
+            Y_VERIFY(Counter > 0);
             --Counter;
         }
 
@@ -354,22 +336,20 @@ protected:
         }
     };
 
-    std::unordered_map<TFullObjectId, TAggregateMetrics> ObjectToTabletMetrics;
+    std::unordered_map<TObjectId, TAggregateMetrics> ObjectToTabletMetrics;
     std::unordered_map<TTabletTypes::EType, TAggregateMetrics> TabletTypeToTabletMetrics;
 
     TBootQueue BootQueue;
     bool ProcessWaitQueueScheduled = false;
     bool ProcessBootQueueScheduled = false;
     bool ProcessBootQueuePostponed = false;
-    TInstant LastConnect;
-    bool WarmUp;
 
     THashMap<ui32, TEvInterconnect::TNodeInfo> NodesInfo;
     TTabletCountersBase* TabletCounters;
     TAutoPtr<TTabletCountersBase> TabletCountersPtr;
+    i32 BalancerProgress; // all values below 0 mean that balancer is not active (-1 = dead, -2 = starting)
     std::unordered_set<TNodeId> BalancerNodes; // all nodes, affected by running balancers
-    EBalancerType LastBalancerTrigger = EBalancerType::Manual;
-    std::array<TBalancerStats, EBalancerTypeSize> BalancerStats;
+
     NKikimrHive::EMigrationState MigrationState = NKikimrHive::EMigrationState::MIGRATION_UNKNOWN;
     i32 MigrationProgress = 0;
     NKikimrHive::TEvSeizeTablets MigrationFilter;
@@ -382,9 +362,7 @@ protected:
     bool RequestingSequenceNow = false;
     size_t RequestingSequenceIndex = 0;
     bool ProcessTabletBalancerScheduled = false;
-    bool ProcessTabletBalancerPostponed = false;
     bool ProcessPendingOperationsScheduled = false;
-    bool LogTabletMovesScheduled = false;
     TResourceRawValues TotalRawResourceValues = {};
     TResourceNormalizedValues TotalNormalizedResourceValues = {};
     TInstant LastResourceChangeReaction;
@@ -397,7 +375,6 @@ protected:
     bool SpreadNeighbours = true; // spread tablets of the same object across cluster
     TSequenceGenerator Sequencer;
     TOwnershipKeeper Keeper;
-    TEventPriorityQueue<THive> EventQueue{*this};
 
     struct TPendingCreateTablet {
         NKikimrHive::TEvCreateTablet CreateTablet;
@@ -434,29 +411,6 @@ protected:
     // normalized to be sorted list of unique values
     std::vector<TTabletTypes::EType> BalancerIgnoreTabletTypes; // built from CurrentConfig
 
-    struct TTabletMoveInfo {
-        TInstant Timestamp;
-        TFullTabletId Tablet;
-        TNodeId From;
-        TNodeId To;
-        double Priority;
-        TTabletTypes::EType TabletType;
-
-
-        TTabletMoveInfo(TInstant timestamp, const TTabletInfo& tablet, TNodeId from, TNodeId to);
-
-        TString ToHTML() const;
-
-        std::weak_ordering operator<=>(const TTabletMoveInfo& other) const;
-    };
-
-    TStaticRingBuffer<TTabletMoveInfo, 5> TabletMoveHistory;
-    std::vector<TTabletMoveInfo> TabletMoveSamplesForLog; // stores (at most) MOVE_SAMPLES_PER_LOG_ENTRY highest priority moves in a heap
-    static constexpr size_t MOVE_SAMPLES_PER_LOG_ENTRY = 10;
-    std::unordered_map<TTabletTypes::EType, ui64> TabletMovesByTypeForLog;
-    TInstant LogTabletMovesSchedulingTime;
-
-
     // to be removed later
     bool TabletOwnersSynced = false;
     // to be removed later
@@ -483,6 +437,7 @@ protected:
     void Handle(TEvLocal::TEvTabletStatus::TPtr&);
     void Handle(TEvLocal::TEvRegisterNode::TPtr&);
     void Handle(TEvBlobStorage::TEvControllerSelectGroupsResult::TPtr&);
+    void Handle(TEvents::TEvPoisonPill::TPtr&);
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr&);
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr&);
     void Handle(TEvTabletPipe::TEvServerConnected::TPtr&);
@@ -529,11 +484,9 @@ protected:
     void Handle(TEvPrivate::TEvKickTablet::TPtr&);
     void Handle(TEvPrivate::TEvBootTablets::TPtr&);
     void Handle(TEvPrivate::TEvCheckTabletNodeAlive::TPtr&);
-    void HandleInit(TEvPrivate::TEvProcessBootQueue::TPtr&);
     void Handle(TEvPrivate::TEvProcessBootQueue::TPtr&);
     void Handle(TEvPrivate::TEvPostponeProcessBootQueue::TPtr&);
     void Handle(TEvPrivate::TEvProcessDisconnectNode::TPtr&);
-    void HandleInit(TEvPrivate::TEvProcessTabletBalancer::TPtr&);
     void Handle(TEvPrivate::TEvProcessTabletBalancer::TPtr&);
     void Handle(TEvPrivate::TEvUnlockTabletReconnectTimeout::TPtr&);
     void Handle(TEvPrivate::TEvProcessPendingOperations::TPtr&);
@@ -545,10 +498,6 @@ protected:
     void Handle(NSysView::TEvSysView::TEvGetTabletsRequest::TPtr& ev);
     void Handle(TEvHive::TEvRequestTabletOwners::TPtr& ev);
     void Handle(TEvHive::TEvTabletOwnersReply::TPtr& ev);
-    void Handle(TEvHive::TEvUpdateTabletsObject::TPtr& ev);
-    void Handle(TEvPrivate::TEvRefreshStorageInfo::TPtr& ev);
-    void Handle(TEvPrivate::TEvLogTabletMoves::TPtr& ev);
-    void Handle(TEvPrivate::TEvProcessIncomingEvent::TPtr& ev);
 
 protected:
     void RestartPipeTx(ui64 tabletId);
@@ -632,9 +581,6 @@ public:
     void UpdateCounterTabletsTotal(i64 tabletsTotalDiff);
     void UpdateCounterTabletsAlive(i64 tabletsAliveDiff);
     void UpdateCounterBootQueueSize(ui64 bootQueueSize);
-    void UpdateCounterEventQueueSize(i64 eventQueueSizeDiff);
-    void UpdateCounterNodesConnected(i64 nodesConnectedDiff);
-    void RecordTabletMove(const TTabletMoveInfo& info);
     bool DomainHasNodes(const TSubDomainKey &domainKey) const;
     void ProcessBootQueue();
     void ProcessWaitQueue();
@@ -642,7 +588,7 @@ public:
     void ProcessPendingOperations();
     void ProcessTabletBalancer();
     const TVector<i64>& GetTabletTypeAllowedMetricIds(TTabletTypes::EType type) const;
-    static const TVector<i64>& GetDefaultAllowedMetricIdsForType(TTabletTypes::EType type);
+    static const TVector<i64>& GetDefaultAllowedMetricIds();
     static bool IsValidMetrics(const NKikimrTabletBase::TMetrics& metrics);
     static bool IsValidMetricsCPU(const NKikimrTabletBase::TMetrics& metrics);
     static bool IsValidMetricsMemory(const NKikimrTabletBase::TMetrics& metrics);
@@ -669,13 +615,6 @@ public:
     void StopTablet(const TActorId& local, TFullTabletId tabletId);
     void ExecuteProcessBootQueue(NIceDb::TNiceDb& db, TSideEffects& sideEffects);
     void UpdateTabletFollowersNumber(TLeaderTabletInfo& tablet, NIceDb::TNiceDb& db, TSideEffects& sideEffects);
-    TDuration GetBalancerCooldown() const;
-    void UpdateObjectCount(const TLeaderTabletInfo& tablet, const TNodeInfo& node, i64 diff);
-    ui64 GetObjectImbalance(TFullObjectId object);
-
-    ui32 GetEventPriority(IEventHandle* ev);
-    void PushProcessIncomingEvent();
-    void ProcessEvent(std::unique_ptr<NActors::IEventHandle> event);
 
     TTabletMetricsAggregates DefaultResourceMetricsAggregates;
     ui64 MetricsWindowSize = TDuration::Minutes(1).MilliSeconds();
@@ -698,10 +637,6 @@ public:
 
     TDuration GetMinPeriodBetweenBalance() const {
         return TDuration::Seconds(CurrentConfig.GetMinPeriodBetweenBalance());
-    }
-
-    TDuration GetMinPeriodBetweenEmergencyBalance() const {
-        return TDuration::Seconds(CurrentConfig.GetMinPeriodBetweenEmergencyBalance());
     }
 
     TDuration GetMinPeriodBetweenReassign() const {
@@ -728,50 +663,20 @@ public:
         return CurrentConfig.GetBalancerInflight();
     }
 
-    ui64 GetEmergencyBalancerInflight() const {
-        return CurrentConfig.GetEmergencyBalancerInflight();
-    }
-
     ui64 GetMaxBootBatchSize() const {
         return CurrentConfig.GetMaxBootBatchSize();
     }
 
-    TResourceNormalizedValues GetMinScatterToBalance() const {
-        TResourceNormalizedValues minScatter;
-        std::get<NMetrics::EResource::CPU>(minScatter) = CurrentConfig.GetMinCPUScatterToBalance();
-        std::get<NMetrics::EResource::Memory>(minScatter) = CurrentConfig.GetMinMemoryScatterToBalance();
-        std::get<NMetrics::EResource::Network>(minScatter) = CurrentConfig.GetMinNetworkScatterToBalance();
-        std::get<NMetrics::EResource::Counter>(minScatter) = CurrentConfig.GetMinCounterScatterToBalance();
-
-        if (CurrentConfig.HasMinScatterToBalance()) {
-            if (!CurrentConfig.HasMinCPUScatterToBalance()) {
-                std::get<NMetrics::EResource::CPU>(minScatter) = CurrentConfig.GetMinScatterToBalance();
-            }
-            if (!CurrentConfig.HasMinNetworkScatterToBalance()) {
-                std::get<NMetrics::EResource::Network>(minScatter) = CurrentConfig.GetMinScatterToBalance();
-            }
-            if (!CurrentConfig.HasMinMemoryScatterToBalance()) {
-                std::get<NMetrics::EResource::Memory>(minScatter) = CurrentConfig.GetMinScatterToBalance();
-            }
-        }
-
-        return minScatter;
+    double GetMinScatterToBalance() const {
+        return CurrentConfig.GetMinScatterToBalance();
     }
 
     double GetMaxNodeUsageToKick() const {
         return CurrentConfig.GetMaxNodeUsageToKick();
     }
 
-    TResourceNormalizedValues GetMinNodeUsageToBalance() const {
-        // MinNodeUsageToBalance is needed so that small fluctuations in metrics do not cause scatter
-        // when cluster load is low. Counter does not fluctuate, so it does not need it.
-        double minUsageToBalance = CurrentConfig.GetMinNodeUsageToBalance();
-        TResourceNormalizedValues minValuesToBalance;
-        std::get<NMetrics::EResource::CPU>(minValuesToBalance) = minUsageToBalance;
-        std::get<NMetrics::EResource::Memory>(minValuesToBalance) = minUsageToBalance;
-        std::get<NMetrics::EResource::Network>(minValuesToBalance) = minUsageToBalance;
-        std::get<NMetrics::EResource::Counter>(minValuesToBalance) = 0;
-        return minValuesToBalance;
+    double GetMinNodeUsageToBalance() const {
+        return CurrentConfig.GetMinNodeUsageToBalance();
     }
 
     ui64 GetMaxTabletsScheduled() const {
@@ -779,7 +684,7 @@ public:
     }
 
     bool GetSpreadNeighbours() const {
-        return SpreadNeighbours;
+        return CurrentConfig.GetSpreadNeighbours();
     }
 
     ui64 GetDefaultUnitIOPS() const {
@@ -818,11 +723,8 @@ public:
         return TDuration::MilliSeconds(CurrentConfig.GetTabletRestartsPeriod());
     }
 
-    ui64 GetTabletRestartsMaxCount() const {
-        if (CurrentConfig.HasTabletRestarsMaxCount() && !CurrentConfig.HasTabletRestartsMaxCount()) {
-            return CurrentConfig.GetTabletRestarsMaxCount();
-        }
-        return CurrentConfig.GetTabletRestartsMaxCount();
+    ui64 GetTabletRestarsMaxCount() const {
+        return CurrentConfig.GetTabletRestarsMaxCount();
     }
 
     TDuration GetPostponeStartPeriod() const {
@@ -831,14 +733,6 @@ public:
 
     bool GetCheckMoveExpediency() const {
         return CurrentConfig.GetCheckMoveExpediency();
-    }
-
-    ui64 GetObjectImbalanceToBalance() {
-        if (GetSpreadNeighbours()) {
-            return CurrentConfig.GetObjectImbalanceToBalance();
-        } else {
-            return std::numeric_limits<ui64>::max();
-        }
     }
 
     const std::unordered_map<TTabletTypes::EType, NKikimrConfig::THiveTabletLimit>& GetTabletLimit() const {
@@ -870,30 +764,6 @@ public:
         return (found != ignoreList.end());
     }
 
-    double GetSpaceUsagePenaltyThreshold() {
-        return CurrentConfig.GetSpaceUsagePenaltyThreshold();
-    }
-
-    double GetSpaceUsagePenalty() {
-        return CurrentConfig.GetSpaceUsagePenalty();
-    }
-
-    TDuration GetWarmUpBootWaitingPeriod() const {
-        return TDuration::MilliSeconds(CurrentConfig.GetWarmUpBootWaitingPeriod());
-    }
-
-    TDuration GetMaxWarmUpPeriod() const {
-        return TDuration::Seconds(CurrentConfig.GetMaxWarmUpPeriod());
-    }
-
-    ui64 GetNodeRestartsToIgnoreInWarmup() const {
-        return CurrentConfig.GetNodeRestartsToIgnoreInWarmup();
-    }
-
-    NKikimrConfig::THiveConfig::EHiveBootStrategy GetBootStrategy() const {
-        return CurrentConfig.GetBootStrategy();
-    }
-
     static void ActualizeRestartStatistics(google::protobuf::RepeatedField<google::protobuf::uint64>& restartTimestamps, ui64 barrier);
     static bool IsSystemTablet(TTabletTypes::EType type);
 
@@ -908,36 +778,19 @@ protected:
     TResourceRawValues GetDefaultResourceInitialMaximumValues();
     double GetScatter() const;
     double GetUsage() const;
-    // If the scatter is considered okay, returns nullopt. Otherwise, returns the resource that should be better balanced.
-    std::optional<EResourceToBalance> CheckScatter(const TResourceNormalizedValues& scatterByResource) const;
 
     struct THiveStats {
-        struct TNodeStat {
-            TNodeId NodeId;
-            double Usage;
-            TResourceNormalizedValues ResourceNormValues;
-
-            TNodeStat(TNodeId node, double usage, TResourceNormalizedValues values)
-                : NodeId(node)
-                , Usage(usage)
-                , ResourceNormValues(values)
-            {
-            }
-        };
-
         double MinUsage;
         TNodeId MinUsageNodeId;
         double MaxUsage;
         TNodeId MaxUsageNodeId;
         double Scatter;
-        TResourceNormalizedValues ScatterByResource;
-        std::vector<TNodeStat> Values;
     };
 
     THiveStats GetStats() const;
     void RemoveSubActor(ISubActor* subActor);
     const NKikimrLocal::TLocalConfig &GetLocalConfig() const { return LocalConfig; }
-    NKikimrTabletBase::TMetrics GetDefaultResourceValuesForObject(TFullObjectId objectId);
+    NKikimrTabletBase::TMetrics GetDefaultResourceValuesForObject(TObjectId objectId);
     NKikimrTabletBase::TMetrics GetDefaultResourceValuesForTabletType(TTabletTypes::EType type);
     NKikimrTabletBase::TMetrics GetDefaultResourceValuesForProfile(TTabletTypes::EType type, const TString& resourceProfile);
     static void AggregateMetricsMax(NKikimrTabletBase::TMetrics& aggregate, const NKikimrTabletBase::TMetrics& value);
@@ -950,7 +803,6 @@ protected:
     void InitDefaultChannelBind(TChannelBind& bind);
     void RequestPoolsInformation();
     void RequestFreeSequence();
-    void EnqueueIncomingEvent(STATEFN_SIG);
 
     bool SeenDomain(TSubDomainKey domain);
     void ResolveDomain(TSubDomainKey domain);

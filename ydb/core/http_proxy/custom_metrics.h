@@ -42,10 +42,20 @@ static const bool setStreamPrefix{true};
 
 template <>
 void FillInputCustomMetrics<PutRecordsRequest>(const PutRecordsRequest& request, const THttpRequestContext& httpContext, const TActorContext& ctx) {
+    /* deprecated metric: */ ctx.Send(MakeMetricsServiceID(),
+             new TEvServerlessProxy::TEvCounter{request.records_size(), true, true,
+                 BuildLabels("", httpContext, "stream.incoming_records_per_second", setStreamPrefix)
+             });
+
     i64 bytes = 0;
     for (auto& rec : request.records()) {
         bytes += rec.data().size() +  rec.partition_key().size() + rec.explicit_hash_key().size();
     }
+
+    /* deprecated metric */ ctx.Send(MakeMetricsServiceID(),
+             new TEvServerlessProxy::TEvCounter{bytes, true, true,
+                 BuildLabels("", httpContext, "stream.incoming_bytes_per_second", setStreamPrefix)
+             });
 
     /* deprecated metric: */ ctx.Send(MakeMetricsServiceID(),
              new TEvServerlessProxy::TEvCounter{bytes, true, true,
@@ -62,6 +72,10 @@ template <>
 void FillInputCustomMetrics<PutRecordRequest>(const PutRecordRequest& request, const THttpRequestContext& httpContext, const TActorContext& ctx) {
     /* deprecated metric: */ ctx.Send(MakeMetricsServiceID(),
              new TEvServerlessProxy::TEvCounter{1, true, true,
+                 BuildLabels("", httpContext, "stream.incoming_records_per_second", setStreamPrefix)
+             });
+    /* deprecated metric: */ ctx.Send(MakeMetricsServiceID(),
+             new TEvServerlessProxy::TEvCounter{1, true, true,
                  BuildLabels("", httpContext, "stream.put_record.records_per_second", setStreamPrefix)
              });
     ctx.Send(MakeMetricsServiceID(),
@@ -71,6 +85,10 @@ void FillInputCustomMetrics<PutRecordRequest>(const PutRecordRequest& request, c
 
     i64 bytes = request.data().size() +  request.partition_key().size() + request.explicit_hash_key().size();
 
+    /* deprecated metric: */ ctx.Send(MakeMetricsServiceID(),
+             new TEvServerlessProxy::TEvCounter{bytes, true, true,
+                 BuildLabels("", httpContext, "stream.incoming_bytes_per_second", setStreamPrefix)
+             });
     /* deprecated metric: */ ctx.Send(MakeMetricsServiceID(),
              new TEvServerlessProxy::TEvCounter{bytes, true, true,
                  BuildLabels("", httpContext, "stream.put_record.bytes_per_second", setStreamPrefix)
@@ -140,7 +158,7 @@ void FillOutputCustomMetrics<GetRecordsResult>(const GetRecordsResult& result, c
                                          r.partition_key().size() +
                                          r.sequence_number().size() +
                                          sizeof(r.approximate_arrival_timestamp()) +
-                                         sizeof(r.encryption_type())
+                                         sizeof(r.encryption())
                                          ;
                                  });
 

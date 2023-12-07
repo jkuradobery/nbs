@@ -1,8 +1,7 @@
 #pragma once
 
 #include <ydb/core/kqp/expr_nodes/kqp_expr_nodes.h>
-#include <ydb/library/yql/ast/yql_pos_handle.h>
-#include <ydb/library/yql/ast/yql_expr.h>
+#include <ydb/core/kqp/gateway/kqp_gateway.h>
 
 namespace NYql {
 
@@ -12,8 +11,7 @@ enum class EPhysicalQueryType {
     Unspecified,
     Data,
     Scan,
-    GenericQuery,
-    GenericScript,
+    Query
 };
 
 struct TKqpPhyQuerySettings {
@@ -45,24 +43,16 @@ struct TKqpPhyTxSettings {
 
 constexpr TStringBuf KqpReadRangesSourceName = "KqpReadRangesSource";
 
-static constexpr std::string_view TKqpStreamLookupStrategyName = "LookupRows"sv;
-static constexpr std::string_view TKqpStreamLookupJoinStrategyName = "LookupJoinRows"sv;
-
 struct TKqpReadTableSettings {
     static constexpr TStringBuf SkipNullKeysSettingName = "SkipNullKeys";
     static constexpr TStringBuf ItemsLimitSettingName = "ItemsLimit";
     static constexpr TStringBuf ReverseSettingName = "Reverse";
     static constexpr TStringBuf SortedSettingName = "Sorted";
-    static constexpr TStringBuf SequentialSettingName = "Sequential";
-    static constexpr TStringBuf ForcePrimaryName = "ForcePrimary";
-    static constexpr TStringBuf GroupByFieldNames = "GroupByFieldNames";
 
     TVector<TString> SkipNullKeys;
     TExprNode::TPtr ItemsLimit;
     bool Reverse = false;
     bool Sorted = false;
-    TMaybe<ui64> SequentialInFlight;
-    bool ForcePrimary = false;
 
     void AddSkipNullKey(const TString& key);
     void SetItemsLimit(const TExprNode::TPtr& expr) { ItemsLimit = expr; }
@@ -79,15 +69,11 @@ struct TKqpReadTableSettings {
 
 struct TKqpUpsertRowsSettings {
     static constexpr TStringBuf InplaceSettingName = "Inplace";
-    static constexpr TStringBuf IsUpdateSettingName = "IsUpdate";
 
     bool Inplace = false;
-    bool IsUpdate = false;
 
     void SetInplace() { Inplace = true; }
-    void SetIsUpdate() { IsUpdate = true; }
 
-    static TKqpUpsertRowsSettings Parse(const NNodes::TCoNameValueTupleList& settingsList);
     static TKqpUpsertRowsSettings Parse(const NNodes::TKqpUpsertRows& node);
     NNodes::TCoNameValueTupleList BuildNode(TExprContext& ctx, TPositionHandle pos) const;
 };
@@ -95,22 +81,16 @@ struct TKqpUpsertRowsSettings {
 struct TKqpReadTableExplainPrompt {
     static constexpr TStringBuf UsedKeyColumnsName = "UsedKeyColumns";
     static constexpr TStringBuf ExpectedMaxRangesName = "ExpectedMaxRanges";
-    static constexpr TStringBuf PointPrefixLenName = "PointPrefixLen";
 
     TVector<TString> UsedKeyColumns;
-    TMaybe<ui64> ExpectedMaxRanges;
-    ui64 PointPrefixLen = 0;
+    TString ExpectedMaxRanges;
 
     void SetUsedKeyColumns(TVector<TString> columns) {
         UsedKeyColumns = columns;
     }
 
     void SetExpectedMaxRanges(size_t count) {
-        ExpectedMaxRanges = count;
-    }
-
-    void SetPointPrefixLen(size_t len) {
-        PointPrefixLen = len;
+        ExpectedMaxRanges = ToString(count);
     }
 
     NNodes::TCoNameValueTupleList BuildNode(TExprContext& ctx, TPositionHandle pos) const;

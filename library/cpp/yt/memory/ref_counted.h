@@ -16,15 +16,42 @@ class TRefCountedBase
 public:
     TRefCountedBase() = default;
 
+    // Make destructor protected
+    virtual ~TRefCountedBase() noexcept = default;
+
+    virtual void DestroyRefCounted() = 0;
+
+private:
     TRefCountedBase(const TRefCountedBase&) = delete;
     TRefCountedBase(TRefCountedBase&&) = delete;
 
     TRefCountedBase& operator=(const TRefCountedBase&) = delete;
     TRefCountedBase& operator=(TRefCountedBase&&) = delete;
+};
 
-    virtual ~TRefCountedBase() noexcept = default;
+////////////////////////////////////////////////////////////////////////////////
 
-    virtual void DestroyRefCounted() = 0;
+template <class T, class = void>
+struct TFreeMemory
+{
+    static void Do(void* ptr)
+    {
+#ifdef _win_
+        ::_aligned_free(ptr);
+#else
+        ::free(ptr);
+#endif
+    }
+};
+
+template <class T>
+struct TFreeMemory<T, std::void_t<typename T::TAllocator>>
+{
+    static void Do(void* ptr)
+    {
+        using TAllocator = typename T::TAllocator;
+        TAllocator::Free(ptr);
+    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -75,6 +102,8 @@ void DeallocateRefCounted(const T* obj);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// API
+
 template <class T>
 void Ref(T* obj, int n = 1);
 
@@ -83,17 +112,16 @@ void Unref(T* obj, int n = 1);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class TRefCounted
+struct TRefCounted
     : public TRefCountedBase
     , public TRefCounter
 {
-public:
     void Unref() const;
+
     void WeakUnref() const;
 
-protected:
     template <class T>
-    static void DestroyRefCountedImpl(T* obj);
+    static void DestroyRefCountedImpl(T* ptr);
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -144,31 +172,15 @@ using TRefCountedPtr = TIntrusivePtr<TRefCounted>;
 #define DEFINE_REFCOUNTED_TYPE(type) \
     [[maybe_unused]] YT_ATTRIBUTE_USED Y_FORCE_INLINE const ::NYT::TRefCounter* GetRefCounter(const type* obj) \
     { \
-        return ::NYT::NDetail::TRefCountedTraits<type>::GetRefCounter(obj); \
+        return ::NYT::TRefCountedHelper<type>::GetRefCounter(obj); \
     } \
     [[maybe_unused]] YT_ATTRIBUTE_USED Y_FORCE_INLINE void DestroyRefCounted(const type* obj) \
     { \
-        ::NYT::NDetail::TRefCountedTraits<type>::Destroy(obj); \
+        ::NYT::TRefCountedHelper<type>::Destroy(obj); \
     } \
     [[maybe_unused]] YT_ATTRIBUTE_USED Y_FORCE_INLINE void DeallocateRefCounted(const type* obj) \
     { \
-        ::NYT::NDetail::TRefCountedTraits<type>::Deallocate(obj); \
-    }
-
-//! Provides weak implementations for Ref/Unref overloads.
-//! Do not use if unsure.
-#define DEFINE_WEAK_REFCOUNTED_TYPE(type) \
-    [[maybe_unused]] Y_WEAK YT_ATTRIBUTE_USED const ::NYT::TRefCounter* GetRefCounter(const type*) \
-    { \
-        YT_ABORT(); \
-    } \
-    [[maybe_unused]] Y_WEAK YT_ATTRIBUTE_USED void DestroyRefCounted(const type*) \
-    { \
-        YT_ABORT(); \
-    } \
-    [[maybe_unused]] Y_WEAK YT_ATTRIBUTE_USED void DeallocateRefCounted(const type*) \
-    { \
-        YT_ABORT(); \
+        ::NYT::TRefCountedHelper<type>::Deallocate(obj); \
     }
 
 ////////////////////////////////////////////////////////////////////////////////

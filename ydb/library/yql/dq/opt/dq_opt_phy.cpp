@@ -7,7 +7,6 @@
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/providers/common/provider/yql_provider.h>
 #include <ydb/library/yql/dq/type_ann/dq_type_ann.h>
-#include <ydb/library/yql/providers/dq/expr_nodes/dqs_expr_nodes.h>
 
 namespace NYql::NDq {
 
@@ -76,164 +75,8 @@ TMaybeNode<TCoMux> ConvertMuxArgumentsToFlows(TCoMux node, TExprContext& ctx) {
         .Done();
 }
 
-bool PrepareKeySelectorToStage(TCoLambda& keySelector, TCoLambda& stageLambda, TCoLambda& handlerLambda, TExprContext& ctx) {
-    if (keySelector.Body().Ref().IsComplete()) {
-        // constant key
-        return false;
-    }
-    const TPositionHandle pos = keySelector.Pos();
-    TVector<TExprBase> keyElements;
-    if (auto maybeTuple = keySelector.Body().Maybe<TExprList>()) {
-        auto tuple = maybeTuple.Cast();
-        for (const auto& element : tuple) {
-            keyElements.push_back(element);
-        }
-    } else {
-        keyElements.push_back(keySelector.Body());
-    }
-
-    size_t genCount = 0;
-    TCoLambda removeColumns = BuildIdentityLambda(pos, ctx);
-    TCoLambda addColumns = BuildIdentityLambda(pos, ctx);
-    for (auto& element : keyElements) {
-        if (element.Maybe<TCoMember>()) {
-            auto member = element.Cast<TCoMember>();
-            if (member.Struct().Raw() == keySelector.Args().Arg(0).Raw()) {
-                continue;
-            }
-        }
-
-        TString newMemberName = TString("_yql_key_selector_") + ToString(genCount++);
-
-        TCoLambda computeElement = Build<TCoLambda>(ctx, pos)
-            .InitFrom(keySelector)
-            .Body(element)
-            .Done();
-
-        addColumns = Build<TCoLambda>(ctx, pos)
-            .Args({"row"})
-            .Body<TCoAddMember>()
-                .Struct<TExprApplier>()
-                    .Apply(addColumns)
-                    .With(0, "row")
-                .Build()
-                .Name()
-                    .Value(newMemberName)
-                .Build()
-                .Item<TExprApplier>()
-                    .Apply(computeElement)
-                    .With(0, "row")
-                .Build()
-            .Build()
-            .Done();
-
-        removeColumns = Build<TCoLambda>(ctx, pos)
-            .Args({"row"})
-            .Body<TCoRemoveMember>()
-                .Struct<TExprApplier>()
-                    .Apply(removeColumns)
-                    .With(0, "row")
-                .Build()
-                .Name()
-                    .Value(newMemberName)
-                .Build()
-            .Build()
-            .Done();
-
-        element = Build<TCoMember>(ctx, pos)
-            .Struct(keySelector.Args().Arg(0))
-            .Name()
-                .Value(newMemberName)
-            .Build()
-            .Done();
-
-    }
-
-    if (!genCount) {
-        return false;
-    }
-
-    handlerLambda = Build<TCoLambda>(ctx, pos)
-        .Args({"flow"})
-        .Body<TExprApplier>()
-            .Apply(handlerLambda)
-            .With<TCoOrderedMap>(0)
-                .Input("flow")
-                .Lambda(removeColumns)
-            .Build()
-        .Build()
-        .Done();
-
-    stageLambda = Build<TCoLambda>(ctx, pos)
-        .Args({"flow"})
-        .Body<TCoOrderedMap>()
-            .Input("flow")
-            .Lambda(addColumns)
-        .Build()
-        .Done();
-
-    if (keyElements.size() == 1) {
-        keySelector = Build<TCoLambda>(ctx, pos)
-            .InitFrom(keySelector)
-            .Body(keyElements.front())
-            .Done();
-    } else {
-        keySelector = Build<TCoLambda>(ctx, pos)
-            .InitFrom(keySelector)
-            .Body<TExprList>()
-                .Add(keyElements)
-            .Build()
-            .Done();
-    }
-
-    keySelector = TCoLambda(ctx.DeepCopyLambda(keySelector.Ref()));
-    return true;
-}
-
-TDqConnection BuildShuffleConnection(TPositionHandle pos, TCoLambda keySelector, TDqCnUnionAll dqUnion, TExprContext& ctx) {
-    const bool isConstKey = keySelector.Body().Ref().IsComplete();
-    if (isConstKey) {
-        return Build<TDqCnUnionAll>(ctx, pos)
-            .Output()
-                .Stage(dqUnion.Output().Stage())
-                .Index(dqUnion.Output().Index())
-            .Build()
-            .Done();
-    }
-
-    TVector<TExprBase> keyElements;
-    if (auto maybeTuple = keySelector.Body().template Maybe<TExprList>()) {
-        auto tuple = maybeTuple.Cast();
-        for (const auto& element : tuple) {
-            keyElements.push_back(element);
-        }
-    } else {
-        keyElements.push_back(keySelector.Body());
-    }
-
-    TVector<TCoAtom> keyColumns;
-    keyColumns.reserve(keyElements.size());
-    for (auto& element : keyElements) {
-        auto member = element.Cast<TCoMember>();
-        YQL_ENSURE(member.Struct().Raw() == keySelector.Args().Arg(0).Raw(), "Should be handled earlier");
-        keyColumns.push_back(element.Cast<TCoMember>().Name());
-    }
-
-    return Build<TDqCnHashShuffle>(ctx, pos)
-        .Output()
-            .Stage(dqUnion.Output().Stage())
-            .Index(dqUnion.Output().Index())
-        .Build()
-        .KeyColumns()
-            .Add(keyColumns)
-        .Build()
-        .Done();
-}
-
 template <typename TPartition>
-TExprBase DqBuildPartitionsStageStub(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
-    const TParentsMap& parentsMap, bool allowStageMultiUsage)
-{
+TExprBase DqBuildPartitionsStageStub(TExprBase node, TExprContext& ctx, const TParentsMap& parentsMap) {
     auto partitionsInput = node.Maybe<TPartition>().Input();
     const bool isMuxInput = partitionsInput.template Maybe<TCoMux>().IsValid();
     if (!partitionsInput.template Maybe<TDqCnUnionAll>() && !isMuxInput) {
@@ -278,7 +121,7 @@ TExprBase DqBuildPartitionsStageStub(TExprBase node, TExprContext& ctx, IOptimiz
                 muxArgs.push_back(child);
                 continue;
             }
-            if (!IsSingleConsumerConnection(conn.Cast(), parentsMap, allowStageMultiUsage)) {
+            if (!IsSingleConsumerConnection(conn.Cast(), parentsMap)) {
                 return node;
             }
             TCoArgument programArg = Build<TCoArgument>(ctx, conn.Cast().Pos())
@@ -310,28 +153,59 @@ TExprBase DqBuildPartitionsStageStub(TExprBase node, TExprContext& ctx, IOptimiz
     } else {
         auto dqUnion = partition.Input().template Cast<TDqCnUnionAll>();
 
-        if (!IsSingleConsumerConnection(dqUnion, parentsMap, allowStageMultiUsage)) {
+        if (!IsSingleConsumerConnection(dqUnion, parentsMap)) {
             return node;
         }
 
         auto keyLambda = partition.KeySelectorLambda();
-        TCoLambda stageLambda = BuildIdentityLambda(node.Pos(), ctx);
-        TCoLambda handlerLambda = partition.ListHandlerLambda();
-        if (PrepareKeySelectorToStage(keyLambda, stageLambda, handlerLambda, ctx)) {
-            auto newConn = DqPushLambdaToStageUnionAll(dqUnion, stageLambda, {}, ctx, optCtx);
-            if (!newConn) {
+        TVector<TExprBase> keyElements;
+        if (auto maybeTuple = keyLambda.Body().template Maybe<TExprList>()) {
+            auto tuple = maybeTuple.Cast();
+            for (const auto& element : tuple) {
+                keyElements.push_back(element);
+            }
+        } else {
+            keyElements.push_back(keyLambda.Body());
+        }
+
+        bool allKeysAreMembers = true;
+
+        TVector<TCoAtom> keyColumns;
+        keyColumns.reserve(keyElements.size());
+        for (auto& element : keyElements) {
+            if (!element.Maybe<TCoMember>()) {
+                allKeysAreMembers = false;
+                break;
+            }
+
+            auto member = element.Cast<TCoMember>();
+            if (member.Struct().Raw() != keyLambda.Args().Arg(0).Raw()) {
                 return node;
             }
 
-            return Build<TPartition>(ctx, node.Pos())
-                .InitFrom(partition)
-                .Input(newConn.Cast())
-                .KeySelectorLambda(keyLambda)
-                .ListHandlerLambda(handlerLambda)
-                .Done();
+            keyColumns.push_back(member.Name());
         }
 
-        TDqConnection newConnection = BuildShuffleConnection(node.Pos(), keyLambda, dqUnion, ctx);
+        TDqConnection newConnection = Build<TDqCnUnionAll>(ctx, node.Pos())
+            .Output()
+                .Stage(dqUnion.Output().Stage())
+                .Index(dqUnion.Output().Index())
+                .Build()
+            .Done();
+        if (!keyColumns.empty() && allKeysAreMembers) {
+            newConnection = Build<TDqCnHashShuffle>(ctx, node.Pos())
+                .Output()
+                    .Stage(dqUnion.Output().Stage())
+                    .Index(dqUnion.Output().Index())
+                    .Build()
+                .KeyColumns()
+                    .Add(keyColumns)
+                    .Build()
+                .Done();
+        } else if (!keyColumns.empty()) {
+            return node;
+        }
+
         TCoArgument programArg = Build<TCoArgument>(ctx, node.Pos())
             .Name("arg")
             .Done();
@@ -346,11 +220,15 @@ TExprBase DqBuildPartitionsStageStub(TExprBase node, TExprContext& ctx, IOptimiz
         if (ETypeAnnotationKind::List == partition.Input().Ref().GetTypeAnn()->GetKind()) {
             handler = Build<TCoLambda>(ctx, handler.Pos())
                 .Args({"flow"})
-                .template Body<TCoToFlow>()
-                    .template Input<TExprApplier>()
-                        .Apply(handler)
-                        .template With<TCoForwardList>(0)
-                            .Stream("flow")
+                .template Body<TCoFlatMap>()
+                    .template Input<TCoSqueezeToList>()
+                        .Stream("flow")
+                    .Build()
+                    .Lambda()
+                        .Args({"list"})
+                        .template Body<TExprApplier>()
+                            .Apply(handler)
+                            .With(0, "list")
                         .Build()
                     .Build()
                 .Build().Done();
@@ -379,7 +257,7 @@ TExprBase DqBuildPartitionsStageStub(TExprBase node, TExprContext& ctx, IOptimiz
                     .Build()
                 .Build()
             .Build()
-        .Settings(TDqStageSettings().SetPartitionMode(TDqStageSettings::EPartitionMode::Aggregate).BuildNode(ctx, node.Pos()))
+        .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
         .Done();
 
     return Build<TDqCnUnionAll>(ctx, node.Pos())
@@ -504,10 +382,28 @@ TMaybeNode<TDqStage> DqPushFlatMapInnerConnectionsToStageInput(TCoFlatMapBase& f
         auto argAsList = ctx.NewArgument(inputs[inputId].Pos(), TStringBuilder() << "_dq_list_arg" << inputId);
         auto stageInput = buildDqBroadcastCn(inputs[inputId]);
 
+        auto condenseInput = Build<TCoCondense>(ctx, stageInput.Pos())
+            .Input(args[inputId])
+            .State<TCoList>()
+                .ListType<TCoTypeOf>()
+                    .Value(stageInput)
+                    .Build()
+                .Build()
+            .SwitchHandler()
+                .Args({"item", "state"})
+                .Body(MakeBool<false>(stageInput.Pos(), ctx))
+                .Build()
+            .UpdateHandler()
+                .Args({"item", "state"})
+                .Body<TCoAppend>()
+                    .List("state")
+                    .Item("item")
+                    .Build()
+                .Build()
+            .Done().Ptr();
+
         newFlatMap = Build<TCoFlatMap>(ctx, stageInput.Pos())
-             .Input<TCoSqueezeToList>()
-                 .Stream(args[inputId])
-                 .Build()
+             .Input(condenseInput)
              .Lambda()
                 .Args({argAsList})
                 .Body(ctx.ReplaceNode(std::move(newFlatMap), args[inputId].Ref(), argAsList))
@@ -529,15 +425,26 @@ TMaybeNode<TDqStage> DqPushFlatMapInnerConnectionsToStageInput(TCoFlatMapBase& f
         .Done();
 }
 
-TMaybeNode<TDqStage> DqPushLambdasToStage(const TDqStage& stage, const std::map<ui32, TCoLambda>& lambdas,
+} // namespace
+
+TMaybeNode<TDqStage> DqPushLambdaToStage(const TDqStage& stage, const TCoAtom& outputIndex, const TCoLambda& lambda,
     const TVector<TDqConnection>& lambdaInputs, TExprContext& ctx, IOptimizationContext& optCtx)
 {
+    YQL_CLOG(TRACE, CoreDq) << "stage #" << stage.Ref().UniqueId() << ": " << PrintDqStageOnly(stage, ctx)
+        << ", add lambda to output #" << outputIndex.Value();
+
+    if (IsDqDependsOnStage(lambda, stage)) {
+        YQL_CLOG(TRACE, CoreDq) << "Lambda " << lambda.Ref().Dump() << " depends on stage: " << PrintDqStageOnly(stage, ctx);
+        return {};
+    }
+
     auto program = stage.Program();
+    ui32 index = FromString<ui32>(outputIndex.Value());
     ui32 branchesCount = GetStageOutputsCount(stage);
 
     TExprNode::TPtr newProgram;
     if (branchesCount == 1) {
-        newProgram = ctx.FuseLambdas(lambdas.at(0U).Ref(), program.Ref());
+        newProgram = ctx.FuseLambdas(lambda.Ref(), program.Ref());
     } else {
         auto dqReplicate = program.Body().Cast<TDqReplicate>();
 
@@ -556,8 +463,8 @@ TMaybeNode<TDqStage> DqPushLambdasToStage(const TDqStage& stage, const std::map<
             YQL_ENSURE(branchLambda.Args().Size() == 1);
 
             TExprNode::TPtr newBranchProgram;
-            if (const auto it = lambdas.find(i); lambdas.cend() != it) {
-                newBranchProgram = ctx.FuseLambdas(it->second.Ref(), branchLambda.Ref());
+            if (index == i) {
+                newBranchProgram = ctx.FuseLambdas(lambda.Ref(), branchLambda.Ref());
             } else {
                 newBranchProgram = ctx.DeepCopyLambda(branchLambda.Ref());
             }
@@ -604,23 +511,6 @@ TMaybeNode<TDqStage> DqPushLambdasToStage(const TDqStage& stage, const std::map<
     return newStage;
 }
 
-} // namespace
-
-TMaybeNode<TDqStage> DqPushLambdaToStage(const TDqStage& stage, const TCoAtom& outputIndex, const TCoLambda& lambda,
-    const TVector<TDqConnection>& lambdaInputs, TExprContext& ctx, IOptimizationContext& optCtx)
-{
-    YQL_CLOG(TRACE, CoreDq) << "stage #" << stage.Ref().UniqueId() << ": " << PrintDqStageOnly(stage, ctx)
-        << ", add lambda to output #" << outputIndex.Value();
-
-    if (IsDqDependsOnStage(lambda, stage)) {
-        YQL_CLOG(TRACE, CoreDq) << "Lambda " << lambda.Ref().Dump() << " depends on stage: " << PrintDqStageOnly(stage, ctx);
-        return {};
-    }
-
-    const auto index = FromString<ui32>(outputIndex.Value());
-    return DqPushLambdasToStage(stage, {{index, lambda}}, lambdaInputs, ctx, optCtx);
-}
-
 TExprNode::TPtr DqBuildPushableStage(const NNodes::TDqConnection& connection, TExprContext& ctx) {
     auto stage = connection.Output().Stage().Cast<TDqStage>();
     auto program = stage.Program();
@@ -662,32 +552,6 @@ TMaybeNode<TDqConnection> DqPushLambdaToStageUnionAll(const TDqConnection& conne
         .Done();
 
     return TDqConnection(ctx.ChangeChild(connection.Ref(), TDqConnection::idx_Output, output.Ptr()));
-}
-
-void DqPushLambdasToStagesUnionAll(std::vector<std::pair<TDqCnUnionAll, TCoLambda>>& items, TExprContext& ctx, IOptimizationContext& optCtx)
-{
-    TNodeMap<std::pair<std::map<ui32, TCoLambda>, TDqStage>> map(items.size());
-
-    for (const auto& item: items) {
-        const auto& output = item.first.Output();
-        const auto index = FromString<ui32>(output.Index().Value());
-        const auto ins = map.emplace(output.Stage().Raw(), std::make_pair(std::map<ui32, TCoLambda>(), output.Stage().Cast<TDqStage>())).first;
-        ins->second.first.emplace(index, item.second);
-    }
-
-    for (auto& item : map) {
-        item.second.second = DqPushLambdasToStage(item.second.second, item.second.first, {}, ctx, optCtx).Cast();
-    }
-
-    for (auto& item: items) {
-        const auto& output = item.first.Output();
-        item.first = Build<TDqCnUnionAll>(ctx, item.first.Pos())
-            .Output<TDqOutput>()
-                .Stage(map.find(output.Stage().Raw())->second.second)
-                .Index(output.Index())
-                .Build()
-            .Done();
-    }
 }
 
 TExprBase DqPushSkipNullMembersToStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
@@ -733,9 +597,7 @@ TExprBase DqBuildPureFlatmapStage(TExprBase node, TExprContext& ctx) {
                 .List(flatmap.Input())
                 .Build()
             .Build()
-        .Settings(TDqStageSettings::New()
-            .SetPartitionMode(TDqStageSettings::EPartitionMode::Single)
-            .BuildNode(ctx, flatmap.Input().Pos()))
+        .Settings(TDqStageSettings().BuildNode(ctx, flatmap.Input().Pos()))
         .Done();
 
     auto inputConnection = Build<TDqCnUnionAll>(ctx, flatmap.Pos())
@@ -942,7 +804,7 @@ TExprBase DqBuildLMapOverMuxStageStub(TExprBase node, TExprContext& ctx, NYql::I
             .Build()
         .Done().Ptr();
     auto lmapLambda = ctx.DeepCopyLambda(lmap.Lambda().Ref());
-    Y_ABORT_UNLESS(lmapLambda->Child(0)->ChildrenSize() == 1, "unexpected number of arguments in lmap lambda");
+    Y_VERIFY(lmapLambda->Child(0)->ChildrenSize() == 1, "unexpected number of arguments in lmap lambda");
     auto newBody = ctx.ReplaceNodes(lmapLambda->Child(1), {{lmapLambda->Child(0)->Child(0), newMux}});
     auto lmapStage = Build<TDqStage>(ctx, lmap.Pos())
         .Inputs()
@@ -1079,21 +941,6 @@ NNodes::TExprBase DqPushAggregateCombineToStage(NNodes::TExprBase node, TExprCon
                 .Build()
             .Done();
 
-    if (HasContextFuncs(*lambda.Ptr())) {
-        lambda = Build<TCoLambda>(ctx, aggCombine.Pos())
-            .Args({ TStringBuf("stream") })
-            .Body<TCoWithContext>()
-                .Input<TExprApplier>()
-                    .Apply(lambda)
-                    .With(0, TStringBuf("stream"))
-                .Build()
-                .Name()
-                    .Value("Agg")
-                .Build()
-            .Build()
-        .Done();
-    }
-
     auto result = DqPushLambdaToStageUnionAll(dqUnion, lambda, {}, ctx, optCtx);
     if (!result) {
         return node;
@@ -1102,21 +949,15 @@ NNodes::TExprBase DqPushAggregateCombineToStage(NNodes::TExprBase node, TExprCon
     return result.Cast();
 }
 
-TExprBase DqBuildPartitionsStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
-    const TParentsMap& parentsMap, bool allowStageMultiUsage)
-{
-    return DqBuildPartitionsStageStub<TCoPartitionsByKeys>(std::move(node), ctx, optCtx, parentsMap, allowStageMultiUsage);
+TExprBase DqBuildPartitionsStage(TExprBase node, TExprContext& ctx, const TParentsMap& parentsMap) {
+    return DqBuildPartitionsStageStub<TCoPartitionsByKeys>(std::move(node), ctx, parentsMap);
 }
 
-TExprBase DqBuildPartitionStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
-    const TParentsMap& parentsMap, bool allowStageMultiUsage)
-{
-    return DqBuildPartitionsStageStub<TCoPartitionByKey>(std::move(node), ctx, optCtx, parentsMap, allowStageMultiUsage);
+TExprBase DqBuildPartitionStage(TExprBase node, TExprContext& ctx, const TParentsMap& parentsMap) {
+    return DqBuildPartitionsStageStub<TCoPartitionByKey>(std::move(node), ctx, parentsMap);
 }
 
-TExprBase DqBuildShuffleStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
-    const TParentsMap& parentsMap, bool allowStageMultiUsage)
-{
+TExprBase DqBuildShuffleStage(TExprBase node, TExprContext& ctx, const TParentsMap& parentsMap) {
     auto shuffleInput = node.Maybe<TCoShuffleByKeys>().Input();
     if (!shuffleInput.Maybe<TDqCnUnionAll>()) {
         return node;
@@ -1131,27 +972,50 @@ TExprBase DqBuildShuffleStage(TExprBase node, TExprContext& ctx, IOptimizationCo
 
     auto dqUnion = shuffle.Input().Cast<TDqCnUnionAll>();
 
-    if (!IsSingleConsumerConnection(dqUnion, parentsMap, allowStageMultiUsage)) {
+    if (!IsSingleConsumerConnection(dqUnion, parentsMap)) {
         return node;
     }
 
     auto keyLambda = shuffle.KeySelectorLambda();
-    TCoLambda stageLambda = BuildIdentityLambda(node.Pos(), ctx);
-    TCoLambda handlerLambda = shuffle.ListHandlerLambda();
-    if (PrepareKeySelectorToStage(keyLambda, stageLambda, handlerLambda, ctx)) {
-        auto newConn = DqPushLambdaToStageUnionAll(dqUnion, stageLambda, {}, ctx, optCtx);
-        if (!newConn) {
+    TVector<TExprBase> keyElements;
+    if (auto maybeTuple = keyLambda.Body().Maybe<TExprList>()) {
+        auto tuple = maybeTuple.Cast();
+        for (const auto& element : tuple) {
+            keyElements.push_back(element);
+        }
+    } else {
+        keyElements.push_back(keyLambda.Body());
+    }
+
+    TVector<TCoAtom> keyColumns;
+    keyColumns.reserve(keyElements.size());
+    for (auto& element : keyElements) {
+        if (!element.Maybe<TCoMember>()) {
             return node;
         }
 
-        return Build<TCoShuffleByKeys>(ctx, node.Pos())
-            .Input(newConn.Cast())
-            .KeySelectorLambda(keyLambda)
-            .ListHandlerLambda(handlerLambda)
-            .Done();
+        auto member = element.Cast<TCoMember>();
+        if (member.Struct().Raw() != keyLambda.Args().Arg(0).Raw()) {
+            return node;
+        }
+
+        keyColumns.push_back(member.Name());
     }
 
-    auto connection = BuildShuffleConnection(node.Pos(), keyLambda, dqUnion, ctx);
+    if (keyColumns.empty()) {
+        return node;
+    }
+
+    auto connection = Build<TDqCnHashShuffle>(ctx, node.Pos())
+        .Output()
+            .Stage(dqUnion.Output().Stage())
+            .Index(dqUnion.Output().Index())
+            .Build()
+        .KeyColumns()
+            .Add(keyColumns)
+            .Build()
+        .Done();
+
     TCoArgument programArg = Build<TCoArgument>(ctx, node.Pos())
         .Name("arg")
         .Done();
@@ -1177,7 +1041,7 @@ TExprBase DqBuildShuffleStage(TExprBase node, TExprContext& ctx, IOptimizationCo
                     .Build()
                 .Build()
             .Build()
-        .Settings(TDqStageSettings().SetPartitionMode(TDqStageSettings::EPartitionMode::Aggregate).BuildNode(ctx, node.Pos()))
+        .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
         .Done();
 
     return Build<TDqCnUnionAll>(ctx, node.Pos())
@@ -1188,53 +1052,7 @@ TExprBase DqBuildShuffleStage(TExprBase node, TExprContext& ctx, IOptimizationCo
         .Done();
 }
 
-NNodes::TExprBase DqBuildHashShuffleByKeyStage(NNodes::TExprBase node, TExprContext& ctx, const TParentsMap& /*parentsMap*/) {
-    if (!node.Maybe<TDqCnHashShuffle>()) {
-        return node;
-    }
-    auto cnHash = node.Cast<TDqCnHashShuffle>();
-    auto stage = cnHash.Output().Stage();
-    if (!stage.Program().Body().Maybe<TCoExtend>()) {
-        return node;
-    }
-    auto extend = stage.Program().Body().Cast<TCoExtend>();
-    TNodeSet nodes;
-    for (auto&& i : stage.Program().Args()) {
-        nodes.emplace(i.Raw());
-    }
-    for (auto&& i : extend) {
-        if (nodes.erase(i.Raw()) != 1) {
-            return node;
-        }
-    }
-    if (!nodes.empty()) {
-        return node;
-    }
-    TExprNode::TListType nodesTuple;
-    for (auto&& i : stage.Inputs()) {
-        if (!i.Maybe<TDqCnUnionAll>()) {
-            return node;
-        }
-        auto uAll = i.Cast<TDqCnUnionAll>();
-        nodesTuple.emplace_back(ctx.ChangeChild(node.Ref(), 0, uAll.Output().Ptr()));
-    }
-    auto stageCopy = ctx.ChangeChild(stage.Ref(), 0, ctx.NewList(node.Pos(), std::move(nodesTuple)));
-    auto output =
-        Build<TDqOutput>(ctx, node.Pos())
-            .Stage(stageCopy)
-            .Index().Build("0")
-        .Done();
-    auto outputCnMap =
-        Build<TDqCnMap>(ctx, node.Pos())
-            .Output(output)
-        .Done();
-
-    return TExprBase(outputCnMap);
-}
-
-TExprBase DqBuildFinalizeByKeyStage(TExprBase node, TExprContext& ctx,
-    const TParentsMap& parentsMap, bool allowStageMultiUsage)
-{
+TExprBase DqBuildFinalizeByKeyStage(TExprBase node, TExprContext& ctx, const TParentsMap& parentsMap) {
     auto finalizeInput = node.Maybe<TCoFinalizeByKey>().Input();
     if (!finalizeInput.Maybe<TDqCnUnionAll>()) {
         return node;
@@ -1243,7 +1061,7 @@ TExprBase DqBuildFinalizeByKeyStage(TExprBase node, TExprContext& ctx,
     auto finalize = node.Cast<TCoFinalizeByKey>();
     auto dqUnion = finalize.Input().Cast<TDqCnUnionAll>();
 
-    if (!IsSingleConsumerConnection(dqUnion, parentsMap, allowStageMultiUsage)) {
+    if (!IsSingleConsumerConnection(dqUnion, parentsMap)) {
         return node;
     }
 
@@ -1521,7 +1339,7 @@ bool AddSortColumn(const TExprBase& key, const TExprBase& ascending, TExprContex
     return true;
 }
 
-TExprBase GetSortDirection(const TExprBase& sortDirections, size_t index) {
+TExprBase GetSortDirection(TExprBase& sortDirections, size_t index) {
     TExprNode::TPtr sortDirection;
     if (sortDirections.Maybe<TExprList>()) {
         YQL_ENSURE(index < sortDirections.Cast<TExprList>().Size());
@@ -1532,74 +1350,6 @@ TExprBase GetSortDirection(const TExprBase& sortDirections, size_t index) {
     return TExprBase(sortDirection);
 }
 } // End of anonymous namespace
-
-TExprBase DqBuildTopStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
-    const TParentsMap& parentsMap, bool allowStageMultiUsage)
-{
-    if (!node.Maybe<TCoTop>().Input().Maybe<TDqCnUnionAll>()) {
-        return node;
-    }
-
-    const auto top = node.Cast<TCoTop>();
-    const auto dqUnion = top.Input().Cast<TDqCnUnionAll>();
-    if (!IsSingleConsumerConnection(dqUnion, parentsMap, allowStageMultiUsage)) {
-        return node;
-    }
-
-    if (!CanPushDqExpr(top.Count(), dqUnion) || !CanPushDqExpr(top.KeySelectorLambda(), dqUnion)) {
-        return node;
-    }
-
-    if (auto connToPushableStage = DqBuildPushableStage(dqUnion, ctx)) {
-        return TExprBase(ctx.ChangeChild(*node.Raw(), TCoTop::idx_Input, std::move(connToPushableStage)));
-    }
-
-    const auto result = dqUnion.Output().Stage().Program().Body();
-
-    const auto sortKeySelector = top.KeySelectorLambda();
-    const auto sortDirections = top.SortDirections();
-    const auto lambda = Build<TCoLambda>(ctx, top.Pos())
-            .Args({"stream"})
-            .Body<TCoTop>()
-                .Input("stream")
-                .KeySelectorLambda(ctx.DeepCopyLambda(top.KeySelectorLambda().Ref()))
-                .SortDirections(sortDirections)
-                .Count(top.Count())
-                .Build()
-            .Done();
-
-    const auto stage = dqUnion.Output().Stage().Cast<TDqStage>();
-    const auto newStage = DqPushLambdaToStage(stage, dqUnion.Output().Index(), lambda, {}, ctx, optCtx);
-    if (!newStage) {
-        return node;
-    }
-
-    return Build<TDqCnUnionAll>(ctx, node.Pos())
-        .Output()
-            .Stage<TDqStage>()
-                .Inputs()
-                    .Add<TDqCnUnionAll>()
-                        .Output()
-                            .Stage(newStage.Cast())
-                            .Index(dqUnion.Output().Index())
-                            .Build()
-                        .Build()
-                    .Build()
-                .Program()
-                    .Args({"stream"})
-                    .Body<TCoTop>()
-                        .Input("stream")
-                        .KeySelectorLambda(ctx.DeepCopyLambda(top.KeySelectorLambda().Ref()))
-                        .SortDirections(top.SortDirections())
-                        .Count(top.Count())
-                        .Build()
-                    .Build()
-                .Settings(TDqStageSettings().BuildNode(ctx, top.Pos()))
-                .Build()
-            .Index().Build(0U)
-            .Build()
-        .Done();
-}
 
 TExprBase DqBuildTopSortStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx,
     const TParentsMap& parentsMap, bool allowStageMultiUsage)
@@ -1622,10 +1372,25 @@ TExprBase DqBuildTopSortStage(TExprBase node, TExprContext& ctx, IOptimizationCo
         return TExprBase(ctx.ChangeChild(*node.Raw(), TCoTopSort::idx_Input, std::move(connToPushableStage)));
     }
 
-    const auto result = dqUnion.Output().Stage().Program().Body();
+    auto result = dqUnion.Output().Stage().Program().Body();
 
-    const auto sortKeySelector = topSort.KeySelectorLambda();
-    const auto sortDirections = topSort.SortDirections();
+    auto sortKeySelector = topSort.KeySelectorLambda();
+    auto sortDirections = topSort.SortDirections();
+    auto lambda = Build<TCoLambda>(ctx, topSort.Pos())
+            .Args({"stream"})
+            .Body<TCoTopSort>()
+                .Input("stream")
+                .KeySelectorLambda(ctx.DeepCopyLambda(topSort.KeySelectorLambda().Ref()))
+                .SortDirections(sortDirections)
+                .Count(topSort.Count())
+                .Build()
+            .Done();
+
+    auto stage = dqUnion.Output().Stage().Cast<TDqStage>();
+    auto newStage = DqPushLambdaToStage(stage, dqUnion.Output().Index(), lambda, {}, ctx, optCtx);
+    if (!newStage) {
+        return node;
+    }
 
     bool canMerge = true;
     auto sortColumnList = Build<TDqSortColumnList>(ctx, node.Pos());
@@ -1649,27 +1414,8 @@ TExprBase DqBuildTopSortStage(TExprBase node, TExprContext& ctx, IOptimizationCo
         canMerge = AddSortColumn(lambdaBody, sortDirections, ctx, node, sortKeySelector, sortColumnList, sortKeyTypes);
     }
 
-    canMerge = canMerge && IsMergeConnectionApplicable(sortKeyTypes);
-
-    auto lambda = Build<TCoLambda>(ctx, topSort.Pos())
-            .Args({"stream"})
-            .Body<TCoTopBase>()
-                .CallableName(canMerge ? TCoTopSort::CallableName() : TCoTop::CallableName())
-                .Input("stream")
-                .KeySelectorLambda(ctx.DeepCopyLambda(topSort.KeySelectorLambda().Ref()))
-                .SortDirections(sortDirections)
-                .Count(topSort.Count())
-                .Build()
-            .Done();
-
-    auto stage = dqUnion.Output().Stage().Cast<TDqStage>();
-    auto newStage = DqPushLambdaToStage(stage, dqUnion.Output().Index(), lambda, {}, ctx, optCtx);
-    if (!newStage) {
-        return node;
-    }
-
     TMaybeNode<TDqStage> outerStage;
-    if (canMerge) {
+    if (canMerge && IsMergeConnectionApplicable(sortKeyTypes)) {
         auto mergeCn = Build<TDqCnMerge>(ctx, node.Pos())
             .Output()
                 .Stage(newStage.Cast())
@@ -1717,11 +1463,10 @@ TExprBase DqBuildTopSortStage(TExprBase node, TExprContext& ctx, IOptimizationCo
             .Done();
     }
 
-    // TODO: Use CnMerge or AssumeSorted for keep constraints.
     return Build<TDqCnUnionAll>(ctx, node.Pos())
         .Output()
             .Stage(outerStage.Cast())
-            .Index().Build(0U)
+            .Index().Build("0")
             .Build()
         .Done();
 }
@@ -2083,6 +1828,108 @@ TExprBase DqRewriteLengthOfStageOutput(TExprBase node, TExprContext& ctx, IOptim
     return precompute;
 }
 
+// TODO: Remove once precomputes are supported in YQ
+TExprBase DqRewriteLengthOfStageOutputLegacy(TExprBase node, TExprContext& ctx, IOptimizationContext&) {
+    if (!node.Maybe<TCoLength>().List().Maybe<TDqCnUnionAll>()) {
+        return node;
+    }
+
+    auto dqUnion = node.Cast<TCoLength>().List().Cast<TDqCnUnionAll>();
+
+    auto zero = Build<TCoUint64>(ctx, node.Pos())
+                    .Literal().Build("0")
+                    .Done();
+
+    auto field = BuildAtom("_dq_agg_cnt", node.Pos(), ctx);
+
+    auto aggregateCombine = Build<TCoAggregateCombine>(ctx, node.Pos())
+        .Input(dqUnion)
+        .Keys()
+        .Build()
+        .Handlers()
+            .Add<TCoAggregateTuple>()
+                .ColumnName(field)
+                .Trait<TCoAggApply>()
+                    .Name<TCoAtom>()
+                        .Value("count_all")
+                    .Build()
+                    .InputType(ExpandType(node.Pos(), GetSeqItemType(*dqUnion.Raw()->GetTypeAnn()), ctx))
+                    .Extractor<TCoLambda>()
+                        .Args({ "row" })
+                        .Body<TCoVoid>()
+                        .Build()
+                    .Build()
+                .Build()
+            .Build()
+        .Build()
+        .Settings()
+        .Build()
+        .Done();
+
+    TVector<const TItemExprType*> stateItems = {
+        ctx.MakeType<TItemExprType>("_dq_agg_cnt", ctx.MakeType<TDataExprType>(EDataSlot::Uint64))
+    };
+
+    auto stateRowType = ctx.MakeType<TStructExprType>(stateItems);
+    auto stateTypeNode = ExpandType(node.Pos(), *stateRowType, ctx);
+
+    auto originalTypeNode = ctx.Builder(node.Pos())
+        .Callable("StructType")
+            .List(0)
+                .Add(0, field.Ptr())
+                .Callable(1, "VoidType")
+                .Seal()
+            .Seal()
+        .Seal()
+        .Build();
+
+    auto aggregateFinal = Build<TCoAggregateMergeFinalize>(ctx, node.Pos())
+        .Input(aggregateCombine)
+        .Keys()
+        .Build()
+        .Handlers()
+            .Add<TCoAggregateTuple>()
+                .ColumnName(field)
+                .Trait<TCoAggApplyState>()
+                    .Name<TCoAtom>()
+                        .Value("count_all")
+                    .Build()
+                    .InputType(stateTypeNode)
+                    .Extractor<TCoLambda>()
+                        .Args({ "row" })
+                        .Body<TCoMember>()
+                            .Struct("row")
+                            .Name(field)
+                        .Build()
+                    .Build()
+                    .OriginalType(originalTypeNode)
+                .Build()
+            .Build()
+        .Build()
+        .Settings()
+        .Build()
+        .Done();
+
+    auto toOptional = Build<TCoToOptional>(ctx, node.Pos())
+            .List(aggregateFinal)
+            .Done();
+
+    auto coalesce = Build<TCoCoalesce>(ctx, node.Pos())
+            .Predicate(toOptional)
+            .Value<TCoAsStruct>()
+                .Add<TCoNameValueTuple>()
+                    .Name(field)
+                    .Value(zero)
+                    .Build()
+                .Build()
+            .Done();
+
+    return Build<TCoMember>(ctx, node.Pos())
+        .Struct(coalesce)
+        .Name(field)
+        .Done();
+}
+
 TExprBase DqBuildPureExprStage(TExprBase node, TExprContext& ctx) {
     if (!IsDqPureExpr(node)) {
         return node;
@@ -2097,9 +1944,7 @@ TExprBase DqBuildPureExprStage(TExprBase node, TExprContext& ctx) {
                 .Input(node)
                 .Build()
             .Build()
-        .Settings(TDqStageSettings::New()
-            .SetPartitionMode(TDqStageSettings::EPartitionMode::Single)
-            .BuildNode(ctx, node.Pos()))
+        .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
         .Done();
 
     return Build<TDqCnUnionAll>(ctx, node.Pos())
@@ -2229,7 +2074,7 @@ TExprBase DqBuildPrecompute(TExprBase node, TExprContext& ctx) {
     return phyPrecompute;
 }
 
-TExprBase DqBuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TParentsMap& parentsMap, bool allowStageMultiUsage) {
+TExprBase DqBuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx) {
     if (!node.Maybe<TCoHasItems>()) {
         return node;
     }
@@ -2241,10 +2086,6 @@ TExprBase DqBuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContex
     }
 
     auto unionAll = hasItems.List().Cast<TDqCnUnionAll>();
-
-    if (!IsSingleConsumerConnection(unionAll, parentsMap, allowStageMultiUsage)) {
-        return node;
-    }
 
     if (auto connToPushableStage = DqBuildPushableStage(unionAll, ctx)) {
         return TExprBase(ctx.ChangeChild(*node.Raw(), TCoHasItems::idx_List, std::move(connToPushableStage)));
@@ -2527,47 +2368,6 @@ TExprBase DqBuildScalarPrecompute(TExprBase node, TExprContext& ctx, IOptimizati
         .Body(valueExtractor)
         .Done();
 
-    const bool hasSingleTask = AllOf(stage.Inputs(), [](const auto& input) {
-        return input.template Maybe<TDqCnMerge>() || input.template Maybe<TDqCnUnionAll>();
-    });
-    if (!hasSingleTask) {
-        // Add LIMIT 1 via Take
-        auto takeProgram = Build<TCoLambda>(ctx, node.Pos())
-            .Args({"take_arg"})
-            // DqOutput expects stream as input, thus form stream with one element
-            .Body<TCoToStream>()
-                .Input<TCoTake>()
-                    .Input({"take_arg"})
-                    .Count<TCoUint64>()
-                        .Literal().Build("1")
-                        .Build()
-                    .Build()
-                .Build()
-            .Done();
-
-        auto newUnion = DqPushLambdaToStageUnionAll(unionAll, takeProgram, {}, ctx, optCtx);
-        if (!newUnion) {
-            return node;
-        }
-
-        auto newStage = Build<TDqStage>(ctx, node.Pos())
-            .Inputs()
-                .Add(newUnion.Cast())
-            .Build()
-            .Program(newProgram)
-            .Settings().Build()
-            .Done();
-
-        return Build<TDqPrecompute>(ctx, node.Pos())
-            .Input<TDqCnValue>()
-                .Output<TDqOutput>()
-                    .Stage(newStage)
-                    .Index().Build("0")
-                    .Build()
-                .Build()
-            .Done();
-    }
-
     auto newUnion = DqPushLambdaToStageUnionAll(unionAll, newProgram, {}, ctx, optCtx);
 
     if (!newUnion.IsValid()) {
@@ -2824,105 +2624,6 @@ TExprBase DqPropagatePrecomuteFlatmap(TExprBase node, TExprContext& ctx, IOptimi
     return Build<TDqPhyPrecompute>(ctx, node.Pos())
         .Connection(result.Cast())
         .Done();
-}
-
-NNodes::TExprBase DqBuildStageWithSourceWrap(NNodes::TExprBase node, TExprContext& ctx) {
-    const auto wrap = node.Cast<TDqSourceWrap>();
-    if (IsSameAnnotation(GetSeqItemType(*wrap.Ref().GetTypeAnn()), GetSeqItemType(*wrap.Input().Ref().GetTypeAnn()))) {
-        return Build<TDqCnUnionAll>(ctx, node.Pos())
-            .Output()
-                .Stage<TDqStage>()
-                .Inputs()
-                    .Add<TDqSource>()
-                        .DataSource(wrap.DataSource())
-                        .Settings(wrap.Input())
-                        .Build()
-                    .Build()
-                .Program()
-                    .Args({"source"})
-                    .Body<TCoToStream>()
-                        .Input("source")
-                        .Build()
-                    .Build()
-                .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
-                .Build()
-                .Index().Build("0")
-            .Build().Done();
-    }
-    const auto& items = GetSeqItemType(*wrap.Ref().GetTypeAnn()).Cast<TStructExprType>()->GetItems();
-    auto sourceArg = ctx.NewArgument(node.Pos(), "source");
-    auto inputType = &GetSeqItemType(*wrap.Input().Ref().GetTypeAnn());
-    while (inputType->GetKind() == ETypeAnnotationKind::Tuple) {
-        auto tupleType = inputType->Cast<TTupleExprType>();
-        if (tupleType->GetSize() > 0) {
-            inputType = tupleType->GetItems()[0];
-        }
-    }
-
-    bool supportsBlocks = inputType->GetKind() == ETypeAnnotationKind::Struct &&
-        inputType->Cast<TStructExprType>()->FindItem(BlockLengthColumnName).Defined();
-
-    auto wideWrap = ctx.Builder(node.Pos())
-        .Callable(supportsBlocks ? TDqSourceWideBlockWrap::CallableName() : TDqSourceWideWrap::CallableName())
-            .Add(0, sourceArg)
-            .Add(1, wrap.DataSource().Ptr())
-            .Add(2, wrap.RowType().Ptr())
-            .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                if (wrap.Settings()) {
-                    parent.Add(3, wrap.Settings().Cast().Ptr());
-                }
-
-                return parent;
-            })
-        .Seal()
-        .Build();
-
-    if (supportsBlocks) {
-        wideWrap = ctx.Builder(node.Pos())
-            .Callable("WideFromBlocks")
-                .Add(0, wideWrap)
-            .Seal()
-            .Build();
-    }
-
-    auto narrow = ctx.Builder(node.Pos())
-        .Callable("NarrowMap")
-            .Add(0, wideWrap)
-            .Lambda(1)
-                .Params("fields", items.size())
-                .Callable(TCoAsStruct::CallableName())
-                    .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                        ui32 i = 0U;
-                        for (const auto& item : items) {
-                            parent.List(i)
-                                .Atom(0, item->GetName())
-                                .Arg(1, "fields", i)
-                            .Seal();
-                            ++i;
-                        }
-                        return parent;
-                    })
-                .Seal()
-            .Seal()
-        .Seal()
-        .Build();
-
-    auto program = ctx.NewLambda(node.Pos(), ctx.NewArguments(node.Pos(), { sourceArg }), std::move(narrow));
-
-    return Build<TDqCnUnionAll>(ctx, node.Pos())
-        .Output()
-            .Stage<TDqStage>()
-            .Inputs()
-                .Add<TDqSource>()
-                    .DataSource(wrap.DataSource())
-                    .Settings(wrap.Input())
-                    .Build()
-                .Build()
-            .Program(program)
-            .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
-            .Build()
-            .Index().Build("0")
-        .Build().Done();
 }
 
 } // namespace NYql::NDq

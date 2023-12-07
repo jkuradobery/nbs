@@ -52,7 +52,7 @@ public:
         if (msg->Status == NKikimrProto::OK && msg->ResponseSz == 1) {
             const TEvBlobStorage::TEvGetResult::TResponse& resp = msg->Responses[0];
             Response.SetStatus(resp.Status);
-            Response.SetBuffer(resp.Buffer.ConvertToString());
+            Response.SetBuffer(resp.Buffer);
         }
         IssueResponse(ctx);
     }

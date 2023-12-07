@@ -20,7 +20,7 @@ struct TSchemeShard::TTxDeleteTabletReply : public TSchemeShard::TRwTxBase {
         , HiveId(Ev->Get()->Record.GetOrigin())
     {
         if (Ev->Get()->Record.HasShardOwnerId()) {
-            Y_ABORT_UNLESS(Ev->Get()->Record.ShardLocalIdxSize() == 1);
+            Y_VERIFY(Ev->Get()->Record.ShardLocalIdxSize() == 1);
             ShardIdx = TShardIdx(Ev->Get()->Record.GetShardOwnerId(),
                                  Ev->Get()->Record.GetShardLocalIdx(0));
         }
@@ -36,7 +36,7 @@ struct TSchemeShard::TTxDeleteTabletReply : public TSchemeShard::TRwTxBase {
             if (Status == NKikimrProto::INVALID_OWNER) {
                 LOG_WARN_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                            "Got DeleteTabletReply with Forward response from Hive " << HiveId << " to Hive " << ForwardToHiveId << " shardIdx " << ShardIdx);
-                Y_ABORT_UNLESS(ForwardToHiveId);
+                Y_VERIFY(ForwardToHiveId);
                 Self->ShardDeleter.RedirectDeleteRequest(HiveId, ForwardToHiveId, ShardIdx, Self->ShardInfos, ctx);
                 return;
             }
@@ -104,9 +104,6 @@ struct TSchemeShard::TTxDeleteTabletReply : public TSchemeShard::TRwTxBase {
             case ETabletType::BlobDepot:
                 Self->TabletCounters->Simple()[COUNTER_BLOB_DEPOT_COUNT].Sub(1);
                 break;
-            case ETabletType::StatisticsAggregator:
-                Self->TabletCounters->Simple()[COUNTER_STATISTICS_AGGREGATOR_COUNT].Sub(1);
-                break;
             default:
                 Y_FAIL_S("Unknown TabletType"
                          << ", ShardIdx " << ShardIdx
@@ -133,6 +130,9 @@ struct TSchemeShard::TTxDeleteTabletReply : public TSchemeShard::TRwTxBase {
             switch (tabletType) {
             case ETabletType::SequenceShard:
                 domain->RemoveSequenceShard(ShardIdx);
+                break;
+            case ETabletType::ReplicationController:
+                domain->RemoveReplicationController(ShardIdx);
                 break;
             default:
                 break;

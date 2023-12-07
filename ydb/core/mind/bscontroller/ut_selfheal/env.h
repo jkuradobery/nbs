@@ -176,7 +176,7 @@ struct TEnvironmentSetup {
 
     void SetupStorage() {
         const TActorId proxyId = MakeBlobStorageProxyID(GroupId);
-        Runtime->RegisterService(proxyId, Runtime->Register(CreateBlobStorageGroupProxyMockActor(GroupId), NodeId));
+        Runtime->RegisterService(proxyId, Runtime->Register(CreateBlobStorageGroupProxyMockActor(), NodeId));
 
         for (ui32 nodeId : Runtime->GetNodes()) {
             const TActorId wardenId = Runtime->Register(new TNodeWardenMock(nodeId, TabletId), nodeId);
@@ -192,11 +192,6 @@ struct TEnvironmentSetup {
 
         bool working = true;
         Runtime->Sim([&] { return working; }, [&](IEventHandle& event) { working = event.GetTypeRewrite() != TEvTablet::EvBoot; });
-    }
-
-    void Sim(TDuration duration) {
-        const auto end = Runtime->GetClock() + duration;
-        Runtime->Sim([&] { return Runtime->GetClock() <= end; });
     }
 
     void WaitForNodeWardensToConnect() {

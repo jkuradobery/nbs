@@ -28,8 +28,6 @@ public:
         return Scope.empty();
     }
 
-    TString ParseFolder() const;
-
 private:
     TString Scope;
 };

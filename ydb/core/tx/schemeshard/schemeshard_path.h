@@ -35,7 +35,6 @@ public:
         const TString& GetError() const;
 
         const TChecker& IsResolved(EStatus status = EStatus::StatusPathDoesNotExist) const;
-        const TChecker& HasResolvedPrefix(EStatus status = EStatus::StatusSchemeError) const;
         const TChecker& NotEmpty(EStatus status = EStatus::StatusNameConflict) const;
         const TChecker& NotRoot(EStatus status = EStatus::StatusNameConflict) const;
         const TChecker& NotResolved(EStatus status = EStatus::StatusNameConflict) const;
@@ -89,11 +88,6 @@ public:
         const TChecker& PQReservedStorageLimit(ui64 delta = 1, EStatus status = EStatus::StatusResourceExhausted) const;
         const TChecker& ExportsLimit(ui64 delta = 1, EStatus status = EStatus::StatusResourceExhausted) const;
         const TChecker& ImportsLimit(ui64 delta = 1, EStatus status = EStatus::StatusResourceExhausted) const;
-        const TChecker& IsExternalTable(EStatus status = EStatus::StatusNameConflict) const;
-        const TChecker& IsExternalDataSource(EStatus status = EStatus::StatusNameConflict) const;
-        // Check there are no uncles or cousins with same name
-        const TChecker& IsNameUniqGrandParentLevel(EStatus status = EStatus::StatusNameConflict) const;
-        const TChecker& IsView(EStatus status = EStatus::StatusNameConflict) const;
     };
 
 public:

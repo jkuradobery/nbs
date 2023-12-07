@@ -31,7 +31,7 @@ private:
     THolder<NMiniKQL::TKqpProgramBuilder> PgmBuilder_;
 };
 
-TIntrusivePtr<NYql::NCommon::IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext& ctx, NYql::TTypeAnnotationContext& typesCtx);
+TIntrusivePtr<NYql::NCommon::IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext& ctx);
 
 } // namespace NKqp
 } // namespace NKikimr

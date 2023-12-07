@@ -6,7 +6,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/regex/pcre
     library/cpp/testing/unittest
     ydb/core/base

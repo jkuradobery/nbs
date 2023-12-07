@@ -9,14 +9,13 @@ SRCS(
     grpc_pq_write.h
     persqueue.cpp
     persqueue.h
-    services_initializer.cpp
     topic.cpp
 )
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/containers/disjoint_interval_tree
-    ydb/library/grpc/server
+    library/cpp/grpc/server
     ydb/core/base
     ydb/core/grpc_services
     ydb/core/kqp
@@ -27,7 +26,7 @@ PEERDIR(
     ydb/core/ydb_convert
     ydb/library/aclib
     ydb/library/persqueue/obfuscate
-#    ydb/library/persqueue/tests
+    ydb/library/persqueue/tests
     ydb/library/persqueue/topic_parser
     ydb/public/api/grpc
     ydb/public/api/grpc/draft
@@ -46,5 +45,4 @@ RECURSE(
 RECURSE_FOR_TESTS(
     ut
     ut/new_schemecache_ut
-    ut/describes_ut
 )

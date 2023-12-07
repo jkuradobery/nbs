@@ -4,9 +4,10 @@
 #include "datashard_impl.h"
 #include "execution_unit_kind.h"
 
-#include <ydb/library/actors/wilson/wilson_span.h>
+#include <library/cpp/actors/wilson/wilson_span.h>
 
-namespace NKikimr::NDataShard {
+namespace NKikimr {
+namespace NDataShard {
 
 using NTabletFlatExecutor::TTransactionContext;
 
@@ -77,7 +78,6 @@ private:
     TVector<EExecutionUnitKind> CompleteList;
     TInstant CommitStart;
     bool Rescheduled = false;
-    bool WaitComplete = false;
 };
 
 class TDataShard::TTxProposeTransactionBase : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
@@ -108,7 +108,6 @@ protected:
     TInstant CommitStart;
     bool Acked;
     bool Rescheduled = false;
-    bool WaitComplete = false;
     NWilson::TSpan ProposeTransactionSpan;
 };
 
@@ -138,6 +137,16 @@ public:
     TTxType GetTxType() const override { return TXTYPE_PROGRESS_RESEND_RS; }
 private:
     const ui64 Seqno;
+};
+
+class TDataShard::TTxCancelTransactionProposal : public NTabletFlatExecutor::TTransactionBase<TDataShard> {
+public:
+    TTxCancelTransactionProposal(TDataShard *self, ui64 txId);
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override;
+    void Complete(const TActorContext &ctx) override;
+    TTxType GetTxType() const override { return TXTYPE_CANCEL_TX_PROPOSAL; }
+private:
+    const ui64 TxId;
 };
 
 inline bool MaybeRequestMoreTxMemory(ui64 usage, NTabletFlatExecutor::TTransactionContext &txc) {
@@ -271,15 +280,16 @@ private:
     THolder<TEvDataShard::TEvS3DownloadInfo> Reply;
 };
 
-class TDataShard::TTxS3UploadRows
-    : public NTabletFlatExecutor::TTransactionBase<TDataShard>
-    , public TCommonUploadOps<TEvDataShard::TEvS3UploadRowsRequest, TEvDataShard::TEvS3UploadRowsResponse>
+class TDataShard::TTxUnsafeUploadRows: public NTabletFlatExecutor::TTransactionBase<TDataShard>
+                                     , public TCommonUploadOps<
+                                           TEvDataShard::TEvUnsafeUploadRowsRequest,
+                                           TEvDataShard::TEvUnsafeUploadRowsResponse>
 {
 public:
-    TTxS3UploadRows(TDataShard* ds, TEvDataShard::TEvS3UploadRowsRequest::TPtr& ev);
+    TTxUnsafeUploadRows(TDataShard* ds, TEvDataShard::TEvUnsafeUploadRowsRequest::TPtr& ev);
     bool Execute(TTransactionContext& txc, const TActorContext& ctx) override;
     void Complete(const TActorContext& ctx) override;
-    TTxType GetTxType() const override { return TXTYPE_S3_UPLOAD_ROWS; }
+    TTxType GetTxType() const override { return TXTYPE_UNSAFE_UPLOAD_ROWS; }
 
 private:
     TRowVersion MvccVersion = TRowVersion::Min();
@@ -295,4 +305,4 @@ private:
     bool ActivateWaitingOps = false;
 };
 
-}
+}}

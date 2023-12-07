@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/core/base/counters.h>
 #include <ydb/library/aclib/aclib.h>
 #include "msgbus_server.h"
@@ -82,7 +82,7 @@ public:
     void Bootstrap(const TActorContext &ctx);
 
     //STFUNC(StateFunc)
-    void StateFunc(TAutoPtr<NActors::IEventHandle> &ev) {
+    void StateFunc(TAutoPtr<NActors::IEventHandle> &ev, const NActors::TActorContext &ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvBusProxy::TEvRequest, Handle);
             HFunc(TEvBusProxy::TEvPersQueue, Handle);

@@ -9,13 +9,13 @@ namespace NKikimr::NGRpcProxy::V1 {
 TAclWrapper::TAclWrapper(THolder<NACLib::TSecurityObject> acl)
     : AclOldSchemeCache(std::move(acl))
 {
-    Y_ABORT_UNLESS(AclOldSchemeCache);
+    Y_VERIFY(AclOldSchemeCache);
 }
 
 TAclWrapper::TAclWrapper(TIntrusivePtr<TSecurityObject> acl)
     : AclNewSchemeCache(std::move(acl))
 {
-    Y_ABORT_UNLESS(AclNewSchemeCache);
+    Y_VERIFY(AclNewSchemeCache);
 }
 
 bool TAclWrapper::CheckAccess(NACLib::EAccessRights rights, const NACLib::TUserToken& userToken) {
@@ -97,26 +97,27 @@ Ydb::StatusIds::StatusCode ConvertPersQueueInternalCodeToStatus(const Ydb::PersQ
         case TABLET_PIPE_DISCONNECTED:
             return Ydb::StatusIds::UNAVAILABLE;
         case PREFERRED_CLUSTER_MISMATCHED:
-        case SOURCEID_DELETED:
             return Ydb::StatusIds::ABORTED;
         case OVERLOAD:
-        case WRITE_ERROR_PARTITION_IS_FULL:
-        case WRITE_ERROR_DISK_IS_FULL:
             return Ydb::StatusIds::OVERLOADED;
         case BAD_REQUEST:
-        case WRITE_ERROR_BAD_OFFSET:
-        case READ_ERROR_TOO_SMALL_OFFSET:
-        case READ_ERROR_TOO_BIG_OFFSET:
-        case SET_OFFSET_ERROR_COMMIT_TO_FUTURE:
-        case SET_OFFSET_ERROR_COMMIT_TO_PAST:
             return Ydb::StatusIds::BAD_REQUEST;
         case WRONG_COOKIE:
         case CREATE_SESSION_ALREADY_LOCKED:
         case DELETE_SESSION_NO_SESSION:
         case READ_ERROR_NO_SESSION:
             return Ydb::StatusIds::SESSION_EXPIRED;
+        case WRITE_ERROR_PARTITION_IS_FULL:
+        case WRITE_ERROR_DISK_IS_FULL:
+        case WRITE_ERROR_BAD_OFFSET:
+        case SOURCEID_DELETED:
+        case READ_ERROR_IN_PROGRESS:
+        case READ_ERROR_TOO_SMALL_OFFSET:
+        case READ_ERROR_TOO_BIG_OFFSET:
+        case SET_OFFSET_ERROR_COMMIT_TO_FUTURE:
+        case SET_OFFSET_ERROR_COMMIT_TO_PAST:
         case READ_NOT_DONE:
-            return Ydb::StatusIds::INTERNAL_ERROR;
+            return Ydb::StatusIds::GENERIC_ERROR;
         case TABLET_IS_DROPPED:
         case UNKNOWN_TOPIC:
         case WRONG_PARTITION_NUMBER:
@@ -124,7 +125,7 @@ Ydb::StatusIds::StatusCode ConvertPersQueueInternalCodeToStatus(const Ydb::PersQ
         case ACCESS_DENIED:
             return Ydb::StatusIds::UNAUTHORIZED;
         case ERROR:
-            return Ydb::StatusIds::UNSUPPORTED;
+            return Ydb::StatusIds::GENERIC_ERROR;
 
         default:
             return Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
@@ -133,7 +134,45 @@ Ydb::StatusIds::StatusCode ConvertPersQueueInternalCodeToStatus(const Ydb::PersQ
 
 Ydb::StatusIds::StatusCode ConvertPersQueueInternalCodeToStatus(const NPersQueue::NErrorCode::EErrorCode code)
 {
-    return ConvertPersQueueInternalCodeToStatus(ConvertOldCode(code));
+    using namespace NPersQueue::NErrorCode;
+
+    switch(code) {
+        case OK :
+            return Ydb::StatusIds::SUCCESS;
+        case INITIALIZING:
+        case CLUSTER_DISABLED:
+            return Ydb::StatusIds::UNAVAILABLE;
+        case OVERLOAD:
+            return Ydb::StatusIds::OVERLOADED;
+        case BAD_REQUEST:
+            return Ydb::StatusIds::BAD_REQUEST;
+        case WRONG_COOKIE:
+        case CREATE_SESSION_ALREADY_LOCKED:
+        case DELETE_SESSION_NO_SESSION:
+        case READ_ERROR_NO_SESSION:
+            return Ydb::StatusIds::SESSION_EXPIRED;
+        case WRITE_ERROR_PARTITION_IS_FULL:
+        case WRITE_ERROR_DISK_IS_FULL:
+        case WRITE_ERROR_BAD_OFFSET:
+        case SOURCEID_DELETED:
+        case READ_ERROR_IN_PROGRESS:
+        case READ_ERROR_TOO_SMALL_OFFSET:
+        case READ_ERROR_TOO_BIG_OFFSET:
+        case SET_OFFSET_ERROR_COMMIT_TO_FUTURE:
+        case READ_NOT_DONE:
+            return Ydb::StatusIds::GENERIC_ERROR;
+        case TABLET_IS_DROPPED:
+        case UNKNOWN_TOPIC:
+        case WRONG_PARTITION_NUMBER:
+            return Ydb::StatusIds::SCHEME_ERROR;
+        case ACCESS_DENIED:
+            return Ydb::StatusIds::UNAUTHORIZED;
+        case ERROR:
+            return Ydb::StatusIds::GENERIC_ERROR;
+
+        default:
+            return Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
+    }
 }
 
 Ydb::PersQueue::ErrorCode::ErrorCode ConvertOldCode(const NPersQueue::NErrorCode::EErrorCode code)

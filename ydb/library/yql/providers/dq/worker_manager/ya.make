@@ -1,8 +1,7 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/ydb_issue
+    library/cpp/actors/core
     ydb/library/yql/utils/failure_injector
     ydb/library/yql/providers/common/config
     ydb/library/yql/providers/common/gateway
@@ -22,7 +21,3 @@ SRCS(
 )
 
 END()
-
-RECURSE(
-    interface
-)

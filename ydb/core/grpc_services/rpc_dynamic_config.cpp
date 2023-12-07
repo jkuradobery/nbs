@@ -147,14 +147,6 @@ private:
         return TBase::Reply(ev->Get()->Record.GetYdbStatus(), ev->Get()->Record.GetIssues(), TActivationContext::AsActorContext());
     }
 
-    void Handle(TEvConsole::TEvSetYamlConfigResponse::TPtr& ev) {
-        return TBase::Reply(Ydb::StatusIds::SUCCESS, ev->Get()->Record.GetIssues(), TActivationContext::AsActorContext());
-    }
-
-    void Handle(TEvConsole::TEvReplaceYamlConfigResponse::TPtr& ev) {
-        return TBase::Reply(Ydb::StatusIds::SUCCESS, ev->Get()->Record.GetIssues(), TActivationContext::AsActorContext());
-    }
-
     template<typename T>
     void Handle(T& ev)
     {
@@ -189,7 +181,7 @@ private:
             Undelivered();
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev)
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx)
     {
         switch (ev->GetTypeRewrite()) {
             hFunc(TConsoleResponse, Handle);
@@ -200,7 +192,7 @@ private:
             hFunc(TEvConsole::TEvUnauthorized, Handle);
             hFunc(TEvConsole::TEvDisabled, Handle);
             hFunc(TEvConsole::TEvGenericError, Handle);
-            default: TBase::StateFuncBase(ev);
+            default: TBase::StateFuncBase(ev, ctx);
         }
     }
 

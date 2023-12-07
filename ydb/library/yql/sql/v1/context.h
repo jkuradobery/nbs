@@ -1,6 +1,6 @@
 #pragma once
 
-#include "source.h"
+#include "node.h"
 #include "sql.h"
 
 #include <ydb/library/yql/providers/common/provider/yql_provider_names.h>
@@ -78,7 +78,6 @@ namespace NSQLTranslationV1 {
         Allow,
         AsStringLiteral,
         AsPgType,
-        MatchRecognize,
     };
 
     class TContext {
@@ -139,17 +138,12 @@ namespace NSQLTranslationV1 {
                     normalizedClusterName = cluster;
                     return TString(NYql::KikimrProviderName);
                 }
-                if (Settings.DynamicClusterProvider) {
-                    normalizedClusterName = cluster.StartsWith('/') ? cluster : Settings.PathPrefix + "/" + cluster;
-                    return Settings.DynamicClusterProvider;
-                }
                 return Nothing();
             }
 
             return provider;
         }
 
-        bool IsDynamicCluster(const TDeferredAtom& cluster) const;
         bool HasNonYtProvider(const ISource& source) const;
         bool UseUnordered(const ISource& source) const;
         bool UseUnordered(const TTableRef& table) const;
@@ -170,7 +164,7 @@ namespace NSQLTranslationV1 {
         }
 
         bool IsAlreadyDeclared(const TString& varName) const;
-        void DeclareVariable(const TString& varName, const TNodePtr& typeNode, bool isWeak = false);
+        void DeclareVariable(const TString& varName, const TNodePtr& typeNode);
 
         bool AddExport(TPosition symbolPos, const TString& symbolName);
         TString AddImport(const TVector<TString>& modulePath);
@@ -196,12 +190,6 @@ namespace NSQLTranslationV1 {
             return TopLevelColumnReferenceState;
         }
 
-        TStringBuf GetMatchRecognizeDefineVar() const {
-            YQL_ENSURE(EColumnRefState::MatchRecognize == ColumnReferenceState,
-                       "DefineVar can only be accessed within processing of MATCH_RECOGNIZE lambdas");
-            return MatchRecognizeDefineVar;
-        }
-
         TVector<NSQLTranslation::TSQLHint> PullHintForToken(NYql::TPosition tokenPos);
         void WarnUnusedHints();
 
@@ -222,13 +210,11 @@ namespace NSQLTranslationV1 {
 
         EColumnRefState ColumnReferenceState = EColumnRefState::Deny;
         EColumnRefState TopLevelColumnReferenceState = EColumnRefState::Deny;
-        TString MatchRecognizeDefineVar;
         TString NoColumnErrorContext = "in current scope";
         TVector<TBlocks*> CurrentBlocks;
 
     public:
         THashMap<TString, TNodePtr> Variables;
-        THashSet<TString> WeakVariables;
         NSQLTranslation::TTranslationSettings Settings;
         std::unique_ptr<TMemoryPool> Pool;
         NYql::TIssues& Issues;
@@ -264,10 +250,11 @@ namespace NSQLTranslationV1 {
         bool EnableSystemColumns = true;
         bool DqEngineEnable = false;
         bool DqEngineForce = false;
-        TString CostBasedOptimizer;
         TMaybe<bool> JsonQueryReturnsJsonDocument;
         TMaybe<bool> AnsiInForEmptyOrNullableItemsCollections;
         TMaybe<bool> AnsiRankForNullableKeys = true;
+        TMaybe<bool> AnsiOrderByLimitInUnionAll = true;
+        bool EnforceAnsiOrderByLimitInUnionAll = false;
         const bool AnsiQuotedIdentifiers;
         bool AnsiOptionalAs = true;
         bool OrderedColumns = false;
@@ -285,19 +272,7 @@ namespace NSQLTranslationV1 {
         // see YQL-10265
         bool AnsiCurrentRow = false;
         TMaybe<bool> YsonCastToString;
-        using TLiteralWithPosition = std::pair<TString, TPosition>;
-        using TLibraryStuff = std::tuple<TPosition, std::optional<TLiteralWithPosition>, std::optional<TLiteralWithPosition>>;
-        std::unordered_map<TString, TLibraryStuff> Libraries; // alias -> optional file with token
-        using TPackageStuff = std::tuple<
-            TPosition, TLiteralWithPosition,
-            std::optional<TLiteralWithPosition>
-        >;
-
-        std::unordered_map<TString, TPackageStuff> Packages; // alias -> url with optional token
-
-        using TOverrideLibraryStuff = std::tuple<TPosition>;
-        std::unordered_map<TString, TOverrideLibraryStuff> OverrideLibraries; // alias -> position
-
+        THashMap<TString, TMaybe<std::pair<TString, TString>>> Libraries; // alias -> optional file with token
         THashMap<TString, ui32> PackageVersions;
         NYql::TWarningPolicy WarningPolicy;
         TString PqReadByRtmrCluster;
@@ -305,17 +280,14 @@ namespace NSQLTranslationV1 {
         bool EmitAggApply = false;
         bool UseBlocks = false;
         bool AnsiLike = false;
-        bool FeatureR010 = false; //Row pattern recognition: FROM clause
-        TMaybe<bool> CompactGroupBy;
     };
 
     class TColumnRefScope {
     public:
-        TColumnRefScope(TContext& ctx, EColumnRefState state, bool isTopLevelExpr = true, const TString& defineVar = "")
+        TColumnRefScope(TContext& ctx, EColumnRefState state, bool isTopLevelExpr = true)
             : PrevTop(ctx.TopLevelColumnReferenceState)
             , Prev(ctx.ColumnReferenceState)
             , PrevErr(ctx.NoColumnErrorContext)
-            , PrevDefineVar(ctx.MatchRecognizeDefineVar)
             , Ctx(ctx)
         {
             if (isTopLevelExpr) {
@@ -323,8 +295,6 @@ namespace NSQLTranslationV1 {
             } else {
                 Ctx.ColumnReferenceState = state;
             }
-            YQL_ENSURE(defineVar.empty() || EColumnRefState::MatchRecognize == state, "Internal logic error");
-            ctx.MatchRecognizeDefineVar = defineVar;
         }
 
         void SetNoColumnErrContext(const TString& msg) {
@@ -335,13 +305,11 @@ namespace NSQLTranslationV1 {
             Ctx.TopLevelColumnReferenceState = PrevTop;
             Ctx.ColumnReferenceState = Prev;
             std::swap(Ctx.NoColumnErrorContext, PrevErr);
-            std::swap(Ctx.MatchRecognizeDefineVar, PrevDefineVar);
         }
     private:
         const EColumnRefState PrevTop;
         const EColumnRefState Prev;
         TString PrevErr;
-        TString PrevDefineVar;
         TContext& Ctx;
     };
 

@@ -1,6 +1,5 @@
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include "datashard_ut_common_kqp.h"
-#include "datashard_ut_common_pq.h"
 #include "datashard_active_transaction.h"
 
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
@@ -165,7 +164,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         runtime.SetLogPriority(NKikimrServices::TABLET_EXECUTOR, NLog::PRI_DEBUG);
 
         TVector<THolder<IEventHandle>> capturedPlans;
-        auto capturePlans = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto capturePlans = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvPlanStep::EventType: {
                     Cerr << "... captured TEvPlanStep" << Endl;
@@ -247,7 +246,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         TVector<THolder<IEventHandle>> capturedPlans;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvPlanStep::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvPlanStep>();
@@ -343,7 +342,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         runtime.SetLogPriority(NKikimrServices::TABLET_EXECUTOR, NLog::PRI_DEBUG);
 
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
@@ -384,13 +383,10 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
     Y_UNIT_TEST(DistributedWriteLaterSnapshotBlockedThenCommit) {
         TPortManager pm;
-        NKikimrConfig::TAppConfig app;
-        app.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(false);
         TServerSettings serverSettings(pm.GetPort(2134));
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000)
-            .SetAppConfig(app);
+            .SetDomainPlanResolution(1000);
 
         Tests::TServer::TPtr server = new TServer(serverSettings);
         auto &runtime = *server->GetRuntime();
@@ -411,7 +407,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         runtime.SetLogPriority(NKikimrServices::TABLET_EXECUTOR, NLog::PRI_DEBUG);
 
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
@@ -474,13 +470,10 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
     Y_UNIT_TEST(DistributedWriteLaterSnapshotBlockedThenAbort) {
         TPortManager pm;
-        NKikimrConfig::TAppConfig app;
-        app.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(false);
         TServerSettings serverSettings(pm.GetPort(2134));
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000)
-            .SetAppConfig(app);
+            .SetDomainPlanResolution(1000);
 
         Tests::TServer::TPtr server = new TServer(serverSettings);
         auto &runtime = *server->GetRuntime();
@@ -504,7 +497,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         size_t observedPlans = 0;
         TVector<THolder<IEventHandle>> capturedPlans;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvPlanStep::EventType: {
                     ++observedPlans;
@@ -590,7 +583,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         size_t observedPlans = 0;
         TVector<THolder<IEventHandle>> capturedPlans;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvPlanStep::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvPlanStep>();
@@ -660,7 +653,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         size_t observedPropose = 0;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvDataShard::TEvProposeTransaction::EventType: {
                     ++observedPropose;
@@ -738,7 +731,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         const auto tableId1 = ResolveTableId(server, sender, "/Root/table-1");
 
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
@@ -820,7 +813,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         size_t observedPropose = 0;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvDataShard::TEvProposeTransaction::EventType: {
                     ++observedPropose;
@@ -900,7 +893,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         size_t observedSplit = 0;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvDataShard::TEvSplit::EventType: {
                     ++observedSplit;
@@ -988,7 +981,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         ui64 maxReadSetStep = 0;
         bool captureReadSets = true;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
@@ -1048,7 +1041,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
             msg->Record.MutableSnapshot()->SetTxId(Max<ui64>());
             msg->Record.AddColumns(1);
             msg->Record.AddColumns(2);
-            msg->Record.SetResultFormat(NKikimrDataEvents::FORMAT_ARROW);
+            msg->Record.SetResultFormat(NKikimrTxDataShard::ARROW);
 
             TVector<TCell> fromKeyCells = { TCell::Make(ui32(0)) };
             TVector<TCell> toKeyCells = { TCell::Make(ui32(10)) };
@@ -1118,7 +1111,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         ui64 maxReadSetStep = 0;
         bool captureReadSets = true;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
@@ -1178,7 +1171,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
             msg->Record.MutableSnapshot()->SetTxId(Max<ui64>());
             msg->Record.AddColumns(1);
             msg->Record.AddColumns(2);
-            msg->Record.SetResultFormat(NKikimrDataEvents::FORMAT_ARROW);
+            msg->Record.SetResultFormat(NKikimrTxDataShard::ARROW);
             msg->Record.SetMaxRowsInResult(1);
 
             TVector<TCell> fromKeyCells = { TCell::Make(ui32(0)) };
@@ -1250,7 +1243,6 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         auto sender = runtime.AllocateEdgeActor();
 
         runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::KQP_COMPUTE, NLog::PRI_TRACE);
         runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
 
         InitRoot(server, sender);
@@ -1269,7 +1261,7 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
         ui64 maxReadSetStep = 0;
         bool captureReadSets = true;
         TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
@@ -1300,16 +1292,14 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
 
         runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(false);
 
-        std::vector<TString> observedResults;
+        TVector<TString> observedResults;
         TMaybe<Ydb::StatusIds::StatusCode> observedStatus;
         auto scanSender = runtime.Register(new TLambdaActor([&](TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
             switch (ev->GetTypeRewrite()) {
                 case NKqp::TEvKqpExecuter::TEvStreamData::EventType: {
                     auto* msg = ev->Get<NKqp::TEvKqpExecuter::TEvStreamData>();
                     Cerr << "... observed stream data" << Endl;
-                    if (msg->Record.GetResultSet().rows().size()) {
-                        observedResults.emplace_back(FormatResult(msg->Record.GetResultSet()));
-                    }
+                    observedResults.push_back(FormatResult(msg->Record.GetResultSet()));
                     auto resp = MakeHolder<NKqp::TEvKqpExecuter::TEvStreamDataAck>();
                     resp->Record.SetSeqNo(msg->Record.GetSeqNo());
                     resp->Record.SetFreeSpace(1);
@@ -1324,8 +1314,8 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
                 }
                 default: {
                     Cerr << "... ignored event " << ev->GetTypeRewrite();
-                    if (ev->HasEvent()) {
-                        Cerr << " " << ev->GetTypeName();
+                    if (ev->GetBase()) {
+                        Cerr << " " << ev->GetBase()->ToString();
                     }
                     Cerr << Endl;
                 }
@@ -1354,642 +1344,6 @@ Y_UNIT_TEST_SUITE(DataShardVolatile) {
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
             "{ items { uint32_value: 2 } items { uint32_value: 2 } }");
         UNIT_ASSERT_VALUES_EQUAL(observedStatus, Ydb::StatusIds::SUCCESS);
-    }
-
-    Y_UNIT_TEST(DistributedWriteWithAsyncIndex) {
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false},
-                        })
-                        .Indexes({
-                            {"by_value", {"value"}, {}, NKikimrSchemeOp::EIndexTypeGlobalAsync},
-                        });
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1);");
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 10);");
-
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(true);
-        ExecSQL(server, sender, R"(
-            UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 3);
-            UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 30);
-        )");
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(false);
-
-        // Make sure changes are actually delivered
-        SimulateSleep(runtime, TDuration::Seconds(1));
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleStaleRoExec(runtime, R"(
-                SELECT key, value
-                FROM `/Root/table-1` VIEW by_value
-                ORDER BY key
-            )"),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 3 } }");
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleStaleRoExec(runtime, R"(
-                SELECT key, value
-                FROM `/Root/table-2` VIEW by_value
-                ORDER BY key
-            )"),
-            "{ items { uint32_value: 10 } items { uint32_value: 10 } }, "
-            "{ items { uint32_value: 20 } items { uint32_value: 30 } }");
-    }
-
-    Y_UNIT_TEST(DistributedWriteThenBulkUpsert) {
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false},
-                            {"value2", "Uint32", false, false}});
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1);");
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 10);");
-
-        ui64 maxReadSetStep = 0;
-        bool captureReadSets = true;
-        TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
-            switch (ev->GetTypeRewrite()) {
-                case TEvTxProcessing::TEvReadSet::EventType: {
-                    const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
-                    maxReadSetStep = Max(maxReadSetStep, msg->Record.GetStep());
-                    if (captureReadSets) {
-                        Cerr << "... captured TEvReadSet for " << msg->Record.GetTabletDest() << Endl;
-                        capturedReadSets.emplace_back(ev.Release());
-                        return TTestActorRuntime::EEventAction::DROP;
-                    }
-                    break;
-                }
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        auto prevObserverFunc = runtime.SetObserverFunc(captureEvents);
-
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(true);
-
-        TString sessionId = CreateSessionRPC(runtime, "/Root");
-
-        auto future = SendRequest(runtime, MakeSimpleRequestRPC(R"(
-            UPSERT INTO `/Root/table-1` (key, value, value2) VALUES (2, 2, 42);
-            UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 20);
-        )", sessionId, "", true /* commitTx */), "/Root");
-
-        WaitFor(runtime, [&]{ return capturedReadSets.size() >= 4; }, "captured readsets");
-        UNIT_ASSERT_VALUES_EQUAL(capturedReadSets.size(), 4u);
-
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(false);
-
-        // Write to key 2 using bulk upsert
-        NThreading::TFuture<Ydb::Table::BulkUpsertResponse> bulkUpsertFuture;
-        {
-            Ydb::Table::BulkUpsertRequest request;
-            request.set_table("/Root/table-1");
-            auto* r = request.mutable_rows();
-
-            auto* reqRowType = r->mutable_type()->mutable_list_type()->mutable_item()->mutable_struct_type();
-            auto* reqKeyType = reqRowType->add_members();
-            reqKeyType->set_name("key");
-            reqKeyType->mutable_type()->set_type_id(Ydb::Type::UINT32);
-            auto* reqValueType = reqRowType->add_members();
-            reqValueType->set_name("value");
-            reqValueType->mutable_type()->set_type_id(Ydb::Type::UINT32);
-
-            auto* reqRows = r->mutable_value();
-            auto* row1 = reqRows->add_items();
-            row1->add_items()->set_uint32_value(2);
-            row1->add_items()->set_uint32_value(22);
-
-            using TEvBulkUpsertRequest = NKikimr::NGRpcService::TGrpcRequestOperationCall<
-                Ydb::Table::BulkUpsertRequest, Ydb::Table::BulkUpsertResponse>;
-            bulkUpsertFuture = NRpcService::DoLocalRpc<TEvBulkUpsertRequest>(
-                std::move(request), "/Root", "", runtime.GetActorSystem(0));
-
-            auto response = AwaitResponse(runtime, std::move(bulkUpsertFuture));
-            UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::SUCCESS);
-        }
-
-        // This compaction verifies there's no commit race with the waiting
-        // distributed transaction. If commits happen in incorrect order we
-        // would observe unexpected results.
-        const auto shard1 = GetTableShards(server, sender, "/Root/table-1").at(0);
-        const auto tableId1 = ResolveTableId(server, sender, "/Root/table-1");
-        CompactTable(runtime, shard1, tableId1, false);
-
-        runtime.SetObserverFunc(prevObserverFunc);
-        for (auto& ev : capturedReadSets) {
-            runtime.Send(ev.Release(), 0, true);
-        }
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            FormatResult(AwaitResponse(runtime, std::move(future))),
-            "<empty>");
-
-        // Verify the result
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, R"(
-                SELECT key, value, value2 FROM `/Root/table-1`
-                UNION ALL
-                SELECT key, value, value2 FROM `/Root/table-2`
-                ORDER BY key
-                )"),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } items { null_flag_value: NULL_VALUE } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 22 } items { uint32_value: 42 } }, "
-            "{ items { uint32_value: 10 } items { uint32_value: 10 } items { null_flag_value: NULL_VALUE } }, "
-            "{ items { uint32_value: 20 } items { uint32_value: 20 } items { null_flag_value: NULL_VALUE } }");
-    }
-
-    namespace {
-        using TCdcStream = TShardedTableOptions::TCdcStream;
-
-        TCdcStream NewAndOldImages(NKikimrSchemeOp::ECdcStreamFormat format, const TString& name = "Stream") {
-            return TCdcStream{
-                .Name = name,
-                .Mode = NKikimrSchemeOp::ECdcStreamModeNewAndOldImages,
-                .Format = format,
-            };
-        }
-
-        TCdcStream WithInitialScan(TCdcStream streamDesc) {
-            streamDesc.InitialState = NKikimrSchemeOp::ECdcStreamStateScan;
-            return streamDesc;
-        }
-
-        void WaitForContent(TServer::TPtr server, const TActorId& sender, const TString& path, const TVector<TString>& expected) {
-            while (true) {
-                const auto records = GetPqRecords(*server->GetRuntime(), sender, path, 0);
-                if (records.size() >= expected.size()) {
-                    for (ui32 i = 0; i < expected.size(); ++i) {
-                        UNIT_ASSERT_VALUES_EQUAL(records.at(i).second, expected.at(i));
-                    }
-
-                    UNIT_ASSERT_VALUES_EQUAL(records.size(), expected.size());
-                    break;
-                }
-
-                SimulateSleep(server, TDuration::Seconds(1));
-            }
-        }
-    } // namespace
-
-    Y_UNIT_TEST(DistributedWriteThenBulkUpsertWithCdc) {
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000)
-            .SetEnableChangefeedInitialScan(true);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false},
-                            {"value2", "Uint32", false, false}});
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1);");
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 10);");
-
-        WaitTxNotification(server, sender, AsyncAlterAddStream(server, "/Root", "table-1",
-            WithInitialScan(NewAndOldImages(NKikimrSchemeOp::ECdcStreamFormatJson))));
-
-        WaitForContent(server, sender, "/Root/table-1/Stream", {
-            R"({"update":{},"newImage":{"value2":null,"value":1},"key":[1]})",
-        });
-
-        ui64 maxReadSetStep = 0;
-        bool captureReadSets = true;
-        TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
-            switch (ev->GetTypeRewrite()) {
-                case TEvTxProcessing::TEvReadSet::EventType: {
-                    const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
-                    maxReadSetStep = Max(maxReadSetStep, msg->Record.GetStep());
-                    if (captureReadSets) {
-                        Cerr << "... captured TEvReadSet for " << msg->Record.GetTabletDest() << Endl;
-                        capturedReadSets.emplace_back(ev.Release());
-                        return TTestActorRuntime::EEventAction::DROP;
-                    }
-                    break;
-                }
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        auto prevObserverFunc = runtime.SetObserverFunc(captureEvents);
-
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(true);
-
-        TString sessionId = CreateSessionRPC(runtime, "/Root");
-
-        auto future = SendRequest(runtime, MakeSimpleRequestRPC(R"(
-            UPSERT INTO `/Root/table-1` (key, value, value2) VALUES (2, 2, 42);
-            UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 20);
-        )", sessionId, "", true /* commitTx */), "/Root");
-
-        WaitFor(runtime, [&]{ return capturedReadSets.size() >= 4; }, "captured readsets");
-        UNIT_ASSERT_VALUES_EQUAL(capturedReadSets.size(), 4u);
-
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(false);
-
-        // Write to key 2 using bulk upsert
-        NThreading::TFuture<Ydb::Table::BulkUpsertResponse> bulkUpsertFuture;
-        {
-            Ydb::Table::BulkUpsertRequest request;
-            request.set_table("/Root/table-1");
-            auto* r = request.mutable_rows();
-
-            auto* reqRowType = r->mutable_type()->mutable_list_type()->mutable_item()->mutable_struct_type();
-            auto* reqKeyType = reqRowType->add_members();
-            reqKeyType->set_name("key");
-            reqKeyType->mutable_type()->set_type_id(Ydb::Type::UINT32);
-            auto* reqValueType = reqRowType->add_members();
-            reqValueType->set_name("value");
-            reqValueType->mutable_type()->set_type_id(Ydb::Type::UINT32);
-
-            auto* reqRows = r->mutable_value();
-            auto* row1 = reqRows->add_items();
-            row1->add_items()->set_uint32_value(2);
-            row1->add_items()->set_uint32_value(22);
-
-            using TEvBulkUpsertRequest = NKikimr::NGRpcService::TGrpcRequestOperationCall<
-                Ydb::Table::BulkUpsertRequest, Ydb::Table::BulkUpsertResponse>;
-            bulkUpsertFuture = NRpcService::DoLocalRpc<TEvBulkUpsertRequest>(
-                std::move(request), "/Root", "", runtime.GetActorSystem(0));
-
-            // Note: we expect bulk upsert to block until key 2 outcome is decided
-            SimulateSleep(runtime, TDuration::Seconds(1));
-            UNIT_ASSERT(!bulkUpsertFuture.HasValue());
-        }
-
-        runtime.SetObserverFunc(prevObserverFunc);
-        for (auto& ev : capturedReadSets) {
-            runtime.Send(ev.Release(), 0, true);
-        }
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            FormatResult(AwaitResponse(runtime, std::move(future))),
-            "<empty>");
-
-        SimulateSleep(runtime, TDuration::Seconds(1));
-
-        // Verify the result
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, R"(
-                SELECT key, value, value2 FROM `/Root/table-1`
-                UNION ALL
-                SELECT key, value, value2 FROM `/Root/table-2`
-                ORDER BY key
-                )"),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } items { null_flag_value: NULL_VALUE } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 22 } items { uint32_value: 42 } }, "
-            "{ items { uint32_value: 10 } items { uint32_value: 10 } items { null_flag_value: NULL_VALUE } }, "
-            "{ items { uint32_value: 20 } items { uint32_value: 20 } items { null_flag_value: NULL_VALUE } }");
-
-        WaitForContent(server, sender, "/Root/table-1/Stream", {
-            R"({"update":{},"newImage":{"value2":null,"value":1},"key":[1]})",
-            R"({"update":{},"newImage":{"value2":42,"value":2},"key":[2]})",
-            R"({"update":{},"newImage":{"value2":42,"value":22},"key":[2],"oldImage":{"value2":42,"value":2}})",
-        });
-
-        UNIT_ASSERT(bulkUpsertFuture.HasValue());
-    }
-
-    Y_UNIT_TEST(DistributedWriteThenLateWriteReadCommit) {
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        NKikimrConfig::TAppConfig appCfg;
-        appCfg.MutableTableServiceConfig()->SetEnableKqpImmediateEffects(true);
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000)
-            .SetAppConfig(appCfg)
-            .SetEnableDataShardVolatileTransactions(true);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false}});
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1);");
-        ExecSQL(server, sender, "UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 10);");
-
-        ui64 maxReadSetStep = 0;
-        bool captureReadSets = true;
-        TVector<THolder<IEventHandle>> capturedReadSets;
-        auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
-            switch (ev->GetTypeRewrite()) {
-                case TEvTxProcessing::TEvReadSet::EventType: {
-                    const auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
-                    maxReadSetStep = Max(maxReadSetStep, msg->Record.GetStep());
-                    if (captureReadSets) {
-                        Cerr << "... captured TEvReadSet for " << msg->Record.GetTabletDest() << Endl;
-                        capturedReadSets.emplace_back(ev.Release());
-                        return TTestActorRuntime::EEventAction::DROP;
-                    }
-                    break;
-                }
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        auto prevObserverFunc = runtime.SetObserverFunc(captureEvents);
-
-        TString sessionId = CreateSessionRPC(runtime, "/Root");
-
-        auto future = SendRequest(runtime, MakeSimpleRequestRPC(R"(
-            UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 2);
-            UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 20);
-        )", sessionId, "", /* commitTx */ true), "/Root");
-
-        WaitFor(runtime, [&]{ return capturedReadSets.size() >= 4; }, "captured readsets");
-        UNIT_ASSERT_VALUES_EQUAL(capturedReadSets.size(), 4u);
-
-        // Make an uncommitted write and read it to make sure it's flushed to datashard
-        TString sessionId2 = CreateSessionRPC(runtime, "/Root");
-        TString txId2;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleBegin(runtime, sessionId2, txId2, R"(
-                UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 22);
-            )"),
-            "<empty>");
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleContinue(runtime, sessionId2, txId2, R"(
-                SELECT key, value FROM `/Root/table-1` WHERE key = 2;
-            )"),
-            "{ items { uint32_value: 2 } items { uint32_value: 22 } }");
-
-        // Unblock readsets and let it commit
-        runtime.SetObserverFunc(prevObserverFunc);
-        for (auto& ev : std::exchange(capturedReadSets, {})) {
-            runtime.Send(ev.Release(), 0, true);
-        }
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            FormatResult(AwaitResponse(runtime, std::move(future))),
-            "<empty>");
-
-        // Commit the transaction, it should succeed without crashing
-        UNIT_ASSERT_VALUES_EQUAL(
-            CommitTransactionRPC(runtime, sessionId2, txId2),
-            "");
-
-        // Verify the result
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, R"(
-                SELECT key, value FROM `/Root/table-1`
-                UNION ALL
-                SELECT key, value FROM `/Root/table-2`
-                ORDER BY key
-                )"),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 22 } }, "
-            "{ items { uint32_value: 10 } items { uint32_value: 10 } }, "
-            "{ items { uint32_value: 20 } items { uint32_value: 20 } }");
-    }
-
-    Y_UNIT_TEST(DistributedWriteLostPlanThenDrop) {
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000)
-            .SetEnableDataShardVolatileTransactions(true);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        CreateShardedTable(server, sender, "/Root", "table-1", 1);
-        CreateShardedTable(server, sender, "/Root", "table-2", 1);
-
-        const auto shards1 = GetTableShards(server, sender, "/Root/table-1");
-        UNIT_ASSERT_VALUES_EQUAL(shards1.size(), 1u);
-
-        bool removeTransactions = true;
-        size_t removedTransactions = 0;
-        size_t receivedReadSets = 0;
-        auto observer = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case TEvTxProcessing::TEvPlanStep::EventType: {
-                    auto* msg = ev->Get<TEvTxProcessing::TEvPlanStep>();
-                    auto step = msg->Record.GetStep();
-                    auto tabletId = msg->Record.GetTabletID();
-                    auto recipient = ev->GetRecipientRewrite();
-                    Cerr << "... observed step " << step << " at tablet " << tabletId << Endl;
-                    if (removeTransactions && tabletId == shards1.at(0)) {
-                        THashMap<TActorId, TVector<ui64>> acks;
-                        for (auto& tx : msg->Record.GetTransactions()) {
-                            // Acknowledge transaction to coordinator
-                            auto ackTo = ActorIdFromProto(tx.GetAckTo());
-                            acks[ackTo].push_back(tx.GetTxId());
-                            ++removedTransactions;
-                        }
-                        // Acknowledge transactions to coordinator and remove them
-                        // It would be as if shard missed them for some reason
-                        for (auto& pr : acks) {
-                            auto* ack = new TEvTxProcessing::TEvPlanStepAck(tabletId, step, pr.second.begin(), pr.second.end());
-                            runtime.Send(new IEventHandle(pr.first, recipient, ack), 0, true);
-                        }
-                        auto* accept = new TEvTxProcessing::TEvPlanStepAccepted(tabletId, step);
-                        runtime.Send(new IEventHandle(ev->Sender, recipient, accept), 0, true);
-                        msg->Record.ClearTransactions();
-                        return TTestActorRuntime::EEventAction::DROP;
-                    }
-                    break;
-                }
-                case TEvTxProcessing::TEvReadSet::EventType: {
-                    auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
-                    auto tabletId = msg->Record.GetTabletDest();
-                    Cerr << "... observed readset at " << tabletId << Endl;
-                    if (tabletId == shards1.at(0)) {
-                        ++receivedReadSets;
-                    }
-                    break;
-                }
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        auto prevObserverFunc = runtime.SetObserverFunc(observer);
-
-        TString sessionId = CreateSessionRPC(runtime, "/Root");
-
-        auto future = SendRequest(runtime, MakeSimpleRequestRPC(R"(
-            UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 2);
-            UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 20);
-        )", sessionId, "", /* commitTx */ true), "/Root");
-
-        WaitFor(runtime, [&]{ return removedTransactions > 0 && receivedReadSets >= 2; }, "readset exchange start");
-        UNIT_ASSERT_VALUES_EQUAL(removedTransactions, 1u);
-        UNIT_ASSERT_VALUES_EQUAL(receivedReadSets, 2u);
-
-        removeTransactions = false;
-
-        auto dropStartTs = runtime.GetCurrentTime();
-        Cerr << "... dropping table" << Endl;
-        ui64 txId = AsyncDropTable(server, sender, "/Root", "table-2");
-        Cerr << "... drop table txId# " << txId << " started" << Endl;
-        WaitTxNotification(server, sender, txId);
-        auto dropLatency = runtime.GetCurrentTime() - dropStartTs;
-        Cerr << "... drop finished in " << dropLatency << Endl;
-        UNIT_ASSERT(dropLatency < TDuration::Seconds(5));
-    }
-
-    Y_UNIT_TEST(DistributedWriteLostPlanThenSplit) {
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(1000)
-            .SetEnableDataShardVolatileTransactions(true);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        SetSplitMergePartCountLimit(server->GetRuntime(), -1);
-        CreateShardedTable(server, sender, "/Root", "table-1", 1);
-        CreateShardedTable(server, sender, "/Root", "table-2", 1);
-
-        const auto shards1 = GetTableShards(server, sender, "/Root/table-1");
-        UNIT_ASSERT_VALUES_EQUAL(shards1.size(), 1u);
-
-        bool removeTransactions = true;
-        size_t removedTransactions = 0;
-        size_t receivedReadSets = 0;
-        auto observer = [&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case TEvTxProcessing::TEvPlanStep::EventType: {
-                    auto* msg = ev->Get<TEvTxProcessing::TEvPlanStep>();
-                    auto step = msg->Record.GetStep();
-                    auto tabletId = msg->Record.GetTabletID();
-                    auto recipient = ev->GetRecipientRewrite();
-                    Cerr << "... observed step " << step << " at tablet " << tabletId << Endl;
-                    if (removeTransactions && tabletId == shards1.at(0)) {
-                        THashMap<TActorId, TVector<ui64>> acks;
-                        for (auto& tx : msg->Record.GetTransactions()) {
-                            // Acknowledge transaction to coordinator
-                            auto ackTo = ActorIdFromProto(tx.GetAckTo());
-                            acks[ackTo].push_back(tx.GetTxId());
-                            ++removedTransactions;
-                        }
-                        // Acknowledge transactions to coordinator and remove them
-                        // It would be as if shard missed them for some reason
-                        for (auto& pr : acks) {
-                            auto* ack = new TEvTxProcessing::TEvPlanStepAck(tabletId, step, pr.second.begin(), pr.second.end());
-                            runtime.Send(new IEventHandle(pr.first, recipient, ack), 0, true);
-                        }
-                        auto* accept = new TEvTxProcessing::TEvPlanStepAccepted(tabletId, step);
-                        runtime.Send(new IEventHandle(ev->Sender, recipient, accept), 0, true);
-                        msg->Record.ClearTransactions();
-                        return TTestActorRuntime::EEventAction::DROP;
-                    }
-                    break;
-                }
-                case TEvTxProcessing::TEvReadSet::EventType: {
-                    auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
-                    auto tabletId = msg->Record.GetTabletDest();
-                    Cerr << "... observed readset at " << tabletId << Endl;
-                    if (tabletId == shards1.at(0)) {
-                        ++receivedReadSets;
-                    }
-                    break;
-                }
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        };
-        auto prevObserverFunc = runtime.SetObserverFunc(observer);
-
-        TString sessionId = CreateSessionRPC(runtime, "/Root");
-
-        auto future = SendRequest(runtime, MakeSimpleRequestRPC(R"(
-            UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1), (2, 2);
-            UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 20);
-        )", sessionId, "", /* commitTx */ true), "/Root");
-
-        WaitFor(runtime, [&]{ return removedTransactions > 0 && receivedReadSets >= 2; }, "readset exchange start");
-        UNIT_ASSERT_VALUES_EQUAL(removedTransactions, 1u);
-        UNIT_ASSERT_VALUES_EQUAL(receivedReadSets, 2u);
-
-        removeTransactions = false;
-
-        auto splitStartTs = runtime.GetCurrentTime();
-        Cerr << "... splitting table" << Endl;
-        ui64 txId = AsyncSplitTable(server, sender, "/Root/table-1", shards1.at(0), 2);
-        Cerr << "... split txId# " << txId << " started" << Endl;
-        WaitTxNotification(server, sender, txId);
-        auto splitLatency = runtime.GetCurrentTime() - splitStartTs;
-        Cerr << "... split finished in " << splitLatency << Endl;
-        UNIT_ASSERT(splitLatency < TDuration::Seconds(5));
     }
 
 } // Y_UNIT_TEST_SUITE(DataShardVolatile)

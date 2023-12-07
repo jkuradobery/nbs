@@ -4,8 +4,6 @@
 
 #include <library/cpp/malloc/api/malloc.h>
 
-#include <library/cpp/yt/memory/memory_tag.h>
-
 namespace NYT::NYTAlloc {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -51,19 +49,11 @@ size_t GetAllocationSize(size_t size)
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-
-} // namespace NYT::NYTAlloc
-
-namespace NYT {
-
-using namespace NYTAlloc;
-
-////////////////////////////////////////////////////////////////////////////////
 // Memory tags API bridge
 
 TMemoryTag GetCurrentMemoryTag()
 {
-    return NYTAlloc::TThreadManager::GetCurrentMemoryTag();
+    return TThreadManager::GetCurrentMemoryTag();
 }
 
 void SetCurrentMemoryTag(TMemoryTag tag)
@@ -83,12 +73,6 @@ size_t GetMemoryUsageForTag(TMemoryTag tag)
     GetMemoryUsageForTags(&tag, 1, &result);
     return result;
 }
-
-////////////////////////////////////////////////////////////////////////////////
-
-} // namespace NYT
-
-namespace NYT::NYTAlloc {
 
 ////////////////////////////////////////////////////////////////////////////////
 // Memory zone API bridge
@@ -155,9 +139,9 @@ extern "C" void* valloc(size_t size)
 extern "C" void* aligned_alloc(size_t alignment, size_t size)
 {
     // Alignment must be a power of two.
-    Y_ABORT_UNLESS((alignment & (alignment - 1)) == 0);
+    Y_VERIFY((alignment & (alignment - 1)) == 0);
     // Alignment must not exceed the page size.
-    Y_ABORT_UNLESS(alignment <= PageSize);
+    Y_VERIFY(alignment <= PageSize);
     if (alignment <= 16) {
         // Proper alignment here is automatic.
         return Allocate(size);

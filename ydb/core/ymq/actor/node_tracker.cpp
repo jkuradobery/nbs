@@ -134,25 +134,15 @@ namespace NKikimr::NSQS {
         }
     }
 
-    void TNodeTrackerActor::AnswerForSubscriber(ui64 subscriptionId, ui32 nodeId, bool disconnected) {
-        Send(ParentActor, new TSqsEvents::TEvNodeTrackerSubscriptionStatus(subscriptionId, nodeId, disconnected));
+    void TNodeTrackerActor::AnswerForSubscriber(ui64 subscriptionId, ui32 nodeId) {
+        Send(ParentActor, new TSqsEvents::TEvNodeTrackerSubscriptionStatus(subscriptionId, nodeId));
     }
 
     void TNodeTrackerActor::HandlePipeClientDisconnected(TEvTabletPipe::TEvClientDestroyed::TPtr& ev, const NActors::TActorContext&) {
-        ui64 tabletId = ev->Get()->TabletId;
-        auto it = TabletsInfo.find(tabletId);
+        auto it = TabletsInfo.find(ev->Get()->TabletId);
         if (it != TabletsInfo.end()) {
-            LOG_SQS_DEBUG(GetLogPrefix() << "tablet pipe " << tabletId << " disconnected");
-
-            auto& info = it->second;
-            if (info.PipeServer) {
-                for (auto& [id, subscriber] : info.Subscribers) {
-                    if (subscriber->NodeId) {
-                        AnswerForSubscriber(id, subscriber->NodeId.value(), true);
-                    }
-                }
-            }
-            ReconnectToTablet(tabletId);
+            LOG_SQS_DEBUG(GetLogPrefix() << "tablet pipe " << ev->Get()->TabletId << " disconnected");
+            ReconnectToTablet(ev->Get()->TabletId);
         } else {
             LOG_SQS_WARN(GetLogPrefix() << " disconnected from unrequired tablet id: [" << ev->Get()->TabletId << "]. Client pipe actor: " << ev->Get()->ClientId << ". Server pipe actor: " << ev->Get()->ServerId);
         }
@@ -265,7 +255,7 @@ namespace NKikimr::NSQS {
 
     ui64 TNodeTrackerActor::GetTabletId(const TMap<TKeyPrefix, ui64>& tabletsPerEndKeyRange, TKeyPrefix keyPrefix) const {
         auto it = tabletsPerEndKeyRange.lower_bound(keyPrefix);
-        Y_ABORT_UNLESS(it != tabletsPerEndKeyRange.end());
+        Y_VERIFY(it != tabletsPerEndKeyRange.end());
         return it->second;
     }
 
@@ -338,7 +328,7 @@ namespace NKikimr::NSQS {
             lastCurrent = intervalC.second;
             lastActual = intervalA.second;
         }
-        Y_ABORT_UNLESS(currentIt == current.end());
+        Y_VERIFY(currentIt == current.end());
     }
 
     void TNodeTrackerActor::UpdateKeyRanges(
@@ -361,7 +351,7 @@ namespace NKikimr::NSQS {
     void TNodeTrackerActor::HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const NActors::TActorContext& ctx) {
         LOG_SQS_DEBUG(GetLogPrefix() << "got tables description.");
         const NSchemeCache::TSchemeCacheNavigate* result = ev->Get()->Request.Get();
-        Y_ABORT_UNLESS(result->ResultSet.size() == 2);
+        Y_VERIFY(result->ResultSet.size() == 2);
         for (auto result : result->ResultSet) {
             if (result.Status != NSchemeCache::TSchemeCacheNavigate::EStatus::Ok) {
                 DescribeTablesFailed(TStringBuilder() << "describe tables failed : " << result.ToString(), ctx);

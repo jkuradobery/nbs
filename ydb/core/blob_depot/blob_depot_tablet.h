@@ -27,8 +27,8 @@ namespace NKikimr::NBlobDepot {
                 EvCommitCertainKeys,
                 EvDoGroupMetricsExchange,
                 EvKickSpaceMonitor,
+                EvProcessRegisterAgentQ,
                 EvUpdateThroughputs,
-                EvDeliver,
             };
         };
 
@@ -39,6 +39,12 @@ namespace NKikimr::NBlobDepot {
 
         TBlobDepot(TActorId tablet, TTabletStorageInfo *info);
         ~TBlobDepot();
+
+        void HandlePoison() {
+            STLOG(PRI_DEBUG, BLOB_DEPOT, BDT23, "HandlePoison", (Id, GetLogId()));
+            Become(&TThis::StateZombie);
+            Send(Tablet(), new TEvents::TEvPoison);
+        }
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -78,7 +84,7 @@ namespace NKikimr::NBlobDepot {
             std::optional<ui32> NodeId; // as reported by RegisterAgent
             ui64 NextExpectedMsgId = 1;
             std::deque<std::unique_ptr<IEventHandle>> PostponeQ;
-            size_t InFlightDeliveries = 0;
+            bool ProcessThroughQueue = false;
         };
 
         THashMap<TActorId, TPipeServerContext> PipeServers;
@@ -148,8 +154,8 @@ namespace NKikimr::NBlobDepot {
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-        void Enqueue(TAutoPtr<IEventHandle>& ev) override {
-            Y_ABORT("unexpected event Type# %08" PRIx32, ev->GetTypeRewrite());
+        void Enqueue(TAutoPtr<IEventHandle>& ev, const TActorContext&) override {
+            Y_FAIL("unexpected event Type# %08" PRIx32, ev->GetTypeRewrite());
         }
 
         void DefaultSignalTabletActive(const TActorContext&) override {} // signalled explicitly after load is complete
@@ -214,7 +220,15 @@ namespace NKikimr::NBlobDepot {
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
         STFUNC(StateInit) {
-            StateInitImpl(ev, SelfId());
+            if (ev->GetTypeRewrite() == TEvents::TSystem::Poison) {
+                HandlePoison();
+            } else {
+                StateInitImpl(ev, ctx);
+            }
+        }
+
+        STFUNC(StateZombie) {
+            StateInitImpl(ev, ctx);
         }
 
         void HandleFromAgent(STATEFN_SIG);

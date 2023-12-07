@@ -20,14 +20,14 @@ namespace NKikimr::NBsController {
             STLOG(PRI_DEBUG, BS_CONTROLLER, BSCTXGME00, "TTxGroupMetricsExchange::Execute", (Record, record));
 
             NIceDb::TNiceDb db(txc.DB);
-
+            
             for (NKikimrBlobStorage::TGroupMetrics& item : *record.MutableGroupMetrics()) {
                 if (TGroupInfo *group = Self->FindGroup(item.GetGroupId())) {
                     group->GroupMetrics = std::move(item);
 
                     TString s;
                     const bool success = group->GroupMetrics->SerializeToString(&s);
-                    Y_DEBUG_ABORT_UNLESS(success);
+                    Y_VERIFY_DEBUG(success);
                     db.Table<Schema::Group>().Key(group->ID).Update<Schema::Group::Metrics>(s);
                 }
             }

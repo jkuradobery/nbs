@@ -1,5 +1,3 @@
-#pragma once
-
 #include "kqp_session_actor.h"
 
 #include <ydb/core/docapi/traits.h>
@@ -9,8 +7,8 @@
 #include <ydb/core/kqp/provider/yql_kikimr_settings.h>
 #include <ydb/core/protos/kqp.pb.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/json/json_reader.h>
 
 #include <util/datetime/base.h>
@@ -87,7 +85,7 @@ inline TIntrusivePtr<NYql::TKikimrConfiguration> CreateConfig(const TKqpSettings
         cfg->_KqpTablePathPrefix = workerSettings.Database;
     }
 
-    ApplyServiceConfig(*cfg, workerSettings.TableService);
+    ApplyServiceConfig(*cfg, workerSettings.Service);
 
     cfg->FreezeDefaults();
     return cfg;
@@ -110,7 +108,7 @@ inline ETableReadType ExtractMostHeavyReadType(const TString& queryPlan) {
             }
 
             for (const auto& read : table["reads"].GetArray()) {
-                Y_ABORT_UNLESS(read.Has("type"));
+                Y_VERIFY(read.Has("type"));
                 const auto& type = read["type"].GetString();
 
                 if (type == "Scan") {
@@ -124,8 +122,6 @@ inline ETableReadType ExtractMostHeavyReadType(const TString& queryPlan) {
 
     return maxReadType;
 }
-
-bool CanCacheQuery(const NKqpProto::TKqpPhyQuery& query);
 
 void SlowLogQuery(const TActorContext &ctx, const NYql::TKikimrConfiguration* config, const TKqpRequestInfo& requestInfo,
     const TDuration& duration, Ydb::StatusIds::StatusCode status, const TIntrusiveConstPtr<NACLib::TUserToken>& userToken, ui64 parametersSize,
@@ -145,11 +141,7 @@ bool HasSchemeOrFatalIssues(const NYql::TIssues& issues);
 
 IActor* CreateKqpWorkerActor(const TActorId& owner, const TString& sessionId,
     const TKqpSettings::TConstPtr& kqpSettings, const TKqpWorkerSettings& workerSettings,
-    std::optional<TKqpFederatedQuerySetup> federatedQuerySetup,
-    TIntrusivePtr<TModuleResolverState> moduleResolverState,
-    TIntrusivePtr<TKqpCounters> counters,
-    const NKikimrConfig::TMetadataProviderConfig& metadataProviderConfig
-    );
+    TIntrusivePtr<TModuleResolverState> moduleResolverState, TIntrusivePtr<TKqpCounters> counters);
 
 bool IsSameProtoType(const NKikimrMiniKQL::TType& actual, const NKikimrMiniKQL::TType& expected);
 

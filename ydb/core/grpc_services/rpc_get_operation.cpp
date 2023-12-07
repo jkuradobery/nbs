@@ -10,18 +10,15 @@
 
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/console/console.h>
-#include <ydb/core/kqp/common/kqp.h>
-#include <ydb/core/kqp/common/events/script_executions.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/schemeshard/schemeshard_build_index.h>
 #include <ydb/core/tx/schemeshard/schemeshard_export.h>
 #include <ydb/core/tx/schemeshard/schemeshard_import.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/string/cast.h>
 
@@ -46,8 +43,6 @@ class TGetOperationRPC : public TRpcOperationRequestActor<TGetOperationRPC, TEvG
             return "[GetImport]";
         case TOperationId::BUILD_INDEX:
             return "[GetIndexBuild]";
-        case TOperationId::SCRIPT_EXECUTION:
-            return "[GetScriptExecution]";
         default:
             return "[Untagged]";
         }
@@ -62,7 +57,7 @@ class TGetOperationRPC : public TRpcOperationRequestActor<TGetOperationRPC, TEvG
         case TOperationId::BUILD_INDEX:
             return new NSchemeShard::TEvIndexBuilder::TEvGetRequest(DatabaseName, RawOperationId_);
         default:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
     }
 
@@ -96,9 +91,6 @@ public:
                 }
                 ResolveDatabase();
                 break;
-            case TOperationId::SCRIPT_EXECUTION:
-                SendGetScriptExecutionOperation();
-                break;
             default:
                 SendNotifyTxCompletion(ctx);
                 break;
@@ -118,10 +110,9 @@ public:
             HFunc(NSchemeShard::TEvExport::TEvGetExportResponse, Handle);
             HFunc(NSchemeShard::TEvImport::TEvGetImportResponse, Handle);
             HFunc(NSchemeShard::TEvIndexBuilder::TEvGetResponse, Handle);
-            HFunc(NKqp::TEvGetScriptExecutionOperationResponse, Handle);
 
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 private:
@@ -163,7 +154,7 @@ private:
         }
 
         IActor* pipeActor = NTabletPipe::CreateClient(ctx.SelfID, tid);
-        Y_ABORT_UNLESS(pipeActor);
+        Y_VERIFY(pipeActor);
         PipeActorId_ = ctx.ExecutorThread.RegisterActor(pipeActor);
 
         auto request = MakeHolder<NConsole::TEvConsole::TEvGetOperationRequest>();
@@ -190,16 +181,12 @@ private:
         }
 
         IActor* pipeActor = NTabletPipe::CreateClient(ctx.SelfID, schemeShardTabletId);
-        Y_ABORT_UNLESS(pipeActor);
+        Y_VERIFY(pipeActor);
         PipeActorId_ = ctx.ExecutorThread.RegisterActor(pipeActor);
 
         auto request = MakeHolder<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletion>();
         request->Record.SetTxId(txId);
         NTabletPipe::SendData(ctx, PipeActorId_, request.Release());
-    }
-
-    void SendGetScriptExecutionOperation() {
-        Send(NKqp::MakeKqpProxyID(SelfId().NodeId()), new NKqp::TEvGetScriptExecutionOperation(DatabaseName, OperationId_));
     }
 
     void Handle(NSchemeShard::TEvExport::TEvGetExportResponse::TPtr& ev, const TActorContext& ctx) {
@@ -238,23 +225,6 @@ private:
             ::NKikimr::NGRpcService::ToOperation(record.GetIndexBuild(), resp.mutable_operation());
             Reply(resp, ctx);
         }
-    }
-
-    void Handle(NKqp::TEvGetScriptExecutionOperationResponse::TPtr& ev, const TActorContext& ctx) {
-        TEvGetOperationRequest::TResponse resp;
-        auto deferred = resp.mutable_operation();
-        deferred->set_id(GetProtoRequest()->id());
-        deferred->set_ready(ev->Get()->Ready);
-        deferred->set_status(ev->Get()->Status);
-        if (ev->Get()->Issues) {
-            for (const NYql::TIssue& issue : ev->Get()->Issues) {
-                NYql::IssueToMessage(issue, deferred->add_issues());
-            }
-        }
-        if (ev->Get()->Metadata) {
-            deferred->mutable_metadata()->Swap(ev->Get()->Metadata.Get());
-        }
-        Reply(resp, ctx);
     }
 
     void ReplyWithError(const StatusIds::StatusCode status,
@@ -300,12 +270,12 @@ private:
 
     void Reply(const TEvGetOperationRequest::TResponse& response, const TActorContext& ctx) {
         TProtoResponseHelper::SendProtoResponse(response, response.operation().status(), Request);
-        Die(ctx);
+        this->Die(ctx);
     }
 
     void ReplyWithStatus(StatusIds::StatusCode status) {
         Request->ReplyWithYdbStatus(status);
-        PassAway();
+        this->PassAway();
     }
 
     TOperationId OperationId_;
@@ -313,13 +283,8 @@ private:
     TActorId PipeActorId_;
 };
 
-void DoGetOperationRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TGetOperationRPC(p.release()));
-}
-
-template<>
-IActor* TEvGetOperationRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TGetOperationRPC(msg);
+void DoGetOperationRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TGetOperationRPC(p.release()));
 }
 
 } // namespace NGRpcService

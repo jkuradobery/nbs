@@ -22,6 +22,27 @@ namespace NMiniKQL {
 
 constexpr bool EnableStaticRefcount = true;
 
+size_t GetMethodPtrIndex(uintptr_t ptr)
+{
+#ifdef _win_
+    Y_ENSURE(memcmp((void*)ptr, "\x48\x8B\x01\xFF", 4) == 0);
+    size_t offset;
+    if (*(ui8*)(ptr + 4) == 0x60) {
+        offset = *(ui8*)(ptr + 5);
+    }
+    else if (*(ui8*)(ptr + 4) == 0xa0) {
+        offset = *(ui32*)(ptr + 5);
+    }
+    else {
+        ythrow yexception() << "Unsupported code";
+    }
+
+    return offset / 8;
+#else
+    return ptr >> 3;
+#endif
+}
+
 using namespace llvm;
 
 Type* GetCompContextType(LLVMContext &context) {
@@ -42,7 +63,7 @@ Type* GetCompContextType(LLVMContext &context) {
         structPtrType,              // stats
         ptrValueType,               // mutables
         structPtrType,              // builder
-        Type::getFloatTy(context),  // adjustor
+        Type::getFloatTy(context),  // ddjustor
         Type::getInt32Ty(context),  // rsscounter
         PointerType::getUnqual(sourcePosType)
     });
@@ -50,15 +71,13 @@ Type* GetCompContextType(LLVMContext &context) {
 
 Value* TCodegenContext::GetFactory() const {
     if (!Factory) {
-        auto& context = Codegen.GetContext();
-        const auto indexType = Type::getInt32Ty(context);
-        const auto ptrType = PointerType::getUnqual(StructType::get(context));
+        const auto indexType = Type::getInt32Ty(Codegen->GetContext());
         if (Func->getEntryBlock().empty()) {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 0)}, "factory_ptr", &Func->getEntryBlock());
-            const_cast<Value*&>(Factory) = new LoadInst(ptrType, ptr, "factory", &Func->getEntryBlock());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 0)}, "factory_ptr", &Func->getEntryBlock());
+            const_cast<Value*&>(Factory) = new LoadInst(ptr, "factory", &Func->getEntryBlock());
         } else {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 0)}, "factory_ptr", &Func->getEntryBlock().front());
-            const_cast<Value*&>(Factory) = new LoadInst(ptrType, ptr, "factory", &Func->getEntryBlock().back());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 0)}, "factory_ptr", &Func->getEntryBlock().front());
+            const_cast<Value*&>(Factory) = new LoadInst(ptr, "factory", &Func->getEntryBlock().back());
         }
     }
     return Factory;
@@ -66,15 +85,13 @@ Value* TCodegenContext::GetFactory() const {
 
 Value* TCodegenContext::GetStat() const {
     if (!Stat) {
-        auto& context = Codegen.GetContext();
-        const auto indexType = Type::getInt32Ty(context);
-        const auto ptrType = PointerType::getUnqual(StructType::get(context));
+        const auto indexType = Type::getInt32Ty(Codegen->GetContext());
         if (Func->getEntryBlock().empty()) {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 1)}, "stat_ptr", &Func->getEntryBlock());
-            const_cast<Value*&>(Stat) = new LoadInst(ptrType, ptr, "stat", &Func->getEntryBlock());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 1)}, "stat_ptr", &Func->getEntryBlock());
+            const_cast<Value*&>(Stat) = new LoadInst(ptr, "stat", &Func->getEntryBlock());
         } else {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 1)}, "stat_ptr", &Func->getEntryBlock().front());
-            const_cast<Value*&>(Stat) = new LoadInst(ptrType, ptr, "stat", &Func->getEntryBlock().back());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 1)}, "stat_ptr", &Func->getEntryBlock().front());
+            const_cast<Value*&>(Stat) = new LoadInst(ptr, "stat", &Func->getEntryBlock().back());
         }
     }
     return Stat;
@@ -82,15 +99,13 @@ Value* TCodegenContext::GetStat() const {
 
 Value* TCodegenContext::GetMutables() const {
     if (!Mutables) {
-        auto& context = Codegen.GetContext();
-        const auto indexType = Type::getInt32Ty(context);
-        const auto ptrType = PointerType::getUnqual(Type::getInt128Ty(context));
+        const auto indexType = Type::getInt32Ty(Codegen->GetContext());
         if (Func->getEntryBlock().empty()) {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 2)}, "mutables_ptr", &Func->getEntryBlock());
-            const_cast<Value*&>(Mutables) = new LoadInst(ptrType, ptr, "mutables", &Func->getEntryBlock());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 2)}, "mutables_ptr", &Func->getEntryBlock());
+            const_cast<Value*&>(Mutables) = new LoadInst(ptr, "mutables", &Func->getEntryBlock());
         } else {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 2)}, "mutables_ptr", &Func->getEntryBlock().front());
-            const_cast<Value*&>(Mutables) = new LoadInst(ptrType, ptr, "mutables", &Func->getEntryBlock().back());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 2)}, "mutables_ptr", &Func->getEntryBlock().front());
+            const_cast<Value*&>(Mutables) = new LoadInst(ptr, "mutables", &Func->getEntryBlock().back());
         }
     }
     return Mutables;
@@ -98,23 +113,20 @@ Value* TCodegenContext::GetMutables() const {
 
 Value* TCodegenContext::GetBuilder() const {
     if (!Builder) {
-        auto& context = Codegen.GetContext();
-        const auto indexType = Type::getInt32Ty(context);
-        const auto ptrType = PointerType::getUnqual(StructType::get(context));
+        const auto indexType = Type::getInt32Ty(Codegen->GetContext());
         if (Func->getEntryBlock().empty()) {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 3)}, "builder_ptr", &Func->getEntryBlock());
-            const_cast<Value*&>(Builder) = new LoadInst(ptrType, ptr, "builder", &Func->getEntryBlock());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 3)}, "builder_ptr", &Func->getEntryBlock());
+            const_cast<Value*&>(Builder) = new LoadInst(ptr, "builder", &Func->getEntryBlock());
         } else {
-            const auto ptr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 3)}, "builder_ptr", &Func->getEntryBlock().front());
-            const_cast<Value*&>(Builder) = new LoadInst(ptrType, ptr, "builder", &Func->getEntryBlock().back());
+            const auto ptr = GetElementPtrInst::CreateInBounds(Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 3)}, "builder_ptr", &Func->getEntryBlock().front());
+            const_cast<Value*&>(Builder) = new LoadInst(ptr, "builder", &Func->getEntryBlock().back());
         }
     }
     return Builder;
 }
 
-Function* GenerateCompareFunction(NYql::NCodegen::ICodegen& codegen, const TString& name, IComputationExternalNode* left,
-                                IComputationExternalNode* right, IComputationNode* compare) {
-    auto& module = codegen.GetModule();
+Function* GenerateCompareFunction(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name, IComputationExternalNode* left, IComputationExternalNode* right, IComputationNode* compare) {
+    auto& module = codegen->GetModule();
     if (const auto f = module.getFunction(name.c_str()))
         return f;
 
@@ -123,13 +135,13 @@ Function* GenerateCompareFunction(NYql::NCodegen::ICodegen& codegen, const TStri
     MKQL_ENSURE(codegenLeft, "Left must be codegenerator node.");
     MKQL_ENSURE(codegenRight, "Right must be codegenerator node.");
 
-    auto& context = codegen.GetContext();
+    auto& context = codegen->GetContext();
     const auto valueType = Type::getInt128Ty(context);
     const auto ptrType = PointerType::getUnqual(valueType);
     const auto returnType = Type::getInt1Ty(context);
     const auto contextType = GetCompContextType(context);
 
-    const auto funcType = codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
+    const auto funcType = codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
         FunctionType::get(returnType, {PointerType::getUnqual(contextType), valueType, valueType}, false):
         FunctionType::get(returnType, {PointerType::getUnqual(contextType), ptrType, ptrType}, false);
 
@@ -148,8 +160,8 @@ Function* GenerateCompareFunction(NYql::NCodegen::ICodegen& codegen, const TStri
     const auto lv = &*++args;
     const auto rv = &*++args;
 
-    codegenLeft->SetValueBuilder([lv](const TCodegenContext&) { return lv; });
-    codegenRight->SetValueBuilder([rv](const TCodegenContext&) { return rv; });
+    codegenLeft->SetTemporaryValue(lv);
+    codegenRight->SetTemporaryValue(rv);
 
     codegenLeft->CreateInvalidate(ctx, block);
     codegenRight->CreateInvalidate(ctx, block);
@@ -158,8 +170,8 @@ Function* GenerateCompareFunction(NYql::NCodegen::ICodegen& codegen, const TStri
     const auto cast = CastInst::Create(Instruction::Trunc, res, returnType, "bool", block);
     ReturnInst::Create(context, cast, block);
 
-    codegenLeft->SetValueBuilder({});
-    codegenRight->SetValueBuilder({});
+    codegenLeft->SetTemporaryValue(nullptr);
+    codegenRight->SetTemporaryValue(nullptr);
 
     return ctx.Func;
 }
@@ -180,15 +192,15 @@ Value* GetterFor(NUdf::EDataSlot slot, Value* value, LLVMContext &context, Basic
 namespace {
 
 Value* GetMarkFromUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock* block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto type8 = Type::getInt8Ty(context);
     if (value->getType()->isPointerTy()) {
-        const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), ArrayType::get(type8, 8U)});
-        const auto cast = CastInst::Create(Instruction::BitCast, value, PointerType::getUnqual(type), "cast", block);
+        const auto ptrType = PointerType::getUnqual(StructType::get(context, {PointerType::getUnqual(StructType::get(context)), ArrayType::get(type8, 8U)}));
+        const auto cast = CastInst::Create(Instruction::BitCast, value, ptrType, "cast", block);
         const auto type32 = Type::getInt32Ty(context);
-        const auto metaptr = GetElementPtrInst::CreateInBounds(type, cast, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1), ConstantInt::get(type32, 7)}, "metaptr", block);
-        const auto meta = new LoadInst(type8, metaptr, "meta", block);
+        const auto metaptr = GetElementPtrInst::CreateInBounds(cast, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1), ConstantInt::get(type32, 7)}, "metaptr", block);
+        const auto meta = new LoadInst(metaptr, "meta", block);
         const auto mark = BinaryOperator::CreateAnd(meta, ConstantInt::get(meta->getType(), 3), "mark", block);
         return mark;
     } else {
@@ -202,7 +214,7 @@ Value* GetMarkFromUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock* 
 
 template<bool BoxedOrString>
 Value* GetPointerFromUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock* block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto type32 = Type::getInt32Ty(context);
     const auto type64 = Type::getInt64Ty(context);
@@ -211,20 +223,16 @@ Value* GetPointerFromUnboxed(Value* value, const TCodegenContext& ctx, BasicBloc
         StructType::get(context, {type32, type32, type32, type32})
     );
     if (value->getType()->isPointerTy()) {
-        const auto strType = StructType::get(context, {type, type64});
-        const auto cast = CastInst::Create(Instruction::BitCast, value, PointerType::getUnqual(strType), "cast", block);
-        const auto ptr = GetElementPtrInst::CreateInBounds(strType, cast, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 0)}, "ptr", block);
-        const auto pointer = new LoadInst(type, ptr, "pointer", block);
+        const auto ptrType = PointerType::getUnqual(StructType::get(context, {type, type64}));
+        const auto cast = CastInst::Create(Instruction::BitCast, value, ptrType, "cast", block);
+        const auto ptr = GetElementPtrInst::CreateInBounds(cast, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 0)}, "ptr", block);
+        const auto pointer = new LoadInst(ptr, "pointer", block);
         return pointer;
     } else {
         const auto half = CastInst::Create(Instruction::Trunc, value, type64, "half", block);
         const auto pointer = CastInst::Create(Instruction::IntToPtr, half, type, "pointer", block);
         return pointer;
     }
-}
-
-ui32 MyCompareStrings(NUdf::TUnboxedValuePod lhs, NUdf::TUnboxedValuePod rhs) {
-    return NUdf::CompareStrings(lhs, rhs);
 }
 
 bool MyEquteStrings(NUdf::TUnboxedValuePod lhs, NUdf::TUnboxedValuePod rhs) {
@@ -240,7 +248,7 @@ Value* GenEqualsFunction(NUdf::EDataSlot slot, Value* lv, Value* rv, TCodegenCon
 
 template <>
 Value* GenEqualsFunction<false>(NUdf::EDataSlot slot, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto& info = NUdf::GetDataTypeInfo(slot);
 
@@ -279,7 +287,7 @@ Value* GenEqualsFunction<false>(NUdf::EDataSlot slot, Value* lv, Value* rv, TCod
 
 template <>
 Value* GenEqualsFunction<true>(NUdf::EDataSlot slot, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto tiny = BasicBlock::Create(context, "tiny", ctx.Func);
     const auto test = BasicBlock::Create(context, "test", ctx.Func);
@@ -312,143 +320,6 @@ Value* GenEqualsFunction<true>(NUdf::EDataSlot slot, Value* lv, Value* rv, TCode
 
 Value* GenEqualsFunction(NUdf::EDataSlot slot, bool isOptional, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block) {
     return isOptional ? GenEqualsFunction<true>(slot, lv, rv, ctx, block) : GenEqualsFunction<false>(slot, lv, rv, ctx, block);
-}
-
-template <bool IsOptional>
-Value* GenCompareFunction(NUdf::EDataSlot slot, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block);
-
-template <>
-Value* GenCompareFunction<false>(NUdf::EDataSlot slot, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
-
-    const auto& info = NUdf::GetDataTypeInfo(slot);
-
-    if ((info.Features & NUdf::EDataTypeFeatures::CommonType) && (info.Features & NUdf::EDataTypeFeatures::StringType || NUdf::EDataSlot::Uuid == slot || NUdf::EDataSlot::DyNumber == slot)) {
-        return CallBinaryUnboxedValueFunction(&MyCompareStrings, Type::getInt32Ty(context), lv, rv, ctx.Codegen, block);
-    }
-
-    const bool extra = info.Features & (NUdf::EDataTypeFeatures::FloatType | NUdf::EDataTypeFeatures::TzDateType);
-    const auto resultType = Type::getInt32Ty(context);
-
-    const auto exit = BasicBlock::Create(context, "exit", ctx.Func);
-    const auto test = BasicBlock::Create(context, "test", ctx.Func);
-
-    const auto res = PHINode::Create(resultType, extra ? 3U : 2U, "result", exit);
-
-    const auto lhs = GetterFor(slot, lv, context, block);
-    const auto rhs = GetterFor(slot, rv, context, block);
-
-    if (info.Features & NUdf::EDataTypeFeatures::FloatType) {
-        const auto more = BasicBlock::Create(context, "more", ctx.Func);
-        const auto next = BasicBlock::Create(context, "next", ctx.Func);
-
-        const auto uno = CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_UNO, lhs, rhs, "unorded", block);
-
-        BranchInst::Create(more, next, uno, block);
-        block = more;
-
-        const auto luno = CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_UNO, ConstantFP::get(lhs->getType(), 0.0), lhs, "luno", block);
-        const auto runo = CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_UNO, ConstantFP::get(rhs->getType(), 0.0), rhs, "runo", block);
-        const auto once = BinaryOperator::CreateXor(luno, runo, "xor", block);
-
-        const auto left = SelectInst::Create(luno, ConstantInt::get(resultType, 1), ConstantInt::get(resultType, -1), "left", block);
-        const auto both = SelectInst::Create(once, left, ConstantInt::get(resultType, 0), "both", block);
-
-        res->addIncoming(both, block);
-        BranchInst::Create(exit, block);
-
-        block = next;
-    }
-
-    const auto equals = info.Features & NUdf::EDataTypeFeatures::FloatType ?
-        CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_OEQ, lhs, rhs, "equals", block):
-        CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, lhs, rhs, "equals", block);
-
-    if (info.Features & NUdf::EDataTypeFeatures::TzDateType) {
-        const auto more = BasicBlock::Create(context, "more", ctx.Func);
-        const auto next = BasicBlock::Create(context, "next", ctx.Func);
-
-        BranchInst::Create(more, test, equals, block);
-
-        block = more;
-
-        const auto ltz = GetterForTimezone(context, lv, block);
-        const auto rtz = GetterForTimezone(context, rv, block);
-        const auto tzeq = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, ltz, rtz, "tzeq", block);
-        res->addIncoming(ConstantInt::get(resultType, 0), block);
-        BranchInst::Create(exit, next, tzeq, block);
-
-        block = next;
-        const auto tzlt = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_ULT, ltz, rtz, "tzlt", block);
-        const auto tzout = SelectInst::Create(tzlt, ConstantInt::get(resultType, -1), ConstantInt::get(resultType, 1), "tzout", block);
-        res->addIncoming(tzout, block);
-        BranchInst::Create(exit, block);
-    } else {
-        res->addIncoming(ConstantInt::get(resultType, 0), block);
-        BranchInst::Create(exit, test, equals, block);
-    }
-
-    block = test;
-
-    const auto less = info.Features & NUdf::EDataTypeFeatures::FloatType ?
-        CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_OLT, lhs, rhs, "less", block): // float
-        info.Features & (NUdf::EDataTypeFeatures::SignedIntegralType | NUdf::EDataTypeFeatures::TimeIntervalType | NUdf::EDataTypeFeatures::DecimalType) ?
-        CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_SLT, lhs, rhs, "less", block): // signed
-        info.Features & (NUdf::EDataTypeFeatures::UnsignedIntegralType | NUdf::EDataTypeFeatures::DateType | NUdf::EDataTypeFeatures::TzDateType) ?
-        CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_ULT, lhs, rhs, "less", block): // unsigned
-        rhs; // bool
-
-    const auto out = SelectInst::Create(less, ConstantInt::get(resultType, -1), ConstantInt::get(resultType, 1), "out", block);
-    res->addIncoming(out, block);
-    BranchInst::Create(exit, block);
-
-    block = exit;
-    return res;
-}
-
-template <>
-Value* GenCompareFunction<true>(NUdf::EDataSlot slot, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
-
-    const auto tiny = BasicBlock::Create(context, "tiny", ctx.Func);
-    const auto side = BasicBlock::Create(context, "side", ctx.Func);
-    const auto test = BasicBlock::Create(context, "test", ctx.Func);
-    const auto done = BasicBlock::Create(context, "done", ctx.Func);
-
-    const auto resultType = Type::getInt32Ty(context);
-    const auto res = PHINode::Create(resultType, 3U, "result", done);
-
-    const auto le = IsEmpty(lv, block);
-    const auto re = IsEmpty(rv, block);
-
-    const auto any = BinaryOperator::CreateOr(le, re, "or", block);
-
-    BranchInst::Create(tiny, test, any, block);
-
-    block = tiny;
-
-    const auto both = BinaryOperator::CreateAnd(le, re, "and", block);
-    res->addIncoming(ConstantInt::get(resultType, 0), block);
-    BranchInst::Create(done, side, both, block);
-
-    block = side;
-
-    const auto out = SelectInst::Create(le, ConstantInt::get(resultType, -1), ConstantInt::get(resultType, 1), "out", block);
-    res->addIncoming(out, block);
-    BranchInst::Create(done, block);
-
-    block = test;
-
-    const auto comp = GenCompareFunction<false>(slot, lv, rv, ctx, block);
-    res->addIncoming(comp, block);
-    BranchInst::Create(done, block);
-
-    block = done;
-    return res;
-}
-
-Value* GenCompareFunction(NUdf::EDataSlot slot, bool isOptional, Value* lv, Value* rv, TCodegenContext& ctx, BasicBlock*& block) {
-    return isOptional ? GenCompareFunction<true>(slot, lv, rv, ctx, block) : GenCompareFunction<false>(slot, lv, rv, ctx, block);
 }
 
 Value* GenCombineHashes(Value* first, Value* second, BasicBlock* block) {
@@ -488,7 +359,7 @@ Value* GenHashFunction(NUdf::EDataSlot slot, Value* value, TCodegenContext& ctx,
 
 template <>
 Value* GenHashFunction<false>(NUdf::EDataSlot slot, Value* value, TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto& info = NUdf::GetDataTypeInfo(slot);
 
@@ -544,7 +415,7 @@ Value* GenHashFunction<false>(NUdf::EDataSlot slot, Value* value, TCodegenContex
 
 template <>
 Value* GenHashFunction<true>(NUdf::EDataSlot slot, Value* value, TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto tiny = BasicBlock::Create(context, "tiny", ctx.Func);
     const auto test = BasicBlock::Create(context, "test", ctx.Func);
@@ -574,22 +445,22 @@ Value* GenHashFunction(NUdf::EDataSlot slot, bool isOptional, Value* value, TCod
 }
 
 Value* LoadIfPointer(Value* value, BasicBlock* block) {
-    return value->getType()->isPointerTy() ? new LoadInst(value->getType()->getPointerElementType(), value, "load_value", block) : value;
+    return value->getType()->isPointerTy() ? new LoadInst(value, "load_value", block) : value;
 }
 
 }
 
-Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TString& name, bool isTuple, const TKeyTypes& types) {
-    auto& module = codegen.GetModule();
+Function* GenerateEqualsFunction(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name, bool isTuple, const TKeyTypes& types) {
+    auto& module = codegen->GetModule();
     if (const auto f = module.getFunction(name.c_str()))
         return f;
 
-    auto& context = codegen.GetContext();
+    auto& context = codegen->GetContext();
     const auto valueType = Type::getInt128Ty(context);
     const auto ptrType = PointerType::getUnqual(valueType);
     const auto returnType = Type::getInt1Ty(context);
 
-    const auto funcType = codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
+    const auto funcType = codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
         FunctionType::get(returnType, {valueType, valueType}, false):
         FunctionType::get(returnType, {ptrType, ptrType}, false);
 
@@ -615,13 +486,12 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
         const auto slow = BasicBlock::Create(context, "slow", ctx.Func);
         const auto stop = BasicBlock::Create(context, "stop", ctx.Func);
 
-        const auto elementsType = ArrayType::get(valueType, types.size());
-        const auto elementsPtrType = PointerType::getUnqual(elementsType);
-        const auto elementsPtrOne = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(elementsPtrType, lv, ctx.Codegen, block);
-        const auto elementsPtrTwo = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(elementsPtrType, rv, ctx.Codegen, block);
+        const auto elementsType = PointerType::getUnqual(ArrayType::get(valueType, types.size()));
+        const auto elementsPtrOne = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(elementsType, lv, ctx.Codegen, block);
+        const auto elementsPtrTwo = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(elementsType, rv, ctx.Codegen, block);
 
-        const auto goodOne = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, elementsPtrOne, ConstantPointerNull::get(elementsPtrType), "good_one", block);
-        const auto goodTwo = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, elementsPtrTwo, ConstantPointerNull::get(elementsPtrType), "good_two", block);
+        const auto goodOne = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, elementsPtrOne, ConstantPointerNull::get(elementsType), "good_one", block);
+        const auto goodTwo = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, elementsPtrTwo, ConstantPointerNull::get(elementsType), "good_two", block);
         const auto good = BinaryOperator::CreateAnd(goodOne, goodTwo, "good", block);
 
         BranchInst::Create(fast, slow, good, block);
@@ -631,8 +501,8 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
         {
             block = fast;
 
-            const auto elementsOne = new LoadInst(elementsType, elementsPtrOne, "elements_one", block);
-            const auto elementsTwo = new LoadInst(elementsType, elementsPtrTwo, "elements_two", block);
+            const auto elementsOne = new LoadInst(elementsPtrOne, "elements_one", block);
+            const auto elementsTwo = new LoadInst(elementsPtrTwo, "elements_two", block);
 
             for (ui32 i = 0U; i < last; ++i) {
                 const auto nextOne = ExtractValueInst::Create(elementsOne, i, (TString("next_one_") += ToString(i)).c_str(), block);
@@ -666,8 +536,8 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
                 CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(elementOne, lv, ctx.Codegen, block, ConstantInt::get(indexType, i));
                 CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(elementTwo, rv, ctx.Codegen, block, ConstantInt::get(indexType, i));
 
-                const auto nextOne = new LoadInst(valueType, elementOne, (TString("next_one_") += ToString(i)).c_str(), block);
-                const auto nextTwo = new LoadInst(valueType, elementTwo, (TString("next_two_") += ToString(i)).c_str(), block);
+                const auto nextOne = new LoadInst(elementOne, (TString("next_one_") += ToString(i)).c_str(), block);
+                const auto nextTwo = new LoadInst(elementTwo, (TString("next_two_") += ToString(i)).c_str(), block);
 
                 if (NUdf::GetDataTypeInfo(types[i].first).Features & NUdf::EDataTypeFeatures::StringType) {
                     ValueRelease(EValueRepresentation::String, nextOne, ctx, block);
@@ -685,8 +555,8 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
             CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(elementOne, lv, ctx.Codegen, block, ConstantInt::get(indexType, last));
             CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(elementTwo, rv, ctx.Codegen, block, ConstantInt::get(indexType, last));
 
-            const auto backOne = new LoadInst(valueType, elementOne, "back_one", block);
-            const auto backTwo = new LoadInst(valueType, elementTwo, "back_two", block);
+            const auto backOne = new LoadInst(elementOne, "back_one", block);
+            const auto backTwo = new LoadInst(elementTwo, "back_two", block);
 
             if (NUdf::GetDataTypeInfo(types.back().first).Features & NUdf::EDataTypeFeatures::StringType) {
                 ValueRelease(EValueRepresentation::String, backOne, ctx, block);
@@ -708,17 +578,17 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
     return ctx.Func;
 }
 
-Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString& name, bool isTuple, const TKeyTypes& types) {
-    auto& module = codegen.GetModule();
+Function* GenerateHashFunction(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name, bool isTuple, const TKeyTypes& types) {
+    auto& module = codegen->GetModule();
     if (const auto f = module.getFunction(name.c_str()))
         return f;
 
-    auto& context = codegen.GetContext();
+    auto& context = codegen->GetContext();
     const auto valueType = Type::getInt128Ty(context);
     const auto ptrType = PointerType::getUnqual(valueType);
     const auto returnType = Type::getInt64Ty(context);
 
-    const auto funcType = codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
+    const auto funcType = codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
         FunctionType::get(returnType, {valueType}, false):
         FunctionType::get(returnType, {ptrType}, false);
 
@@ -740,18 +610,17 @@ Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString&
         const auto fast = BasicBlock::Create(context, "fast", ctx.Func);
         const auto slow = BasicBlock::Create(context, "slow", ctx.Func);
 
-        const auto elementsType = ArrayType::get(valueType, types.size());
-        const auto elementsPtrType = PointerType::getUnqual(elementsType);
-        const auto elementsPtr = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(elementsPtrType, arg, ctx.Codegen, block);
+        const auto elementsType = PointerType::getUnqual(ArrayType::get(valueType, types.size()));
+        const auto elementsPtr = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElements>(elementsType, arg, ctx.Codegen, block);
 
-        const auto null = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, elementsPtr, ConstantPointerNull::get(elementsPtrType), "null", block);
+        const auto null = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, elementsPtr, ConstantPointerNull::get(elementsType), "null", block);
 
         BranchInst::Create(slow, fast, null, block);
 
         {
             block = fast;
 
-            const auto elements = new LoadInst(elementsType, elementsPtr, "elements", block);
+            const auto elements = new LoadInst(elementsPtr, "elements", block);
 
             auto result = static_cast<Value*>(ConstantInt::get(returnType, 0));
 
@@ -776,7 +645,7 @@ Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString&
             for (auto i = 0U; i < types.size(); ++i) {
                 CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetElement>(element, arg, ctx.Codegen, block, ConstantInt::get(Type::getInt32Ty(context), i));
 
-                const auto next = new LoadInst(valueType, element, (TString("next_") += ToString(i)).c_str(), block);
+                const auto next = new LoadInst(element, (TString("next_") += ToString(i)).c_str(), block);
                 if (NUdf::GetDataTypeInfo(types[i].first).Features & NUdf::EDataTypeFeatures::StringType) {
                     ValueRelease(EValueRepresentation::String, next, ctx, block);
                 }
@@ -797,12 +666,12 @@ Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString&
     return ctx.Func;
 }
 
-Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TString& name, const TKeyTypes& types) {
-    auto& module = codegen.GetModule();
+Function* GenerateEqualsFunction(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name, const TKeyTypes& types) {
+    auto& module = codegen->GetModule();
     if (const auto f = module.getFunction(name.c_str()))
         return f;
 
-    auto& context = codegen.GetContext();
+    auto& context = codegen->GetContext();
     const auto valueType = Type::getInt128Ty(context);
     const auto elementsType = ArrayType::get(valueType, types.size());
     const auto ptrType = PointerType::getUnqual(elementsType);
@@ -827,8 +696,8 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
         return ctx.Func;
     }
 
-    const auto elementsOne = new LoadInst(elementsType, lv, "elements_one", block);
-    const auto elementsTwo = new LoadInst(elementsType, rv, "elements_two", block);
+    const auto elementsOne = new LoadInst(lv, "elements_one", block);
+    const auto elementsTwo = new LoadInst(rv, "elements_two", block);
 
     const auto stop = BasicBlock::Create(context, "stop", ctx.Func);
     ReturnInst::Create(context, ConstantInt::getFalse(context), stop);
@@ -856,12 +725,12 @@ Function* GenerateEqualsFunction(NYql::NCodegen::ICodegen& codegen, const TStrin
     return ctx.Func;
 }
 
-Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString& name, const TKeyTypes& types) {
-    auto& module = codegen.GetModule();
+Function* GenerateHashFunction(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name, const TKeyTypes& types) {
+    auto& module = codegen->GetModule();
     if (const auto f = module.getFunction(name.c_str()))
         return f;
 
-    auto& context = codegen.GetContext();
+    auto& context = codegen->GetContext();
     const auto valueType = Type::getInt128Ty(context);
     const auto elementsType = ArrayType::get(valueType, types.size());
     const auto ptrType = PointerType::getUnqual(elementsType);
@@ -882,7 +751,7 @@ Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString&
     }
 
     const auto arg = &*ctx.Func->arg_begin();
-    const auto elements = new LoadInst(elementsType, arg, "elements", block);
+    const auto elements = new LoadInst(arg, "elements", block);
 
     if (types.size() > 1U) {
         auto result = static_cast<Value*>(ConstantInt::get(returnType, 0));
@@ -905,79 +774,13 @@ Function* GenerateHashFunction(NYql::NCodegen::ICodegen& codegen, const TString&
     return ctx.Func;
 }
 
-Function* GenerateCompareFunction(NYql::NCodegen::ICodegen& codegen, const TString& name, const TKeyTypes& types) {
-    auto& module = codegen.GetModule();
-    if (const auto f = module.getFunction(name.c_str()))
-        return f;
-
-    auto& context = codegen.GetContext();
-    const auto valueType = Type::getInt128Ty(context);
-    const auto elementsType = ArrayType::get(valueType, types.size());
-    const auto ptrType = PointerType::getUnqual(elementsType);
-    const auto dirsType = ArrayType::get(Type::getInt1Ty(context), types.size());
-    const auto ptrDirsType = PointerType::getUnqual(dirsType);
-    const auto returnType = Type::getInt32Ty(context);
-
-    const auto funcType = FunctionType::get(returnType, {ptrDirsType, ptrType, ptrType}, false);
-
-    TCodegenContext ctx(codegen);
-    ctx.AlwaysInline = true;
-    ctx.Func = cast<Function>(module.getOrInsertFunction(name.c_str(), funcType).getCallee());
-
-    auto args = ctx.Func->arg_begin();
-
-    const auto main = BasicBlock::Create(context, "main", ctx.Func);
-    auto block = main;
-
-    const auto dp = &*args;
-    const auto lv = &*++args;
-    const auto rv = &*++args;
-
-    if (types.empty()) {
-        ReturnInst::Create(context, ConstantInt::get(returnType, 0), block);
-        return ctx.Func;
-    }
-
-    const auto directions = new LoadInst(dirsType, dp, "directions", block);
-    const auto elementsOne = new LoadInst(elementsType, lv, "elements_one", block);
-    const auto elementsTwo = new LoadInst(elementsType, rv, "elements_two", block);
-    const auto zero = ConstantInt::get(returnType, 0);
-
-    for (auto i = 0U; i < types.size(); ++i) {
-        const auto nextOne = ExtractValueInst::Create(elementsOne, i, (TString("next_one_") += ToString(i)).c_str(), block);
-        const auto nextTwo = ExtractValueInst::Create(elementsTwo, i, (TString("next_two_") += ToString(i)).c_str(), block);
-
-        const auto exit = BasicBlock::Create(context, (TString("exit_") += ToString(i)).c_str(), ctx.Func);
-        const auto step = BasicBlock::Create(context, (TString("step_") += ToString(i)).c_str(), ctx.Func);
-
-        const auto test = GenCompareFunction(types[i].first, types[i].second, nextOne, nextTwo, ctx, block);
-        const auto skip = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, zero, test,  (TString("skip_") += ToString(i)).c_str(), block);
-
-        BranchInst::Create(step, exit, skip, block);
-
-        block = exit;
-
-        const auto dir = ExtractValueInst::Create(directions, i, (TString("dir_") += ToString(i)).c_str(), block);
-        const auto neg = BinaryOperator::CreateNeg(test, (TString("neg_") += ToString(i)).c_str(), block);
-        const auto out = SelectInst::Create(dir, test, neg, (TString("neg_") += ToString(i)).c_str(), block);
-
-        ReturnInst::Create(context, out, block);
-
-        block = step;
-    }
-
-    ReturnInst::Create(context, zero, block);
-    return ctx.Func;
-}
-
 void GenInvalidate(const TCodegenContext& ctx, const std::vector<std::pair<ui32, EValueRepresentation>>& invalidationSet, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto indexType = Type::getInt32Ty(context);
-    const auto valueType = Type::getInt128Ty(context);
     const auto values = ctx.GetMutables();
 
     for (const auto index : invalidationSet) {
-        const auto invPtr = GetElementPtrInst::CreateInBounds(valueType, values, {ConstantInt::get(indexType, index.first)}, "inv_ptr", block);
+        const auto invPtr = GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(indexType, index.first)}, "inv_ptr", block);
         ValueUnRef(index.second, invPtr, ctx, block);
         new StoreInst(GetInvalid(context), invPtr, block);
     }
@@ -988,7 +791,7 @@ TUnboxedImmutableCodegeneratorNode::TUnboxedImmutableCodegeneratorNode(TMemoryUs
 {}
 
 Value* TUnboxedImmutableCodegeneratorNode::CreateGetValue(const TCodegenContext& ctx, BasicBlock*&) const {
-    return ConstantInt::get(Type::getInt128Ty(ctx.Codegen.GetContext()), APInt(128, 2, reinterpret_cast<const uint64_t*>(&UnboxedValue)));
+    return ConstantInt::get(Type::getInt128Ty(ctx.Codegen->GetContext()), APInt(128, 2, reinterpret_cast<const uint64_t*>(&UnboxedValue)));
 }
 
 TUnboxedImmutableRunCodegeneratorNode::TUnboxedImmutableRunCodegeneratorNode(TMemoryUsageInfo* memInfo, NUdf::TUnboxedValue&& value)
@@ -1022,24 +825,24 @@ TString TExternalCodegeneratorRootNode::MakeName(const TString& method) const {
     return out.Str();
 }
 
-void TExternalCodegeneratorRootNode::FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) {
+void TExternalCodegeneratorRootNode::FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) {
     if (GetValueFunc)
-        GetFunction = reinterpret_cast<TGetPtr>(codegen.GetPointerToFunction(GetValueFunc));
+        GetFunction = reinterpret_cast<TGetPtr>(codegen->GetPointerToFunction(GetValueFunc));
 
     if (SetValueFunc)
-        SetFunction = reinterpret_cast<TSetPtr>(codegen.GetPointerToFunction(SetValueFunc));
+        SetFunction = reinterpret_cast<TSetPtr>(codegen->GetPointerToFunction(SetValueFunc));
 }
 
-void TExternalCodegeneratorRootNode::GenerateFunctions(NYql::NCodegen::ICodegen& codegen) {
+void TExternalCodegeneratorRootNode::GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) {
     GetValueFunc = GenerateGetValue(codegen);
     SetValueFunc = GenerateSetValue(codegen);
-    codegen.ExportSymbol(GetValueFunc);
-    codegen.ExportSymbol(SetValueFunc);
+    codegen->ExportSymbol(GetValueFunc);
+    codegen->ExportSymbol(SetValueFunc);
 }
 
-Function* TExternalCodegeneratorRootNode::GenerateGetValue(NYql::NCodegen::ICodegen& codegen) {
-    auto& module = codegen.GetModule();
-    auto& context = codegen.GetContext();
+Function* TExternalCodegeneratorRootNode::GenerateGetValue(const NYql::NCodegen::ICodegen::TPtr& codegen) {
+    auto& module = codegen->GetModule();
+    auto& context = codegen->GetContext();
     const auto& name = MakeName("Get");
     if (const auto f = module.getFunction(name.c_str()))
         return f;
@@ -1047,7 +850,7 @@ Function* TExternalCodegeneratorRootNode::GenerateGetValue(NYql::NCodegen::ICode
     const auto valueType = Type::getInt128Ty(context);
     const auto contextType = GetCompContextType(context);
 
-    const auto funcType = codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
+    const auto funcType = codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
         FunctionType::get(valueType, {PointerType::getUnqual(contextType)}, false):
         FunctionType::get(Type::getVoidTy(context), {PointerType::getUnqual(valueType), PointerType::getUnqual(contextType)}, false);
 
@@ -1055,7 +858,7 @@ Function* TExternalCodegeneratorRootNode::GenerateGetValue(NYql::NCodegen::ICode
     ctx.Func = cast<Function>(module.getOrInsertFunction(name.c_str(), funcType).getCallee());
 
     auto args = ctx.Func->arg_begin();
-    if (codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows) {
+    if (codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows) {
         auto& firstArg = *args++;
         firstArg.addAttr(Attribute::StructRet);
         firstArg.addAttr(Attribute::NoAlias);
@@ -1067,7 +870,7 @@ Function* TExternalCodegeneratorRootNode::GenerateGetValue(NYql::NCodegen::ICode
 
     const auto get = CreateGetValue(ctx, main);
 
-    if (codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
+    if (codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
         ReturnInst::Create(context, get, main);
     } else {
         new StoreInst(get, &*--args, main);
@@ -1077,16 +880,16 @@ Function* TExternalCodegeneratorRootNode::GenerateGetValue(NYql::NCodegen::ICode
     return ctx.Func;
 }
 
-Function* TExternalCodegeneratorRootNode::GenerateSetValue(NYql::NCodegen::ICodegen& codegen) {
-    auto& module = codegen.GetModule();
-    auto& context = codegen.GetContext();
+Function* TExternalCodegeneratorRootNode::GenerateSetValue(const NYql::NCodegen::ICodegen::TPtr& codegen) {
+    auto& module = codegen->GetModule();
+    auto& context = codegen->GetContext();
     const auto& name = MakeName("Set");
     if (const auto f = module.getFunction(name.c_str()))
         return f;
 
     const auto intType = Type::getInt128Ty(context);
     const auto contextType = GetCompContextType(context);
-    const auto valueType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+    const auto valueType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
         (Type*)PointerType::getUnqual(intType) : (Type*)intType;
 
     const auto funcType = FunctionType::get(Type::getVoidTy(context), {PointerType::getUnqual(contextType), valueType}, false);
@@ -1101,8 +904,8 @@ Function* TExternalCodegeneratorRootNode::GenerateSetValue(NYql::NCodegen::ICode
 
     const auto valueArg = &*++args;
 
-    if (codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows) {
-        const auto value = new LoadInst(valueArg->getType()->getPointerElementType(), valueArg, "load_value", main);
+    if (codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows) {
+        const auto value = new LoadInst(valueArg, "load_value", main);
         CreateSetValue(ctx, main, value);
     } else {
         CreateSetValue(ctx, main, valueArg);
@@ -1112,54 +915,49 @@ Function* TExternalCodegeneratorRootNode::GenerateSetValue(NYql::NCodegen::ICode
 }
 
 Value* TExternalCodegeneratorNode::CreateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-    if (ValueGetterBuilder) {
-        llvm::Function * ValueGetter = ValueGetterBuilder(ctx);
+    if (ValueGetter) {
         return CallInst::Create(ValueGetter, {ctx.Ctx}, "getter", block);
     }
 
-    if (ValueBuilder) {
-        llvm::Value * TemporaryValue = ValueBuilder(ctx);
+    if (TemporaryValue) {
         return LoadIfPointer(TemporaryValue, block);
     }
 
     MKQL_ENSURE(!Getter, "Wrong LLVM function generation order.");
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto indexType = Type::getInt32Ty(context);
-    const auto valueType = Type::getInt128Ty(context);
-    const auto valuePtr = GetElementPtrInst::CreateInBounds(valueType, ctx.GetMutables(), {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
-    const auto value = new LoadInst(valueType, valuePtr, "value", block);
+    const auto valuePtr = GetElementPtrInst::CreateInBounds(ctx.GetMutables(), {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
+    const auto value = new LoadInst(valuePtr, "value", block);
     return value;
 }
 
 Value* TExternalCodegeneratorNode::CreateRefValue(const TCodegenContext& ctx, BasicBlock*& block) const {
     CreateInvalidate(ctx, block);
 
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto indexType = Type::getInt32Ty(context);
-    const auto valueType = Type::getInt128Ty(context);
     const auto values = ctx.GetMutables();
-    const auto valuePtr = GetElementPtrInst::CreateInBounds(valueType, values, {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
+    const auto valuePtr = GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
     return valuePtr;
 }
 
 void TExternalCodegeneratorNode::CreateSetValue(const TCodegenContext& ctx, BasicBlock*& block, Value* value) const {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto indexType = Type::getInt32Ty(context);
-    const auto valueType = Type::getInt128Ty(context);
     const auto values = ctx.GetMutables();
-    const auto valuePtr = GetElementPtrInst::CreateInBounds(valueType, values, {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
+    const auto valuePtr = GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
 
 
     if (value->getType()->isPointerTy()) {
         ValueUnRef(RepresentationKind, valuePtr, ctx, block);
-        const auto load = new LoadInst(valueType, value, "value", block);
+        const auto load = new LoadInst(value, "value", block);
         new StoreInst(load, valuePtr, block);
         new StoreInst(ConstantInt::get(load->getType(), 0), value, block);
     } else {
         if (EValueRepresentation::Embedded == RepresentationKind) {
             new StoreInst(value, valuePtr, block);
         } else {
-            const auto load = new LoadInst(valueType, valuePtr, "value", block);
+            const auto load = new LoadInst(valuePtr, "value", block);
             const auto equal = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, value, load, "equal", block);
 
             const auto skip = BasicBlock::Create(context, "skip", ctx.Func);
@@ -1180,16 +978,15 @@ void TExternalCodegeneratorNode::CreateSetValue(const TCodegenContext& ctx, Basi
 }
 
 Value* TExternalCodegeneratorNode::CreateSwapValue(const TCodegenContext& ctx, BasicBlock*& block, Value* value) const {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto indexType = Type::getInt32Ty(context);
-    const auto valueType = Type::getInt128Ty(context);
     const auto values = ctx.GetMutables();
-    const auto valuePtr = GetElementPtrInst::CreateInBounds(valueType, values, {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
-    const auto output = new LoadInst(valueType, valuePtr, "output", block);
+    const auto valuePtr = GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(indexType, ValueIndex)}, "value_ptr", block);
+    const auto output = new LoadInst(valuePtr, "output", block);
     ValueRelease(RepresentationKind, output, ctx, block);
 
     if (value->getType()->isPointerTy()) {
-        const auto load = new LoadInst(valueType, value, "load", block);
+        const auto load = new LoadInst(value, "load", block);
         new StoreInst(load, valuePtr, block);
         new StoreInst(ConstantInt::get(load->getType(), 0), value, block);
     } else {
@@ -1205,15 +1002,8 @@ void TExternalCodegeneratorNode::CreateInvalidate(const TCodegenContext& ctx, Ba
     GenInvalidate(ctx, InvalidationSet, block);
 }
 
-void TExternalCodegeneratorNode::SetValueBuilder(TValueBuilder valueBuilder)
-{
-    ValueBuilder = std::move(valueBuilder);
-}
-
-void TExternalCodegeneratorNode::SetValueGetterBuilder(TValueGetterBuilder valueGetterBuilder)
-{
-    ValueGetterBuilder = std::move(valueGetterBuilder);
-}
+void TExternalCodegeneratorNode::SetTemporaryValue(Value* value) { TemporaryValue = value; }
+void TExternalCodegeneratorNode::SetValueGetter(Function* function) { ValueGetter = function; }
 
 void TWideFlowProxyCodegeneratorNode::CreateInvalidate(const TCodegenContext& ctx, BasicBlock*& block) const {
     GenInvalidate(ctx, InvalidationSet, block);
@@ -1401,14 +1191,13 @@ template<> Type* GetTypeFor<float>(LLVMContext &context)  { return Type::getFloa
 template<> Type* GetTypeFor<double>(LLVMContext &context) { return Type::getDoubleTy(context); }
 
 void AddRefBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
-    const auto load = value->getType()->isPointerTy() ? new LoadInst(value->getType()->getPointerElementType(), value, "load", block) : value;
+    auto& context = ctx.Codegen->GetContext();
+    const auto load = value->getType()->isPointerTy() ? new LoadInst(value, "load", block) : value;
     const auto half = CastInst::Create(Instruction::Trunc, load, Type::getInt64Ty(context), "half", block);
-    const auto counterType = Type::getInt32Ty(context);
-    const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), counterType, Type::getInt16Ty(context)});
+    const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), Type::getInt32Ty(context), Type::getInt16Ty(context)});
     const auto boxptr = CastInst::Create(Instruction::IntToPtr, half, PointerType::getUnqual(type), "boxptr", block);
-    const auto cntptr = GetElementPtrInst::CreateInBounds(type, boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
-    const auto refs = new LoadInst(counterType, cntptr, "refs", block);
+    const auto cntptr = GetElementPtrInst::CreateInBounds(boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
+    const auto refs = new LoadInst(cntptr, "refs", block);
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 4)
     if constexpr (EnableStaticRefcount) {
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
@@ -1433,14 +1222,13 @@ void AddRefBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
 }
 
 void UnRefBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
-    const auto load = value->getType()->isPointerTy() ? new LoadInst(value->getType()->getPointerElementType(), value, "load", block) : value;
+    auto& context = ctx.Codegen->GetContext();
+    const auto load = value->getType()->isPointerTy() ? new LoadInst(value, "load", block) : value;
     const auto half = CastInst::Create(Instruction::Trunc, load, Type::getInt64Ty(context), "half", block);
-    const auto counterType = Type::getInt32Ty(context);
-    const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), counterType, Type::getInt16Ty(context)});
+    const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), Type::getInt32Ty(context), Type::getInt16Ty(context)});
     const auto boxptr = CastInst::Create(Instruction::IntToPtr, half, PointerType::getUnqual(type), "boxptr", block);
-    const auto cntptr = GetElementPtrInst::CreateInBounds(type, boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
-    const auto refs = new LoadInst(counterType, cntptr, "refs", block);
+    const auto cntptr = GetElementPtrInst::CreateInBounds(boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
+    const auto refs = new LoadInst(cntptr, "refs", block);
 
     const auto live = BasicBlock::Create(context, "live", ctx.Func);
 
@@ -1467,23 +1255,22 @@ void UnRefBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
 
     const auto fnType = FunctionType::get(Type::getVoidTy(context), {boxptr->getType()}, false);
     const auto name = "DeleteBoxed";
-    ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteBoxed));
-    const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType).getCallee();
-    CallInst::Create(fnType, func, {boxptr}, "", block);
+    ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteBoxed));
+    const auto func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+    CallInst::Create(func, {boxptr}, "", block);
 
     BranchInst::Create(live, block);
     block = live;
 }
 
 void CleanupBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
-    const auto load = value->getType()->isPointerTy() ? new LoadInst(value->getType()->getPointerElementType(), value, "load", block) : value;
+    auto& context = ctx.Codegen->GetContext();
+    const auto load = value->getType()->isPointerTy() ? new LoadInst(value, "load", block) : value;
     const auto half = CastInst::Create(Instruction::Trunc, load, Type::getInt64Ty(context), "half", block);
-    const auto counterType = Type::getInt32Ty(context);
-    const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), counterType, Type::getInt16Ty(context)});
+    const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), Type::getInt32Ty(context), Type::getInt16Ty(context)});
     const auto boxptr = CastInst::Create(Instruction::IntToPtr, half, PointerType::getUnqual(type), "boxptr", block);
-    const auto cntptr = GetElementPtrInst::CreateInBounds(type, boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
-    const auto refs = new LoadInst(counterType, cntptr, "refs", block);
+    const auto cntptr = GetElementPtrInst::CreateInBounds(boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
+    const auto refs = new LoadInst(cntptr, "refs", block);
     const auto test = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_NE, refs, ConstantInt::get(refs->getType(), 0), "many", block);
 
     const auto live = BasicBlock::Create(context, "live", ctx.Func);
@@ -1495,9 +1282,9 @@ void CleanupBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) 
 
     const auto fnType = FunctionType::get(Type::getVoidTy(context), {boxptr->getType()}, false);
     const auto name = "DeleteBoxed";
-    ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteBoxed));
-    const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType).getCallee();
-    CallInst::Create(fnType, func, {boxptr}, "", block);
+    ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteBoxed));
+    const auto func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+    CallInst::Create(func, {boxptr}, "", block);
 
     BranchInst::Create(live, block);
     block = live;
@@ -1506,7 +1293,7 @@ void CleanupBoxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) 
 
 template<bool IncOrDec>
 void ChangeRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto type8 = Type::getInt8Ty(context);
     const auto type32 = Type::getInt32Ty(context);
@@ -1518,8 +1305,7 @@ void ChangeRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& blo
     const auto doit = BasicBlock::Create(context, "doit", ctx.Func);
     const auto done = BasicBlock::Create(context, "done", ctx.Func);
 
-    const auto refsPtrType = PointerType::getUnqual(type32);
-    const auto refsptr = PHINode::Create(refsPtrType, 2U, "refsptr", doit);
+    const auto refsptr = PHINode::Create(PointerType::getUnqual(type32), 2U, "refsptr", doit);
 
     const auto choise = SwitchInst::Create(mark, done, 2U, block);
     choise->addCase(ConstantInt::get(type8, 2), strb);
@@ -1529,7 +1315,7 @@ void ChangeRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& blo
         block = strb;
 
         const auto strptr = GetPointerFromUnboxed<false>(value, ctx, block);
-        const auto elemptr = GetElementPtrInst::CreateInBounds(strptr->getType()->getPointerElementType(), strptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "elemptr", block);
+        const auto elemptr = GetElementPtrInst::CreateInBounds(strptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "elemptr", block);
         refsptr->addIncoming(elemptr, block);
         BranchInst::Create(doit, block);
     }
@@ -1538,14 +1324,14 @@ void ChangeRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& blo
         block = boxb;
 
         const auto boxptr = GetPointerFromUnboxed<true>(value, ctx, block);;
-        const auto elemptr = GetElementPtrInst::CreateInBounds(boxptr->getType()->getPointerElementType(), boxptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "elemptr", block);
+        const auto elemptr = GetElementPtrInst::CreateInBounds(boxptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "elemptr", block);
         refsptr->addIncoming(elemptr, block);
         BranchInst::Create(doit, block);
     }
 
     block = doit;
 
-    const auto refs = new LoadInst(type32, refsptr, "refs", block);
+    const auto refs = new LoadInst(refsptr, "refs", block);
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 4)
     if constexpr (EnableStaticRefcount) {
         const auto magic = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_SLT, refs, ConstantInt::get(refs->getType(), 0), "magic", block);
@@ -1567,7 +1353,7 @@ void ChangeRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& blo
 
 template<bool Decrement>
 void CheckRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto type8 = Type::getInt8Ty(context);
     const auto type32 = Type::getInt32Ty(context);
@@ -1586,8 +1372,8 @@ void CheckRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& bloc
         block = strb;
 
         const auto strptr = GetPointerFromUnboxed<false>(value, ctx, block);
-        const auto refptr = GetElementPtrInst::CreateInBounds(strptr->getType()->getPointerElementType(), strptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "refptr", block);
-        const auto refs = new LoadInst(type32, refptr, "refs", block);
+        const auto refptr = GetElementPtrInst::CreateInBounds(strptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "refptr", block);
+        const auto refs = new LoadInst(refptr, "refs", block);
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 4)
         if constexpr (EnableStaticRefcount) {
@@ -1617,9 +1403,9 @@ void CheckRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& bloc
 
         const auto fnType = FunctionType::get(Type::getVoidTy(context), {strptr->getType()}, false);
         const auto name = "DeleteString";
-        ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteString));
-        const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType).getCallee();
-        CallInst::Create(fnType, func, {strptr}, "", block);
+        ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteString));
+        const auto func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        CallInst::Create(func, {strptr}, "", block);
         BranchInst::Create(nope, block);
     }
 
@@ -1627,8 +1413,8 @@ void CheckRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& bloc
         block = boxb;
 
         const auto boxptr = GetPointerFromUnboxed<true>(value, ctx, block);;
-        const auto refptr = GetElementPtrInst::CreateInBounds(boxptr->getType()->getPointerElementType(), boxptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "cntptr", block);
-        const auto refs = new LoadInst(type32, refptr, "refs", block);
+        const auto refptr = GetElementPtrInst::CreateInBounds(boxptr, {ConstantInt::get(type32, 0), ConstantInt::get(type32, 1)}, "cntptr", block);
+        const auto refs = new LoadInst(refptr, "refs", block);
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 4)
         if constexpr (EnableStaticRefcount) {
@@ -1659,19 +1445,19 @@ void CheckRefUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& bloc
 
         const auto fnType = FunctionType::get(Type::getVoidTy(context), {boxptr->getType()}, false);
         const auto name = "DeleteBoxed";
-        ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteBoxed));
-        const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType).getCallee();
+        ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DeleteBoxed));
+        const auto func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
 
-        CallInst::Create(fnType, func, {boxptr}, "", block);
+        CallInst::Create(func, {boxptr}, "", block);
         BranchInst::Create(nope, block);
     }
 
     block = nope;
 }
 #ifdef MAKE_UNBOXED_VALUE_LLVM_REFCOUNTION_FUNCTIONS
-Function* GenRefCountFunction(const char* label, void (*func)(Value*, const TCodegenContext&, BasicBlock*&), Type* type, NYql::NCodegen::ICodegen& codegen) {
-    auto& module = codegen.GetModule();
-    auto& context = codegen.GetContext();
+Function* GenRefCountFunction(const char* label, void (*func)(Value*, const TCodegenContext&, BasicBlock*&), Type* type, const NYql::NCodegen::ICodegen::TPtr& codegen) {
+    auto& module = codegen->GetModule();
+    auto& context = codegen->GetContext();
     const auto name = TString(label) += (type->isPointerTy() ? "Ptr" : "Val");
     if (const auto f = module.getFunction(name.c_str()))
         return f;
@@ -1723,19 +1509,8 @@ void CleanupUnboxed(Value* value, const TCodegenContext& ctx, BasicBlock*& block
 #endif
 
 void SafeUnRefUnboxed(Value* pointer, const TCodegenContext& ctx, BasicBlock*& block) {
-    if (const auto itemType = pointer->getType()->getPointerElementType(); itemType->isArrayTy()) {
-        const auto indexType = Type::getInt64Ty(ctx.Codegen.GetContext());
-        Value* zeros = UndefValue::get(itemType);
-        for (size_t idx = 0U; idx < itemType->getArrayNumElements(); ++idx) {
-            const auto item = GetElementPtrInst::CreateInBounds(itemType, pointer, {  ConstantInt::get(indexType, 0), ConstantInt::get(indexType, idx) }, (TString("item_") += ToString(idx)).c_str(), block);
-            UnRefUnboxed(item, ctx, block);
-            zeros = InsertValueInst::Create(zeros, ConstantInt::get(itemType->getArrayElementType(), 0), {idx}, (TString("zero_") += ToString(idx)).c_str(), block);
-        }
-        new StoreInst(zeros, pointer, block);
-    } else {
-        UnRefUnboxed(pointer, ctx, block);
-        new StoreInst(ConstantInt::get(itemType, 0), pointer, block);
-    }
+    UnRefUnboxed(pointer, ctx, block);
+    new StoreInst(ConstantInt::get(pointer->getType()->getPointerElementType(), 0), pointer, block);
 }
 
 void ValueAddRef(EValueRepresentation kind, Value* pointer, const TCodegenContext& ctx, BasicBlock*& block) {
@@ -1775,7 +1550,7 @@ void ValueRelease(EValueRepresentation kind, Value* pointer, const TCodegenConte
 }
 
 std::pair<Value*, Value*> GetVariantParts(Value* variant, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto type = Type::getInt32Ty(context);
     const auto lshr = BinaryOperator::CreateLShr(variant, ConstantInt::get(variant->getType(), 122), "lshr",  block);
@@ -1811,7 +1586,7 @@ std::pair<Value*, Value*> GetVariantParts(Value* variant, const TCodegenContext&
         const auto place = new AllocaInst(item->getType(), 0U, "place", &ctx.Func->getEntryBlock().back());
         const auto idx = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetVariantIndex>(type, variant, ctx.Codegen, block);
         CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetVariantItem>(place, variant, ctx.Codegen, block);
-        const auto clean = new LoadInst(item->getType(), place, "clean",  block);
+        const auto clean = new LoadInst(place, "clean",  block);
         ValueRelease(EValueRepresentation::Any, clean, ctx, block);
         index->addIncoming(idx, block);
         item->addIncoming(clean, block);
@@ -1823,7 +1598,7 @@ std::pair<Value*, Value*> GetVariantParts(Value* variant, const TCodegenContext&
 }
 
 Value* MakeVariant(Value* item, Value* variant, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     const auto boxed = BasicBlock::Create(context, "boxed", ctx.Func);
     const auto embed = BasicBlock::Create(context, "embed", ctx.Func);
@@ -1857,18 +1632,18 @@ Value* MakeVariant(Value* item, Value* variant, const TCodegenContext& ctx, Basi
         const auto factory = ctx.GetFactory();
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::CreateBoxedVariantHolder));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto signature = FunctionType::get(item->getType(), {factory->getType(), item->getType(), variant->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            const auto output = CallInst::Create(signature, creator, {factory, item, variant}, "output", block);
+            const auto output = CallInst::Create(creator, {factory, item, variant}, "output", block);
             result->addIncoming(output, block);
         } else {
             const auto place = new AllocaInst(item->getType(), 0U, "place", block);
             new StoreInst(item, place, block);
             const auto signature = FunctionType::get(Type::getVoidTy(context), {factory->getType(), place->getType(), place->getType(), variant->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            CallInst::Create(signature, creator, {factory, place, place, variant}, "", block);
-            const auto output = new LoadInst(item->getType(), place, "output", block);
+            CallInst::Create(creator, {factory, place, place, variant}, "", block);
+            const auto output = new LoadInst(place, "output", block);
             result->addIncoming(output, block);
         }
 
@@ -1883,32 +1658,30 @@ Value* GetNodeValue(IComputationNode* node, const TCodegenContext& ctx, BasicBlo
     if (const auto codegen = dynamic_cast<ICodegeneratorInlineNode*>(node))
         return codegen->CreateGetValue(ctx, block);
 
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto ptr = ConstantInt::get(Type::getInt64Ty(context), intptr_t(node));
     const auto ptrType = PointerType::getUnqual(StructType::get(context));
     const auto nodeThis = CastInst::Create(Instruction::IntToPtr, ptr, ptrType, "node_this", block);
 
-    const auto valueType = Type::getInt128Ty(context);
-    const auto retPtr = new AllocaInst(valueType, 0U, "return_ptr", &ctx.Func->getEntryBlock().back());
-    const auto funType = ctx.Codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
+    const auto retPtr = new AllocaInst(Type::getInt128Ty(context), 0U, "return_ptr", &ctx.Func->getEntryBlock().back());
+    const auto funType = ctx.Codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
         FunctionType::get(Type::getVoidTy(context), {retPtr->getType(), nodeThis->getType(), ctx.Ctx->getType()}, false):
         FunctionType::get(Type::getVoidTy(context), {nodeThis->getType(), retPtr->getType(), ctx.Ctx->getType()}, false);
-    const auto ptrFunType = PointerType::getUnqual(funType);
-    const auto tableType = PointerType::getUnqual(ptrFunType);
-    const auto nodeVTable = CastInst::Create(Instruction::IntToPtr, ptr, PointerType::getUnqual(tableType), "node_vtable", block);
+    const auto ptrTableType = PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(funType)));
+    const auto nodeVTable = CastInst::Create(Instruction::IntToPtr, ptr, ptrTableType, "node_vtable", block);
 
-    const auto table = new LoadInst(tableType, nodeVTable, "table", false, block);
-    const auto elem = GetElementPtrInst::CreateInBounds(ptrFunType, table, {ConstantInt::get(Type::getInt64Ty(context), GetMethodIndex(&IComputationNode::GetValue))}, "element", block);
-    const auto func = new LoadInst(ptrFunType, elem, "func", false, block);
+    const auto table = new LoadInst(nodeVTable, "table", false, block);
+    const auto elem = GetElementPtrInst::CreateInBounds(table, {ConstantInt::get(Type::getInt64Ty(context), GetMethodIndex(&IComputationNode::GetValue))}, "element", block);
+    const auto func = new LoadInst(elem, "func", false, block);
 
-    if (ctx.Codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
-        CallInst::Create(funType, func, {retPtr, nodeThis, ctx.Ctx}, "", block);
+    if (ctx.Codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
+        CallInst::Create(func, {retPtr, nodeThis, ctx.Ctx}, "", block);
     } else {
-        CallInst::Create(funType, func, {nodeThis, retPtr, ctx.Ctx}, "", block);
+        CallInst::Create(func, {nodeThis, retPtr, ctx.Ctx}, "", block);
     }
 
     ValueRelease(node->GetRepresentation(), retPtr, ctx, block);
-    const auto result = new LoadInst(valueType, retPtr, "return", false, block);
+    const auto result = new LoadInst(retPtr, "return", false, block);
     return result;
 }
 
@@ -1920,26 +1693,25 @@ void GetNodeValue(Value* value, IComputationNode* node, const TCodegenContext& c
         return;
     }
 
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto ptr = ConstantInt::get(Type::getInt64Ty(context), intptr_t(node));
     const auto ptrType = PointerType::getUnqual(StructType::get(context));
     const auto nodeThis = CastInst::Create(Instruction::IntToPtr, ptr, ptrType, "node_this", block);
 
-    const auto funType = ctx.Codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
+    const auto funType = ctx.Codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows ?
         FunctionType::get(Type::getVoidTy(context), {value->getType(), nodeThis->getType(), ctx.Ctx->getType()}, false):
         FunctionType::get(Type::getVoidTy(context), {nodeThis->getType(), value->getType(), ctx.Ctx->getType()}, false);
-    const auto ptrFunType = PointerType::getUnqual(funType);
-    const auto tableType = PointerType::getUnqual(ptrFunType);
-    const auto nodeVTable = CastInst::Create(Instruction::IntToPtr, ptr, PointerType::getUnqual(tableType), "node_vtable", block);
+    const auto ptrTableType = PointerType::getUnqual(PointerType::getUnqual(PointerType::getUnqual(funType)));
+    const auto nodeVTable = CastInst::Create(Instruction::IntToPtr, ptr, ptrTableType, "node_vtable", block);
 
-    const auto table = new LoadInst(tableType, nodeVTable, "table", false, block);
-    const auto elem = GetElementPtrInst::CreateInBounds(ptrFunType, table, {ConstantInt::get(Type::getInt64Ty(context), GetMethodIndex(&IComputationNode::GetValue))}, "element", block);
-    const auto func = new LoadInst(ptrFunType, elem, "func", false, block);
+    const auto table = new LoadInst(nodeVTable, "table", false, block);
+    const auto elem = GetElementPtrInst::CreateInBounds(table, {ConstantInt::get(Type::getInt64Ty(context), GetMethodIndex(&IComputationNode::GetValue))}, "element", block);
+    const auto func = new LoadInst(elem, "func", false, block);
 
-    if (ctx.Codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
-        CallInst::Create(funType, func, {value, nodeThis, ctx.Ctx}, "", block);
+    if (ctx.Codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
+        CallInst::Create(func, {value, nodeThis, ctx.Ctx}, "", block);
     } else {
-        CallInst::Create(funType, func, {nodeThis, value, ctx.Ctx}, "", block);
+        CallInst::Create(func, {nodeThis, value, ctx.Ctx}, "", block);
     }
 }
 
@@ -1950,20 +1722,20 @@ ICodegeneratorInlineWideNode::TGenerateResult GetNodeValues(IComputationWideFlow
 }
 
 Value* GenNewArray(const TCodegenContext& ctx, Value* size, Value* items, BasicBlock* block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto fact = ctx.GetFactory();
     const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::CreateDirectArrayHolder));
     const auto valueType = Type::getInt128Ty(context);
-    if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+    if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
         const auto funType = FunctionType::get(valueType, {fact->getType(), size->getType(), items->getType()}, false);
         const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-        return CallInst::Create(funType, funcPtr, {fact, size, items}, "array", block);
+        return CallInst::Create(funcPtr, {fact, size, items}, "array", block);
     } else {
         const auto resultPtr = new AllocaInst(valueType, 0U, "return", block);
         const auto funType = FunctionType::get(Type::getVoidTy(context), {fact->getType(), resultPtr->getType(), size->getType(), items->getType()}, false);
         const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-        CallInst::Create(funType, funcPtr, {fact, resultPtr, size, items}, "", block);
-        return new LoadInst(valueType, resultPtr, "array", block);
+        CallInst::Create(funcPtr, {fact, resultPtr, size, items}, "", block);
+        return new LoadInst(resultPtr, "array", block);
     }
 }
 
@@ -1972,17 +1744,17 @@ Value* GetMemoryUsed(ui64 limit, const TCodegenContext& ctx, BasicBlock* block) 
         return nullptr;
     }
 
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto fact = ctx.GetFactory();
     const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::GetMemoryUsed));
     const auto funType = FunctionType::get(Type::getInt64Ty(context), {fact->getType()}, false);
     const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "get_used", block);
-    return CallInst::Create(funType, funcPtr, {fact}, "mem_used", block);
+    return CallInst::Create(funcPtr, {fact}, "mem_used", block);
 }
 
 template <bool TrackRss>
 Value* CheckAdjustedMemLimit(ui64 limit, Value* init, const TCodegenContext& ctx, BasicBlock*& block) {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
 
     if (!limit || !init) {
         return ConstantInt::getFalse(context);
@@ -1990,9 +1762,9 @@ Value* CheckAdjustedMemLimit(ui64 limit, Value* init, const TCodegenContext& ctx
 
     const auto indexType = Type::getInt32Ty(context);
 
-    if constexpr (TrackRss) {
-        const auto rssPtr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), ctx.Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 5)}, "rss_ptr", block);
-        const auto rss = new LoadInst(Type::getInt32Ty(context), rssPtr, "rsscounter", block);
+    if (TrackRss) {
+        const auto rssPtr = GetElementPtrInst::CreateInBounds(ctx.Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 5)}, "rss_ptr", block);
+        const auto rss = new LoadInst(rssPtr, "adjustor", block);
         const auto inc = BinaryOperator::CreateAdd(rss, ConstantInt::get(rss->getType(), 1), "inc", block);
         new StoreInst(inc, rssPtr, block);
         const auto mod = BinaryOperator::CreateURem(rss, ConstantInt::get(rss->getType(), STEP_FOR_RSS_CHECK), "mod", block);
@@ -2008,15 +1780,15 @@ Value* CheckAdjustedMemLimit(ui64 limit, Value* init, const TCodegenContext& ctx
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TComputationContext::UpdateUsageAdjustor));
         const auto funType = FunctionType::get(Type::getVoidTy(context), {ctx.Ctx->getType(), Type::getInt64Ty(context)}, false);
         const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "update", block);
-        CallInst::Create(funType, funcPtr, {ctx.Ctx, ConstantInt::get(init->getType(), limit)}, "", block);
+        CallInst::Create(funcPtr, {ctx.Ctx, ConstantInt::get(init->getType(), limit)}, "", block);
 
         BranchInst::Create(skip, block);
 
         block = skip;
     }
 
-    const auto adjPtr = GetElementPtrInst::CreateInBounds(GetCompContextType(context), ctx.Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 4)}, "adj_ptr", block);
-    const auto adjustor = new LoadInst(Type::getFloatTy(context), adjPtr, "adjustor", block);
+    const auto adjPtr = GetElementPtrInst::CreateInBounds(ctx.Ctx, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 4)}, "adj_ptr", block);
+    const auto adjustor = new LoadInst(adjPtr, "adjustor", block);
 
     const auto curr = GetMemoryUsed(limit, ctx, block);
     const auto cast = CastInst::Create(Instruction::UIToFP, curr, adjustor->getType(), "cast", block);
@@ -2030,7 +1802,7 @@ template Value* CheckAdjustedMemLimit<false>(ui64 limit, Value* init, const TCod
 template Value* CheckAdjustedMemLimit<true>(ui64 limit, Value* init, const TCodegenContext& ctx, BasicBlock*& block);
 
 Value* WrapArgumentForWindows(Value* arg, const TCodegenContext& ctx, BasicBlock* block) {
-    if (ctx.Codegen.GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
+    if (ctx.Codegen->GetEffectiveTarget() != NYql::NCodegen::ETarget::Windows) {
         return arg;
     }
 

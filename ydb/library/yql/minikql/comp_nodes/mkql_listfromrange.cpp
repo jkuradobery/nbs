@@ -10,13 +10,11 @@ namespace {
 
 template<typename T>
 ui64 ShiftByMaxNegative(T value) {
-    static_assert(sizeof(T) <= sizeof(ui64));
-    static_assert(std::is_integral_v<T>);
-    if constexpr (std::is_signed_v<T>) {
+    if (std::is_signed<T>()) {
         if (value < 0) {
             return ui64(value + std::numeric_limits<T>::max() + T(1));
         }
-        return ui64(value) + ui64(std::numeric_limits<T>::max()) + 1ul;
+        return ui64(value) + ui64(std::numeric_limits<T>::max() + 1ul);
     }
     return ui64(value);
 }
@@ -152,7 +150,7 @@ private:
         }
 
         ui64 GetListLength() const final {
-            if constexpr (std::is_integral_v<T>) {
+            if (std::is_integral<T>()) {
                 return GetElementsCount<T, TStep>(Start, End, Step);
             }
 
@@ -223,7 +221,8 @@ private:
             }
         }
         TTzValue(TMemoryUsageInfo* memInfo, TComputationContext& ctx, T start, T end, TStep step, ui16 TimezoneId)
-            : TValue(memInfo, ctx, start, end, step), TimezoneId(TimezoneId)
+            : TimezoneId(TimezoneId)
+            , TValue(memInfo, ctx, start, end, step)
         {
         }
     private:
@@ -256,8 +255,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
-        const auto valueType = Type::getInt128Ty(context);
+        auto& context = ctx.Codegen->GetContext();
 
         const auto startv = GetNodeValue(Start, ctx, block);
         const auto endv = GetNodeValue(End, ctx, block);
@@ -279,24 +277,24 @@ public:
         const auto timezone = TzDate ? GetterForTimezone(context, startv, block) : ConstantInt::get(Type::getInt16Ty(context), 0);
 
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TListFromRangeWrapper::MakeList));
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
-            const auto signature = FunctionType::get(valueType, {ctx.Ctx->getType(), start->getType(), end->getType(), step->getType(), timezone->getType()}, false);
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+            const auto signature = FunctionType::get(Type::getInt128Ty(context), {ctx.Ctx->getType(), start->getType(), end->getType(), step->getType(), timezone->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            const auto output = CallInst::Create(signature, creator, {ctx.Ctx, start, end, step, timezone}, "output", block);
+            const auto output = CallInst::Create(creator, {ctx.Ctx, start, end, step, timezone}, "output", block);
             return output;
         } else {
-            const auto place = new AllocaInst(valueType, 0U, "place", block);
+            const auto place = new AllocaInst(Type::getInt128Ty(context), 0U, "place", block);
             const auto signature = FunctionType::get(Type::getVoidTy(context), {place->getType(), ctx.Ctx->getType(), start->getType(), end->getType(), step->getType(), timezone->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            CallInst::Create(signature, creator, {place, ctx.Ctx, start, end, step, timezone}, "", block);
-            const auto output = new LoadInst(valueType, place, "output", block);
+            CallInst::Create(creator, {place, ctx.Ctx, start, end, step, timezone}, "", block);
+            const auto output = new LoadInst(place, "output", block);
             return output;
         }
     }
 #endif
 private:
     static NUdf::TUnboxedValuePod MakeList(TComputationContext& ctx, T start, T end, TStep step, ui16 timezoneId) {
-        if constexpr(TzDate)
+        if (timezoneId)
             return ctx.HolderFactory.Create<TTzValue>(ctx, start, end, step, timezoneId);
         else
             return ctx.HolderFactory.Create<TValue>(ctx, start, end, step);

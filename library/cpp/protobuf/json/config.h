@@ -72,10 +72,6 @@ namespace NProtobufJson {
         /// with FieldNameMode.
         bool UseJsonName = false;
 
-        /// Use 'json_enum_value' protobuf option for enum value, mutually exclusive
-        /// with EnumValueMode
-        bool UseJsonEnumValue = false;
-
         // Allow nonstandard conversions, e.g. from google.protobuf.Duration to string
         bool ConvertTimeAsString = false;
 
@@ -87,13 +83,12 @@ namespace NProtobufJson {
         bool MapAsObject = false;
 
         /// Stringify long integers which are not exactly representable by float or double values
-        enum EStringifyNumbersMode {
+        enum EStringifyLongNumbersMode {
             StringifyLongNumbersNever = 0, // default
             StringifyLongNumbersForFloat,
             StringifyLongNumbersForDouble,
-            StringifyInt64Always,
         };
-        EStringifyNumbersMode StringifyNumbers = StringifyLongNumbersNever;
+        EStringifyLongNumbersMode StringifyLongNumbers = StringifyLongNumbersNever;
 
         /// Custom field names generator.
         TNameGenerator NameGenerator = {};
@@ -139,7 +134,6 @@ namespace NProtobufJson {
         }
 
         TSelf& SetEnumMode(EnumValueMode mode) {
-            Y_ENSURE(!UseJsonEnumValue || mode == EnumNumber, "EnumValueMode and UseJsonEnumValue are mutually exclusive");
             EnumMode = mode;
             return *this;
         }
@@ -155,13 +149,6 @@ namespace NProtobufJson {
             UseJsonName = jsonName;
             return *this;
         }
-
-        TSelf& SetUseJsonEnumValue(bool jsonEnumValue) {
-            Y_ENSURE(!jsonEnumValue || EnumMode == EnumNumber, "EnumValueMode and UseJsonEnumValue are mutually exclusive");
-            UseJsonEnumValue = jsonEnumValue;
-            return *this;
-        }
-
 
         TSelf& SetConvertTimeAsString(bool value) {
             ConvertTimeAsString = value;
@@ -183,8 +170,8 @@ namespace NProtobufJson {
             return *this;
         }
 
-        TSelf& SetStringifyNumbers(EStringifyNumbersMode stringify) {
-            StringifyNumbers = stringify;
+        TSelf& SetStringifyLongNumbers(EStringifyLongNumbersMode stringify) {
+            StringifyLongNumbers = stringify;
             return *this;
         }
 

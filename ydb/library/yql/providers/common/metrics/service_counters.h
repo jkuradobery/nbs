@@ -35,4 +35,4 @@ struct TServiceCounters {
 };
 
 } // namespace NCommon
-} // namespace NYql
+} // namespace NYq

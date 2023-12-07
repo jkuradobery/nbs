@@ -4,10 +4,9 @@
 #include <ydb/public/api/protos/ydb_topic.pb.h>
 #include <ydb/core/protos/pqconfig.pb.h>
 
-#include <ydb/core/tx/long_tx_service/public/lock_handle.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <util/system/types.h>
 
@@ -51,7 +50,7 @@ public:
                       const Ydb::Topic::OffsetsRange& range);
     void AddOperation(const TString& topic, ui32 partition);
 
-    void BuildTopicTxs(THashMap<ui64, NKikimrPQ::TDataTransaction> &txs);
+    void BuildTopicTxs(THashMap<ui64, NKikimrPQ::TKqpTransaction> &txs);
 
     void Merge(const TTopicPartitionOperations& rhs);
 
@@ -89,9 +88,6 @@ public:
     bool HasOperations() const;
     bool HasReadOperations() const;
     bool HasWriteOperations() const;
-    bool HasWriteId() const;
-    ui64 GetWriteId() const;
-    void SetWriteId(NLongTxService::TLockHandle handle);
 
     bool TabletHasReadOperations(ui64 tabletId) const;
 
@@ -106,7 +102,7 @@ public:
                                     Ydb::StatusIds_StatusCode& status,
                                     TString& message);
 
-    void BuildTopicTxs(THashMap<ui64, NKikimrPQ::TDataTransaction> &txs);
+    void BuildTopicTxs(THashMap<ui64, NKikimrPQ::TKqpTransaction> &txs);
 
     void Merge(const TTopicOperations& rhs);
 
@@ -121,7 +117,6 @@ private:
     bool HasWriteOperations_ = false;
 
     TMaybe<TString> Consumer_;
-    NLongTxService::TLockHandle WriteId_;
 };
 
 }

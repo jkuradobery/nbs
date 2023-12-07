@@ -1,7 +1,7 @@
 #include "handoff_mon.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_mon.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 using namespace NKikimrServices;
 using namespace NKikimr::NHandoff;
@@ -19,7 +19,7 @@ namespace NKikimr {
 
             TInfo() = default;
             TInfo(IInputStream &) {
-                Y_ABORT("Not supported");
+                Y_FAIL("Not supported");
             }
             TInfo(const NHandoff::TCountersPtr &c, const NHandoff::TPrivateProxyStatePtr &p)
                 : Cntr(c)
@@ -59,7 +59,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvHandoffProxyMonResult::TPtr &ev, const TActorContext &ctx) {
-            Y_DEBUG_ABORT_UNLESS(Counter > 0);
+            Y_VERIFY_DEBUG(Counter > 0);
 
             auto d = ev->Get();
             Cells[d->VDiskID].Get() = TInfo(d->CountersPtr, d->PrivateProxyStatePtr);
@@ -139,10 +139,10 @@ namespace NKikimr {
         TActiveActors ActiveActors;
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_DEBUG_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::HandoffMonId);
+            Y_VERIFY_DEBUG(ev->Get()->SubRequestId == TDbMon::HandoffMonId);
             auto actor = std::make_unique<THandoffMonRequestActor>(ctx.SelfID, SelfVDisk, Top, ProxiesPtr, ev);
             auto aid = ctx.Register(actor.release());
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
         void Handle(TEvents::TEvActorDied::TPtr &ev, const TActorContext &ctx) {

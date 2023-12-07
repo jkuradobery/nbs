@@ -72,7 +72,7 @@ namespace NKikimr {
                         break;
 
                     case TBlobType::MemBlob:
-                        Y_ABORT();
+                        Y_FAIL();
                 }
             }
 
@@ -82,7 +82,7 @@ namespace NKikimr {
                     TDiskBlob blob(data, local, GType, key.LogoBlobID());
                     for (auto it = blob.begin(); it != blob.end(); ++it) {
                         if (Item->Needed.Get(it.GetPartId() - 1)) {
-                            Item->SetPartData(TLogoBlobID(key.LogoBlobID(), it.GetPartId()), it.GetPart());
+                            Item->SetPartData(TLogoBlobID(key.LogoBlobID(), it.GetPartId()), it.GetPart().ConvertToString());
                         }
                     }
                 } else {
@@ -165,7 +165,7 @@ namespace NKikimr {
         }
 
         void Handle(NPDisk::TEvChunkReadResult::TPtr ev) {
-            Y_ABORT_UNLESS(ReadsPending);
+            Y_VERIFY(ReadsPending);
             --ReadsPending;
 
             auto *msg = ev->Get();
@@ -176,7 +176,7 @@ namespace NKikimr {
                 TDiskBlob blob(&rope, cmd->Parts, Info->Type, item.BlobId);
                 for (auto it = blob.begin(); it != blob.end(); ++it) {
                     if (item.Needed.Get(it.GetPartId() - 1)) {
-                        item.SetPartData(TLogoBlobID(item.BlobId, it.GetPartId()), it.GetPart());
+                        item.SetPartData(TLogoBlobID(item.BlobId, it.GetPartId()), it.GetPart().ConvertToString());
                     }
                 }
                 const NMatrix::TVectorType& avail = item.GetAvailableParts();
@@ -204,7 +204,7 @@ namespace NKikimr {
                         ev.reset(new TEvRecoverBlob);
                         ev->Deadline = Deadline;
                     }
-                    ev->Items.emplace_back(item.BlobId, TStackVec<TRope, 8>(item.Parts), item.PartsMask, item.Needed, TDiskPart(), i);
+                    ev->Items.emplace_back(item.BlobId, TDataPartSet(item.PartSet), item.Needed, TDiskPart(), i);
                 }
             }
             if (ev) {
@@ -224,9 +224,8 @@ namespace NKikimr {
         void Handle(TEvRecoverBlobResult::TPtr ev) {
             for (auto& item : ev->Get()->Items) {
                 auto& myItem = Items[item.Cookie];
-                Y_ABORT_UNLESS(myItem.Status == NKikimrProto::UNKNOWN);
-                myItem.Parts = std::move(item.Parts);
-                myItem.PartsMask = item.PartsMask;
+                Y_VERIFY(myItem.Status == NKikimrProto::UNKNOWN);
+                myItem.PartSet = std::move(item.PartSet);
                 if (item.Status != NKikimrProto::NODATA) { // we keep trying to fetch NODATA's till deadline
                     myItem.Status = item.Status;
                     if (myItem.Status == NKikimrProto::OK && WriteRestoredParts) {
@@ -247,8 +246,8 @@ namespace NKikimr {
             for (ui32 i = item.Needed.FirstPosition(); i != item.Needed.GetSize(); i = item.Needed.NextPosition(i)) {
                 const TLogoBlobID blobId(item.BlobId, i + 1);
                 const TRope& buffer = item.GetPartData(blobId);
-                Y_ABORT_UNLESS(buffer.size() == Info->Type.PartSize(blobId));
-                Y_ABORT_UNLESS(WriteRestoredParts);
+                Y_VERIFY(buffer.size() == Info->Type.PartSize(blobId));
+                Y_VERIFY(WriteRestoredParts);
                 auto ev = std::make_unique<TEvBlobStorage::TEvVPut>(blobId, buffer, vdiskId, true, &index, Deadline,
                     NKikimrBlobStorage::EPutHandleClass::AsyncBlob);
                 ev->RewriteBlob = true;
@@ -260,7 +259,7 @@ namespace NKikimr {
         void Handle(TEvBlobStorage::TEvVPutResult::TPtr ev) {
             STLOG(PRI_DEBUG, BS_VDISK_SCRUB, VDS37, VDISKP(LogPrefix, "received TEvVPutResult"), (SelfId, SelfId()),
                 (Msg, ev->Get()->ToString()));
-            Y_ABORT_UNLESS(WritesPending);
+            Y_VERIFY(WritesPending);
             --WritesPending;
             const auto& record = ev->Get()->Record;
             auto& item = Items[record.GetCookie()];

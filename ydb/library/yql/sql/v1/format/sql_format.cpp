@@ -211,6 +211,37 @@ enum class EScope {
     DoubleQuestion
 };
 
+THashSet<TString> GetKeywords() {
+    TString grammar;
+    Y_ENSURE(NResource::FindExact("SQLv1.g.in", &grammar));
+    THashSet<TString> res;
+    TVector<TString> lines;
+    Split(grammar, "\n", lines);
+    for (auto s : lines) {
+        s = StripString(s);
+        if (s.StartsWith("//")) {
+            continue;
+        }
+
+        auto pos1 = s.find(':');
+        auto pos2 = s.find(';');
+        if (pos1 == TString::npos || pos2 == TString::npos || pos2 < pos1 + 2) {
+            continue;
+        }
+
+        auto before = s.substr(0, pos1);
+        auto after = s.substr(pos1 + 1, pos2 - pos1 - 1);
+        SubstGlobal(after, " ", "");
+        SubstGlobal(after, "'", "");
+        if (after == before) {
+            //Cerr << before << "\n";
+            res.insert(before);
+        }
+    }
+
+    return res;
+}
+
 class TVisitor;
 using TFunctor = std::function<void(TVisitor&, const NProtoBuf::Message& msg)>;
 
@@ -228,42 +259,24 @@ struct TStaticData {
 class TVisitor {
     friend struct TStaticData;
 public:
-    TVisitor(const TParsedTokenList& parsedTokens, const TParsedTokenList& comments)
+    TVisitor(const TVector<NSQLTranslation::TParsedToken>& comments)
         : StaticData(TStaticData::GetInstance())
-        , ParsedTokens(parsedTokens)
         , Comments(comments)
     {
     }
 
-    TString Process(const NProtoBuf::Message& msg, bool& addLine) {
+    TString Process(const NProtoBuf::Message& msg) {
         Scopes.push_back(EScope::Default);
-        MarkedTokens.reserve(ParsedTokens.size());
-        MarkTokens(msg);
-        Y_ENSURE(MarkTokenStack.empty());
-        Y_ENSURE(TokenIndex == ParsedTokens.size());
-        TokenIndex = 0;
         Visit(msg);
-        Y_ENSURE(TokenIndex == ParsedTokens.size());
-        Y_ENSURE(MarkTokenStack.empty());
         for (; LastComment < Comments.size(); ++LastComment) {
             const auto text = Comments[LastComment].Content;
             AddComment(text);
         }
-        addLine = AddLine.GetOrElse(true);
 
         return SB;
     }
 
 private:
-    struct TTokenInfo {
-        bool OpeningBracket = false;
-        bool ClosingBracket = false;
-        bool BracketForcedExpansion = false;
-        ui32 ClosingBracketIndex = 0;
-    };
-
-    using TMarkTokenStack = TVector<ui32>;
-
     void Out(TStringBuf s) {
         for (ui32 i = 0; i < s.Size(); ++i) {
             Out(s[i], i == 0);
@@ -306,150 +319,12 @@ private:
         Out(text);
     }
 
-    void MarkTokens(const NProtoBuf::Message& msg) {
-        const NProtoBuf::Descriptor* descr = msg.GetDescriptor();
-        auto scopePtr = StaticData.ScopeDispatch.FindPtr(descr);
-        if (scopePtr) {
-            if (*scopePtr == EScope::TypeName) {
-                ++InsideType;
-            }
-
-            Scopes.push_back(*scopePtr);
-        }
-
-        bool suppressExpr = false;
-        if (descr == TToken::GetDescriptor()) {
-            const auto& token = dynamic_cast<const TToken&>(msg);
-            MarkToken(token);
-        } else if (descr == TRule_sql_stmt_core::GetDescriptor()) {
-            if (AddLine.Empty()) {
-                AddLine = !IsSimpleStatement(dynamic_cast<const TRule_sql_stmt_core&>(msg)).GetOrElse(false);
-            }
-        } else if (descr == TRule_lambda_body::GetDescriptor()) {
-            Y_ENSURE(TokenIndex >= 1);
-            auto prevIndex = TokenIndex - 1;
-            Y_ENSURE(prevIndex < ParsedTokens.size());
-            Y_ENSURE(ParsedTokens[prevIndex].Content == "{");
-            MarkedTokens[prevIndex].OpeningBracket = false;
-            ForceExpandedColumn = ParsedTokens[prevIndex].LinePos;
-            ForceExpandedLine = ParsedTokens[prevIndex].Line;
-        } else if (descr == TRule_in_atom_expr::GetDescriptor()) {
-            const auto& value = dynamic_cast<const TRule_in_atom_expr&>(msg);
-            if (value.Alt_case() == TRule_in_atom_expr::kAltInAtomExpr7) {
-                suppressExpr = true;
-            }
-        } else if (descr == TRule_select_kind_parenthesis::GetDescriptor()) {
-            const auto& value = dynamic_cast<const TRule_select_kind_parenthesis&>(msg);
-            if (value.Alt_case() == TRule_select_kind_parenthesis::kAltSelectKindParenthesis2) {
-                suppressExpr = true;
-            }
-        } else if (descr == TRule_window_specification::GetDescriptor()) {
-            const auto& value = dynamic_cast<const TRule_window_specification&>(msg);
-            const auto& details = value.GetRule_window_specification_details2();
-            const bool needsNewline = details.HasBlock1() || details.HasBlock2() ||
-                                      details.HasBlock3() || details.HasBlock4();
-            if (needsNewline) {
-                auto& paren = value.GetToken1();
-                ForceExpandedColumn = paren.GetColumn();
-                ForceExpandedLine = paren.GetLine();
-            }
-            suppressExpr = true;
-        } else if (descr == TRule_exists_expr::GetDescriptor()) {
-            const auto& value = dynamic_cast<const TRule_exists_expr&>(msg);
-            auto& paren = value.GetToken2();
-            ForceExpandedColumn = paren.GetColumn();
-            ForceExpandedLine = paren.GetLine();
-            suppressExpr = true;
-        } else if (descr == TRule_case_expr::GetDescriptor()) {
-            const auto& value = dynamic_cast<const TRule_case_expr&>(msg);
-            auto& token = value.GetToken1();
-            ForceExpandedColumn = token.GetColumn();
-            ForceExpandedLine = token.GetLine();
-        }
-
-        const bool expr = (descr == TRule_expr::GetDescriptor() || descr == TRule_in_expr::GetDescriptor());
-        if (expr) {
-            ++InsideExpr;
-        }
-
-        ui64 prevInsideExpr = InsideExpr;
-        if (suppressExpr) {
-            InsideExpr = 0;
-        }
-
-        VisitAllFieldsImpl<&TVisitor::MarkTokens>(descr, msg);
-        if (suppressExpr) {
-            InsideExpr = prevInsideExpr;
-        }
-
-        if (scopePtr) {
-            if (*scopePtr == EScope::TypeName) {
-                --InsideType;
-            }
-
-            Scopes.pop_back();
-        }
-
-        if (expr) {
-            --InsideExpr;
-        }
-    }
-
-    void MarkToken(const TToken& token) {
-        auto str = token.GetValue();
-        if (str == "<EOF>") {
-            return;
-        }
-
-        MarkedTokens.emplace_back();
-        if (str == "(" || str == "[" || str == "{" || str == "<|" || (InsideType && str == "<")) {
-            MarkTokenStack.push_back(TokenIndex);
-            auto& info = MarkedTokens[TokenIndex];
-            info.OpeningBracket = (InsideExpr > 0);
-        } else if (str == ")") {
-            PopBracket("(");
-        } else if (str == "]") {
-            PopBracket("[");
-        } else if (str == "}") {
-            PopBracket("{");
-        } else if (str == "|>") {
-            PopBracket("<|");
-        } else if (InsideType && str == ">") {
-            PopBracket("<");
-        }
-
-        TokenIndex++;
-    }
-
-    void PopBracket(const TString& expected) {
-        Y_ENSURE(!MarkTokenStack.empty());
-        Y_ENSURE(MarkTokenStack.back() < ParsedTokens.size());
-        auto& openToken = ParsedTokens[MarkTokenStack.back()];
-        Y_ENSURE(openToken.Content == expected);
-        auto& openInfo = MarkedTokens[MarkTokenStack.back()];
-        auto& closeInfo = MarkedTokens[TokenIndex];
-        const bool forcedExpansion = openToken.Line == ForceExpandedLine && openToken.LinePos <= ForceExpandedColumn;
-
-        if (openInfo.OpeningBracket) {
-            openInfo.ClosingBracketIndex = TokenIndex;
-            openInfo.BracketForcedExpansion = forcedExpansion;
-            closeInfo.BracketForcedExpansion = forcedExpansion;
-            closeInfo.ClosingBracket = true;
-        }
-
-        MarkTokenStack.pop_back();
-    }
-
     void Visit(const NProtoBuf::Message& msg) {
         const NProtoBuf::Descriptor* descr = msg.GetDescriptor();
         //Cerr << descr->name() << "\n";
         auto scopePtr = StaticData.ScopeDispatch.FindPtr(descr);
         if (descr == TRule_invoke_expr::GetDescriptor()) {
             AfterInvokeExpr = true;
-        }
-
-        if (descr == TRule_unary_op::GetDescriptor()) {
-            AfterUnaryOp = true;
         }
 
         if (scopePtr) {
@@ -476,67 +351,6 @@ private:
         }
     }
 
-    TMaybe<bool> IsSimpleStatement(const TRule_sql_stmt_core& msg) {
-        switch (msg.Alt_case()) {
-            case TRule_sql_stmt_core::kAltSqlStmtCore1: // pragma
-            case TRule_sql_stmt_core::kAltSqlStmtCore5: // drop table
-            case TRule_sql_stmt_core::kAltSqlStmtCore6: // use
-            case TRule_sql_stmt_core::kAltSqlStmtCore8: // commit
-            case TRule_sql_stmt_core::kAltSqlStmtCore11: // rollback
-            case TRule_sql_stmt_core::kAltSqlStmtCore12: // declare
-            case TRule_sql_stmt_core::kAltSqlStmtCore13: // import
-            case TRule_sql_stmt_core::kAltSqlStmtCore14: // export
-            case TRule_sql_stmt_core::kAltSqlStmtCore30: // drop external data source
-            case TRule_sql_stmt_core::kAltSqlStmtCore32: // drop replication
-                return true;
-            case TRule_sql_stmt_core::kAltSqlStmtCore3: { // named nodes
-                const auto& stmt = msg.GetAlt_sql_stmt_core3().GetRule_named_nodes_stmt1();
-                if (stmt.GetBlock3().HasAlt1()) {
-                    return true;
-                }
-                break;
-            }
-            case TRule_sql_stmt_core::kAltSqlStmtCore16: { // do
-                const auto& stmt = msg.GetAlt_sql_stmt_core16().GetRule_do_stmt1();
-                if (stmt.GetBlock2().HasAlt1()) {
-                    return true;
-                }
-                break;
-            }
-            case TRule_sql_stmt_core::kAltSqlStmtCore18: // if
-            case TRule_sql_stmt_core::kAltSqlStmtCore19: // for
-                return false;
-            default:
-                break;
-        }
-
-        return {};
-    }
-
-    template <typename T>
-    void VisitRepeated(const ::google::protobuf::RepeatedPtrField<T>& field) {
-        for (const auto& m : field) {
-            Visit(m);
-        }
-    }
-
-    void VisitDefineActionOrSubqueryBody(const TRule_define_action_or_subquery_body& msg) {
-        VisitRepeated(msg.GetBlock1());
-        if (msg.HasBlock2()) {
-            const auto& b = msg.GetBlock2();
-            Visit(b.GetRule_sql_stmt_core1());
-            for (auto block : b.GetBlock2()) {
-                VisitRepeated(block.GetBlock1());
-                if (!IsSimpleStatement(block.GetRule_sql_stmt_core2()).GetOrElse(false)) {
-                    Out('\n');
-                }
-                Visit(block.GetRule_sql_stmt_core2());
-            }
-
-            VisitRepeated(b.GetBlock3());
-        }
-    }
-
     void VisitPragma(const TRule_pragma_stmt& msg) {
         PosFromToken(msg.GetToken1());
         NewLine();
@@ -554,7 +368,10 @@ private:
             const auto& alt2 = msg.GetBlock4().GetAlt2();
             VisitKeyword(alt2.GetToken1());
             Visit(alt2.GetRule_pragma_value2());
-            VisitRepeated(alt2.GetBlock3());
+            for (const auto& b : alt2.GetBlock3()) {
+                Visit(b);
+            }
+
             VisitKeyword(alt2.GetToken4());
         } else {
             Visit(msg.GetBlock4());
@@ -675,7 +492,7 @@ private:
         PosFromToken(msg.GetToken1());
         NewLine();
         Visit(msg.GetToken1());
-        Visit(msg.GetBlock2());
+        Visit(msg.GetToken2());
         Visit(msg.GetRule_simple_table_ref3());
         Visit(msg.GetToken4());
         PushCurrentIndent();
@@ -686,13 +503,14 @@ private:
             NewLine();
             Visit(b.GetRule_create_table_entry2());
         }
-        if (msg.HasBlock7()) {
-            Visit(msg.GetBlock7());
-        }
 
         PopCurrentIndent();
         NewLine();
-        Visit(msg.GetToken8());
+        Visit(msg.GetToken7());
+        if (msg.HasBlock8()) {
+            NewLine();
+            Visit(msg.GetBlock8());
+        }
         if (msg.HasBlock9()) {
             NewLine();
             Visit(msg.GetBlock9());
@@ -704,10 +522,6 @@ private:
         if (msg.HasBlock11()) {
             NewLine();
             Visit(msg.GetBlock11());
-        }
-        if (msg.HasBlock12()) {
-            NewLine();
-            Visit(msg.GetBlock12());
         }
     }
 
@@ -925,12 +739,6 @@ private:
         PopCurrentIndent();
     }
 
-    void VisitAlterTableStore(const TRule_alter_table_store_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_alter_table_store_stmt::GetDescriptor(), msg);
-    }
-
     void VisitDo(const TRule_do_stmt& msg) {
         PosFromToken(msg.GetToken1());
         NewLine();
@@ -1063,18 +871,6 @@ private:
         PopCurrentIndent();
     }
 
-    void VisitGrantPermissions(const TRule_grant_permissions_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_grant_permissions_stmt::GetDescriptor(), msg);
-    }
-
-    void VisitRevokePermissions(const TRule_revoke_permissions_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_revoke_permissions_stmt::GetDescriptor(), msg);
-    }
-
     void VisitCreateUser(const TRule_create_user_stmt& msg) {
         PosFromToken(msg.GetToken1());
         NewLine();
@@ -1105,12 +901,6 @@ private:
         VisitAllFields(TRule_drop_role_stmt::GetDescriptor(), msg);
     }
 
-    void VisitUpsertObject(const TRule_upsert_object_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_upsert_object_stmt::GetDescriptor(), msg);
-    }
-
     void VisitCreateObject(const TRule_create_object_stmt& msg) {
         PosFromToken(msg.GetToken1());
         NewLine();
@@ -1129,103 +919,16 @@ private:
         VisitAllFields(TRule_drop_object_stmt::GetDescriptor(), msg);
     }
 
-    void VisitCreateTopic(const TRule_create_topic_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitKeyword(msg.GetToken1());
-        VisitKeyword(msg.GetToken2());
-        Visit(msg.GetRule_topic_ref3());
-        if (msg.HasBlock4()) {
-            PushCurrentIndent();
-            auto& b = msg.GetBlock4().GetRule_create_topic_entries1();
-            Visit(b.GetToken1());
-            NewLine();
-            Visit(b.GetRule_create_topic_entry2());
-            for (auto& subEntry : b.GetBlock3()) {
-                Visit(subEntry.GetToken1());
-                NewLine();
-                Visit(subEntry.GetRule_create_topic_entry2());
-            }
-            NewLine();
-            PopCurrentIndent();
-            Visit(b.GetToken4());
-        }
-        if (msg.HasBlock5()) {
-            auto& b = msg.GetBlock5().GetRule_with_topic_settings1();
-            VisitKeyword(b.GetToken1());
-            VisitKeyword(b.GetToken2());
-            PushCurrentIndent();
-            NewLine();
-            Visit(b.GetRule_topic_settings3());
-            PopCurrentIndent();
-            NewLine();
-            VisitKeyword(b.GetToken4());
-        }
-    }
-
-    void VisitAlterTopic(const TRule_alter_topic_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitKeyword(msg.GetToken1());
-        VisitKeyword(msg.GetToken2());
-        Visit(msg.GetRule_topic_ref3());
-        NewLine();
-        PushCurrentIndent();
-        Visit(msg.GetRule_alter_topic_action4());
-        for (auto& b : msg.GetBlock5()) {
-            Visit(b.GetToken1());
-            NewLine();
-            Visit(b.GetRule_alter_topic_action2());
-        }
-
-        PopCurrentIndent();
-    }
-
-    void VisitDropTopic(const TRule_drop_topic_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_drop_topic_stmt::GetDescriptor(), msg);
-    }
-
-    void VisitCreateExternalDataSource(const TRule_create_external_data_source_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_create_external_data_source_stmt::GetDescriptor(), msg);
-    }
-
-    void VisitDropExternalDataSource(const TRule_drop_external_data_source_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_drop_external_data_source_stmt::GetDescriptor(), msg);
-    }
-
-    void VisitCreateAsyncReplication(const TRule_create_replication_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_create_replication_stmt::GetDescriptor(), msg);
-    }
-
-    void VisitDropAsyncReplication(const TRule_drop_replication_stmt& msg) {
-        PosFromToken(msg.GetToken1());
-        NewLine();
-        VisitAllFields(TRule_drop_replication_stmt::GetDescriptor(), msg);
-    }
-
-    template <void (TVisitor::*Func)(const NProtoBuf::Message&)>
-    void VisitAllFieldsImpl(const NProtoBuf::Descriptor* descr, const NProtoBuf::Message& msg) {
+    void VisitAllFields(const NProtoBuf::Descriptor* descr, const NProtoBuf::Message& msg) {
         for (int i = 0; i < descr->field_count(); ++i) {
             const NProtoBuf::FieldDescriptor* fd = descr->field(i);
             NProtoBuf::TConstField field(msg, fd);
             if (field.IsMessage()) {
                 for (size_t j = 0; j < field.Size(); ++j) {
-                    (this->*Func)(*field.template Get<NProtoBuf::Message>(j));
+                    Visit(*field.template Get<NProtoBuf::Message>(j));
                 }
             }
         }
-    }
-
-    void VisitAllFields(const NProtoBuf::Descriptor* descr, const NProtoBuf::Message& msg) {
-        VisitAllFieldsImpl<&TVisitor::Visit>(descr, msg);
     }
 
     void WriteComments() {
@@ -1264,30 +967,19 @@ private:
 
         //Cerr << str << "\n";
         auto currentScope = Scopes.back();
-        if (!SkipSpaceAfterUnaryOp) {
-            if (AfterLess && str == ">") {
-                Out(' ');
-            } else if (AfterDigits && str == ".") {
-                Out(' ');
-            } else if (OutColumn && (currentScope == EScope::DoubleQuestion || str != "?")
-                && str != ":" && str != "." && str != "," && str != ";" && str != ")" && str != "]"
-                && str != "}" && str != "|>" && str != "::" && !AfterNamespace && !AfterBracket
-                && !AfterInvokeExpr && !AfterDollarOrAt && !AfterDot && (!AfterQuestion || str != "?")
-                && (!InsideType || (str != "<" && str != ">" && str != "<>"))
-                && (!InsideType || !AfterLess)
-                && (!AfterKeyExpr || str != "[")
-                ) {
-                Out(' ');
-            }
-        }
-
-        SkipSpaceAfterUnaryOp = false;
-        if (AfterUnaryOp) {
-            if (str == "+" || str == "-" || str == "~") {
-                SkipSpaceAfterUnaryOp = true;
-            }
-
-            AfterUnaryOp = false;
+        if (AfterLess && str == ">") {
+            Out(' ');
+        } else if (AfterDigits && str == ".") {
+            Out(' ');
+        } else if (OutColumn && (currentScope == EScope::DoubleQuestion || str != "?")
+            && str != ":" && str != "." && str != "," && str != ";" && str != ")" && str != "]"
+            && str != "}" && str != "|>" && str != "::" && !AfterNamespace && !AfterBracket
+            && !AfterInvokeExpr && !AfterDollarOrAt && !AfterDot && (!AfterQuestion || str != "?")
+            && (!InsideType || (str != "<" && str != ">" && str != "<>"))
+            && (!InsideType || !AfterLess)
+            && (!AfterKeyExpr || str != "[")
+            ) {
+            Out(' ');
         }
 
         AfterInvokeExpr = false;
@@ -1309,44 +1001,10 @@ private:
 
         AfterDollarOrAt = (str == "$" || str == "@");
 
-        const auto& markedInfo = MarkedTokens[TokenIndex];
-        if (markedInfo.ClosingBracket) {
-            Y_ENSURE(!MarkTokenStack.empty());
-            auto beginTokenIndex = MarkTokenStack.back();
-            if (markedInfo.BracketForcedExpansion || ParsedTokens[beginTokenIndex].Line != ParsedTokens[TokenIndex].Line) {
-                // multiline
-                PopCurrentIndent();
-                NewLine();
-            }
-
-            MarkTokenStack.pop_back();
-        }
-
         Out(str);
         if (str == ";") {
             Out('\n');
         }
-
-        if (markedInfo.OpeningBracket) {
-            MarkTokenStack.push_back(TokenIndex);
-            if (markedInfo.BracketForcedExpansion || ParsedTokens[TokenIndex].Line != ParsedTokens[markedInfo.ClosingBracketIndex].Line) {
-                // multiline
-                PushCurrentIndent();
-                NewLine();
-            }
-        }
-
-        if (str == "," && !MarkTokenStack.empty()) {
-            const bool addNewline = 
-                (TokenIndex + 1 < ParsedTokens.size() && ParsedTokens[TokenIndex].Line != ParsedTokens[TokenIndex + 1].Line)
-             || (TokenIndex > 0 && ParsedTokens[TokenIndex - 1].Line != ParsedTokens[TokenIndex].Line);
-            // add line for trailing comma
-            if (addNewline) {
-                NewLine();
-            }
-        }
-
-        TokenIndex++;
     }
 
     void VisitIntoValuesSource(const TRule_into_values_source& msg) {
@@ -1402,7 +1060,10 @@ private:
         }
 
         Visit(msg.GetRule_named_single_source3());
-        VisitRepeated(msg.GetBlock4());
+        for (const auto& block : msg.GetBlock4()) {
+            Visit(block);
+        }
+
         if (msg.HasBlock5()) {
             NewLine();
             const auto& block5 = msg.GetBlock5();
@@ -1437,7 +1098,9 @@ private:
     void VisitReduceCore(const TRule_reduce_core& msg) {
         Visit(msg.GetToken1());
         Visit(msg.GetRule_named_single_source2());
-        VisitRepeated(msg.GetBlock3());
+        for (const auto& block : msg.GetBlock3()) {
+            Visit(block);
+        }
 
         if (msg.HasBlock4()) {
             NewLine();
@@ -1629,18 +1292,12 @@ private:
     void VisitNamedSingleSource(const TRule_named_single_source& msg) {
         Visit(msg.GetRule_single_source1());
         if (msg.HasBlock2()) {
-            const auto& matchRecognize = msg.GetBlock2();
-            //TODO handle MATCH_RECOGNIZE block
-            //https://st.yandex-team.ru/YQL-16186
-            Visit(matchRecognize);
-        }
-        if (msg.HasBlock3()) {
             NewLine();
             PushCurrentIndent();
-            const auto& block3 = msg.GetBlock3();
-            Visit(block3.GetBlock1());
-            if (block3.HasBlock2()) {
-                const auto& columns = block3.GetBlock2().GetRule_pure_column_list1();
+            const auto& block2 = msg.GetBlock2();
+            Visit(block2.GetBlock1());
+            if (block2.HasBlock2()) {
+                const auto& columns = block2.GetBlock2().GetRule_pure_column_list1();
                 Visit(columns.GetToken1());
                 NewLine();
                 PushCurrentIndent();
@@ -1659,10 +1316,10 @@ private:
             PopCurrentIndent();
         }
 
-        if (msg.HasBlock4()) {
+        if (msg.HasBlock3()) {
             NewLine();
             PushCurrentIndent();
-            Visit(msg.GetBlock4());
+            Visit(msg.GetBlock3());
             PopCurrentIndent();
         }
     }
@@ -1876,14 +1533,9 @@ private:
 
     void VisitWindowSpecification(const TRule_window_specification& msg) {
         Visit(msg.GetToken1());
+        NewLine();
+        PushCurrentIndent();
         const auto& details = msg.GetRule_window_specification_details2();
-        const bool needsNewline = details.HasBlock1() || details.HasBlock2() ||
-                                  details.HasBlock3() || details.HasBlock4();
-        if (needsNewline) {
-            NewLine();
-            PushCurrentIndent();
-        }
-        
         if (details.HasBlock1()) {
             NewLine();
             Visit(details.GetBlock1());
@@ -1904,11 +1556,8 @@ private:
             Visit(details.GetBlock4());
         }
 
-        if (needsNewline) {
-            NewLine();
-            PopCurrentIndent();
-        }
-
+        NewLine();
+        PopCurrentIndent();
         Visit(msg.GetToken3());
     }
 
@@ -1935,7 +1584,10 @@ private:
     void VisitLambdaBody(const TRule_lambda_body& msg) {
         PushCurrentIndent();
         NewLine();
-        VisitRepeated(msg.GetBlock1());
+        for (const auto& block : msg.GetBlock1()) {
+            Visit(block);
+        }
+
         for (const auto& block : msg.GetBlock2()) {
             Visit(block);
             NewLine();
@@ -1943,7 +1595,9 @@ private:
 
         Visit(msg.GetToken3());
         Visit(msg.GetRule_expr4());
-        VisitRepeated(msg.GetBlock5());
+        for (const auto& block : msg.GetBlock5()) {
+            Visit(block);
+        }
 
         PopCurrentIndent();
         NewLine();
@@ -2012,54 +1666,6 @@ private:
         VisitAllFields(TRule_key_expr::GetDescriptor(), msg);
     }
 
-    void VisitExistsExpr(const TRule_exists_expr& msg) {
-        VisitKeyword(msg.GetToken1());
-        VisitToken(msg.GetToken2());
-
-        NewLine();
-        PushCurrentIndent();
-
-        Visit(msg.GetBlock3());
-
-        PopCurrentIndent();
-        NewLine();
-
-        VisitToken(msg.GetToken4());
-    }
-
-    void VisitCaseExpr(const TRule_case_expr& msg) {
-        VisitKeyword(msg.GetToken1());
-        if (msg.HasBlock2()) {
-            Visit(msg.GetBlock2());
-        }
-        NewLine();
-        PushCurrentIndent();
-
-        for (const auto& block : msg.GetBlock3()) {
-            Visit(block);
-            NewLine();
-        }
-
-        Y_ENSURE(msg.HasBlock4());
-        const auto& block = msg.GetBlock4();
-        VisitKeyword(block.GetToken1());
-        Visit(block.GetRule_expr2());
-        PopCurrentIndent();
-        NewLine();
-        Visit(msg.GetToken5());
-    }
-
-    void VisitWhenExpr(const TRule_when_expr& msg) {
-        VisitKeyword(msg.GetToken1());
-        Visit(msg.GetRule_expr2());
-
-        NewLine();
-        PushCurrentIndent();
-        VisitKeyword(msg.GetToken3());
-        Visit(msg.GetRule_expr4());
-        PopCurrentIndent();
-    }
-
     void PushCurrentIndent() {
         CurrentIndent += OneIndent;
     }
@@ -2070,8 +1676,7 @@ private:
 
 private:
     const TStaticData& StaticData;
-    const TParsedTokenList& ParsedTokens;
-    const TParsedTokenList& Comments;
+    const TVector<NSQLTranslation::TParsedToken>& Comments;
     TStringBuilder SB;
     ui32 OutColumn = 0;
     ui32 OutLine = 1;
@@ -2080,26 +1685,16 @@ private:
     ui32 LastComment = 0;
     i32 CurrentIndent = 0;
     TVector<EScope> Scopes;
-    TMaybe<bool> AddLine;
     ui64 InsideType = 0;
     bool AfterNamespace = false;
     bool AfterBracket = false;
     bool AfterInvokeExpr = false;
-    bool AfterUnaryOp = false;
-    bool SkipSpaceAfterUnaryOp = false;
     bool AfterDollarOrAt = false;
     bool AfterDot = false;
     bool AfterDigits = false;
     bool AfterQuestion = false;
     bool AfterLess = false;
-    bool AfterKeyExpr = false; 
-    ui32 ForceExpandedLine = 0;
-    ui32 ForceExpandedColumn = 0;
-
-    ui32 TokenIndex = 0;
-    TMarkTokenStack MarkTokenStack;
-    TVector<TTokenInfo> MarkedTokens;
-    ui64 InsideExpr = 0;
+    bool AfterKeyExpr = false;
 };
 
 template <typename T>
@@ -2159,10 +1754,6 @@ TStaticData::TStaticData()
         {TRule_bitcast_expr::GetDescriptor(), MakeFunctor(&TVisitor::VisitBitCastExpr)},
         {TRule_ext_order_by_clause::GetDescriptor(), MakeFunctor(&TVisitor::VisitExtOrderByClause)},
         {TRule_key_expr::GetDescriptor(), MakeFunctor(&TVisitor::VisitKeyExpr)},
-        {TRule_define_action_or_subquery_body::GetDescriptor(), MakeFunctor(&TVisitor::VisitDefineActionOrSubqueryBody)},
-        {TRule_exists_expr::GetDescriptor(), MakeFunctor(&TVisitor::VisitExistsExpr)},
-        {TRule_case_expr::GetDescriptor(), MakeFunctor(&TVisitor::VisitCaseExpr)},
-        {TRule_when_expr::GetDescriptor(), MakeFunctor(&TVisitor::VisitWhenExpr)},
 
         {TRule_pragma_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitPragma)},
         {TRule_select_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitSelect)},
@@ -2190,20 +1781,9 @@ TStaticData::TStaticData()
         {TRule_create_group_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitCreateGroup)},
         {TRule_alter_group_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitAlterGroup)},
         {TRule_drop_role_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitDropRole)},
-        {TRule_upsert_object_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitUpsertObject)},
         {TRule_create_object_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitCreateObject)},
         {TRule_alter_object_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitAlterObject)},
         {TRule_drop_object_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitDropObject)},
-        {TRule_create_external_data_source_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitCreateExternalDataSource)},
-        {TRule_drop_external_data_source_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitDropExternalDataSource)},
-        {TRule_create_replication_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitCreateAsyncReplication)},
-        {TRule_drop_replication_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitDropAsyncReplication)},
-        {TRule_create_topic_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitCreateTopic)},
-        {TRule_alter_topic_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitAlterTopic)},
-        {TRule_drop_topic_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitDropTopic)},
-        {TRule_grant_permissions_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitGrantPermissions)},
-        {TRule_revoke_permissions_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitRevokePermissions)},
-        {TRule_alter_table_store_stmt::GetDescriptor(), MakeFunctor(&TVisitor::VisitAlterTableStore)}
         })
 {
     // ensure that all statements has a visitor
@@ -2280,16 +1860,11 @@ public:
             }
 
             TVector<NSQLTranslation::TParsedToken> comments;
-            TParsedTokenList parsedTokens, stmtTokens;
-            bool hasTrailingComments = false;
+            TParsedTokenList stmtTokens;
             auto onNextRawToken = [&](NSQLTranslation::TParsedToken&& token) {
                 stmtTokens.push_back(token);
                 if (token.Name == "COMMENT") {
                     comments.emplace_back(std::move(token));
-                    hasTrailingComments = true;
-                } else if (token.Name != "WS" && token.Name != "EOF") {
-                    parsedTokens.emplace_back(std::move(token));
-                    hasTrailingComments = false;
                 }
             };
 
@@ -2301,16 +1876,11 @@ public:
             auto message = NSQLTranslationV1::SqlAST(currentQuery, "Query", parserIssues, NSQLTranslation::SQL_MAX_PARSER_ERRORS, parsedSettings.AnsiLexer, parsedSettings.Arena);
             if (!message) {
                 finalFormattedQuery << currentQuery;
-                if (!currentQuery.EndsWith("\n")) {
-                    finalFormattedQuery << "\n";
-                }
-
                 continue;
             }
 
-            TVisitor visitor(parsedTokens, comments);
-            bool addLine;
-            auto currentFormattedQuery = visitor.Process(*message, addLine);
+            TVisitor visitor(comments);
+            auto currentFormattedQuery = visitor.Process(*message);
             TParsedTokenList stmtFormattedTokens;
             auto onNextFormattedToken = [&](NSQLTranslation::TParsedToken&& token) {
                 stmtFormattedTokens.push_back(token);
@@ -2325,17 +1895,8 @@ public:
                 return false;
             }
 
-            if (addLine && !finalFormattedQuery.Empty()) {
-                finalFormattedQuery << "\n";
-            }
-
             finalFormattedQuery << currentFormattedQuery;
-            if (parsedTokens.back().Name != "SEMICOLON") {
-                if (hasTrailingComments 
-                     && !comments.back().Content.EndsWith("\n")
-                     && comments.back().Content.StartsWith("--")) {
-                    finalFormattedQuery << "\n";
-                }
+            if (!currentFormattedQuery.EndsWith(";\n")) {
                 finalFormattedQuery << ";\n";
             }
         }
@@ -2401,37 +1962,6 @@ bool SqlFormatSimple(const TString& query, TString& formattedQuery, TString& err
         error = e.what();
         return false;
     }
-}
-
-THashSet<TString> GetKeywords() {
-    TString grammar;
-    Y_ENSURE(NResource::FindExact("SQLv1.g.in", &grammar));
-    THashSet<TString> res;
-    TVector<TString> lines;
-    Split(grammar, "\n", lines);
-    for (auto s : lines) {
-        s = StripString(s);
-        if (s.StartsWith("//")) {
-            continue;
-        }
-
-        auto pos1 = s.find(':');
-        auto pos2 = s.find(';');
-        if (pos1 == TString::npos || pos2 == TString::npos || pos2 < pos1 + 2) {
-            continue;
-        }
-
-        auto before = s.substr(0, pos1);
-        auto after = s.substr(pos1 + 1, pos2 - pos1 - 1);
-        SubstGlobal(after, " ", "");
-        SubstGlobal(after, "'", "");
-        if (after == before) {
-            //Cerr << before << "\n";
-            res.insert(before);
-        }
-    }
-
-    return res;
 }
 
 } // namespace NSQLFormat

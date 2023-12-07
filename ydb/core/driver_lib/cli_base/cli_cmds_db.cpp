@@ -8,7 +8,7 @@
 #include <ydb/public/sdk/cpp/client/resources/ydb_resources.h>
 
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 
 #include <ydb/public/api/grpc/ydb_table_v1.grpc.pb.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
@@ -805,7 +805,7 @@ public:
 
 class TClientCommandSchemaTableOptions : public TClientCommand {
 public:
-    NYdbGrpc::TGRpcClientConfig ClientConfig;
+    NGrpc::TGRpcClientConfig ClientConfig;
 
     TClientCommandSchemaTableOptions()
         : TClientCommand("options", {}, "Describe table options")
@@ -848,14 +848,14 @@ public:
             return -2;
         }
 
-        NYdbGrpc::TCallMeta meta;
+        NGrpc::TCallMeta meta;
         if (config.SecurityToken) {
             meta.Aux.push_back({NYdb::YDB_AUTH_TICKET_HEADER, config.SecurityToken});
         }
 
         Ydb::Operations::Operation response;
-        NYdbGrpc::TResponseCallback<Ydb::Table::DescribeTableOptionsResponse> responseCb =
-            [&res, &response](NYdbGrpc::TGrpcStatus &&grpcStatus, Ydb::Table::DescribeTableOptionsResponse &&resp) -> void {
+        NGrpc::TResponseCallback<Ydb::Table::DescribeTableOptionsResponse> responseCb =
+            [&res, &response](NGrpc::TGrpcStatus &&grpcStatus, Ydb::Table::DescribeTableOptionsResponse &&resp) -> void {
             res = (int)grpcStatus.GRpcStatusCode;
             if (!res) {
                 response.CopyFrom(resp.operation());
@@ -865,14 +865,14 @@ public:
         };
 
         {
-            NYdbGrpc::TGRpcClientLow clientLow;
+            NGrpc::TGRpcClientLow clientLow;
             Ydb::Table::DescribeTableOptionsRequest request;
             auto connection = clientLow.CreateGRpcServiceConnection<Ydb::Table::V1::TableService>(ClientConfig);
             connection->DoRequest(request, std::move(responseCb), &Ydb::Table::V1::TableService::Stub::AsyncDescribeTableOptions, meta);
         }
 
         if (!res) {
-            Y_ABORT_UNLESS(response.ready());
+            Y_VERIFY(response.ready());
             if (response.status() == Ydb::StatusIds::SUCCESS) {
                 Ydb::Table::DescribeTableOptionsResult result;
                 response.result().UnpackTo(&result);
@@ -918,7 +918,7 @@ public:
 
 class TClientCommandSchemaTableCopy : public TClientCommand {
 public:
-    NYdbGrpc::TGRpcClientConfig ClientConfig;
+    NGrpc::TGRpcClientConfig ClientConfig;
     TString DatabaseName;
     TVector<TString> SrcValues;
     TVector<TString> DstValues;
@@ -963,7 +963,7 @@ public:
             return -2;
         }
 
-        Y_ABORT_UNLESS(SrcValues.size() == DstValues.size());
+        Y_VERIFY(SrcValues.size() == DstValues.size());
         const ui32 itemCount = SrcValues.size();
 
         TVector<NYdb::NTable::TCopyItem> copyItems;

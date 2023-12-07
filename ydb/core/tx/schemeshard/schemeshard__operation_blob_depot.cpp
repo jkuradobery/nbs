@@ -28,10 +28,10 @@ namespace NKikimr::NSchemeShard {
 
                 TTxState *GetTxState(TOperationContext& context) const {
                     TTxState *txState = context.SS->FindTx(OperationId);
-                    Y_ABORT_UNLESS(txState);
-                    Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateBlobDepot || txState->TxType == TTxState::TxAlterBlobDepot ||
+                    Y_VERIFY(txState);
+                    Y_VERIFY(txState->TxType == TTxState::TxCreateBlobDepot || txState->TxType == TTxState::TxAlterBlobDepot ||
                         txState->TxType == TTxState::TxDropBlobDepot);
-                    Y_ABORT_UNLESS(txState->State == ExpectedState);
+                    Y_VERIFY(txState->State == ExpectedState);
                     return txState;
                 }
 
@@ -53,24 +53,24 @@ namespace NKikimr::NSchemeShard {
                     txState->ClearShardsInProgress();
 
                     auto path = TPath::Init(txState->TargetPathId, context.SS);
-                    Y_ABORT_UNLESS(path.IsResolved());
+                    Y_VERIFY(path.IsResolved());
 
                     auto blobDepotInfo = context.SS->BlobDepots[path->PathId];
-                    Y_ABORT_UNLESS(blobDepotInfo);
+                    Y_VERIFY(blobDepotInfo);
 
                     for (auto& shard : txState->Shards) {
                         auto shardIdx = shard.Idx;
                         blobDepotInfo->BlobDepotShardIdx = shard.Idx;
                         auto tabletId = context.SS->ShardInfos[shardIdx].TabletID;
                         blobDepotInfo->BlobDepotTabletId = tabletId;
-                        Y_ABORT_UNLESS(shard.TabletType == ETabletType::BlobDepot);
+                        Y_VERIFY(shard.TabletType == ETabletType::BlobDepot);
                         auto event = std::make_unique<TEvBlobDepot::TEvApplyConfig>(static_cast<ui64>(OperationId.GetTxId()));
                         event->Record.MutableConfig()->CopyFrom(blobDepotInfo->Description.GetConfig());
                         context.OnComplete.BindMsgToPipe(OperationId, tabletId, shardIdx, event.release());
                         txState->ShardsInProgress.insert(shardIdx);
                     }
 
-                    Y_ABORT_UNLESS(txState->ShardsInProgress);
+                    Y_VERIFY(txState->ShardsInProgress);
                     return false;
                 }
 
@@ -80,7 +80,7 @@ namespace NKikimr::NSchemeShard {
                             << " at schemeshard# " << context.SS->SelfTabletId());
 
                     TTxState *txState = GetTxState(context);
-                    Y_ABORT_UNLESS(txState->ShardsInProgress);
+                    Y_VERIFY(txState->ShardsInProgress);
 
                     const auto& record = ev->Get()->Record;
                     const TTabletId tabletId(record.GetTabletId());
@@ -144,7 +144,7 @@ namespace NKikimr::NSchemeShard {
                 : TSubOperation(id, state)
                 , Action(action)
             {
-                Y_ABORT_UNLESS(state != TTxState::Invalid);
+                Y_VERIFY(state != TTxState::Invalid);
                 SetState(state);
             }
 
@@ -158,7 +158,7 @@ namespace NKikimr::NSchemeShard {
                     case EAction::Alter: return ProposeAlter(owner, context);
                     case EAction::Drop: return ProposeDrop(owner, context);
                 }
-                Y_ABORT("unreachable code");
+                Y_FAIL("unreachable code");
             }
 
             void AbortPropose(TOperationContext& context) override {
@@ -166,7 +166,7 @@ namespace NKikimr::NSchemeShard {
                     << " OperationId# " << OperationId
                     << " at schemeshard# " << context.SS->SelfTabletId());
 
-                Y_ABORT();
+                Y_FAIL();
             }
 
             void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -195,7 +195,7 @@ namespace NKikimr::NSchemeShard {
                 };
 
                 const auto it = stateMachine.find({Action, GetState()});
-                Y_ABORT_UNLESS(it != stateMachine.end());
+                Y_VERIFY(it != stateMachine.end());
 
                 LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "TBlobDepot::StateDone"
                     << " OperationId# " << OperationId
@@ -360,7 +360,7 @@ namespace NKikimr::NSchemeShard {
                 context.SS->PersistUpdateNextPathId(db);
                 context.SS->PersistUpdateNextShardIdx(db);
                 for (auto shard : txState.Shards) {
-                    Y_ABORT_UNLESS(shard.Operation == TTxState::CreateParts);
+                    Y_VERIFY(shard.Operation == TTxState::CreateParts);
                     context.SS->PersistChannelsBinding(db, shard.Idx, context.SS->ShardInfos[shard.Idx].BindedChannels);
                     context.SS->PersistShardMapping(db, shard.Idx, InvalidTabletId, pathId, OperationId.GetTxId(), shard.TabletType);
                 }
@@ -404,7 +404,7 @@ namespace NKikimr::NSchemeShard {
             };
 
             TTxState::ETxState NextState(TTxState::ETxState) const override {
-                Y_ABORT("unreachable");
+                Y_FAIL("unreachable");
             }
 
             TSubOperationState::TPtr SelectStateFunc(TTxState::ETxState state) override {
@@ -417,20 +417,20 @@ namespace NKikimr::NSchemeShard {
                     {{EAction::Create, TTxState::Done}, TFactoryImpl<TDone>()},
                 };
 
-                Y_ABORT_UNLESS(state != TTxState::Invalid);
+                Y_VERIFY(state != TTxState::Invalid);
                 const auto it = FactoryMap.find({Action, state});
-                Y_ABORT_UNLESS(it != FactoryMap.end());
+                Y_VERIFY(it != FactoryMap.end());
                 return it->second(OperationId);
             }
         };
 
     }
 
-    ISubOperation::TPtr CreateNewBlobDepot(TOperationId id, const TTxTransaction& tx) { return MakeIntrusive<TBlobDepot>(EAction::Create, id, tx); }
-    ISubOperation::TPtr CreateNewBlobDepot(TOperationId id, TTxState::ETxState state) { return MakeIntrusive<TBlobDepot>(EAction::Create, id, state); }
-    ISubOperation::TPtr CreateAlterBlobDepot(TOperationId id, const TTxTransaction& tx) { return MakeIntrusive<TBlobDepot>(EAction::Alter, id, tx); }
-    ISubOperation::TPtr CreateAlterBlobDepot(TOperationId id, TTxState::ETxState state) { return MakeIntrusive<TBlobDepot>(EAction::Alter, id, state); }
-    ISubOperation::TPtr CreateDropBlobDepot(TOperationId id, const TTxTransaction& tx) { return MakeIntrusive<TBlobDepot>(EAction::Drop, id, tx); }
-    ISubOperation::TPtr CreateDropBlobDepot(TOperationId id, TTxState::ETxState state) { return MakeIntrusive<TBlobDepot>(EAction::Drop, id, state); }
+    ISubOperationBase::TPtr CreateNewBlobDepot(TOperationId id, const TTxTransaction& tx) { return MakeIntrusive<TBlobDepot>(EAction::Create, id, tx); }
+    ISubOperationBase::TPtr CreateNewBlobDepot(TOperationId id, TTxState::ETxState state) { return MakeIntrusive<TBlobDepot>(EAction::Create, id, state); }
+    ISubOperationBase::TPtr CreateAlterBlobDepot(TOperationId id, const TTxTransaction& tx) { return MakeIntrusive<TBlobDepot>(EAction::Alter, id, tx); }
+    ISubOperationBase::TPtr CreateAlterBlobDepot(TOperationId id, TTxState::ETxState state) { return MakeIntrusive<TBlobDepot>(EAction::Alter, id, state); }
+    ISubOperationBase::TPtr CreateDropBlobDepot(TOperationId id, const TTxTransaction& tx) { return MakeIntrusive<TBlobDepot>(EAction::Drop, id, tx); }
+    ISubOperationBase::TPtr CreateDropBlobDepot(TOperationId id, TTxState::ETxState state) { return MakeIntrusive<TBlobDepot>(EAction::Drop, id, state); }
 
 }

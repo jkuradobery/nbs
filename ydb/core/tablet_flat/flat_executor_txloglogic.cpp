@@ -7,7 +7,6 @@
 #include "logic_redo_entry.h"
 #include "logic_redo_queue.h"
 #include "probes.h"
-#include "util_string.h"
 #include <ydb/core/tablet_flat/flat_executor.pb.h>
 #include <util/system/sanitizers.h>
 
@@ -60,7 +59,7 @@ bool TLogicRedo::TerminateTransaction(TAutoPtr<TSeat> seat, const TActorContext 
     if (CompletionQueue.empty()) {
         const TTxType txType = seat->Self->GetTxType();
 
-        seat->Terminate(seat->TerminationReason, ctx.MakeFor(ownerID));
+        seat->Self->Terminate(seat->TerminationReason, ctx.MakeFor(ownerID));
         Counters->Cumulative()[TExecutorCounters::TX_TERMINATED].Increment(1);
         if (AppTxCounters && txType != UnknownTxType)
             AppTxCounters->TxCumulative(txType, COUNTER_TT_TERMINATED).Increment(1);
@@ -79,7 +78,7 @@ void CompleteRoTransaction(TAutoPtr<TSeat> seat, const TActorContext &ownerCtx, 
 
     THPTimer completeTimer;
     LWTRACK(TransactionCompleteBegin, seat->Self->Orbit, seat->UniqID);
-    seat->Complete(ownerCtx, false);
+    seat->Complete(ownerCtx);
     LWTRACK(TransactionCompleteEnd, seat->Self->Orbit, seat->UniqID);
 
     const ui64 completeTimeus = ui64(1000000. * completeTimer.Passed());
@@ -112,7 +111,7 @@ void TLogicRedo::FlushBatchedLog()
         CommitManager->Commit(commit);
     }
 
-    Y_ABORT_UNLESS(Batch->Commit == nullptr, "Batch still has acquired commit");
+    Y_VERIFY(Batch->Commit == nullptr, "Batch still has acquired commit");
 }
 
 TLogicRedo::TCommitRWTransactionResult TLogicRedo::CommitRWTransaction(
@@ -120,7 +119,7 @@ TLogicRedo::TCommitRWTransactionResult TLogicRedo::CommitRWTransaction(
 {
     seat->CommitTimer.Reset();
 
-    Y_ABORT_UNLESS(force || !(change.Scheme || change.Annex));
+    Y_VERIFY(force || !(change.Scheme || change.Annex));
 
     const TTxType txType = seat->Self->GetTxType();
 
@@ -145,7 +144,7 @@ TLogicRedo::TCommitRWTransactionResult TLogicRedo::CommitRWTransaction(
     if (force || MaxItemsToBatch < 2 || change.Redo.size() > MaxBytesToBatch) {
         FlushBatchedLog();
 
-        auto commit = CommitManager->Begin(true, ECommit::Redo, seat->GetTxTraceId());
+        auto commit = CommitManager->Begin(true, ECommit::Redo);
 
         commit->PushTx(seat.Get());
         CompletionQueue.push_back({ seat, commit->Step });
@@ -170,30 +169,21 @@ TLogicRedo::TCommitRWTransactionResult TLogicRedo::CommitRWTransaction(
         }
 
         /* Sometimes clang drops the last emplace_back above if move was used
-            before for data field. This hacky Y_ABORT_UNLESS prevents this and check
+            before for data field. This hacky Y_VERIFY prevents this and check
             that emplace always happens.
          */
 
-        Y_ABORT_UNLESS(was + change.Annex.size() == commit->GcDelta.Created.size());
+        Y_VERIFY(was + change.Annex.size() == commit->GcDelta.Created.size());
 
         return { commit, false };
     } else {
         if (Batch->Bytes + change.Redo.size() > MaxBytesToBatch)
             FlushBatchedLog();
 
-        if (!Batch->Commit) {
-            Batch->Commit = CommitManager->Begin(false, ECommit::Redo, seat->GetTxTraceId());
-        } else {
-            i64 batchSize = Batch->Bodies.size() + 1;
+        if (!Batch->Commit)
+            Batch->Commit = CommitManager->Begin(false, ECommit::Redo);
 
-            Batch->Commit->FirstTx->TxSpan.Attribute("BatchSize", batchSize);
-
-            seat->TxSpan.Attribute("Batched", true);
-            seat->TxSpan.Link(Batch->Commit->FirstTx->GetTxTraceId(), {});
-        }
-        
         Batch->Commit->PushTx(seat.Get());
-
         CompletionQueue.push_back({ seat, Batch->Commit->Step });
 
         Batch->Add(std::move(change.Redo), change.Affects);
@@ -217,9 +207,6 @@ void TLogicRedo::MakeLogEntry(TLogCommit &commit, TString redo, TArrayRef<const 
         Counters->Cumulative()[TMonCo::LOG_REDO_WRITTEN].Increment(coded.size());
 
         if (embed && coded.size() <= MaxSizeToEmbedInLog) {
-            // Note: Encode reserves MaxCompressedLength bytes
-            NUtil::ShrinkToFit(coded);
-
             commit.Embedded = std::move(coded);
             Queue->Push({ Cookies->Gen, commit.Step }, affects, commit.Embedded);
         } else {
@@ -232,11 +219,11 @@ void TLogicRedo::MakeLogEntry(TLogCommit &commit, TString redo, TArrayRef<const 
 }
 
 ui64 TLogicRedo::Confirm(ui32 step, const TActorContext &ctx, const TActorId &ownerId) {
-    Y_ABORT_UNLESS(!CompletionQueue.empty(), "t: %" PRIu64
+    Y_VERIFY(!CompletionQueue.empty(), "t: %" PRIu64
         " non-expected confirmation %" PRIu32
         ", prev %" PRIu32, Cookies->Tablet, step, PrevConfirmedStep);
 
-    Y_ABORT_UNLESS(CompletionQueue[0].Step == step, "t: %" PRIu64
+    Y_VERIFY(CompletionQueue[0].Step == step, "t: %" PRIu64
         " inconsistent confirmation head: %" PRIu32
         ", step: %" PRIu32
         ", queue size: %" PRISZT
@@ -260,7 +247,7 @@ ui64 TLogicRedo::Confirm(ui32 step, const TActorContext &ctx, const TActorId &ow
         ++confirmedTransactions;
         THPTimer completeTimer;
         LWTRACK(TransactionCompleteBegin, seat->Self->Orbit, seat->UniqID);
-        entry.InFlyRWTransaction->Complete(ownerCtx, true);
+        entry.InFlyRWTransaction->Complete(ownerCtx);
         LWTRACK(TransactionCompleteEnd, seat->Self->Orbit, seat->UniqID);
 
         const ui64 completeTimeus = ui64(1000000. * completeTimer.Passed());
@@ -280,7 +267,7 @@ ui64 TLogicRedo::Confirm(ui32 step, const TActorContext &ctx, const TActorId &ow
 
         for (auto &x : entry.WaitingTerminatedTransactions) {
             const TTxType roTxType = x->Self->GetTxType();
-            x->Terminate(x->TerminationReason, ownerCtx);
+            x->Self->Terminate(x->TerminationReason, ownerCtx);
 
             Counters->Cumulative()[TExecutorCounters::TX_TERMINATED].Increment(1);
             if (AppTxCounters && roTxType != UnknownTxType)
@@ -297,7 +284,7 @@ ui64 TLogicRedo::Confirm(ui32 step, const TActorContext &ctx, const TActorId &ow
 
 void TLogicRedo::SnapToLog(NKikimrExecutorFlat::TLogSnapshot &snap)
 {
-    Y_ABORT_UNLESS(Batch->Commit == nullptr);
+    Y_VERIFY(Batch->Commit == nullptr);
 
     Queue->Flush(snap);
 

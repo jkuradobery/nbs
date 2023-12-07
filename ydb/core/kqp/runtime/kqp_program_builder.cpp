@@ -25,7 +25,8 @@ TType* GetRowType(const TProgramBuilder& builder, const TArrayRef<TKqpTableColum
                 break;
             }
             case NKikimr::NScheme::NTypeIds::Pg: {
-                Y_ABORT_UNLESS(column.TypeDesc, "No pg type description");
+                Y_VERIFY(column.TypeDesc, "No pg type description");
+                Y_VERIFY(!column.NotNull, "pg not null types are not allowed");
                 type = TPgType::Create(NPg::PgTypeIdFromTypeDesc(column.TypeDesc), builder.GetTypeEnvironment());
                 break;
             }
@@ -130,33 +131,7 @@ TType* MakeWideFlowType(TProgramBuilder& builder, TStructType* rowType) {
         tupleItems.push_back(rowType->GetMemberType(i));
     }
 
-    return builder.NewFlowType(builder.NewMultiType(tupleItems));
-}
-
-TType* MakeBlockType(TProgramBuilder& builder, TStructType* rowType) {
-    std::vector<TType*> tupleItems;
-    tupleItems.reserve(rowType->GetMembersCount());
-    for (ui32 i = 0; i < rowType->GetMembersCount(); ++i) {
-        tupleItems.push_back(rowType->GetMemberType(i));
-    }
-
-    return builder.NewBlockType(builder.NewTupleType(tupleItems), TBlockType::EShape::Many);
-}
-
-EJoinKind GetIndexLookupJoinKind(const TString& joinKind) {
-    if (joinKind == "Inner") {
-        return EJoinKind::Inner;
-    } else if (joinKind == "Left") {
-        return EJoinKind::Left;
-    } else if (joinKind == "LeftOnly") {
-        return EJoinKind::LeftOnly;
-    } else if (joinKind == "RightSemi") {
-        return EJoinKind::RightSemi;
-    } else if (joinKind == "LeftSemi") {
-        return EJoinKind::LeftSemi;
-    } else {
-        MKQL_ENSURE_S(false, "Unexpected join kind: " << joinKind);
-    }
+    return builder.NewFlowType(builder.NewTupleType(tupleItems));
 }
 
 } // namespace
@@ -190,7 +165,8 @@ TRuntimeNode TKqpProgramBuilder::KqpWideReadTable(const TTableId& tableId, const
 
     MKQL_ENSURE_S(returnType);
     MKQL_ENSURE_S(returnType->IsFlow());
-    GetWideComponents(AS_TYPE(TFlowType, returnType));
+    const auto itemType = AS_TYPE(TFlowType, returnType)->GetItemType();
+    MKQL_ENSURE_S(itemType->IsTuple());
 
     TCallableBuilder builder(Env, __func__, returnType);
     builder.Add(BuildTableIdLiteral(tableId, *this));
@@ -213,30 +189,8 @@ TRuntimeNode TKqpProgramBuilder::KqpWideReadTableRanges(const TTableId& tableId,
     } else {
         MKQL_ENSURE_S(returnType);
         MKQL_ENSURE_S(returnType->IsFlow());
-        GetWideComponents(AS_TYPE(TFlowType, returnType));
-    }
-
-    TCallableBuilder builder(Env, __func__, returnType);
-    builder.Add(BuildTableIdLiteral(tableId, *this));
-    builder.Add(BuildKeyRangesNode(*this, ranges));
-    builder.Add(BuildColumnTags(*this, columns));
-    builder.Add(ranges.ItemsLimit);
-    builder.Add(NewDataLiteral(ranges.Reverse));
-
-    return TRuntimeNode(builder.Build(), false);
-}
-
-TRuntimeNode TKqpProgramBuilder::KqpBlockReadTableRanges(const TTableId& tableId, const TKqpKeyRanges& ranges,
-    const TArrayRef<TKqpTableColumn>& columns, TType* returnType)
-{
-    if (returnType == nullptr) {
-        auto rowType = GetRowType(*this, columns);
-        auto structType = AS_TYPE(TStructType, rowType);
-        returnType = MakeBlockType(*this, structType);
-    } else {
-        MKQL_ENSURE_S(returnType);
-        MKQL_ENSURE_S(returnType->IsFlow());
-        GetWideComponents(AS_TYPE(TFlowType, returnType));
+        const auto itemType = AS_TYPE(TFlowType, returnType)->GetItemType();
+        MKQL_ENSURE_S(itemType->IsTuple());
     }
 
     TCallableBuilder builder(Env, __func__, returnType);
@@ -268,7 +222,7 @@ TRuntimeNode TKqpProgramBuilder::KqpLookupTable(const TTableId& tableId, const T
 }
 
 TRuntimeNode TKqpProgramBuilder::KqpUpsertRows(const TTableId& tableId, const TRuntimeNode& rows,
-    const TArrayRef<TKqpTableColumn>& upsertColumns, bool isUpdate)
+    const TArrayRef<TKqpTableColumn>& upsertColumns)
 {
     auto streamType = AS_TYPE(TStreamType, rows.GetStaticType());
     auto rowType = AS_TYPE(TStructType, streamType->GetItemType());
@@ -279,7 +233,7 @@ TRuntimeNode TKqpProgramBuilder::KqpUpsertRows(const TTableId& tableId, const TR
     builder.Add(BuildTableIdLiteral(tableId, *this));
     builder.Add(rows);
     builder.Add(BuildColumnIndicesMap(*this, *rowType, upsertColumns));
-    builder.Add(this->NewDataLiteral<bool>(isUpdate));
+
     return TRuntimeNode(builder.Build(), false);
 }
 
@@ -327,39 +281,6 @@ TRuntimeNode TKqpProgramBuilder::KqpEnsure(TRuntimeNode value, TRuntimeNode pred
     callableBuilder.Add(predicate);
     callableBuilder.Add(issueCode);
     callableBuilder.Add(message);
-    return TRuntimeNode(callableBuilder.Build(), false);
-}
-
-TRuntimeNode TKqpProgramBuilder::KqpIndexLookupJoin(const TRuntimeNode& input, const TString& joinType,
-    const TString& leftLabel, const TString& rightLabel) {
-
-    auto inputRowItems = AS_TYPE(TTupleType, AS_TYPE(TStreamType, input.GetStaticType())->GetItemType());
-    MKQL_ENSURE(inputRowItems->GetElementsCount() == 2, "Expected 2 elements");
-
-    auto leftRowType = AS_TYPE(TStructType, inputRowItems->GetElementType(0));
-    auto rightRowType = AS_TYPE(TStructType, AS_TYPE(TOptionalType, inputRowItems->GetElementType(1))->GetItemType());
-
-    TStructTypeBuilder rowTypeBuilder(GetTypeEnvironment());
-
-    for (ui32 i = 0; i < leftRowType->GetMembersCount(); ++i) {
-        TString newMemberName = leftLabel.empty() ? TString(leftRowType->GetMemberName(i))
-            : TString::Join(leftLabel, ".", leftRowType->GetMemberName(i));
-        rowTypeBuilder.Add(newMemberName, leftRowType->GetMemberType(i));
-    }
-
-    for (ui32 i = 0; i < rightRowType->GetMembersCount(); ++i) {
-        TString newMemberName = rightLabel.empty() ? TString(rightRowType->GetMemberName(i))
-            : TString::Join(rightLabel, ".", rightRowType->GetMemberName(i));
-        rowTypeBuilder.Add(newMemberName, rightRowType->GetMemberType(i));
-    }
-
-    auto returnType = NewStreamType(rowTypeBuilder.Build());
-
-    TCallableBuilder callableBuilder(Env, __func__, returnType);
-    callableBuilder.Add(input);
-    callableBuilder.Add(NewDataLiteral<ui32>((ui32)GetIndexLookupJoinKind(joinType)));
-    callableBuilder.Add(NewDataLiteral<ui64>(leftRowType->GetMembersCount()));
-    callableBuilder.Add(NewDataLiteral<ui64>(rightRowType->GetMembersCount()));
     return TRuntimeNode(callableBuilder.Build(), false);
 }
 

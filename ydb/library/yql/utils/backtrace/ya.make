@@ -10,15 +10,11 @@ IF (OS_LINUX AND ARCH_X86_64)
         symbolizer_linux.cpp
     )
     PEERDIR(
-        ydb/library/yql/utils/backtrace/fake_llvm_symbolizer
         contrib/libs/libunwind
     )
 ELSE()
     SRCS(
         symbolizer_dummy.cpp
-    )
-    PEERDIR(
-        ydb/library/yql/utils/backtrace/fake_llvm_symbolizer
     )
 ENDIF()
 
@@ -28,12 +24,3 @@ PEERDIR(
 )
 
 END()
-
-RECURSE(
-    fake_llvm_symbolizer
-)
-
-RECURSE_FOR_TESTS(
-    ut
-)
-

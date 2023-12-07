@@ -1,10 +1,8 @@
-# External build system generator for opensource export relies on the name system_allocator.
-# Change it carefully.
-LIBRARY(system_allocator)
-
-ALLOCATOR_IMPL()
+LIBRARY()
 
 NO_UTIL()
+
+DISABLE(OPENSOURCE_EXPORT)
 
 PEERDIR(
     library/cpp/malloc/api

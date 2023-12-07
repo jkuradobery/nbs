@@ -270,6 +270,22 @@ namespace NTypeAnnImpl {
             }
 
             auto structType = itemType->Cast<TStructExprType>();
+            if (!options.KeepSysColumns && AnyOf(structType->GetItems(), [](const TItemExprType* structItem) { return structItem->GetName().StartsWith("_yql_sys_"); })) {
+                if (updatedChildren.empty()) {
+                    updatedChildren = input->ChildrenList();
+                }
+                updatedChildren[idx] = ctx.Expr.ChangeChild(listPair, 0,
+                    ctx.Expr.Builder(list.Pos())
+                        .Callable("RemovePrefixMembers")
+                            .Add(0, listPair.HeadPtr())
+                            .List(1)
+                                .Atom(0, "_yql_sys_", TNodeFlags::Default)
+                            .Seal()
+                        .Seal()
+                        .Build()
+                    );
+                continue;
+            }
             if (auto err = labels.Add(ctx.Expr, *listPair.Child(1), structType)) {
                 ctx.Expr.AddError(*err);
                 ctx.Expr.AddError(TIssue(
@@ -335,10 +351,6 @@ namespace NTypeAnnImpl {
             }
         }
 
-        if (!EnsureTupleOfAtoms(*input->Child(4), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
         const TStructExprType* rightStructType = nullptr;
         const TTupleExprType* rightTupleType = nullptr;
         if (joinKind != "LeftSemi" && joinKind != "LeftOnly") {
@@ -361,8 +373,8 @@ namespace NTypeAnnImpl {
             }
         }
 
-        auto& leftRenames = *input->Child(5);
-        auto& rightRenames = *input->Child(6);
+        const auto& leftRenames = *input->Child(4);
+        const auto& rightRenames = *input->Child(5);
         if (!EnsureTupleOfAtoms(leftRenames, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
@@ -474,9 +486,17 @@ namespace NTypeAnnImpl {
     }
 
     IGraphTransformer::TStatus MapJoinCoreWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        Y_UNUSED(output);
-        
-        if (!EnsureArgsCount(*input, 7, ctx.Expr)) {
+        if (input->ChildrenSize() == 7U) {
+            // Drop unused argument: right key.
+            auto children = input->ChildrenList();
+            auto it = children.cbegin();
+            std::advance(it, 4U);
+            children.erase(it);
+            output = ctx.Expr.ChangeChildren(*input, std::move(children));
+            return IGraphTransformer::TStatus::Repeat;
+        }
+
+        if (!EnsureArgsCount(*input, 6, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
@@ -502,15 +522,17 @@ namespace NTypeAnnImpl {
         }
     }
 
-    IGraphTransformer::TStatus GraceJoinCoreWrapperImp(const TExprNode::TPtr& input, const TMultiExprType& leftTupleType, const TMultiExprType& rightTupleType, TContext& ctx, int shift) {
-        if (!EnsureAtom(*input->Child(shift), ctx.Expr)) {
+
+    IGraphTransformer::TStatus GraceJoinCoreWrapperImp(const TExprNode::TPtr& input, const TMultiExprType& leftTupleType, const TMultiExprType& rightTupleType, TContext& ctx) {
+
+        if (!EnsureAtom(*input->Child(2), ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
-        const auto joinKind = input->Child(shift);
+        const auto joinKind = input->Child(2)->Content();
 
-        auto& leftKeyColumns = *input->Child(shift + 1);
-        auto& rightKeyColumns = *input->Child(shift + 2);
+        const auto& leftKeyColumns = *input->Child(3);
+        const auto& rightKeyColumns = *input->Child(4);
 
         if (!EnsureTupleOfAtoms(leftKeyColumns, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
@@ -519,10 +541,10 @@ namespace NTypeAnnImpl {
         if (!EnsureTupleOfAtoms(rightKeyColumns, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
+      
 
-
-        auto& leftRenames = *input->Child(shift + 3);
-        auto& rightRenames = *input->Child(shift + 4);
+        const auto& leftRenames = *input->Child(5);
+        const auto& rightRenames = *input->Child(6);
 
         if (!EnsureTupleOfAtoms(leftRenames, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
@@ -570,7 +592,7 @@ namespace NTypeAnnImpl {
             }
 
             auto columnType = GetFieldType(leftTupleType, *oldPos);
-            if (joinKind->IsAtom({"Right", "Full", "Exclusion"}) && !columnType->IsOptionalOrNull()) {
+            if ((joinKind == "Right" || joinKind == "Full" || joinKind == "Exclusion" ) && !columnType->IsOptionalOrNull()) {
                 columnType = ctx.Expr.MakeType<TOptionalExprType>(columnType);
             }
 
@@ -580,7 +602,7 @@ namespace NTypeAnnImpl {
             } else {
                     resultItems[index] = columnType;
             }
-
+            
         }
 
         for (ui32 i = 0; i < rightRenames.ChildrenSize(); i += 2) {
@@ -604,7 +626,7 @@ namespace NTypeAnnImpl {
             }
 
             auto columnType =  GetFieldType(rightTupleType, *oldPos);
-            if (joinKind->IsAtom({"Left", "Full", "Exclusion"}) && !columnType->IsOptionalOrNull()) {
+            if ((joinKind == "Left" || joinKind == "Full" || joinKind == "Exclusion" ) && !columnType->IsOptionalOrNull()) {
                 columnType = ctx.Expr.MakeType<TOptionalExprType>(columnType);
             }
 
@@ -614,13 +636,7 @@ namespace NTypeAnnImpl {
             } else {
                 resultItems[index] = columnType;
             }
-        }
-
-        for (auto i = 0U; i < input->Tail().ChildrenSize(); ++i) {
-            if (const auto& flag = *input->Tail().Child(i); !flag.IsAtom({"LeftAny", "RightAny"})) {
-                ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(flag.Pos()), TStringBuilder() << "Unsupported grace join option: " << flag.Content()));
-                return IGraphTransformer::TStatus::Error;
-            }
+            
         }
 
         const auto resultItemType = ctx.Expr.MakeType<TMultiExprType>(resultItems);
@@ -631,8 +647,11 @@ namespace NTypeAnnImpl {
         return IGraphTransformer::TStatus::Ok;
     }
 
+
     IGraphTransformer::TStatus GraceJoinCoreWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        if (!EnsureArgsCount(*input, 8, ctx.Expr)) {
+        Y_UNUSED(output);
+ 
+        if (!EnsureArgsCount(*input, 7, ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
@@ -647,40 +666,17 @@ namespace NTypeAnnImpl {
         }
 
         if ( !EnsureWideFlowType(*input->Child(0), ctx.Expr) ) {
-            return IGraphTransformer::TStatus::Error;
+            return IGraphTransformer::TStatus::Error;           
         }
 
         if ( !EnsureWideFlowType(*input->Child(1), ctx.Expr) ) {
-            return IGraphTransformer::TStatus::Error;
+            return IGraphTransformer::TStatus::Error;           
         }
 
-        if (const auto status = NormalizeTupleOfAtoms(input, 7U, output, ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
-            return status;
-        }
+         return GraceJoinCoreWrapperImp(input, *leftItemType->Cast<TMultiExprType>(), *rightItemType->Cast<TMultiExprType>(), ctx);
 
-        return GraceJoinCoreWrapperImp(input, *leftItemType->Cast<TMultiExprType>(), *rightItemType->Cast<TMultiExprType>(), ctx, 2);
     }
 
-    IGraphTransformer::TStatus GraceSelfJoinCoreWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        if (!EnsureArgsCount(*input, 7, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        const TTypeAnnotationNode* leftItemType = nullptr;
-        if (!EnsureNewSeqType<true>(*input->Child(0), ctx.Expr, &leftItemType)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if ( !EnsureWideFlowType(*input->Child(0), ctx.Expr) ) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (const auto status = NormalizeTupleOfAtoms(input, 6U, output, ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
-            return status;
-        }
-
-        return GraceJoinCoreWrapperImp(input, *leftItemType->Cast<TMultiExprType>(), *leftItemType->Cast<TMultiExprType>(), ctx, 1);
-    }
 
     template<class TInputType>
     IGraphTransformer::TStatus CommonJoinCoreWrapperT(const TExprNode::TPtr& input, const TInputType& inputItemType, TContext& ctx) {

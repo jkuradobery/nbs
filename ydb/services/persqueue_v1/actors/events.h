@@ -8,7 +8,6 @@
 #include <ydb/core/persqueue/percentile_counter.h>
 
 #include <ydb/public/api/protos/persqueue_error_codes_v1.pb.h>
-#include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
 #include <ydb/services/lib/actors/type_definitions.h>
 
@@ -64,7 +63,6 @@ struct TEvPQProxy {
         EvTopicUpdateToken,
         EvCommitRange,
         EvRequestTablet,
-        EvPartitionLocationResponse,
         EvEnd
     };
 
@@ -325,7 +323,7 @@ struct TEvPQProxy {
     };
 
     struct TEvStartRead : public NActors::TEventLocal<TEvStartRead, EvStartRead> {
-        TEvStartRead(ui64 id, ui64 readOffset, const TMaybe<ui64>& commitOffset, bool verifyReadOffset)
+        TEvStartRead(ui64 id, ui64 readOffset, ui64 commitOffset, bool verifyReadOffset)
             : AssignId(id)
             , ReadOffset(readOffset)
             , CommitOffset(commitOffset)
@@ -335,7 +333,7 @@ struct TEvPQProxy {
 
         const ui64 AssignId;
         ui64 ReadOffset;
-        TMaybe<ui64> CommitOffset;
+        ui64 CommitOffset;
         bool VerifyReadOffset;
         ui64 Generation;
     };
@@ -377,8 +375,7 @@ struct TEvPQProxy {
     };
 
     struct TEvLockPartition : public NActors::TEventLocal<TEvLockPartition, EvLockPartition> {
-        explicit TEvLockPartition(const ui64 readOffset, const TMaybe<ui64>& commitOffset, bool verifyReadOffset,
-                                   bool startReading)
+        explicit TEvLockPartition(const ui64 readOffset, const ui64 commitOffset, bool verifyReadOffset, bool startReading)
             : ReadOffset(readOffset)
             , CommitOffset(commitOffset)
             , VerifyReadOffset(verifyReadOffset)
@@ -386,7 +383,7 @@ struct TEvPQProxy {
         { }
 
         ui64 ReadOffset;
-        TMaybe<ui64> CommitOffset;
+        ui64 CommitOffset;
         bool VerifyReadOffset;
         bool StartReading;
     };
@@ -446,54 +443,6 @@ struct TEvPQProxy {
 
         ui64 TabletId;
     };
-
-    struct TLocalResponseBase {
-        Ydb::StatusIds::StatusCode Status;
-        NYql::TIssues Issues;
-    };
-
-    struct TPartitionLocationInfo {
-        ui64 PartitionId;
-        ui64 Generation;
-        ui64 NodeId;
-        TString Hostname;
-    };
-
-    struct TEvPartitionLocationResponse : public NActors::TEventLocal<TEvPartitionLocationResponse, EvPartitionLocationResponse>
-                                        , public TLocalResponseBase
-                                        
-    {
-        TEvPartitionLocationResponse() {}
-        TVector<TPartitionLocationInfo> Partitions;
-        ui64 SchemeShardId;
-        ui64 PathId;
-    };
-
-};
-
-struct TLocalRequestBase {
-    TLocalRequestBase() = default;
-
-    TLocalRequestBase(const TString& topic, const TString& database, const TString& token)
-        : Topic(topic)
-        , Database(database)
-        , Token(token)
-        {}
-    
-    TString Topic;
-    TString Database;
-    TString Token;
-
-};
-
-struct TGetPartitionsLocationRequest : public TLocalRequestBase {
-    TGetPartitionsLocationRequest() = default;
-    TGetPartitionsLocationRequest(const TString& topic, const TString& database, const TString& token, const TVector<ui32>& partitionIds)
-        : TLocalRequestBase(topic, database, token)
-        , PartitionIds(partitionIds)
-    {}
-
-    TVector<ui32> PartitionIds;
 
 };
 }

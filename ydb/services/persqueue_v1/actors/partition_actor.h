@@ -3,14 +3,14 @@
 #include "events.h"
 #include "partition_id.h"
 
-#include <ydb/library/actors/core/actorid.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actorid.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/containers/disjoint_interval_tree/disjoint_interval_tree.h>
 
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/persqueue/events/global.h>
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 #include <ydb/library/persqueue/topic_parser/topic_parser.h>
 
@@ -150,7 +150,7 @@ private:
 
     ui64 ReadOffset;
     ui64 ClientReadOffset;
-    TMaybe<ui64> ClientCommitOffset;
+    ui64 ClientCommitOffset;
     bool ClientVerifyReadOffset;
     ui64 CommittedOffset;
     ui64 WriteTimestampEstimateMs;

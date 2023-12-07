@@ -2,7 +2,7 @@ UNITTEST_FOR(ydb/library/yql/minikql)
 
 FORK_SUBTESTS()
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(1800)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -12,7 +12,6 @@ ELSE()
 ENDIF()
 
 SRCS(
-    aligned_page_pool_ut.cpp
     compact_hash_ut.cpp
     mkql_alloc_ut.cpp
     mkql_node_builder_ut.cpp
@@ -30,7 +29,8 @@ SRCS(
 
 PEERDIR(
     contrib/libs/apache/arrow
-    ydb/library/yql/minikql/invoke_builtins/llvm
+    ydb/library/yql/minikql/computation
+    ydb/library/yql/minikql/invoke_builtins
     ydb/library/yql/parser/pg_wrapper
     ydb/library/yql/public/udf/service/exception_policy
 )

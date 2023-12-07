@@ -1,14 +1,13 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/monlib/service/pages
     ydb/core/base
     ydb/core/blobstorage/backpressure
     ydb/core/blobstorage/base
     ydb/core/blobstorage/groupinfo
     ydb/core/blobstorage/vdisk/hulldb/barriers
-    ydb/core/blobstorage/vdisk/hulldb/base
     ydb/core/blobstorage/vdisk/hulldb/generic
     ydb/core/protos
 )

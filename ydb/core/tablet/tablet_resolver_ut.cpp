@@ -2,8 +2,8 @@
 #include <ydb/core/base/tablet_resolver.h>
 #include <ydb/core/base/tabletid.h>
 #include <ydb/core/testlib/tablet_helpers.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 namespace NKikimr {
@@ -57,6 +57,7 @@ Y_UNIT_TEST_SUITE(TTabletResolver) {
         }
 
         STFUNC(StateLookup) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvStateStorage::TEvInfo, HandleLookup);
             }
@@ -64,7 +65,7 @@ Y_UNIT_TEST_SUITE(TTabletResolver) {
 
         void HandleLookup(TEvStateStorage::TEvInfo::TPtr& ev) {
             auto* msg = ev->Get();
-            Y_ABORT_UNLESS(msg->SignatureSz);
+            Y_VERIFY(msg->SignatureSz);
             SignatureSz = msg->SignatureSz;
             Signature.Reset(msg->Signature.Release());
 
@@ -73,6 +74,7 @@ Y_UNIT_TEST_SUITE(TTabletResolver) {
         }
 
         STFUNC(StateUpdate) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvStateStorage::TEvInfo, HandleUpdate);
             }

@@ -10,7 +10,7 @@
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/testlib/tablet_helpers.h>
 
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 
 #include <ydb/core/testlib/tenant_runtime.h>
 #include <library/cpp/testing/unittest/registar.h>
@@ -202,7 +202,7 @@ void CollectItems(THashMap<ui64, TConfigItem::TPtr> &)
 void CollectItems(THashMap<ui64, TConfigItem::TPtr> &items,
                   const NKikimrConsole::TConfigItem &item)
 {
-    Y_ABORT_UNLESS(!items.contains(item.GetId().GetId()));
+    Y_VERIFY(!items.contains(item.GetId().GetId()));
     items.emplace(item.GetId().GetId(), new TConfigItem(item));
 }
 
@@ -2450,15 +2450,9 @@ Y_UNIT_TEST_SUITE(TConsoleConfigTests) {
 namespace {
 
 class TConfigProxy : public TActor<TConfigProxy>, public TTabletExecutedFlat {
-    void DefaultSignalTabletActive(const TActorContext &) override
-    {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext &ctx) override
     {
         Become(&TThis::StateWork);
-        SignalTabletActive(ctx);
         ctx.Send(Sink, new TEvents::TEvWakeup);
     }
 
@@ -2487,7 +2481,11 @@ public:
 
     STFUNC(StateInit)
     {
-        StateInitImpl(ev, SelfId());
+        switch (ev->GetTypeRewrite()) {
+            HFunc(TEvConsole::TEvConfigNotificationRequest, Handle);
+        default:
+            StateInitImpl(ev, ctx);
+        }
     }
 
     STFUNC(StateWork)
@@ -3533,18 +3531,19 @@ Y_UNIT_TEST_SUITE(TConsoleConfigSubscriptionTests) {
 
         ui32 undelivered = 0;
         bool attemptFinished = false;
-        auto countRetries = [&](TAutoPtr<IEventHandle> &event) -> auto {
+        auto countRetries = [&](TTestActorRuntimeBase&,
+                                TAutoPtr<IEventHandle> &event) -> auto {
             if (event->GetTypeRewrite() == TEvents::TSystem::Undelivered) {
                 if (!attemptFinished)
                     ++undelivered;
             }
             if (event->GetTypeRewrite() == TConfigsProvider::TEvPrivate::EvNotificationTimeout
-                && dynamic_cast<TConfigsProvider::TEvPrivate::TEvNotificationTimeout*>(event->StaticCastAsLocal<IEventBase>())) {
+                && dynamic_cast<TConfigsProvider::TEvPrivate::TEvNotificationTimeout*>(event->GetBase())) {
                 attemptFinished = true;
             }
             // Don't allow to cleanup config for missing node.
             if (event->GetTypeRewrite() == TConfigsManager::TEvPrivate::EvCleanupSubscriptions
-                && dynamic_cast<TConfigsManager::TEvPrivate::TEvCleanupSubscriptions*>(event->StaticCastAsLocal<IEventBase>()))
+                && dynamic_cast<TConfigsManager::TEvPrivate::TEvCleanupSubscriptions*>(event->GetBase()))
                 return TTestActorRuntime::EEventAction::DROP;
             return TTestActorRuntime::EEventAction::PROCESS;
         };
@@ -3599,7 +3598,7 @@ Y_UNIT_TEST_SUITE(TConsoleConfigSubscriptionTests) {
         TDispatchOptions options;
         options.FinalEvents.emplace_back([&](IEventHandle &ev) -> bool {
                 if (ev.GetTypeRewrite() == TConfigsManager::TEvPrivate::EvCleanupSubscriptions
-                    && dynamic_cast<TConfigsManager::TEvPrivate::TEvCleanupSubscriptions*>(ev.StaticCastAsLocal<IEventBase>()))
+                    && dynamic_cast<TConfigsManager::TEvPrivate::TEvCleanupSubscriptions*>(ev.GetBase()))
                     return true;
                 return false;
             }, 1);

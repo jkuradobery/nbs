@@ -2,86 +2,80 @@
 
 namespace NYql {
 
-ui64 TDqIntegrationBase::Partition(const TDqSettings&, size_t, const TExprNode&,
-    TVector<TString>&, TString*, TExprContext&, bool) {
+ui64 TDqIntegrationBase::Partition(const TDqSettings& config, size_t maxPartitions, const TExprNode& node,
+    TVector<TString>& partitions, TString* clusterName, TExprContext& ctx, bool canFallback) {
+    Y_UNUSED(config);
+    Y_UNUSED(maxPartitions);
+    Y_UNUSED(node);
+    Y_UNUSED(partitions);
+    Y_UNUSED(clusterName);
+    Y_UNUSED(ctx);
+    Y_UNUSED(canFallback);
     return 0;
 }
 
-bool TDqIntegrationBase::CheckPragmas(const TExprNode& node, TExprContext& ctx, bool skipIssues) {
-    Y_UNUSED(skipIssues);
-    Y_UNUSED(node);
+TMaybe<ui64> TDqIntegrationBase::CanRead(const TDqSettings&, const TExprNode& read, TExprContext& ctx, bool skipIssues) {
+    Y_UNUSED(read);
     Y_UNUSED(ctx);
-    return true;
-}
-
-bool TDqIntegrationBase::CanRead(const TExprNode&, TExprContext&, bool) {
-    return false;
-}
-
-TMaybe<ui64> TDqIntegrationBase::EstimateReadSize(ui64, ui32, const TVector<const TExprNode*> &, TExprContext&) {
+    Y_UNUSED(skipIssues);
     return Nothing();
 }
 
-bool TDqIntegrationBase::CanBlockReadTypes(const TStructExprType* node) {
-    for (const auto& e: node->GetItems()) {
-        // Check type
-        auto type = e->GetItemType();
-        while (ETypeAnnotationKind::Optional == type->GetKind()) {
-            type = type->Cast<TOptionalExprType>()->GetItemType();
-        }
-        if (ETypeAnnotationKind::Data != type->GetKind()) {
-            return false;
-        }
-    }
-    return true;
-}
+TExprNode::TPtr TDqIntegrationBase::WrapRead(const TDqSettings&, const TExprNode::TPtr& read, TExprContext& ctx) {
+    Y_UNUSED(read);
+    Y_UNUSED(ctx);
 
-TExprNode::TPtr TDqIntegrationBase::WrapRead(const TDqSettings&, const TExprNode::TPtr& read, TExprContext&) {
     return read;
 }
 
-TMaybe<TOptimizerStatistics> TDqIntegrationBase::ReadStatistics(const TExprNode::TPtr& readWrap, TExprContext& ctx) {
-    Y_UNUSED(readWrap);
+TMaybe<bool> TDqIntegrationBase::CanWrite(const TDqSettings&, const TExprNode& write, TExprContext& ctx) {
+    Y_UNUSED(write);
     Y_UNUSED(ctx);
     return Nothing();
 }
 
-TMaybe<bool> TDqIntegrationBase::CanWrite(const TExprNode&, TExprContext&) {
-    return Nothing();
-}
-
-bool TDqIntegrationBase::CanBlockRead(const NNodes::TExprBase&, TExprContext&, TTypeAnnotationContext&) {
-    return false;
-}
-
-TExprNode::TPtr TDqIntegrationBase::WrapWrite(const TExprNode::TPtr& write, TExprContext&) {
-    return write;
-}
-
-void TDqIntegrationBase::RegisterMkqlCompiler(NCommon::TMkqlCallableCompilerBase&)  {
+void TDqIntegrationBase::RegisterMkqlCompiler(NCommon::TMkqlCallableCompilerBase& compiler)  {
+    Y_UNUSED(compiler);
 }
 
 bool TDqIntegrationBase::CanFallback() {
     return false;
 }
 
-void TDqIntegrationBase::FillSourceSettings(const TExprNode&, ::google::protobuf::Any&, TString&) {
+void TDqIntegrationBase::FillSourceSettings(const TExprNode& node, ::google::protobuf::Any& settings, TString& sourceType) {
+    Y_UNUSED(node);
+    Y_UNUSED(settings);
+    Y_UNUSED(sourceType);
 }
 
-void TDqIntegrationBase::FillSinkSettings(const TExprNode&, ::google::protobuf::Any&, TString&) {
+void TDqIntegrationBase::FillSinkSettings(const TExprNode& node, ::google::protobuf::Any& settings, TString& sinkType) {
+    Y_UNUSED(node);
+    Y_UNUSED(settings);
+    Y_UNUSED(sinkType);
 }
 
-void TDqIntegrationBase::FillTransformSettings(const TExprNode&, ::google::protobuf::Any&) {
+void TDqIntegrationBase::FillTransformSettings(const TExprNode& node, ::google::protobuf::Any& settings) {
+    Y_UNUSED(node);
+    Y_UNUSED(settings);
 }
 
-void TDqIntegrationBase::Annotate(const TExprNode&, THashMap<TString, TString>&) {
+void TDqIntegrationBase::Annotate(const TExprNode& node, THashMap<TString, TString>& params) {
+    Y_UNUSED(node);
+    Y_UNUSED(params);
 }
 
-bool TDqIntegrationBase::PrepareFullResultTableParams(const TExprNode&, TExprContext&, THashMap<TString, TString>&, THashMap<TString, TString>&) {
+bool TDqIntegrationBase::PrepareFullResultTableParams(const TExprNode& root, TExprContext& ctx, THashMap<TString, TString>& params, THashMap<TString, TString>& secureParams) {
+    Y_UNUSED(root);
+    Y_UNUSED(ctx);
+    Y_UNUSED(params);
+    Y_UNUSED(secureParams);
     return false;
 }
 
-void TDqIntegrationBase::WriteFullResultTableRef(NYson::TYsonWriter&, const TVector<TString>&, const THashMap<TString, TString>&) {
+void TDqIntegrationBase::WriteFullResultTableRef(NYson::TYsonWriter& writer, const TVector<TString>& columns, const THashMap<TString, TString>& graphParams) {
+    Y_UNUSED(writer);
+    Y_UNUSED(columns);
+    Y_UNUSED(graphParams);
 }
 
 } // namespace NYql

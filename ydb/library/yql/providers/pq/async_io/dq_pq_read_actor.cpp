@@ -20,11 +20,11 @@
 #include <ydb/public/sdk/cpp/client/ydb_persqueue_core/persqueue.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/credentials/credentials.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 
 #include <util/generic/algorithm.h>
@@ -94,7 +94,6 @@ public:
 
     TDqPqReadActor(
         ui64 inputIndex,
-        TCollectStatsLevel statsLevel,
         const TTxId& txId,
         ui64 taskId,
         const THolderFactory& holderFactory,
@@ -126,7 +125,6 @@ public:
         }
 
         InitWatermarkTracker();
-        IngressStats.Level = statsLevel;
     }
 
     NYdb::NPersQueue::TPersQueueClientSettings GetPersQueueClientSettings() const {
@@ -161,7 +159,6 @@ public:
         }
 
         stateProto.SetStartingMessageTimestampMs(StartingMessageTimestamp.MilliSeconds());
-        stateProto.SetIngressBytes(IngressStats.Bytes);
 
         TString stateBlob;
         YQL_ENSURE(stateProto.SerializeToString(&stateBlob));
@@ -176,7 +173,6 @@ public:
 
     void LoadState(const NDqProto::TSourceState& state) override {
         TInstant minStartingMessageTs = state.DataSize() ? TInstant::Max() : StartingMessageTimestamp;
-        ui64 ingressBytes = 0;
         for (const auto& stateData : state.GetData()) {
             const auto& data = stateData.GetStateData();
             if (data.GetVersion() == StateVersion) { // Current version
@@ -193,14 +189,11 @@ public:
                     }
                 }
                 minStartingMessageTs = Min(minStartingMessageTs, TInstant::MilliSeconds(stateProto.GetStartingMessageTimestampMs()));
-                ingressBytes += stateProto.GetIngressBytes();
             } else {
                 ythrow yexception() << "Invalid state version " << data.GetVersion();
             }
         }
         StartingMessageTimestamp = minStartingMessageTs;
-        IngressStats.Bytes += ingressBytes;
-        IngressStats.Chunks++;
         InitWatermarkTracker();
 
         if (ReadSession) {
@@ -219,11 +212,7 @@ public:
 
     ui64 GetInputIndex() const override {
         return InputIndex;
-    }
-
-    const TDqAsyncStats& GetIngressStats() const override {
-        return IngressStats;
-    }
+    };
 
     NYdb::NPersQueue::TPersQueueClient& GetPersQueueClient() {
         if (!PersQueueClient) {
@@ -241,13 +230,13 @@ public:
 
 private:
     STRICT_STFUNC(StateFunc,
-        hFunc(TEvPrivate::TEvSourceDataReady, Handle);
+        HFunc(TEvPrivate::TEvSourceDataReady, Handle);
     )
 
-    void Handle(TEvPrivate::TEvSourceDataReady::TPtr&) {
+    void Handle(TEvPrivate::TEvSourceDataReady::TPtr&, const TActorContext& ctx) {
         SRC_LOG_T("Source data ready");
         SubscribedOnEvent = false;
-        Send(ComputeActorId, new TEvNewAsyncInputDataArrived(InputIndex));
+        ctx.Send(ComputeActorId, new TEvNewAsyncInputDataArrived(InputIndex));
     }
 
     // IActor & IDqComputeActorAsyncInput
@@ -280,7 +269,7 @@ private:
         }
     }
 
-    i64 GetAsyncInputData(NKikimr::NMiniKQL::TUnboxedValueBatch& buffer, TMaybe<TInstant>& watermark, bool&, i64 freeSpace) override {
+    i64 GetAsyncInputData(NKikimr::NMiniKQL::TUnboxedValueVector& buffer, TMaybe<TInstant>& watermark, bool&, i64 freeSpace) override {
         SRC_LOG_T("GetAsyncInputData freeSpace = " << freeSpace);
 
         const auto now = TInstant::Now();
@@ -291,22 +280,17 @@ private:
             return usedSpace;
         }
 
-        bool recheckBatch = false;
+        auto events = GetReadSession().GetEvents(false, TMaybe<size_t>(), static_cast<size_t>(Max<i64>(freeSpace, 0)));
 
-        if (freeSpace > 0) {
-            auto events = GetReadSession().GetEvents(false, TMaybe<size_t>(), static_cast<size_t>(freeSpace));
-            recheckBatch = !events.empty();
-
-            ui32 batchItemsEstimatedCount = 0;
-            for (auto& event : events) {
-                if (const auto* val = std::get_if<NYdb::NPersQueue::TReadSessionEvent::TDataReceivedEvent>(&event)) {
-                    batchItemsEstimatedCount += val->GetMessages().size();
-                }
+        ui32 batchItemsEstimatedCount = 0;
+        for (auto& event : events) {
+            if (const auto* val = std::get_if<NYdb::NPersQueue::TReadSessionEvent::TDataReceivedEvent>(&event)) {
+                batchItemsEstimatedCount += val->GetMessages().size();
             }
+        }
 
-            for (auto& event : events) {
-                std::visit(TPQEventProcessor{*this, batchItemsEstimatedCount, LogPrefix}, event);
-            }
+        for (auto& event : events) {
+            std::visit(TPQEventProcessor{*this, batchItemsEstimatedCount, LogPrefix}, event);
         }
 
         if (WatermarkTracker) {
@@ -316,15 +300,11 @@ private:
                 const auto t = watermark;
                 SRC_LOG_T("Fake watermark " << t << " was produced");
                 PushWatermarkToReady(*watermark);
-                recheckBatch = true;
             }
         }
 
-        if (recheckBatch) {
-            usedSpace = 0;
-            if (MaybeReturnReadyBatch(buffer, watermark, usedSpace)) {
-                return usedSpace;
-            }
+        if (MaybeReturnReadyBatch(buffer, watermark, usedSpace)) {
+            return usedSpace;
         }
 
         watermark = Nothing();
@@ -404,15 +384,14 @@ private:
         THashMap<NYdb::NPersQueue::TPartitionStream::TPtr, TList<std::pair<ui64, ui64>>> OffsetRanges; // [start, end)
     };
 
-    bool MaybeReturnReadyBatch(NKikimr::NMiniKQL::TUnboxedValueBatch& buffer, TMaybe<TInstant>& watermark, i64& usedSpace) {
+    bool MaybeReturnReadyBatch(NKikimr::NMiniKQL::TUnboxedValueVector& buffer, TMaybe<TInstant>& watermark, i64& usedSpace) {
         if (ReadyBuffer.empty()) {
             SubscribeOnNextEvent();
             return false;
         }
 
         auto& readyBatch = ReadyBuffer.front();
-        buffer.clear();
-        std::move(readyBatch.Data.begin(), readyBatch.Data.end(), std::back_inserter(buffer));
+        buffer.swap(readyBatch.Data);
         watermark = readyBatch.Watermark;
         usedSpace = readyBatch.UsedSpace;
 
@@ -432,7 +411,7 @@ private:
         }
 
         SRC_LOG_T("Return ready batch."
-            << " DataCount = " << buffer.RowCount()
+            << " DataCount = " << buffer.size()
             << " Watermark = " << (watermark ? ToString(*watermark) : "none")
             << " Used space = " << usedSpace);
         return true;
@@ -454,7 +433,7 @@ private:
             const auto partitionKey = MakePartitionKey(event.GetPartitionStream());
             for (const auto& message : event.GetMessages()) {
                 const TString& data = message.GetData();
-                Self.IngressStats.Bytes += data.size();
+
                 LWPROBE(PqReadDataReceived, TString(TStringBuilder() << Self.TxId), Self.SourceParams.GetTopicPath(), data);
                 SRC_LOG_T("Data received: " << message.DebugString(true));
 
@@ -558,7 +537,6 @@ private:
 
 private:
     const ui64 InputIndex;
-    TDqAsyncStats IngressStats;
     const TTxId TxId;
     const i64 BufferSize;
     const bool RangesMode;
@@ -586,7 +564,6 @@ private:
 std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
     NPq::NProto::TDqPqTopicSource&& settings,
     ui64 inputIndex,
-    TCollectStatsLevel statsLevel,
     TTxId txId,
     ui64 taskId,
     const THashMap<TString, TString>& secureParams,
@@ -611,7 +588,6 @@ std::pair<IDqComputeActorAsyncInput*, NActors::IActor*> CreateDqPqReadActor(
 
     TDqPqReadActor* actor = new TDqPqReadActor(
         inputIndex,
-        statsLevel,
         txId,
         taskId,
         holderFactory,
@@ -637,7 +613,6 @@ void RegisterDqPqReadActorFactory(TDqAsyncIoFactory& factory, NYdb::TDriver driv
         return CreateDqPqReadActor(
             std::move(settings),
             args.InputIndex,
-            args.StatsLevel,
             args.TxId,
             args.TaskId,
             args.SecureParams,

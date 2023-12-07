@@ -7,9 +7,9 @@
 #include <ydb/core/mon_alloc/profiler.h>
 #include <ydb/core/tablet/tablet_impl.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 
 
 /**** ACHTUNG: Do not make here any new dependecies on kikimr ****/
@@ -85,7 +85,7 @@ namespace NActors {
     }
 
     void TTestActorRuntime::AddAppDataInit(std::function<void(ui32, NKikimr::TAppData&)> callback) {
-        Y_ABORT_UNLESS(!IsInitialized, "Actor system is already initialized");
+        Y_VERIFY(!IsInitialized, "Actor system is already initialized");
         AppDataInit_.push_back(std::move(callback));
     }
 
@@ -108,8 +108,8 @@ namespace NActors {
             const auto* app0 = App0.Get();
             if (!SingleSysEnv) {
                 const TIntrusivePtr<::NMonitoring::TDynamicCounters> profilerCounters = NKikimr::GetServiceCounters(node->DynamicCounters, "utils");
-                TTestActorSetupCmd profilerSetup{CreateProfilerActor(profilerCounters, "."), TMailboxType::Simple, 0};
-                node->LocalServices.push_back(std::pair<TActorId, TTestActorSetupCmd>(MakeProfilerID(FirstNodeId + nodeIndex), profilerSetup));
+                TActorSetupCmd profilerSetup(CreateProfilerActor(profilerCounters, "."), TMailboxType::Simple, 0);
+                node->LocalServices.push_back(std::pair<TActorId, TActorSetupCmd>(MakeProfilerID(FirstNodeId + nodeIndex), profilerSetup));
             }
 
             if (!UseRealThreads) {
@@ -136,18 +136,13 @@ namespace NActors {
             nodeAppData->StreamingConfig.SetEnableOutputStreams(true);
             nodeAppData->PQConfig = app0->PQConfig;
             nodeAppData->NetClassifierConfig.CopyFrom(app0->NetClassifierConfig);
+            nodeAppData->StaticBlobStorageConfig->CopyFrom(*app0->StaticBlobStorageConfig);
             nodeAppData->EnableKqpSpilling = app0->EnableKqpSpilling;
             nodeAppData->FeatureFlags = app0->FeatureFlags;
             nodeAppData->CompactionConfig = app0->CompactionConfig;
-            nodeAppData->HiveConfig.SetWarmUpBootWaitingPeriod(10);
-            nodeAppData->HiveConfig.SetMaxNodeUsageToKick(100);
-            nodeAppData->HiveConfig.SetMinCounterScatterToBalance(100);
-            nodeAppData->HiveConfig.SetMinScatterToBalance(100);
-            nodeAppData->HiveConfig.SetObjectImbalanceToBalance(100);
-            nodeAppData->HiveConfig.CopyFrom(app0->HiveConfig);
+            nodeAppData->HiveConfig = app0->HiveConfig;
             nodeAppData->SchemeShardConfig = app0->SchemeShardConfig;
             nodeAppData->DataShardConfig = app0->DataShardConfig;
-            nodeAppData->ColumnShardConfig = app0->ColumnShardConfig;
             nodeAppData->MeteringConfig = app0->MeteringConfig;
             nodeAppData->AwsCompatibilityConfig = app0->AwsCompatibilityConfig;
             nodeAppData->EnableMvccSnapshotWithLegacyDomainRoot = app0->EnableMvccSnapshotWithLegacyDomainRoot;
@@ -188,16 +183,17 @@ namespace NActors {
     }
 
     ui16 TTestActorRuntime::GetMonPort(ui32 nodeIndex) const {
-        Y_ABORT_UNLESS(nodeIndex < MonPorts.size(), "Unknown MonPort for nodeIndex = %" PRIu32, nodeIndex);
+        Y_VERIFY(nodeIndex < MonPorts.size(), "Unknown MonPort for nodeIndex = %" PRIu32, nodeIndex);
         return MonPorts[nodeIndex];
     }
 
-    void TTestActorRuntime::InitActorSystemSetup(TActorSystemSetup& /*setup*/) {
+    void TTestActorRuntime::InitActorSystemSetup(TActorSystemSetup& setup) {
+        setup.MaxActivityType = GetActivityTypeCount();
     }
 
     NKikimr::TAppData& TTestActorRuntime::GetAppData(ui32 nodeIndex) {
         TGuard<TMutex> guard(Mutex);
-        Y_ABORT_UNLESS(nodeIndex < NodeCount);
+        Y_VERIFY(nodeIndex < NodeCount);
         ui32 nodeId = FirstNodeId + nodeIndex;
         auto* node = GetNodeById(nodeId);
         return *node->GetAppData<NKikimr::TAppData>();

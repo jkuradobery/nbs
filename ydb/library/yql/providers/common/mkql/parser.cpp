@@ -4,7 +4,6 @@
 #include <functional>
 #include <string_view>
 #include <ydb/library/yql/minikql/defs.h>
-#include <ydb/library/yql/core/yql_expr_type_annotation.h>
 
 #include <library/cpp/json/json_writer.h>
 
@@ -137,7 +136,6 @@ TRuntimeNode WrapWithDecompress(
 }
 } // namespace
 
-
 TRuntimeNode BuildParseCall(
     TPosition pos,
     TRuntimeNode input,
@@ -157,53 +155,19 @@ TRuntimeNode BuildParseCall(
     const auto* finalItemStructType = static_cast<TStructType*>(finalItemType);
 
     if (useBlocks) {
-        return ctx.ProgramBuilder.BlockExpandChunked(ctx.ProgramBuilder.ExpandMap(
-            ctx.ProgramBuilder.ToFlow(input), [&](TRuntimeNode item) {
-                auto parsedData = (extraColumnsByPathIndex || !metadataColumns.empty())
-                                      ? ctx.ProgramBuilder.Nth(item, 0)
-                                      : item;
+        return ctx.ProgramBuilder.ExpandMap(ctx.ProgramBuilder.ToFlow(input), [&](TRuntimeNode item) {
+            MKQL_ENSURE(!extraColumnsByPathIndex && metadataColumns.empty(), "TODO");
 
-                TMaybe<TRuntimeNode> extra;
-                if (extraColumnsByPathIndex) {
-                    auto pathInd   = ctx.ProgramBuilder.Nth(item, 1);
-                    auto extraNode = ctx.ProgramBuilder.Lookup(
-                        ctx.ProgramBuilder.ToIndexDict(*extraColumnsByPathIndex), pathInd);
-                    extra = ctx.ProgramBuilder.Unwrap(
-                        extraNode,
-                        ctx.ProgramBuilder.NewDataLiteral<NUdf::EDataSlot::String>(
-                            "Failed to lookup path index"),
-                        pos.File,
-                        pos.Row,
-                        pos.Column);
-                }
+            TRuntimeNode::TList fields;
 
-                auto blockLengthName =
-                    ctx.ProgramBuilder.Member(parsedData, BlockLengthColumnName);
-                TRuntimeNode::TList fields;
-                fields.reserve(finalItemStructType->GetMembersCount());
+            for (ui32 i = 0; i < finalItemStructType->GetMembersCount(); ++i) {
+                TStringBuf name = finalItemStructType->GetMemberName(i);
+                fields.push_back(ctx.ProgramBuilder.Member(item, name));
+            }
 
-                for (ui32 i = 0; i < finalItemStructType->GetMembersCount(); ++i) {
-                    TStringBuf name         = finalItemStructType->GetMemberName(i);
-                    const auto metadataIter = metadataColumns.find(TString(name));
-                    if (metadataIter != metadataColumns.end()) {
-                        fields.push_back(ctx.ProgramBuilder.ReplicateScalar(
-                            ctx.ProgramBuilder.AsScalar(
-                                ctx.ProgramBuilder.Nth(item, metadataIter->second)),
-                            blockLengthName));
-                    } else if (parseItemStructType->FindMemberIndex(name).Defined()) {
-                        fields.push_back(ctx.ProgramBuilder.Member(parsedData, name));
-                    } else {
-                        MKQL_ENSURE(extra, "Column " << name << " wasn't found");
-                        fields.push_back(ctx.ProgramBuilder.ReplicateScalar(
-                            ctx.ProgramBuilder.AsScalar(
-                                ctx.ProgramBuilder.Member(*extra, name)),
-                            blockLengthName));
-                    }
-                }
-
-                fields.push_back(blockLengthName);
-                return fields;
-            }));
+            fields.push_back(ctx.ProgramBuilder.Member(item, "_yql_block_length"));
+            return fields;
+        });
     }
 
     if (!compression.empty()) {
@@ -238,6 +202,7 @@ TRuntimeNode BuildParseCall(
 
                 if (extraColumnsByPathIndex || !metadataColumns.empty()) {
                     auto data = ctx.ProgramBuilder.Nth(item, 0);
+                    TMaybe<TRuntimeNode> pathInd;
                     res.emplace_back(parseLambda(data));
                     if (extraColumnsByPathIndex) {
                         res.emplace_back(ctx.ProgramBuilder.Nth(item, res.size()));
@@ -389,7 +354,6 @@ TMaybe<TRuntimeNode> TryWrapWithParser(const TDqSourceWrapBase& wrapper, NCommon
     if (auto extraColumnsSetting = GetSetting(wrapper.Settings().Cast().Ref(), "extraColumns")) {
         extraColumns = MkqlBuildExpr(extraColumnsSetting->Tail(), ctx);
         extraType = extraColumnsSetting->Tail().GetTypeAnn()->Cast<TListExprType>()->GetItemType()->Cast<TStructExprType>();
-        MKQL_ENSURE(extraType->GetItems(), "Extra column type must not be an empty struct");
     }
 
     std::unordered_map<TString, ui32> metadataColumns;
@@ -424,7 +388,6 @@ TMaybe<TRuntimeNode> TryWrapWithParser(const TDqSourceWrapBase& wrapper, NCommon
 
     const auto& settings = GetSettings(wrapper.Settings().Cast().Ref());
     TPosition pos = ctx.ExprCtx.GetPosition(wrapper.Pos());
-
     return BuildParseCall(
         pos,
         input,
@@ -438,32 +401,6 @@ TMaybe<TRuntimeNode> TryWrapWithParser(const TDqSourceWrapBase& wrapper, NCommon
         finalItemType,
         ctx,
         useBlocks);
-}
-
-TMaybe<TRuntimeNode> TryWrapWithParserForArrowIPCStreaming(const TDqSourceWrapBase& wrapper, NCommon::TMkqlBuildContext& ctx) {
-    const auto input = MkqlBuildExpr(wrapper.Input().Ref(), ctx);
-    const TStructExprType* rowType = wrapper.RowType().Ref().GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TStructExprType>();
-
-    const auto finalItemType = NCommon::BuildType(
-        wrapper.RowType().Ref(),
-        *rowType,
-        ctx.ProgramBuilder);
-
-    const auto* finalItemStructType = static_cast<TStructType*>(finalItemType);
-
-    return ctx.ProgramBuilder.ExpandMap(ctx.ProgramBuilder.ToFlow(input), [&](TRuntimeNode item) {
-        // MKQL_ENSURE(!extraColumnsByPathIndex && metadataColumns.empty(), "TODO");
-
-        TRuntimeNode::TList fields;
-
-        for (ui32 i = 0; i < finalItemStructType->GetMembersCount(); ++i) {
-            TStringBuf name = finalItemStructType->GetMemberName(i);
-            fields.push_back(ctx.ProgramBuilder.Member(item, name));
-        }
-
-        fields.push_back(ctx.ProgramBuilder.Member(item, BlockLengthColumnName));
-        return fields;
-    });
 }
 
 }

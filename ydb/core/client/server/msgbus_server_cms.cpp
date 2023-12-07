@@ -1,8 +1,8 @@
 #include "msgbus_server_request.h"
 #include "msgbus_securereq.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/cms.h>
@@ -243,7 +243,7 @@ public:
 
     void SendReplyAndDie(const TActorContext &ctx)
     {
-        Y_ABORT_UNLESS(Response.HasStatus());
+        Y_VERIFY(Response.HasStatus());
 
         auto response = MakeHolder<TBusCmsResponse>();
         response->Record = std::move(Response);
@@ -281,9 +281,9 @@ public:
             CFunc(TEvTabletPipe::EvClientDestroyed, Undelivered);
             HFunc(TEvTabletPipe::TEvClientConnected, Handle);
         default:
-            Y_ABORT("TCmsRequestActor::MainState unexpected event type: %" PRIx32 " event: %s",
+            Y_FAIL("TCmsRequestActor::MainState unexpected event type: %" PRIx32 " event: %s",
                    ev->GetTypeRewrite(),
-                   ev->ToString().data());
+                   ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
         }
     }
 

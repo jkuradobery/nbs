@@ -9,9 +9,8 @@ EXCLUDE_TAGS(GO_PROTO)
 
 GRPC()
 SRCS(
-    folder.proto
-    transitional/folder_service.proto
     folder_service.proto
+    folder.proto
 )
 
 USE_COMMON_GOOGLE_APIS(

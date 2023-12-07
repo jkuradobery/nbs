@@ -35,11 +35,6 @@ Y_FORCE_INLINE TRef TRef::FromString(const TString& str)
     return FromStringBuf(str);
 }
 
-Y_FORCE_INLINE TRef TRef::FromString(const std::string& str)
-{
-    return TRef(str.data(), str.size());
-}
-
 Y_FORCE_INLINE TRef TRef::FromStringBuf(TStringBuf strBuf)
 {
     return TRef(strBuf.data(), strBuf.length());
@@ -48,7 +43,7 @@ Y_FORCE_INLINE TRef TRef::FromStringBuf(TStringBuf strBuf)
 template <class T>
 Y_FORCE_INLINE TRef TRef::FromPod(const T& data)
 {
-    static_assert(TTypeTraits<T>::IsPod || (std::is_standard_layout_v<T> && std::is_trivial_v<T>), "T must be a pod-type.");
+    static_assert(TTypeTraits<T>::IsPod || std::is_pod<T>::value, "T must be a pod-type.");
     return TRef(&data, sizeof (data));
 }
 
@@ -86,7 +81,7 @@ Y_FORCE_INLINE TMutableRef::operator TRef() const
 template <class T>
 Y_FORCE_INLINE TMutableRef TMutableRef::FromPod(T& data)
 {
-    static_assert(TTypeTraits<T>::IsPod || (std::is_standard_layout_v<T> && std::is_trivial_v<T>), "T must be a pod-type.");
+    static_assert(TTypeTraits<T>::IsPod || std::is_pod<T>::value, "T must be a pod-type.");
     return TMutableRef(&data, sizeof (data));
 }
 
@@ -374,25 +369,6 @@ public:
     const TSharedRef* End() const
     {
         return Begin() + Size_;
-    }
-
-
-    // TSharedRangeHolder overrides.
-    std::optional<size_t> GetTotalByteSize() const override
-    {
-        size_t result = 0;
-        for (size_t index = 0; index < Size(); ++index) {
-            const auto& part = (*this)[index];
-            if (!part) {
-                continue;
-            }
-            auto partSize = part.GetHolder()->GetTotalByteSize();
-            if (!partSize) {
-                return std::nullopt;
-            }
-            result += *partSize;
-        }
-        return result;
     }
 
 private:

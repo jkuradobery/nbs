@@ -1,5 +1,5 @@
 #include "defs.h"
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include "datashard_ut_common_kqp.h"
 
 #include <ydb/core/testlib/test_client.h>
@@ -109,7 +109,8 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
 
         // Run multishard tx but drop RS to pause it on the first shard.
         {
-            auto captureRS = [shard=shards[1]](TAutoPtr<IEventHandle> &event) -> auto {
+            auto captureRS = [shard=shards[1]](TTestActorRuntimeBase&,
+                                            TAutoPtr<IEventHandle> &event) -> auto {
                 if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
                     auto &rec = event->Get<TEvTxProcessing::TEvReadSet>()->Record;
                     if (rec.GetTabletSource() == shard)
@@ -220,7 +221,8 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
         // Run multishard tx but drop all RS acks to the table-1.
         // Tx should still finish successfully.
         {
-            auto captureRS = [shard=shards1[0]](TAutoPtr<IEventHandle> &event) -> auto {
+            auto captureRS = [shard=shards1[0]](TTestActorRuntimeBase&,
+                                                TAutoPtr<IEventHandle> &event) -> auto {
                 if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSetAck) {
                     auto &rec = event->Get<TEvTxProcessing::TEvReadSetAck>()->Record;
                     if (rec.GetTabletSource() == shard) {
@@ -275,7 +277,8 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
 
         // We want to intercept all RS from table-1 and all RS acks
         // from table-3.
-        auto captureRS = [shard1,shard3](TAutoPtr<IEventHandle> &event) -> auto {
+        auto captureRS = [shard1,shard3](TTestActorRuntimeBase&,
+                                         TAutoPtr<IEventHandle> &event) -> auto {
             if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
                 auto &rec = event->Get<TEvTxProcessing::TEvReadSet>()->Record;
                 if (rec.GetTabletSource() == shard1) {
@@ -355,12 +358,12 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }");
 
         size_t readSets = 0;
-        auto observeReadSets = [&](TAutoPtr<IEventHandle> &ev) -> auto {
+        auto observeReadSets = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
                     NKikimrTx::TReadSetData genericData;
-                    Y_ABORT_UNLESS(genericData.ParseFromString(msg->Record.GetReadSet()));
+                    Y_VERIFY(genericData.ParseFromString(msg->Record.GetReadSet()));
                     Cerr << "... generic readset: " << genericData.DebugString() << Endl;
                     UNIT_ASSERT(genericData.HasDecision());
                     UNIT_ASSERT(genericData.GetDecision() == NKikimrTx::TReadSetData::DECISION_COMMIT);
@@ -415,12 +418,12 @@ Y_UNIT_TEST_SUITE(TDataShardRSTest) {
         ExecSQL(server, sender, "UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 2)");
 
         size_t readSets = 0;
-        auto observeReadSets = [&](TAutoPtr<IEventHandle> &ev) -> auto {
+        auto observeReadSets = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvReadSet::EventType: {
                     auto* msg = ev->Get<TEvTxProcessing::TEvReadSet>();
                     NKikimrTx::TReadSetData genericData;
-                    Y_ABORT_UNLESS(genericData.ParseFromString(msg->Record.GetReadSet()));
+                    Y_VERIFY(genericData.ParseFromString(msg->Record.GetReadSet()));
                     Cerr << "... generic readset: " << genericData.DebugString() << Endl;
                     UNIT_ASSERT(genericData.HasDecision());
                     UNIT_ASSERT(genericData.GetDecision() == NKikimrTx::TReadSetData::DECISION_ABORT);

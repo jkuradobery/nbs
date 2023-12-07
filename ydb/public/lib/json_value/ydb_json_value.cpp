@@ -241,13 +241,6 @@ namespace NYdb {
                 Parser.CloseTagged();
                 break;
 
-            case TTypeParser::ETypeKind::EmptyList:
-            {
-                Writer.BeginList();
-                Writer.EndList();
-                break;
-            }
-
             case TTypeParser::ETypeKind::List:
                 Parser.OpenList();
                 Writer.BeginList();
@@ -285,13 +278,6 @@ namespace NYdb {
                 Writer.EndList();
                 break;
 
-            case TTypeParser::ETypeKind::EmptyDict:
-            {
-                Writer.BeginList();
-                Writer.EndList();
-                break;
-            }
-
             case TTypeParser::ETypeKind::Dict:
                 Parser.OpenDict();
                 Writer.BeginList();
@@ -307,9 +293,7 @@ namespace NYdb {
                 Parser.CloseDict();
                 Writer.EndList();
                 break;
-            case TTypeParser::ETypeKind::Null:
-                Writer.WriteNull();
-                break;
+
             default:
                 ThrowFatalError(TStringBuilder() << "Unsupported type kind: " << Parser.GetKind());
             }
@@ -441,7 +425,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui8>::max()) {
+                if (intValue > std::numeric_limits<ui8>::max() || intValue < std::numeric_limits<ui8>::min()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt8 type");
                 }
                 ValueBuilder.Uint8(intValue);
@@ -461,7 +445,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui16>::max()) {
+                if (intValue > std::numeric_limits<ui16>::max() || intValue < std::numeric_limits<ui16>::min()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt16 type");
                 }
                 ValueBuilder.Uint16(intValue);
@@ -481,7 +465,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui32>::max()) {
+                if (intValue > std::numeric_limits<ui32>::max() || intValue < std::numeric_limits<ui32>::min()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt32 type");
                 }
                 ValueBuilder.Uint32(intValue);
@@ -501,7 +485,7 @@ namespace {
             {
                 EnsureType(jsonValue, NJson::JSON_UINTEGER);
                 unsigned long long intValue = jsonValue.GetUInteger();
-                if (intValue > std::numeric_limits<ui64>::max()) {
+                if (intValue > std::numeric_limits<ui64>::max() || intValue < std::numeric_limits<ui64>::min()) {
                     ThrowFatalError(TStringBuilder() << "Value \"" << intValue << "\" doesn't fit in UInt64 type");
                 }
                 ValueBuilder.Uint64(intValue);
@@ -664,10 +648,6 @@ namespace {
 
         void ParseValue(const NJson::TJsonValue& jsonValue) {
             switch (TypeParser.GetKind()) {
-            case TTypeParser::ETypeKind::Null:
-                EnsureType(jsonValue, NJson::JSON_NULL);
-                break;
-
             case TTypeParser::ETypeKind::Primitive:
                 ParsePrimitiveValue(jsonValue, TypeParser.GetPrimitive());
                 break;
@@ -678,7 +658,7 @@ namespace {
                 break;
 
             case TTypeParser::ETypeKind::Pg: {
-                    TPgType pgType(""); // TODO: correct type?
+                    TPgType pgType(0, -1, -1);
                     if (jsonValue.GetType() == NJson::JSON_STRING) {
                         ValueBuilder.Pg(TPgValue(TPgValue::VK_TEXT, jsonValue.GetString(), pgType));
                     } else if (jsonValue.GetType() == NJson::JSON_NULL) {
@@ -716,23 +696,17 @@ namespace {
                 TypeParser.CloseTagged();
                 break;
 
-            case TTypeParser::ETypeKind::EmptyList:
-                EnsureType(jsonValue, NJson::JSON_ARRAY);
-                break;
-
             case TTypeParser::ETypeKind::List:
                 EnsureType(jsonValue, NJson::JSON_ARRAY);
                 TypeParser.OpenList();
-                if (jsonValue.GetArray().empty()) {
-                    ValueBuilder.EmptyList(GetType());
-                } else {
-                    ValueBuilder.BeginList();
-                    for (const auto& element : jsonValue.GetArray()) {
-                        ValueBuilder.AddListItem();
-                        ParseValue(element);
-                    }
-                    ValueBuilder.EndList();
+                ValueBuilder.BeginList();
+
+                for (const auto& element : jsonValue.GetArray()) {
+                    ValueBuilder.AddListItem();
+                    ParseValue(element);
                 }
+
+                ValueBuilder.EndList();
                 TypeParser.CloseList();
                 break;
 
@@ -742,6 +716,7 @@ namespace {
                 TypeParser.OpenStruct();
                 ValueBuilder.BeginStruct();
 
+                size_t counter = 0;
                 const auto& jsonMap = jsonValue.GetMap();
                 while (TypeParser.TryNextMember()) {
                     const TString& memberName = TypeParser.GetMemberName();
@@ -752,6 +727,10 @@ namespace {
                     }
                     ValueBuilder.AddMember(memberName);
                     ParseValue(it->second);
+                    ++counter;
+                }
+                if (counter != jsonMap.size()) {
+                    ThrowFatalError("Map in json string contains more members than YDB struct does");
                 }
 
                 ValueBuilder.EndStruct();
@@ -777,10 +756,6 @@ namespace {
 
                 ValueBuilder.EndTuple();
                 TypeParser.CloseTuple();
-                break;
-
-            case TTypeParser::ETypeKind::EmptyDict:
-                EnsureType(jsonValue, NJson::JSON_ARRAY);
                 break;
 
             case TTypeParser::ETypeKind::Dict:

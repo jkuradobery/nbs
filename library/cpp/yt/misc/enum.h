@@ -4,9 +4,9 @@
 
 #include <util/generic/strbuf.h>
 
-#include <array>
-#include <optional>
+#include <stdexcept>
 #include <type_traits>
+#include <array>
 #include <vector>
 
 #include <library/cpp/yt/exception/exception.h>
@@ -22,166 +22,168 @@ namespace NYT {
  * (unittests/enum_ut.cpp).
  */
 
-// The actual overload must be provided with DEFINE_ENUM* (see below).
+// Actual overload must be provided with defines DEFINE_ENUM_XXX (see below).
 template <class T>
 void GetEnumTraitsImpl(T);
 
-template <class T>
-using TEnumTraitsImpl = decltype(GetEnumTraitsImpl(T()));
-
-template <class T>
-constexpr bool IsEnumDomainSizeKnown()
-{
-    if constexpr(requires{ TEnumTraitsImpl<T>::DomainSize; }) {
-        return true;
-    } else {
-        return false;
-    }
-}
-
 template <
     class T,
-    bool = IsEnumDomainSizeKnown<T>()
->
-struct TEnumTraitsWithKnownDomain
-{ };
-
-template <
-    class T,
-    bool = std::is_enum_v<T> && !std::is_same_v<TEnumTraitsImpl<T>, void>
+    bool = std::is_enum<T>::value &&
+        !std::is_convertible<T, int>::value &&
+        !std::is_same<void, decltype(GetEnumTraitsImpl(T()))>::value
 >
 struct TEnumTraits
 {
     static constexpr bool IsEnum = false;
     static constexpr bool IsBitEnum = false;
     static constexpr bool IsStringSerializableEnum = false;
-    static constexpr bool IsMonotonic = false;
-};
-
-template <class T>
-struct TEnumTraitsWithKnownDomain<T, true>
-{
-    static constexpr int GetDomainSize();
-
-    static constexpr const std::array<TStringBuf, GetDomainSize()>& GetDomainNames();
-    static constexpr const std::array<T, GetDomainSize()>& GetDomainValues();
-
-    // For non-bit enums only.
-    static constexpr T GetMinValue()
-        requires (!TEnumTraitsImpl<T>::IsBitEnum);
-    static constexpr T GetMaxValue()
-        requires (!TEnumTraitsImpl<T>::IsBitEnum);
-
-    // For bit enums only.
-    static std::vector<T> Decompose(T value)
-        requires (TEnumTraitsImpl<T>::IsBitEnum);
 };
 
 template <class T>
 struct TEnumTraits<T, true>
-    : public TEnumTraitsWithKnownDomain<T>
 {
+    using TImpl = decltype(GetEnumTraitsImpl(T()));
+    using TType = T;
+    using TUnderlying = typename TImpl::TUnderlying;
+
     static constexpr bool IsEnum = true;
-    static constexpr bool IsBitEnum = TEnumTraitsImpl<T>::IsBitEnum;
-    static constexpr bool IsStringSerializableEnum = TEnumTraitsImpl<T>::IsStringSerializableEnum;
-    static constexpr bool IsMonotonic = TEnumTraitsImpl<T>::IsMonotonic;
+    static constexpr bool IsBitEnum = TImpl::IsBitEnum;
+    static constexpr bool IsStringSerializableEnum = TImpl::IsStringSerializableEnum;
+
+    static constexpr int DomainSize = TImpl::DomainSize;
 
     static TStringBuf GetTypeName();
 
-    static std::optional<TStringBuf> FindLiteralByValue(T value);
-    static std::optional<T> FindValueByLiteral(TStringBuf literal);
+    static const TStringBuf* FindLiteralByValue(TType value);
+    static bool FindValueByLiteral(TStringBuf literal, TType* result);
 
-    static TString ToString(T value);
-    static T FromString(TStringBuf literal);
+    static const std::array<TStringBuf, DomainSize>& GetDomainNames();
+    static const std::array<TType, DomainSize>& GetDomainValues();
+
+    static TType FromString(TStringBuf str);
+    static TString ToString(TType value);
+
+    // For non-bit enums only.
+    static constexpr TType GetMinValue();
+    static constexpr TType GetMaxValue();
+
+    // For bit enums only.
+    static std::vector<TType> Decompose(TType value);
+
+    // LLVM SmallDenseMap interop.
+    // This should only be used for enums whose underlying type has big enough range
+    // (see getEmptyKey and getTombstoneKey functions).
+    struct TDenseMapInfo
+    {
+        static inline TType getEmptyKey()
+        {
+            return static_cast<TType>(-1);
+        }
+
+        static inline TType getTombstoneKey()
+        {
+            return static_cast<TType>(-2);
+        }
+
+        static unsigned getHashValue(const TType& key)
+        {
+            return static_cast<unsigned>(key) * 37U;
+        }
+
+        static bool isEqual(const TType& lhs, const TType& rhs)
+        {
+            return lhs == rhs;
+        }
+    };
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Defines a smart enumeration with a specific underlying type.
 /*!
- * \param enumType Enumeration enumType.
+ * \param name Enumeration name.
  * \param seq Enumeration domain encoded as a <em>sequence</em>.
  * \param underlyingType Underlying type.
  */
-#define DEFINE_ENUM_WITH_UNDERLYING_TYPE(enumType, underlyingType, seq) \
-    ENUM__CLASS(enumType, underlyingType, seq) \
-    ENUM__BEGIN_TRAITS(enumType, underlyingType, false, false, seq) \
-    ENUM__VALIDATE_UNIQUE(enumType) \
-    ENUM__END_TRAITS(enumType) \
-    static_assert(true)
+#define DEFINE_ENUM_WITH_UNDERLYING_TYPE(name, underlyingType, seq) \
+    ENUM__CLASS(name, underlyingType, seq) \
+    ENUM__BEGIN_TRAITS(name, underlyingType, false, false, seq) \
+    ENUM__MINMAX \
+    ENUM__VALIDATE_UNIQUE(name) \
+    ENUM__END_TRAITS(name)
 
 //! Defines a smart enumeration with a specific underlying type.
 //! Duplicate enumeration values are allowed.
-#define DEFINE_AMBIGUOUS_ENUM_WITH_UNDERLYING_TYPE(enumType, underlyingType, seq) \
-    ENUM__CLASS(enumType, underlyingType, seq) \
-    ENUM__BEGIN_TRAITS(enumType, underlyingType, false, false, seq) \
-    ENUM__END_TRAITS(enumType) \
-    static_assert(true)
+#define DEFINE_AMBIGUOUS_ENUM_WITH_UNDERLYING_TYPE(name, underlyingType, seq) \
+    ENUM__CLASS(name, underlyingType, seq) \
+    ENUM__BEGIN_TRAITS(name, underlyingType, false, false, seq) \
+    ENUM__MINMAX \
+    ENUM__END_TRAITS(name)
 
 //! Defines a smart enumeration with the default |int| underlying type.
-#define DEFINE_ENUM(enumType, seq) \
-    DEFINE_ENUM_WITH_UNDERLYING_TYPE(enumType, int, seq)
+#define DEFINE_ENUM(name, seq) \
+    DEFINE_ENUM_WITH_UNDERLYING_TYPE(name, int, seq)
 
 //! Defines a smart enumeration with a specific underlying type.
 /*!
- * \param enumType Enumeration enumType.
+ * \param name Enumeration name.
  * \param seq Enumeration domain encoded as a <em>sequence</em>.
  * \param underlyingType Underlying type.
  */
-#define DEFINE_BIT_ENUM_WITH_UNDERLYING_TYPE(enumType, underlyingType, seq) \
-    ENUM__CLASS(enumType, underlyingType, seq) \
-    ENUM__BEGIN_TRAITS(enumType, underlyingType, true, false, seq) \
-    ENUM__VALIDATE_UNIQUE(enumType) \
-    ENUM__END_TRAITS(enumType) \
-    ENUM__BITWISE_OPS(enumType) \
-    static_assert(true)
+#define DEFINE_BIT_ENUM_WITH_UNDERLYING_TYPE(name, underlyingType, seq) \
+    ENUM__CLASS(name, underlyingType, seq) \
+    ENUM__BEGIN_TRAITS(name, underlyingType, true, false, seq) \
+    ENUM__DECOMPOSE \
+    ENUM__VALIDATE_UNIQUE(name) \
+    ENUM__END_TRAITS(name) \
+    ENUM__BITWISE_OPS(name)
 
 //! Defines a smart enumeration with a specific underlying type.
 //! Duplicate enumeration values are allowed.
 /*!
- * \param enumType Enumeration enumType.
+ * \param name Enumeration name.
  * \param seq Enumeration domain encoded as a <em>sequence</em>.
  * \param underlyingType Underlying type.
  */
-#define DEFINE_AMBIGUOUS_BIT_ENUM_WITH_UNDERLYING_TYPE(enumType, underlyingType, seq) \
-    ENUM__CLASS(enumType, underlyingType, seq) \
-    ENUM__BEGIN_TRAITS(enumType, underlyingType, true, false, seq) \
-    ENUM__END_TRAITS(enumType) \
-    ENUM__BITWISE_OPS(enumType) \
-    static_assert(true)
+#define DEFINE_AMBIGUOUS_BIT_ENUM_WITH_UNDERLYING_TYPE(name, underlyingType, seq) \
+    ENUM__CLASS(name, underlyingType, seq) \
+    ENUM__BEGIN_TRAITS(name, underlyingType, true, false, seq) \
+    ENUM__DECOMPOSE \
+    ENUM__END_TRAITS(name) \
+    ENUM__BITWISE_OPS(name)
 
-//! Defines a smart enumeration with the default |unsigned int| underlying type.
+//! Defines a smart enumeration with the default |unsigned| underlying type.
 /*!
- * \param enumType Enumeration enumType.
+ * \param name Enumeration name.
  * \param seq Enumeration domain encoded as a <em>sequence</em>.
  */
-#define DEFINE_BIT_ENUM(enumType, seq) \
-    DEFINE_BIT_ENUM_WITH_UNDERLYING_TYPE(enumType, unsigned int, seq)
+#define DEFINE_BIT_ENUM(name, seq) \
+    DEFINE_BIT_ENUM_WITH_UNDERLYING_TYPE(name, unsigned, seq)
 
 //! Defines a smart enumeration with a specific underlying type and IsStringSerializable attribute.
 /*!
- * \param enumType Enumeration enumType.
+ * \param name Enumeration name.
  * \param seq Enumeration domain encoded as a <em>sequence</em>.
  * \param underlyingType Underlying type.
  */
-#define DEFINE_STRING_SERIALIZABLE_ENUM_WITH_UNDERLYING_TYPE(enumType, underlyingType, seq) \
-    ENUM__CLASS(enumType, underlyingType, seq) \
-    ENUM__BEGIN_TRAITS(enumType, underlyingType, false, true, seq) \
-    ENUM__VALIDATE_UNIQUE(enumType) \
-    ENUM__END_TRAITS(enumType) \
-    static_assert(true)
+#define DEFINE_STRING_SERIALIZABLE_ENUM_WITH_UNDERLYING_TYPE(name, underlyingType, seq) \
+    ENUM__CLASS(name, underlyingType, seq) \
+    ENUM__BEGIN_TRAITS(name, underlyingType, false, true, seq) \
+    ENUM__MINMAX \
+    ENUM__VALIDATE_UNIQUE(name) \
+    ENUM__END_TRAITS(name) \
 
 //! Defines a smart enumeration with a specific underlying type and IsStringSerializable attribute.
 //! Duplicate enumeration values are allowed.
-#define DEFINE_AMBIGUOUS_STRING_SERIALIZABLE_ENUM_WITH_UNDERLYING_TYPE(enumType, underlyingType, seq) \
-    ENUM__CLASS(enumType, underlyingType, seq) \
-    ENUM__BEGIN_TRAITS(enumType, underlyingType, false, true, seq) \
-    ENUM__END_TRAITS(enumType) \
-    static_assert(true)
+#define DEFINE_AMBIGUOUS_STRING_SERIALIZABLE_ENUM_WITH_UNDERLYING_TYPE(name, underlyingType, seq) \
+    ENUM__CLASS(name, underlyingType, seq) \
+    ENUM__BEGIN_TRAITS(name, underlyingType, false, true, seq) \
+    ENUM__MINMAX \
+    ENUM__END_TRAITS(name)
 
 //! Defines a smart enumeration with the default |int| underlying type and IsStringSerializable attribute.
-#define DEFINE_STRING_SERIALIZABLE_ENUM(enumType, seq) \
-    DEFINE_STRING_SERIALIZABLE_ENUM_WITH_UNDERLYING_TYPE(enumType, int, seq)
+#define DEFINE_STRING_SERIALIZABLE_ENUM(name, seq) \
+    DEFINE_STRING_SERIALIZABLE_ENUM_WITH_UNDERLYING_TYPE(name, int, seq)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -223,7 +225,7 @@ public:
     static bool IsDomainValue(E value);
 
 private:
-    using TUnderlying = std::underlying_type_t<E>;
+    using TUnderlying = typename TEnumTraits<E>::TUnderlying;
     static constexpr int N = static_cast<TUnderlying>(Max) - static_cast<TUnderlying>(Min) + 1;
     std::array<T, N> Items_;
 };
@@ -231,14 +233,12 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Returns |true| iff the enumeration value is not bitwise zero.
-template <typename E>
-    requires TEnumTraits<E>::IsBitEnum
-constexpr bool Any(E value) noexcept;
+template <typename E, typename = std::enable_if_t<NYT::TEnumTraits<E>::IsBitEnum, E>>
+bool Any(E value);
 
 //! Returns |true| iff the enumeration value is bitwise zero.
-template <typename E>
-    requires TEnumTraits<E>::IsBitEnum
-constexpr bool None(E value) noexcept;
+template <typename E, typename = std::enable_if_t<NYT::TEnumTraits<E>::IsBitEnum, E>>
+bool None(E value);
 
 ////////////////////////////////////////////////////////////////////////////////
 

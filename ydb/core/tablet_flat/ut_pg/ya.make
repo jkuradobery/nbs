@@ -11,7 +11,6 @@ PEERDIR(
     ydb/core/tablet_flat/test/libs/table
     ydb/library/yql/public/udf/service/exception_policy
     ydb/library/yql/sql/pg
-    ydb/library/yql/parser/pg_wrapper
 )
 
 ADDINCL(

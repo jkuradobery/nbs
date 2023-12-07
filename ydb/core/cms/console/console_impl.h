@@ -15,7 +15,7 @@
 
 #include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/set.h>
 
@@ -54,11 +54,10 @@ private:
     ITransaction *CreateTxLoadState();
     ITransaction *CreateTxSetConfig(TEvConsole::TEvSetConfigRequest::TPtr &ev);
 
-    void DefaultSignalTabletActive(const TActorContext &ctx) override;
     void OnActivateExecutor(const TActorContext &ctx) override;
     void OnDetach(const TActorContext &ctx) override;
     void OnTabletDead(TEvTablet::TEvTabletDead::TPtr &ev, const TActorContext &ctx) override;
-    void Enqueue(STFUNC_SIG) override;
+    void Enqueue(TAutoPtr<IEventHandle> &ev, const TActorContext &ctx) override;
     bool OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev, const TActorContext &ctx) override;
 
     void Cleanup(const TActorContext &ctx);
@@ -73,10 +72,12 @@ private:
     void ForwardToTenantsManager(TAutoPtr<IEventHandle> &ev, const TActorContext &ctx);
     void Handle(TEvConsole::TEvGetConfigRequest::TPtr &ev, const TActorContext &ctx);
     void Handle(TEvConsole::TEvSetConfigRequest::TPtr &ev, const TActorContext &ctx);
+    void Handle(TEvents::TEvPoisonPill::TPtr &ev,
+                const TActorContext &ctx);
 
     STFUNC(StateInit)
     {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork)
@@ -89,7 +90,6 @@ private:
             FFunc(TEvConsole::EvAlterTenantRequest, ForwardToTenantsManager);
             FFunc(TEvConsole::EvCheckConfigUpdatesRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvConfigNotificationResponse, ForwardToConfigsManager);
-            FFunc(TEvConsole::EvIsYamlReadOnlyRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvConfigureRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvGetAllConfigsRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvGetAllMetadataRequest, ForwardToConfigsManager);
@@ -122,14 +122,15 @@ private:
             HFuncTraced(TEvConsole::TEvSetConfigRequest, Handle);
             FFunc(TEvConsole::EvToggleConfigValidatorRequest, ForwardToConfigsManager);
             FFunc(TEvConsole::EvUpdateTenantPoolConfig, ForwardToTenantsManager);
+            HFuncTraced(TEvents::TEvPoisonPill, Handle);
             IgnoreFunc(TEvTabletPipe::TEvServerConnected);
             IgnoreFunc(TEvTabletPipe::TEvServerDisconnected);
 
         default:
-            if (!HandleDefaultEvents(ev, SelfId())) {
-                LOG_CRIT_S(*TlsActivationContext, NKikimrServices::CMS,
+            if (!HandleDefaultEvents(ev, ctx)) {
+                LOG_CRIT_S(ctx, NKikimrServices::CMS,
                            "TConsole::StateWork unexpected event type: " << ev->GetTypeRewrite()
-                           << " event: " << ev->ToString());
+                           << " event: " << (ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?"));
             }
         }
     }

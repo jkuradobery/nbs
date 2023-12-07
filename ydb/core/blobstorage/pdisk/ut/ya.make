@@ -26,7 +26,6 @@ PEERDIR(
 SRCS(
     blobstorage_pdisk_blockdevice_ut.cpp
     blobstorage_pdisk_crypto_ut.cpp
-    blobstorage_pdisk_log_cache_ut.cpp
     blobstorage_pdisk_util_ut.cpp
     blobstorage_pdisk_ut_env.cpp
     blobstorage_pdisk_ut_races.cpp
@@ -39,7 +38,7 @@ SRCS(
     mock/pdisk_mock.cpp
 )
 
-IF (BUILD_TYPE != "DEBUG")
+IF (BUILD_TYPE == "RELEASE")
     SRCS(
         blobstorage_pdisk_ut_yard.cpp
     )

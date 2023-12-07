@@ -1,9 +1,9 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/protobuf/json/json2proto.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include "viewer.h"
@@ -150,7 +150,7 @@ public:
                             (const NThreading::TFuture<TProtoResponse>& future) {
             auto& response = future.GetValueSync();
             auto result = MakeHolder<TEvLocalRpcPrivate::TEvGrpcRequestResult<TProtoResult>>();
-            Y_ABORT_UNLESS(response.operation().ready());
+            Y_VERIFY(response.operation().ready());
             if (response.operation().status() == Ydb::StatusIds::SUCCESS) {
                 TProtoResult rs;
                 response.operation().result().UnpackTo(&rs);

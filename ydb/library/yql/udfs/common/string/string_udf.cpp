@@ -5,12 +5,9 @@
 #include <library/cpp/charset/codepage.h>
 #include <library/cpp/deprecated/split/split_iterator.h>
 #include <library/cpp/html/pcdata/pcdata.h>
-#include <library/cpp/string_utils/base32/base32.h>
 #include <library/cpp/string_utils/base64/base64.h>
 #include <library/cpp/string_utils/levenshtein_diff/levenshtein_diff.h>
 #include <library/cpp/string_utils/quote/quote.h>
-
-#include <ydb/library/yql/public/udf/arrow/udf_arrow_helpers.h>
 
 #include <util/charset/wide.h>
 #include <util/generic/vector.h>
@@ -30,7 +27,6 @@ using namespace NKikimr;
 using namespace NUdf;
 
 namespace {
-
 #define STRING_UDF(udfName, function)                       \
     SIMPLE_STRICT_UDF(T##udfName, char*(TAutoMap<char*>)) { \
         const TString input(args[0].AsStringRef());         \
@@ -130,7 +126,6 @@ namespace {
     }
 
 #define STRING_UDF_MAP(XX)           \
-    XX(Base32Encode, Base32Encode)   \
     XX(Base64Encode, Base64Encode)   \
     XX(Base64EncodeUrl, Base64EncodeUrl)   \
     XX(EscapeC, EscapeC)             \
@@ -144,8 +139,6 @@ namespace {
     XX(Collapse, Collapse)
 
 #define STRING_UNSAFE_UDF_MAP(XX)  \
-    XX(Base32Decode, Base32Decode)         \
-    XX(Base32StrictDecode, Base32StrictDecode)         \
     XX(Base64Decode, Base64Decode) \
     XX(Base64StrictDecode, Base64StrictDecode)         \
     XX(HexDecode, HexDecode)
@@ -263,7 +256,8 @@ namespace {
         return args[0];
     }
 
-    SIMPLE_STRICT_UDF_WITH_OPTIONAL_ARGS(TFind, i64(TAutoMap<char*>, char*, TOptional<ui64>), 1) {
+    SIMPLE_STRICT_UDF_OPTIONS(TFind, i64(TAutoMap<char*>, char*, TOptional<ui64>),
+                       builder.OptionalArgs(1)) {
         Y_UNUSED(valueBuilder);
         const TString haystack(args[0].AsStringRef());
         const TString needle(args[1].AsStringRef());
@@ -271,7 +265,8 @@ namespace {
         return TUnboxedValuePod(haystack.find(needle, pos));
     }
 
-    SIMPLE_STRICT_UDF_WITH_OPTIONAL_ARGS(TReverseFind, i64(TAutoMap<char*>, char*, TOptional<ui64>), 1) {
+    SIMPLE_STRICT_UDF_OPTIONS(TReverseFind, i64(TAutoMap<char*>, char*, TOptional<ui64>),
+                              builder.OptionalArgs(1)) {
         Y_UNUSED(valueBuilder);
         const TString haystack(args[0].AsStringRef());
         const TString needle(args[1].AsStringRef());
@@ -279,7 +274,8 @@ namespace {
         return TUnboxedValuePod(haystack.rfind(needle, pos));
     }
 
-    SIMPLE_STRICT_UDF_WITH_OPTIONAL_ARGS(TSubstring, char*(TAutoMap<char*>, TOptional<ui64>, TOptional<ui64>), 1) {
+    SIMPLE_STRICT_UDF_OPTIONS(TSubstring, char*(TAutoMap<char*>, TOptional<ui64>, TOptional<ui64>),
+                              builder.OptionalArgs(1)) {
         const TString input(args[0].AsStringRef());
         const ui64 from = args[1].GetOrDefault<ui64>(0);
         const ui64 count = args[2].GetOrDefault<ui64>(TString::npos);
@@ -322,14 +318,14 @@ namespace {
     using TLimitArg = TNamedArg<ui64, limitName>;
 
 
-    SIMPLE_STRICT_UDF_WITH_OPTIONAL_ARGS(TSplitToList, TListType<char*>(
+    SIMPLE_STRICT_UDF_OPTIONS(TSplitToList, TListType<char*>(
                             TOptional<char*>,
                             char*,
                             TDelimeterStringArg,
                             TSkipEmptyArg,
                             TLimitArg
                        ),
-                       3) {
+                       builder.OptionalArgs(3)) {
         TTmpVector result;
         if (args[0]) {
             const std::string_view input(args[0].AsStringRef());
@@ -373,7 +369,7 @@ namespace {
         return valueBuilder->NewString(JoinSeq(delimeter, items));
     }
 
-    BEGIN_SIMPLE_STRICT_ARROW_UDF(TLevensteinDistance, ui64(TAutoMap<char*>, TAutoMap<char*>)) {
+    SIMPLE_STRICT_UDF(TLevensteinDistance, ui64(TAutoMap<char*>, TAutoMap<char*>)) {
         Y_UNUSED(valueBuilder);
         const TStringBuf left(args[0].AsStringRef());
         const TStringBuf right(args[1].AsStringRef());
@@ -381,21 +377,9 @@ namespace {
         return TUnboxedValuePod(result);
     }
 
-    struct TLevensteinDistanceKernelExec : public TBinaryKernelExec<TLevensteinDistanceKernelExec> {
-    template <typename TSink>
-        static void Process(TBlockItem arg1, TBlockItem arg2, const TSink& sink) {
-            const std::string_view left(arg1.AsStringRef());
-            const std::string_view right(arg2.AsStringRef());
-            const ui64 result = NLevenshtein::Distance(left, right);
-            sink(TBlockItem(result));
-        }
-    };
-
-    END_SIMPLE_ARROW_UDF(TLevensteinDistance, TLevensteinDistanceKernelExec::Do);
-
     static constexpr ui64 padLim = 1000000;
 
-    SIMPLE_UDF_WITH_OPTIONAL_ARGS(TRightPad, char*(TAutoMap<char*>, ui64, TOptional<char*>), 1) {
+    SIMPLE_UDF_OPTIONS(TRightPad, char*(TAutoMap<char*>, ui64, TOptional<char*>), builder.OptionalArgs(1)) {
         TStringStream result;
         const TStringBuf input(args[0].AsStringRef());
         char paddingSymbol = ' ';
@@ -413,7 +397,7 @@ namespace {
         return valueBuilder->NewString(TStringRef(result.Data(), result.Size()));
     }
 
-    SIMPLE_UDF_WITH_OPTIONAL_ARGS(TLeftPad, char*(TAutoMap<char*>, ui64, TOptional<char*>), 1) {
+    SIMPLE_UDF_OPTIONS(TLeftPad, char*(TAutoMap<char*>, ui64, TOptional<char*>), builder.OptionalArgs(1)) {
         TStringStream result;
         const TStringBuf input(args[0].AsStringRef());
         char paddingSymbol = ' ';

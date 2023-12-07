@@ -1,5 +1,4 @@
 #include "ref.h"
-
 #include "blob.h"
 
 #include <library/cpp/yt/malloc/malloc.h>
@@ -29,12 +28,6 @@ public:
     explicit TBlobHolder(TBlob&& blob)
         : Blob_(std::move(blob))
     { }
-
-    // TSharedRangeHolder overrides.
-    std::optional<size_t> GetTotalByteSize() const override
-    {
-        return Blob_.Capacity();
-    }
 
 private:
     const TBlob Blob_;
@@ -70,12 +63,6 @@ public:
         return String_;
     }
 
-    // TSharedRangeHolder overrides.
-    std::optional<size_t> GetTotalByteSize() const override
-    {
-        return String_.capacity();
-    }
-
 private:
     const TString String_;
 #ifdef YT_ENABLE_REF_COUNTED_TRACKING
@@ -109,10 +96,7 @@ protected:
     TRefCountedTypeCookie Cookie_;
 #endif
 
-    void Initialize(
-        size_t size,
-        TSharedMutableRefAllocateOptions options,
-        TRefCountedTypeCookie cookie)
+    void Initialize(size_t size, TSharedMutableRefAllocateOptions options, TRefCountedTypeCookie cookie)
     {
         Size_ = size;
         Cookie_ = cookie;
@@ -133,10 +117,7 @@ class TDefaultAllocationHolder
     , public TWithExtraSpace<TDefaultAllocationHolder>
 {
 public:
-    TDefaultAllocationHolder(
-        size_t size,
-        TSharedMutableRefAllocateOptions options,
-        TRefCountedTypeCookie cookie)
+    TDefaultAllocationHolder(size_t size, TSharedMutableRefAllocateOptions options, TRefCountedTypeCookie cookie)
     {
         if (options.ExtendToUsableSize) {
             if (auto usableSize = GetUsableSpaceSize(); usableSize != 0) {
@@ -150,12 +131,6 @@ public:
     {
         return static_cast<char*>(GetExtraSpacePtr());
     }
-
-    // TSharedRangeHolder overrides.
-    std::optional<size_t> GetTotalByteSize() const override
-    {
-        return Size_;
-    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -164,10 +139,7 @@ class TPageAlignedAllocationHolder
     : public TAllocationHolderBase<TPageAlignedAllocationHolder>
 {
 public:
-    TPageAlignedAllocationHolder(
-        size_t size,
-        TSharedMutableRefAllocateOptions options,
-        TRefCountedTypeCookie cookie)
+    TPageAlignedAllocationHolder(size_t size, TSharedMutableRefAllocateOptions options, TRefCountedTypeCookie cookie)
         : Begin_(static_cast<char*>(::aligned_malloc(size, GetPageSize())))
     {
         Initialize(size, options, cookie);
@@ -181,12 +153,6 @@ public:
     char* GetBegin()
     {
         return Begin_;
-    }
-
-    // TSharedRangeHolder overrides.
-    std::optional<size_t> GetTotalByteSize() const override
-    {
-        return AlignUp(Size_, GetPageSize());
     }
 
 private:
@@ -385,21 +351,6 @@ TString TSharedRefArray::ToString() const
         ptr += part.size();
     }
     return result;
-}
-
-TSharedRefArray TSharedRefArray::MakeCopy(
-    const TSharedRefArray& array,
-    TRefCountedTypeCookie tagCookie)
-{
-    TSharedRefArrayBuilder builder(
-        array.Size(),
-        array.ByteSize(),
-        tagCookie);
-    for (const auto& part : array) {
-        auto partCopy = builder.AllocateAndAdd(part.Size());
-        ::memcpy(partCopy.Begin(), part.Begin(), part.Size());
-    }
-    return builder.Finish();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

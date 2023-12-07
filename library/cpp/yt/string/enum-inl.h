@@ -4,10 +4,6 @@
 #include "enum.h"
 #endif
 
-#include "format.h"
-
-#include <library/cpp/yt/exception/exception.h>
-
 #include <util/string/printf.h>
 
 namespace NYT {
@@ -31,37 +27,14 @@ void FormatUnknownEnumValue(
 template <class T>
 std::optional<T> TryParseEnum(TStringBuf value)
 {
+    static_assert(TEnumTraits<T>::IsEnum);
+
     auto tryFromString = [] (TStringBuf value) -> std::optional<T> {
-        if (auto decodedValue = TryDecodeEnumValue(value)) {
-            auto enumValue = TEnumTraits<T>::FindValueByLiteral(*decodedValue);
-            return enumValue ? enumValue : TEnumTraits<T>::FindValueByLiteral(value);
+        T result;
+        if (auto ok = TEnumTraits<T>::FindValueByLiteral(DecodeEnumValue(value), &result)) {
+            return result;
         }
-
-        auto reportError = [value] () {
-            throw TSimpleException(Format("Enum value %Qv is neither in a proper underscore case nor in a format \"%v(123)\"",
-                value,
-                TEnumTraits<T>::GetTypeName()));
-        };
-
-        TStringBuf typeName;
-        auto isTypeNameCorrect = value.NextTok('(', typeName) && typeName == TEnumTraits<T>::GetTypeName();
-        if (!isTypeNameCorrect) {
-            reportError();
-        }
-
-        TStringBuf enumValue;
-        std::underlying_type_t<T> underlyingValue = 0;
-        auto isEnumValueCorrect = value.NextTok(')', enumValue) && TryFromString(enumValue, underlyingValue);
-        if (!isEnumValueCorrect) {
-            reportError();
-        }
-
-        auto isParsingComplete = value.empty();
-        if (!isParsingComplete) {
-            reportError();
-        }
-
-        return static_cast<T>(underlyingValue);
+        return {};
     };
 
     if constexpr (TEnumTraits<T>::IsBitEnum) {
@@ -92,25 +65,28 @@ T ParseEnum(TStringBuf value)
 template <class T>
 void FormatEnum(TStringBuilderBase* builder, T value, bool lowerCase)
 {
+    static_assert(TEnumTraits<T>::IsEnum);
+
     auto formatScalarValue = [builder, lowerCase] (T value) {
-        auto optionalLiteral = TEnumTraits<T>::FindLiteralByValue(value);
-        if (!optionalLiteral) {
+        auto* literal = TEnumTraits<T>::FindLiteralByValue(value);
+        if (!literal) {
+            YT_VERIFY(!TEnumTraits<T>::IsBitEnum);
             NYT::NDetail::FormatUnknownEnumValue(
                 builder,
                 TEnumTraits<T>::GetTypeName(),
-                ToUnderlying(value));
+                static_cast<typename TEnumTraits<T>::TUnderlying>(value));
             return;
         }
 
         if (lowerCase) {
-            CamelCaseToUnderscoreCase(builder, *optionalLiteral);
+            CamelCaseToUnderscoreCase(builder, *literal);
         } else {
-            builder->AppendString(*optionalLiteral);
+            builder->AppendString(*literal);
         }
     };
 
     if constexpr (TEnumTraits<T>::IsBitEnum) {
-        if (TEnumTraits<T>::FindLiteralByValue(value)) {
+        if (auto* literal = TEnumTraits<T>::FindLiteralByValue(value)) {
             formatScalarValue(value);
             return;
         }
@@ -130,7 +106,7 @@ void FormatEnum(TStringBuilderBase* builder, T value, bool lowerCase)
 }
 
 template <class T>
-TString FormatEnum(T value)
+TString FormatEnum(T value, typename TEnumTraits<T>::TType*)
 {
     TStringBuilder builder;
     FormatEnum(&builder, value, /*lowerCase*/ true);

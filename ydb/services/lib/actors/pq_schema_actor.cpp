@@ -2,7 +2,6 @@
 
 #include <ydb/library/persqueue/obfuscate/obfuscate.h>
 #include <ydb/library/persqueue/topic_parser/topic_parser.h>
-#include <ydb/core/base/feature_flags.h>
 
 #include <ydb/public/lib/jwt/jwt.h>
 
@@ -16,7 +15,6 @@
 namespace NKikimr::NGRpcProxy::V1 {
 
     constexpr TStringBuf GRPCS_ENDPOINT_PREFIX = "grpcs://";
-    constexpr TStringBuf GRPC_ENDPOINT_PREFIX = "grpc://";
     constexpr i64 DEFAULT_MAX_DATABASE_MESSAGEGROUP_SEQNO_RETENTION_PERIOD_MS =
         TDuration::Days(16).MilliSeconds();
     constexpr ui64 DEFAULT_PARTITION_SPEED = 1_MB;
@@ -255,7 +253,7 @@ namespace NKikimr::NGRpcProxy::V1 {
             return TMsgPqCodes(TStringBuilder() << "service type cannot be empty for consumer '" << rr.name() << "'", Ydb::PersQueue::ErrorCode::VALIDATION_ERROR);
         }
 
-        Y_ABORT_UNLESS(supportedClientServiceTypes.find(serviceType) != supportedClientServiceTypes.end());
+        Y_VERIFY(supportedClientServiceTypes.find(serviceType) != supportedClientServiceTypes.end());
 
         const NKikimr::NGRpcProxy::V1::TClientServiceType& clientServiceType = supportedClientServiceTypes.find(serviceType)->second;
 
@@ -270,7 +268,7 @@ namespace NKikimr::NGRpcProxy::V1 {
                 if (hasPassword) {
                     return TMsgPqCodes("incorrect client service type password", Ydb::PersQueue::ErrorCode::INVALID_ARGUMENT);
                 }
-                if (pqConfig.GetForceClientServiceTypePasswordCheck()) { // no password and check is required
+                if (AppData(ctx)->PQConfig.GetForceClientServiceTypePasswordCheck()) { // no password and check is required
                     return TMsgPqCodes("no client service type password provided", Ydb::PersQueue::ErrorCode::VALIDATION_ERROR);
                 }
             }
@@ -293,7 +291,7 @@ namespace NKikimr::NGRpcProxy::V1 {
         }
 
         if (rr.important()) {
-            if (pqConfig.GetTopicsAreFirstClassCitizen() && !AppData(ctx)->FeatureFlags.GetEnableTopicDiskSubDomainQuota()) {
+            if (AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen()) {
                 return TMsgPqCodes(TStringBuilder() << "important flag is forbiden for consumer " << rr.name(), Ydb::PersQueue::ErrorCode::INVALID_ARGUMENT);
             }
             config->MutablePartitionConfig()->AddImportantClientId(consumerName);
@@ -673,6 +671,7 @@ namespace NKikimr::NGRpcProxy::V1 {
 
         const auto& channelProfiles = pqConfig.GetChannelProfiles();
         if (channelProfiles.size() > 2) {
+            partConfig->SetNumChannels(channelProfiles.size() - 2); // channels 0,1 are reserved in tablet
             partConfig->MutableExplicitChannelProfiles()->CopyFrom(channelProfiles);
         }
         if (settings.max_partition_storage_size() < 0) {
@@ -814,12 +813,10 @@ namespace NKikimr::NGRpcProxy::V1 {
                 if (endpoint.StartsWith(GRPCS_ENDPOINT_PREFIX)) {
                     mirrorFrom->SetUseSecureConnection(true);
                     endpoint = TString(endpoint.begin() + GRPCS_ENDPOINT_PREFIX.size(), endpoint.end());
-                } else if (endpoint.StartsWith(GRPC_ENDPOINT_PREFIX)) {
-                    endpoint = TString(endpoint.begin() + GRPC_ENDPOINT_PREFIX.size(), endpoint.end());
                 }
                 auto parts = SplitString(endpoint, ":");
                 if (parts.size() != 2) {
-                    error = TStringBuilder() << "endpoint in remote mirror rule must be in format [grpcs://]server:port or [grpc://]server:port, but got '"
+                    error = TStringBuilder() << "endpoint in remote mirror rule must be in format [grpcs://]server:port, but got '"
                                              << settings.remote_mirror_rule().endpoint() << "'";
                     return Ydb::StatusIds::BAD_REQUEST;
                 }
@@ -996,6 +993,7 @@ namespace NKikimr::NGRpcProxy::V1 {
 
         const auto& channelProfiles = pqConfig.GetChannelProfiles();
         if (channelProfiles.size() > 2) {
+            partConfig->SetNumChannels(channelProfiles.size() - 2); // channels 0,1 are reserved in tablet
             partConfig->MutableExplicitChannelProfiles()->CopyFrom(channelProfiles);
         }
         if (request.has_retention_period()) {

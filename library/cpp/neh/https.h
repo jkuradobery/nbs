@@ -1,6 +1,6 @@
 #pragma once
 
-#include <openssl/ossl_typ.h>
+#include <contrib/libs/openssl/include/openssl/ossl_typ.h>
 
 #include <util/generic/string.h>
 #include <util/generic/strbuf.h>

@@ -83,7 +83,7 @@ void TRetryEventsQueue::RemoveConfirmedEvents(ui64 confirmedSeqNo) {
 }
 
 void TRetryEventsQueue::SendRetryable(const IRetryableEvent::TPtr& ev) {
-    NActors::TActivationContext::Send(ev->Clone(MyConfirmedSeqNo).Release());
+    NActors::TActivationContext::Send(ev->Clone(MyConfirmedSeqNo));
 }
 
 void TRetryEventsQueue::ScheduleRetry() {

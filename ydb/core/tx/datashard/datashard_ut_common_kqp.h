@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
 #include <ydb/public/sdk/cpp/client/ydb_result/result.h>
 
@@ -17,26 +17,23 @@ namespace NKqpHelpers {
     using TEvDeleteSessionRequest = NKikimr::NGRpcService::TGrpcRequestOperationCall<Ydb::Table::DeleteSessionRequest,
         Ydb::Table::DeleteSessionResponse>;
 
-    using TEvCommitTransactionRequest = NKikimr::NGRpcService::TGrpcRequestOperationCall<Ydb::Table::CommitTransactionRequest,
-        Ydb::Table::CommitTransactionResponse>;
-
     template<class TResp>
     inline TResp AwaitResponse(TTestActorRuntime& runtime, NThreading::TFuture<TResp> f) {
-        if (!f.HasValue() && !f.HasException()) {
-            TDispatchOptions options;
-            options.CustomFinalCondition = [&]() {
-                return f.HasValue() || f.HasException();
-            };
-            options.FinalEvents.emplace_back([&](IEventHandle&) {
-                return f.HasValue() || f.HasException();
-            });
+        size_t responses = 0;
+        TResp response;
+        f.Subscribe([&](NThreading::TFuture<TResp> fut){
+            ++responses;
+            TResp r = fut.ExtractValueSync();
+            response.Swap(&r);
+        });
 
-            runtime.DispatchEvents(options);
+        TDispatchOptions options;
+        options.FinalEvents.emplace_back(
+            [&](IEventHandle& ) -> bool { return responses >= 1; }
+        );
 
-            UNIT_ASSERT(f.HasValue() || f.HasException());
-        }
-
-        return f.ExtractValueSync();
+        runtime.DispatchEvents(options);
+        return response;
     }
 
     inline TString CreateSessionRPC(TTestActorRuntime& runtime, const TString& database = {}) {
@@ -51,20 +48,6 @@ namespace NKqpHelpers {
         sessionId = result.session_id();
         UNIT_ASSERT(!sessionId.empty());
         return sessionId;
-    }
-
-    inline TString CommitTransactionRPC(TTestActorRuntime& runtime, const TString& sessionId, const TString& txId, const TString& database = {}) {
-        Ydb::Table::CommitTransactionRequest request;
-        request.set_session_id(sessionId);
-        request.set_tx_id(txId);
-
-        auto future = NRpcService::DoLocalRpc<TEvCommitTransactionRequest>(
-            std::move(request), database, "", runtime.GetActorSystem(0));
-        auto response = AwaitResponse(runtime, future);
-        if (response.operation().status() != Ydb::StatusIds::SUCCESS) {
-            return TStringBuilder() << "ERROR: " << response.operation().status();
-        }
-        return "";
     }
 
     inline NThreading::TFuture<Ydb::Table::ExecuteDataQueryResponse> SendRequest(
@@ -189,26 +172,26 @@ namespace NKqpHelpers {
     }
 
     inline TString KqpSimpleContinue(TTestActorRuntime& runtime, const TString& sessionId, const TString& txId, const TString& query) {
-        Y_ABORT_UNLESS(!txId.empty(), "continue on empty transaction");
+        Y_VERIFY(!txId.empty(), "continue on empty transaction");
         auto response = AwaitResponse(runtime, SendRequest(runtime, MakeSimpleRequestRPC(query, sessionId, txId, false /* commitTx */)));
         if (response.operation().status() != Ydb::StatusIds::SUCCESS) {
             return TStringBuilder() << "ERROR: " << response.operation().status();
         }
         Ydb::Table::ExecuteQueryResult result;
         response.operation().result().UnpackTo(&result);
-        Y_ABORT_UNLESS(result.tx_meta().id() == txId);
+        Y_VERIFY(result.tx_meta().id() == txId);
         return FormatResult(result);
     }
 
     inline TString KqpSimpleCommit(TTestActorRuntime& runtime, const TString& sessionId, const TString& txId, const TString& query) {
-        Y_ABORT_UNLESS(!txId.empty(), "commit on empty transaction");
+        Y_VERIFY(!txId.empty(), "commit on empty transaction");
         auto response = AwaitResponse(runtime, SendRequest(runtime, MakeSimpleRequestRPC(query, sessionId, txId, true /* commitTx */)));
         if (response.operation().status() != Ydb::StatusIds::SUCCESS) {
             return TStringBuilder() << "ERROR: " << response.operation().status();
         }
         Ydb::Table::ExecuteQueryResult result;
         response.operation().result().UnpackTo(&result);
-        Y_ABORT_UNLESS(result.tx_meta().id().empty(), "must be empty transaction");
+        Y_VERIFY(result.tx_meta().id().empty(), "must be empty transaction");
         return FormatResult(result);
     }
 

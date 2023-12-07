@@ -1,5 +1,5 @@
 #include "change_record.h"
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 
 #include <ydb/core/protos/change_exchange.pb.h>
 #include <ydb/core/scheme/scheme_tablecell.h>
@@ -164,7 +164,7 @@ struct TStructRecord {
         << " }";
     }
 
-    static TStructRecord Parse(const NKikimrChangeExchange::TDataChange& proto,
+    static TStructRecord Parse(const NKikimrChangeExchange::TChangeRecord::TDataChange& proto,
             const THashMap<NTable::TTag, TString>& tagToName)
     {
         TStructRecord record;
@@ -174,13 +174,13 @@ struct TStructRecord {
         });
 
         switch (proto.GetRowOperationCase()) {
-        case NKikimrChangeExchange::TDataChange::kUpsert:
+        case NKikimrChangeExchange::TChangeRecord::TDataChange::kUpsert:
             record.Rop = NTable::ERowOp::Upsert;
             Parse(proto.GetUpsert(), tagToName, [&record](const TString& name, ui32 value) {
                 record.Update.emplace(name, value);
             });
             break;
-        case NKikimrChangeExchange::TDataChange::kErase:
+        case NKikimrChangeExchange::TChangeRecord::TDataChange::kErase:
             record.Rop = NTable::ERowOp::Erase;
             break;
         default:
@@ -204,7 +204,7 @@ struct TStructRecord {
     }
 
     static TStructRecord Parse(const TString& serializedProto, const THashMap<NTable::TTag, TString>& tagToName) {
-        NKikimrChangeExchange::TDataChange proto;
+        NKikimrChangeExchange::TChangeRecord::TDataChange proto;
         Y_PROTOBUF_SUPPRESS_NODISCARD proto.ParseFromArray(serializedProto.data(), serializedProto.size());
         return Parse(proto, tagToName);
     }
@@ -212,7 +212,7 @@ struct TStructRecord {
 private:
     using TInserter = std::function<void(const TString&, ui32)>;
 
-    static void Parse(const NKikimrChangeExchange::TDataChange::TSerializedCells& proto,
+    static void Parse(const NKikimrChangeExchange::TChangeRecord::TDataChange::TSerializedCells& proto,
             const THashMap<NTable::TTag, TString>& tagToName, TInserter inserter)
     {
         TSerializedCellVec serialized;
@@ -267,7 +267,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeCollector) {
         InitRoot(server, sender);
 
         // prevent change sending
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::TEvActivateSender::EventType:
                 return TTestActorRuntime::EEventAction::DROP;
@@ -645,7 +645,7 @@ Y_UNIT_TEST_SUITE(CdcStreamChangeCollector) {
         InitRoot(server, sender);
 
         // prevent change sending
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::TEvActivateSender::EventType:
                 return TTestActorRuntime::EEventAction::DROP;

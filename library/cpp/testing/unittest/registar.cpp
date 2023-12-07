@@ -34,8 +34,8 @@ currentTest;
 ::NUnitTest::TRaiseErrorHandler RaiseErrorHandler;
 
 void ::NUnitTest::NPrivate::RaiseError(const char* what, const TString& msg, bool fatalFailure) {
-    Y_ABORT_UNLESS(UnittestThread, "%s in non-unittest thread with message:\n%s", what, msg.data());
-    Y_ABORT_UNLESS(GetCurrentTest());
+    Y_VERIFY(UnittestThread, "%s in non-unittest thread with message:\n%s", what, msg.data());
+    Y_VERIFY(GetCurrentTest());
 
     if (RaiseErrorHandler) {
         RaiseErrorHandler(what, msg, fatalFailure);
@@ -53,17 +53,17 @@ void ::NUnitTest::NPrivate::RaiseError(const char* what, const TString& msg, boo
 }
 
 void ::NUnitTest::SetRaiseErrorHandler(::NUnitTest::TRaiseErrorHandler handler) {
-    Y_ABORT_UNLESS(UnittestThread);
+    Y_VERIFY(UnittestThread);
     RaiseErrorHandler = std::move(handler);
 }
 
 void ::NUnitTest::NPrivate::SetUnittestThread(bool unittestThread) {
-    Y_ABORT_UNLESS(UnittestThread != unittestThread, "state check");
+    Y_VERIFY(UnittestThread != unittestThread, "state check");
     UnittestThread = unittestThread;
 }
 
 void ::NUnitTest::NPrivate::SetCurrentTest(TTestBase* test) {
-    Y_ABORT_UNLESS(!test || !currentTest, "state check");
+    Y_VERIFY(!test || !currentTest, "state check");
     currentTest = test;
 }
 
@@ -237,17 +237,12 @@ void NUnitTest::ITestSuiteProcessor::Run(std::function<void()> f, const TString&
     f();
 }
 
-void NUnitTest::ITestSuiteProcessor::SetForkTestsParams(bool forkTests, bool isForked) {
-    ForkTests_ = forkTests;
-    IsForked_ = isForked;
-}
-
 bool NUnitTest::ITestSuiteProcessor::GetIsForked() const {
-    return IsForked_;
+    return false;
 }
 
 bool NUnitTest::ITestSuiteProcessor::GetForkTests() const {
-    return ForkTests_;
+    return false;
 }
 
 void NUnitTest::ITestSuiteProcessor::OnStart() {

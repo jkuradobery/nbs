@@ -3,129 +3,75 @@
 #include "mkql_computation_node.h"
 #include "mkql_computation_node_holders.h"
 #include "mkql_optional_usage_mask.h"
-#include "mkql_block_transport.h"
-#include "mkql_block_reader.h"
 
-#include <ydb/library/yql/minikql/mkql_buffer.h>
 #include <ydb/library/yql/public/udf/udf_value.h>
 
 #include <library/cpp/enumbitset/enumbitset.h>
-#include <ydb/library/actors/util/rope.h>
 
 #include <util/stream/output.h>
 #include <util/generic/buffer.h>
 #include <util/generic/strbuf.h>
+
+#ifndef MKQL_DISABLE_CODEGEN
+#include <ydb/library/yql/minikql/codegen/codegen.h>
+#endif
 
 #include <utility>
 
 namespace NKikimr {
 namespace NMiniKQL {
 
-namespace NDetails {
-
-enum EPackProps {
-  Begin,
-  UseOptionalMask = Begin,
-  UseTopLength,
-  SingleOptional,
-  End
-};
-
-using TPackProperties = TEnumBitSet<EPackProps, EPackProps::Begin, EPackProps::End>;
-
-struct TPackerState {
-    explicit TPackerState(TPackProperties&& properties)
-        : Properties(std::move(properties))
-        , OptionalMaskReserve(Properties.Test(EPackProps::UseOptionalMask) ? 1 : 0)
-    {
-    }
-
-    const TPackProperties Properties;
-
-    TPlainContainerCache TopStruct;
-    TVector<TVector<std::pair<NUdf::TUnboxedValue, NUdf::TUnboxedValue>>> DictBuffers;
-    TVector<TVector<std::tuple<NUdf::TUnboxedValue, NUdf::TUnboxedValue, NUdf::TUnboxedValue>>> EncodedDictBuffers;
-    size_t OptionalMaskReserve;
-    NDetails::TOptionalUsageMask OptionalUsageMask;
-};
-
-} // namespace NDetails
-
-template<bool Fast>
-class TValuePackerGeneric {
+class TValuePacker {
+private:
+    enum EProps {
+        Begin,
+        UseOptionalMask = Begin,
+        UseTopLength,
+        SingleOptional,
+        End
+    };
+    using TProperties = TEnumBitSet<EProps, EProps::Begin, EProps::End>;
 public:
-    using TSelf = TValuePackerGeneric<Fast>;
+    TValuePacker(bool stable, const TType* type, bool tryUseCodegen = false);
+    TValuePacker(const TValuePacker& other);
 
-    TValuePackerGeneric(bool stable, const TType *type);
-
-    // reference is valid till the next call to Pack()
+    // Returned buffer is temporary and should be copied before next Pack() call
     TStringBuf Pack(const NUdf::TUnboxedValuePod& value) const;
     NUdf::TUnboxedValue Unpack(TStringBuf buf, const THolderFactory& holderFactory) const;
 
 private:
-    const bool Stable_;
-    const TType* const Type_;
+    void PackImpl(const TType* type, const NUdf::TUnboxedValuePod& value) const;
+    NUdf::TUnboxedValue UnpackImpl(const TType* type, TStringBuf& buf, ui32 topLength, const THolderFactory& holderFactory) const;
+    static TProperties ScanTypeProperties(const TType* type);
+    static bool HasOptionalFields(const TType* type);
+    // Returns length and empty single optional flag
+    static std::pair<ui32, bool> SkipEmbeddedLength(TStringBuf& buf);
+    typedef void(*TPackFunction)(const TRawUV*, ui64*, ui64*);
+    TPackFunction MakePackFunction();
+
+#ifndef MKQL_DISABLE_CODEGEN
+    const NYql::NCodegen::ICodegen::TPtr Codegen;
+#endif
+    const bool Stable;
+    const TType* Type;
     // TODO: real thread safety with external state
-    mutable TBuffer Buffer_;
-    mutable NDetails::TPackerState State_;
+    mutable TBuffer Buffer;
+    TProperties Properties;
+    mutable size_t OptionalMaskReserve;
+    mutable NDetails::TOptionalUsageMask OptionalUsageMask;
+    mutable TPlainContainerCache TopStruct;
+    mutable TVector<TVector<std::pair<NUdf::TUnboxedValue, NUdf::TUnboxedValue>>> DictBuffers;
+    mutable TVector<TVector<std::tuple<NUdf::TUnboxedValue, NUdf::TUnboxedValue, NUdf::TUnboxedValue>>> EncodedDictBuffers;
+    TPackFunction PackFunc = nullptr;
+
+    friend struct TValuePackerDetails;
 };
-
-template<bool Fast>
-class TValuePackerTransport {
-public:
-    using TSelf = TValuePackerTransport<Fast>;
-
-    explicit TValuePackerTransport(const TType* type, arrow::MemoryPool* pool = nullptr);
-    // for compatibility with TValuePackerGeneric - stable packing is not supported
-    TValuePackerTransport(bool stable, const TType* type, arrow::MemoryPool* ppol = nullptr);
-
-    // AddItem()/UnpackBatch() will perform incremental packing - type T is processed as list item type. Will produce List<T> layout
-    TSelf& AddItem(const NUdf::TUnboxedValuePod& value);
-    TSelf& AddWideItem(const NUdf::TUnboxedValuePod* values, ui32 count);
-    size_t PackedSizeEstimate() const {
-        return IsBlock_ ? BlockBuffer_.size() : (Buffer_ ? (Buffer_->Size() + Buffer_->ReservedHeaderSize()) : 0);
-    }
-    void Clear();
-    TRope Finish();
-
-    // Pack()/Unpack() will pack/unpack single value of type T
-    TRope Pack(const NUdf::TUnboxedValuePod& value) const;
-    NUdf::TUnboxedValue Unpack(TRope&& buf, const THolderFactory& holderFactory) const;
-    void UnpackBatch(TRope&& buf, const THolderFactory& holderFactory, TUnboxedValueBatch& result) const;
-private:
-    void BuildMeta(TPagedBuffer::TPtr& buffer, bool addItemCount) const;
-    void StartPack();
-
-    void InitBlocks();
-    TSelf& AddWideItemBlocks(const NUdf::TUnboxedValuePod* values, ui32 count);
-    TRope FinishBlocks();
-    void UnpackBatchBlocks(TRope&& buf, const THolderFactory& holderFactory, TUnboxedValueBatch& result) const;
-
-    const TType* const Type_;
-    ui64 ItemCount_ = 0;
-    TPagedBuffer::TPtr Buffer_;
-    mutable NDetails::TPackerState State_;
-    mutable NDetails::TPackerState IncrementalState_;
-
-    arrow::MemoryPool& ArrowPool_;
-    bool IsBlock_ = false;
-    bool IsLegacyBlock_ = false;
-    ui32 BlockLenIndex_ = 0;
-
-    TVector<std::unique_ptr<IBlockSerializer>> BlockSerializers_;
-    TVector<std::unique_ptr<IBlockReader>> BlockReaders_;
-    TVector<std::shared_ptr<arrow::ArrayData>> ConvertedScalars_;
-    TRope BlockBuffer_;
-
-    TVector<std::unique_ptr<IBlockDeserializer>> BlockDeserializers_;
-};
-
-using TValuePacker = TValuePackerGeneric<false>;
 
 class TValuePackerBoxed : public TComputationValue<TValuePackerBoxed>, public TValuePacker {
     typedef TComputationValue<TValuePackerBoxed> TBase;
 public:
-    TValuePackerBoxed(TMemoryUsageInfo* memInfo, bool stable, const TType* type);
+    TValuePackerBoxed(TMemoryUsageInfo* memInfo, bool stable, const TType* type, bool tryUseCodegen = false);
+    TValuePackerBoxed(TMemoryUsageInfo* memInfo, const TValuePacker& other);
 };
 
 }

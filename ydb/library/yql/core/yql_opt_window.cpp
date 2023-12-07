@@ -268,16 +268,12 @@ TCalcOverWindowTraits ExtractCalcOverWindowTraits(const TExprNode::TPtr& frames,
                 rawTraits.CalculateLambdaLead = lead;
                 rawTraits.OutputType = traits->Child(1)->GetTypeAnn();
                 YQL_ENSURE(rawTraits.OutputType);
-            } else if (traits->IsCallable({"Rank", "DenseRank"})) {
-                rawTraits.OutputType = traits->Child(1)->GetTypeAnn();
-                auto lambdaInputType =
-                    traits->Child(0)->GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TListExprType>()->GetItemType();
-                auto lambda = ReplaceFirstLambdaArgWithCastStruct(*traits->Child(1), *lambdaInputType, ctx);
-                rawTraits.CalculateLambda = ctx.ChangeChild(*traits, 1, std::move(lambda));
             } else {
-                YQL_ENSURE(traits->IsCallable("RowNumber"));
+                YQL_ENSURE(traits->IsCallable({"RowNumber", "Rank", "DenseRank"}));
+
                 rawTraits.CalculateLambda = traits;
-                rawTraits.OutputType = traits->GetTypeAnn();
+                rawTraits.OutputType = traits->IsCallable("RowNumber") ?
+                    ctx.MakeType<TDataExprType>(EDataSlot::Uint64) : traits->Child(1)->GetTypeAnn();
             }
         }
     }
@@ -1233,7 +1229,7 @@ private:
 
         if (defaultValue->IsCallable("Null")) {
             auto resultingType = RawOutputType;
-            if (!resultingType->IsOptionalOrNull()) {
+            if (resultingType->GetKind() != ETypeAnnotationKind::Optional) {
                 resultingType = ctx.MakeType<TOptionalExprType>(resultingType);
             }
 
@@ -2112,26 +2108,30 @@ TExprNode::TPtr ExpandNonCompactFullFrames(TPositionHandle pos, const TExprNode:
             .Callable("EquiJoin")
                 .List(0)
                     .Add(0, input)
-                    .Atom(1, "a", TNodeFlags::Default)
+                    .Atom(1, "a")
                 .Seal()
                 .List(1)
                     .Add(0, aggregated)
-                    .Atom(1, "b", TNodeFlags::Default)
+                    .Atom(1, "b")
                 .Seal()
                 .List(2)
-                    .Atom(0, "Inner", TNodeFlags::Default)
-                    .Atom(1, "a", TNodeFlags::Default)
-                    .Atom(2, "b", TNodeFlags::Default)
+                    .Atom(0, "Inner")
+                    .Atom(1, "a")
+                    .Atom(2, "b")
                     .Add(3, buildJoinKeysTuple("a"))
                     .Add(4, buildJoinKeysTuple("b"))
                     .List(5)
                         .List(0)
-                            .Atom(0, "right", TNodeFlags::Default)
-                            .Atom(1, "any", TNodeFlags::Default)
+                            .Atom(0, "right")
+                            .Atom(1, "any")
                         .Seal()
                     .Seal()
                 .Seal()
-                .List(3).Seal()
+                .List(3)
+                    .List(0)
+                        .Atom(0, "keep_sys", TNodeFlags::Default)
+                    .Seal()
+                .Seal()
             .Seal()
             .Build();
 
@@ -2183,21 +2183,25 @@ TExprNode::TPtr ExpandNonCompactFullFrames(TPositionHandle pos, const TExprNode:
             .Callable("EquiJoin")
                 .List(0)
                     .Add(0, input)
-                    .Atom(1, "a", TNodeFlags::Default)
+                    .Atom(1, "a")
                 .Seal()
                 .List(1)
                     .Add(0, aggregated)
-                    .Atom(1, "b", TNodeFlags::Default)
+                    .Atom(1, "b")
                 .Seal()
                 .List(2)
-                    .Atom(0, "Cross", TNodeFlags::Default)
-                    .Atom(1, "a", TNodeFlags::Default)
-                    .Atom(2, "b", TNodeFlags::Default)
+                    .Atom(0, "Cross")
+                    .Atom(1, "a")
+                    .Atom(2, "b")
                     .List(3).Seal()
                     .List(4).Seal()
                     .List(5).Seal()
                 .Seal()
-                .List(3).Seal()
+                .List(3)
+                    .List(0)
+                        .Atom(0, "keep_sys", TNodeFlags::Default)
+                    .Seal()
+                .Seal()
             .Seal()
             .Build();
     }
@@ -2800,14 +2804,12 @@ TExprNode::TPtr RebuildCalcOverWindowGroup(TPositionHandle pos, const TExprNode:
                 auto traits = kvTuple->ChildPtr(1);
                 YQL_ENSURE(traits->IsCallable({"Lag", "Lead", "RowNumber", "Rank", "DenseRank", "WindowTraits"}));
                 if (traits->IsCallable("WindowTraits")) {
-                    YQL_ENSURE(traits->Head().GetTypeAnn());
-                    const TTypeAnnotationNode& oldItemType = *traits->Head().GetTypeAnn()->Cast<TTypeExprType>()->GetType();
                     traits = ctx.Builder(traits->Pos())
                         .Callable(traits->Content())
                             .Add(0, inputItemType)
-                            .Add(1, ctx.DeepCopyLambda(*ReplaceFirstLambdaArgWithCastStruct(*traits->Child(1), oldItemType, ctx)))
-                            .Add(2, ctx.DeepCopyLambda(*ReplaceFirstLambdaArgWithCastStruct(*traits->Child(2), oldItemType, ctx)))
-                            .Add(3, ctx.DeepCopyLambda(*ReplaceFirstLambdaArgWithCastStruct(*traits->Child(3), oldItemType, ctx)))
+                            .Add(1, ctx.DeepCopyLambda(*traits->Child(1)))
+                            .Add(2, ctx.DeepCopyLambda(*traits->Child(2)))
+                            .Add(3, ctx.DeepCopyLambda(*traits->Child(3)))
                             .Add(4, ctx.DeepCopyLambda(*traits->Child(4)))
                             .Add(5, traits->Child(5)->IsLambda() ? ctx.DeepCopyLambda(*traits->Child(5)) : traits->ChildPtr(5))
                         .Seal()
@@ -2816,10 +2818,7 @@ TExprNode::TPtr RebuildCalcOverWindowGroup(TPositionHandle pos, const TExprNode:
                     TExprNodeList args;
                     args.push_back(inputType);
                     if (traits->ChildrenSize() > 1) {
-                        YQL_ENSURE(traits->Head().GetTypeAnn());
-                        const TTypeAnnotationNode& oldItemType = *traits->Head().GetTypeAnn()->Cast<TTypeExprType>()->GetType()
-                            ->Cast<TListExprType>()->GetItemType();
-                        args.push_back(ctx.DeepCopyLambda(*ReplaceFirstLambdaArgWithCastStruct(*traits->Child(1), oldItemType, ctx)));
+                        args.push_back(ctx.DeepCopyLambda(*traits->Child(1)));
                     }
                     if (traits->ChildrenSize() > 2) {
                         args.push_back(traits->ChildPtr(2));

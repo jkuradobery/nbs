@@ -7,9 +7,9 @@
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/grpc_services/grpc_request_proxy.h>
 #include <ydb/core/persqueue/events/global.h>
-#include <ydb/core/persqueue/pq_rl_helpers.h>
+#include <ydb/services/lib/actors/pq_rl_helpers.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <library/cpp/containers/disjoint_interval_tree/disjoint_interval_tree.h>
 
 #include <util/generic/guid.h>
@@ -121,7 +121,7 @@ struct TFormedReadResponse: public TSimpleRefCount<TFormedReadResponse<TServerMe
 template <bool UseMigrationProtocol> // Migration protocol is "pqv1"
 class TReadSessionActor
     : public TActorBootstrapped<TReadSessionActor<UseMigrationProtocol>>
-    , private NPQ::TRlHelpers
+    , private TRlHelpers
 {
     using TClientMessage = typename std::conditional_t<UseMigrationProtocol,
         PersQueue::V1::MigrationStreamingReadClientMessage,
@@ -210,7 +210,7 @@ private:
             HFunc(TEvPQProxy::TEvPartitionStatus, Handle); // from partitionActor
 
             // Balancer events
-            HFunc(TEvPersQueue::TEvLockPartition, Handle); // can be sent to itself when reading without a consumer
+            HFunc(TEvPersQueue::TEvLockPartition, Handle);
             HFunc(TEvPersQueue::TEvReleasePartition, Handle);
             HFunc(TEvPersQueue::TEvError, Handle);
 
@@ -257,7 +257,7 @@ private:
     void Handle(TEvPQProxy::TEvPartitionStatus::TPtr& ev, const TActorContext& ctx);
 
     // Balancer events
-    void Handle(TEvPersQueue::TEvLockPartition::TPtr& ev, const TActorContext& ctx); // can be sent to itself when reading without a consumer
+    void Handle(TEvPersQueue::TEvLockPartition::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPersQueue::TEvReleasePartition::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPersQueue::TEvError::TPtr& ev, const TActorContext& ctx);
 
@@ -276,7 +276,6 @@ private:
     void InitSession(const TActorContext& ctx);
     void RegisterSession(const TString& topic, const TActorId& pipe, const TVector<ui32>& groups, const TActorContext& ctx);
     void CloseSession(PersQueue::ErrorCode::ErrorCode code, const TString& reason, const TActorContext& ctx);
-    void SendLockPartitionToSelf(ui32 group, TString topicName, TTopicHolder topic, const TActorContext& ctx);
 
     void SetupCounters();
     void SetupTopicCounters(const NPersQueue::TTopicConverterPtr& topic);
@@ -312,7 +311,6 @@ private:
     TString PeerName;
 
     bool CommitsDisabled;
-    bool ReadWithoutConsumer;
 
     bool InitDone;
     bool RangesMode;

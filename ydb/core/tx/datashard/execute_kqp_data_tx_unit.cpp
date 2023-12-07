@@ -4,12 +4,9 @@
 #include "execution_unit_ctors.h"
 #include "setup_sys_locks.h"
 #include "datashard_locks_db.h"
-#include "probes.h"
 
 #include <ydb/core/engine/minikql/minikql_engine_host.h>
 #include <ydb/core/kqp/rm_service/kqp_rm_service.h>
-
-LWTRACE_USING(DATASHARD_PROVIDER)
 
 namespace NKikimr {
 namespace NDataShard {
@@ -88,7 +85,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
                 // For immediate transactions we want to translate this into a propose failure
                 if (op->IsImmediate()) {
                     const auto& dataTx = tx->GetDataTx();
-                    Y_ABORT_UNLESS(!dataTx->Ready());
+                    Y_VERIFY(!dataTx->Ready());
                     op->SetAbortedFlag();
                     BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::ERROR);
                     op->Result()->SetProcessError(dataTx->Code(), dataTx->GetErrors());
@@ -96,7 +93,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
                 }
 
                 // For planned transactions errors are not expected
-                Y_ABORT("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
+                Y_FAIL("Failed to restore tx data: %s", tx->GetDataTx()->GetErrors().c_str());
         }
     }
 
@@ -108,7 +105,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
 
     if (op->IsImmediate() && !dataTx->ReValidateKeys()) {
         // Immediate transactions may be reordered with schema changes and become invalid
-        Y_ABORT_UNLESS(!dataTx->Ready());
+        Y_VERIFY(!dataTx->Ready());
         op->SetAbortedFlag();
         BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::ERROR);
         op->Result()->SetProcessError(dataTx->Code(), dataTx->GetErrors());
@@ -126,8 +123,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
     }
 
     try {
-        auto& kqpLocks = dataTx->GetKqpLocks();
-        bool useGenericReadSets = dataTx->GetUseGenericReadSets();
+        auto& kqpTx = dataTx->GetKqpTransaction();
         auto& tasksRunner = dataTx->GetKqpTasksRunner();
 
         ui64 consumedMemory = dataTx->GetTxSize() + tasksRunner.GetAllocatedMemory();
@@ -202,7 +198,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
         NKqp::NRm::TKqpResourcesRequest req;
         req.MemoryPool = NKqp::NRm::EKqpMemoryPool::DataQuery;
         req.Memory = txc.GetMemoryLimit();
-        ui64 taskId = dataTx->GetFirstKqpTaskId();
+        ui64 taskId = kqpTx.GetTasks().empty() ? std::numeric_limits<ui64>::max() : kqpTx.GetTasks()[0].GetId();
         NKqp::GetKqpResourceManager()->NotifyExternalResourcesAllocated(tx->GetTxId(), taskId, req);
 
         Y_DEFER {
@@ -223,14 +219,12 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
             dataTx->SetVolatileTxId(tx->GetTxId());
         }
 
-        LWTRACK(ProposeTransactionKqpDataExecute, op->Orbit);
-
         KqpCommitLocks(tabletId, tx, writeVersion, DataShard);
 
         auto& computeCtx = tx->GetDataTx()->GetKqpComputeCtx();
 
         auto result = KqpCompleteTransaction(ctx, tabletId, op->GetTxId(),
-            op->HasKqpAttachedRSFlag() ? nullptr : &op->InReadSets(), kqpLocks, useGenericReadSets, tasksRunner, computeCtx);
+            op->HasKqpAttachedRSFlag() ? nullptr : &op->InReadSets(), kqpTx, tasksRunner, computeCtx);
 
         if (!result && computeCtx.HadInconsistentReads()) {
             LOG_T("Operation " << *op << " (execute_kqp_data_tx) at " << tabletId
@@ -257,7 +251,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
             //       relevant for future multi-table shards only.
             // NOTE: generation may not match an existing lock, but it's not a problem.
             for (auto& table : guardLocks.AffectedTables) {
-                Y_ABORT_UNLESS(guardLocks.LockTxId);
+                Y_VERIFY(guardLocks.LockTxId);
                 op->Result()->AddTxLock(
                     guardLocks.LockTxId,
                     DataShard.TabletID(),
@@ -271,11 +265,11 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
             tx->ReleaseTxData(txc, ctx);
 
             // Transaction may have made some changes before it detected
-            // inconsistency, so we need to roll them back.
-            if (txc.DB.HasChanges()) {
-                txc.DB.RollbackChanges();
-            }
-            return EExecutionStatus::Executed;
+            // inconsistency, so we need to roll them back. We do this by
+            // marking transaction for reschedule and restarting. The next
+            // cycle will detect aborted operation and move along.
+            txc.Reschedule();
+            return EExecutionStatus::Restart;
         }
 
         if (!result && computeCtx.IsTabletNotReady()) {
@@ -298,7 +292,8 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
 
             // Rollback database changes, if any
             if (txc.DB.HasChanges()) {
-                txc.DB.RollbackChanges();
+                txc.Reschedule();
+                return EExecutionStatus::Restart;
             }
 
             return EExecutionStatus::Continue;
@@ -308,13 +303,11 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
             allocGuard.Release();
             dataTx->ResetCollectedChanges();
             tx->ReleaseTxData(txc, ctx);
-            if (txc.DB.HasChanges()) {
-                txc.DB.RollbackChanges();
-            }
-            return EExecutionStatus::Continue;
+            txc.Reschedule();
+            return EExecutionStatus::Restart;
         }
 
-        Y_ABORT_UNLESS(result);
+        Y_VERIFY(result);
         op->Result().Swap(result);
         op->SetKqpAttachedRSFlag();
 
@@ -333,8 +326,6 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
                 commitTxIds,
                 dataTx->GetVolatileDependencies(),
                 participants,
-                dataTx->GetVolatileChangeGroup(),
-                dataTx->GetVolatileCommitOrdered(),
                 txc);
         }
 
@@ -359,7 +350,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
         }
 
         KqpUpdateDataShardStatCounters(DataShard, dataTx->GetCounters());
-        auto statsMode = dataTx->GetKqpStatsMode();
+        auto statsMode = kqpTx.GetRuntimeSettings().GetStatsMode();
         KqpFillStats(DataShard, tasksRunner, computeCtx, statsMode, *op->Result());
     } catch (const TMemoryLimitExceededException&) {
         dataTx->ResetCollectedChanges();
@@ -390,7 +381,7 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
             TStringBuilder() << "Shard " << DataShard.TabletID() << " cannot write more uncommitted changes");
 
         for (auto& table : guardLocks.AffectedTables) {
-            Y_ABORT_UNLESS(guardLocks.LockTxId);
+            Y_VERIFY(guardLocks.LockTxId);
             op->Result()->AddTxLock(
                 guardLocks.LockTxId,
                 DataShard.TabletID(),
@@ -404,11 +395,11 @@ EExecutionStatus TExecuteKqpDataTxUnit::Execute(TOperation::TPtr op, TTransactio
         tx->ReleaseTxData(txc, ctx);
 
         // Transaction may have made some changes before it hit the limit,
-        // so we need to roll them back.
-        if (txc.DB.HasChanges()) {
-            txc.DB.RollbackChanges();
-        }
-        return EExecutionStatus::Executed;
+        // so we need to roll them back. We do this by marking transaction for
+        // reschedule and restarting. The next cycle will detect aborted
+        // operation and move along.
+        txc.Reschedule();
+        return EExecutionStatus::Restart;
     } catch (const yexception& e) {
         LOG_C("Exception while executing KQP transaction " << *op << " at " << tabletId << ": " << e.what());
         if (op->IsReadOnly() || op->IsImmediate()) {

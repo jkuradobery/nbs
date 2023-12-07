@@ -9,6 +9,44 @@ namespace {
 using namespace NKikimr;
 using namespace NSchemeShard;
 
+class TDeleteParts: public TSubOperationState {
+private:
+    TOperationId OperationId;
+
+    TString DebugHint() const override {
+        return TStringBuilder()
+                << "TDropKesus TDeleteParts"
+                << ", operationId: " << OperationId;
+    }
+
+public:
+    TDeleteParts(TOperationId id)
+        : OperationId(id)
+    {
+        IgnoreMessages(DebugHint(), {});
+    }
+
+    bool ProgressState(TOperationContext& context) override {
+        TTabletId ssId = context.SS->SelfTabletId();
+
+        LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                   DebugHint() << " ProgressState"
+                               << ", at schemeshard: " << ssId);
+
+        TTxState* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState->TxType == TTxState::TxDropKesus);
+
+        // Initiate asynchronous deletion of all shards
+        for (auto shard : txState->Shards) {
+            context.OnComplete.DeleteShard(shard.Idx);
+        }
+
+        NIceDb::TNiceDb db(context.GetDB());
+        context.SS->ChangeTxState(db, OperationId, TTxState::Propose);
+        return true;
+    }
+};
+
 class TPropose: public TSubOperationState {
 private:
     TOperationId OperationId;
@@ -36,7 +74,7 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropKesus);
+        Y_VERIFY(txState->TxType == TTxState::TxDropKesus);
 
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
@@ -45,7 +83,7 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -89,8 +127,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropKesus);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropKesus);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -185,7 +223,7 @@ public:
         NIceDb::TNiceDb db(context.GetDB());
 
         TKesusInfo::TPtr kesus = context.SS->KesusInfos.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(kesus);
+        Y_VERIFY(kesus);
 
         {
             auto shardIdx = kesus->KesusShardIdx;
@@ -220,11 +258,31 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropKesus");
+        Y_FAIL("no AbortPropose for TDropKesus");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
-        AbortUnsafeDropOperation(OperationId, forceDropTxId, context);
+        LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                     "TDropKesus AbortUnsafe"
+                         << ", opId: " << OperationId
+                         << ", forceDropId: " << forceDropTxId
+                         << ", at schemeshard: " << context.SS->TabletID());
+
+        TTxState* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState);
+
+        TPathId pathId = txState->TargetPathId;
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
+        TPathElement::TPtr path = context.SS->PathsById.at(pathId);
+        Y_VERIFY(path);
+
+        if (path->Dropped()) {
+            for (auto shard : txState->Shards) {
+                context.OnComplete.DeleteShard(shard.Idx);
+            }
+        }
+
+        context.OnComplete.DoneOperation(OperationId);
     }
 };
 
@@ -232,12 +290,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateDropKesus(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateDropKesus(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TDropKesus>(id, tx);
 }
 
-ISubOperation::TPtr CreateDropKesus(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateDropKesus(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropKesus>(id, state);
 }
 

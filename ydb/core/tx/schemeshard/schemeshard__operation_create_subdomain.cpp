@@ -27,7 +27,7 @@ void DeclareShards(TTxState& txState, TTxId txId, TPathId pathId,
 
 void PersistShards(NIceDb::TNiceDb& db, TTxState& txState, TSchemeShard* ss) {
     for (const auto& shard : txState.Shards) {
-        Y_ABORT_UNLESS(ss->ShardInfos.contains(shard.Idx), "shard info is set before");
+        Y_VERIFY(ss->ShardInfos.contains(shard.Idx), "shard info is set before");
         auto& shardInfo = ss->ShardInfos.at(shard.Idx);
         ss->PersistShardMapping(db, shard.Idx, InvalidTabletId, shardInfo.PathId, shardInfo.CurrentTxId, shardInfo.TabletType);
         ss->PersistChannelsBinding(db, shard.Idx, shardInfo.BindedChannels);
@@ -201,8 +201,8 @@ public:
         }
 
         auto domainPathId = parentPath.GetPathIdForDomain();
-        Y_ABORT_UNLESS(context.SS->PathsById.contains(domainPathId));
-        Y_ABORT_UNLESS(context.SS->SubDomains.contains(domainPathId));
+        Y_VERIFY(context.SS->PathsById.contains(domainPathId));
+        Y_VERIFY(context.SS->SubDomains.contains(domainPathId));
         if (domainPathId != context.SS->RootPathId()) {
             result->SetError(NKikimrScheme::StatusNameConflict, "Nested subdomains is forbidden");
             return result;
@@ -268,7 +268,7 @@ public:
 
         context.SS->TabletCounters->Simple()[COUNTER_SUB_DOMAIN_COUNT].Add(1);
 
-        Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));
+        Y_VERIFY(!context.SS->FindTx(OperationId));
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxCreateSubDomain, newNode->PathId);
 
         TSubDomainInfo::TPtr alter = new TSubDomainInfo(
@@ -298,11 +298,7 @@ public:
             alter->SetDatabaseQuotas(settings.GetDatabaseQuotas());
         }
 
-        if (settings.HasAuditSettings()) {
-            alter->SetAuditSettings(settings.GetAuditSettings());
-        }
-
-        Y_ABORT_UNLESS(!context.SS->SubDomains.contains(newNode->PathId));
+        Y_VERIFY(!context.SS->SubDomains.contains(newNode->PathId));
         auto& subDomainInfo = context.SS->SubDomains[newNode->PathId];
         subDomainInfo = new TSubDomainInfo();
         subDomainInfo->SetAlter(alter);
@@ -332,7 +328,7 @@ public:
         context.OnComplete.PublishToSchemeBoard(OperationId, dstPath.Base()->PathId);
 
 
-        Y_ABORT_UNLESS(shardsToCreate == txState.Shards.size());
+        Y_VERIFY(shardsToCreate == txState.Shards.size());
         parentPath.DomainInfo()->IncPathsInside();
         dstPath.DomainInfo()->AddInternalShards(txState);
 
@@ -344,7 +340,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreateSubDomain");
+        Y_FAIL("no AbortPropose for TCreateSubDomain");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -362,12 +358,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateSubDomain(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateSubDomain(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TCreateSubDomain>(id, tx);
 }
 
-ISubOperation::TPtr CreateSubDomain(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateSubDomain(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TCreateSubDomain>(id, state);
 }
 

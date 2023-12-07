@@ -1,6 +1,5 @@
 #pragma once
 
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/kqp/common/kqp_yql.h>
 #include <ydb/core/kqp/gateway/kqp_gateway.h>
 #include <ydb/core/kqp/provider/yql_kikimr_provider.h>
@@ -9,7 +8,7 @@
 
 #include <ydb/library/mkql_proto/protos/minikql.pb.h>
 
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/actorid.h>
 
 namespace NKikimr::NKqp {
 
@@ -232,29 +231,8 @@ public:
         return false;
     }
 
-    void OnNewExecutor(bool isLiteral) {
-        if (!isLiteral)
-            ++ExecutorId;
-    }
-
-    void AcceptIncomingSnapshot(IKqpGateway::TKqpSnapshot& snapshot) {
-        // it's be possible that the executor will not be send a valid snapshot
-        // because it makes only commit/rollback operation with the locks.
-        if (SnapshotHandle.Snapshot.IsValid() && snapshot.IsValid()) {
-            YQL_ENSURE(SnapshotHandle.Snapshot == snapshot, "detected unexpected snapshot switch in tx, ["
-                << SnapshotHandle.Snapshot.Step << "," << SnapshotHandle.Snapshot.TxId << "] vs ["
-                << snapshot.Step << "," << snapshot.TxId << "].");
-        }
-
-        if (ExecutorId == 1) {
-            if (snapshot.IsValid() && !SnapshotHandle.Snapshot.IsValid()) {
-                SnapshotHandle.Snapshot = snapshot;
-            }
-        }
-    }
-
     bool CanDeferEffects() const {
-        if (HasUncommittedChangesRead || AppData()->FeatureFlags.GetEnableForceImmediateEffectsExecution()) {
+        if (HasUncommittedChangesRead) {
             YQL_ENSURE(EnableImmediateEffects);
             return false;
         }
@@ -276,7 +254,6 @@ public:
     TInstant BeginQueryTime;
     TDuration QueriesDuration;
     ui32 QueriesCount = 0;
-    ui32 ExecutorId = 0;
 
     TKqpTxLocks Locks;
 
@@ -403,13 +380,14 @@ public:
     }
 };
 
+bool MergeLocks(const NKikimrMiniKQL::TType& type, const NKikimrMiniKQL::TValue& value, TKqpTransactionContext& txCtx,
+    NYql::TExprContext& ctx);
+
 std::pair<bool, std::vector<NYql::TIssue>> MergeLocks(const NKikimrMiniKQL::TType& type,
     const NKikimrMiniKQL::TValue& value, TKqpTransactionContext& txCtx);
 
 bool NeedSnapshot(const TKqpTransactionContext& txCtx, const NYql::TKikimrConfiguration& config, bool rollbackTx,
     bool commitTx, const NKqpProto::TKqpPhyQuery& physicalQuery);
-
-bool HasOlapTableInTx(const NKqpProto::TKqpPhyQuery& physicalQuery);
 
 }  // namespace NKikimr::NKqp
 

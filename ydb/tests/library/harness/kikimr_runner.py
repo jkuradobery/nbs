@@ -8,17 +8,17 @@ import itertools
 from pkg_resources import resource_string
 from google.protobuf import text_format
 
-import contrib.ydb.tests.library.common.yatest_common as yatest_common
+import ydb.tests.library.common.yatest_common as yatest_common
 
-from contrib.ydb.tests.library.common.wait_for import wait_for
+from ydb.tests.library.common.wait_for import wait_for
 from . import daemon
 from . import param_constants
 from . import kikimr_config
 from . import kikimr_node_interface
 from . import kikimr_cluster_interface
 
-import contrib.ydb.core.protos.blobstorage_config_pb2 as bs
-from contrib.ydb.tests.library.predicates.blobstorage import blobstorage_controller_has_started_on_some_node
+import ydb.core.protos.blobstorage_config_pb2 as bs
+from ydb.tests.library.predicates.blobstorage import blobstorage_controller_has_started_on_some_node
 
 
 logger = logging.getLogger(__name__)

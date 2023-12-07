@@ -32,10 +32,6 @@ struct TKqpOptimizeContext : public TSimpleRefCount<TKqpOptimizeContext> {
     bool IsScanQuery() const {
         return QueryCtx->Type == NYql::EKikimrQueryType::Scan;
     }
-
-    bool IsGenericQuery() const {
-        return QueryCtx->Type == NYql::EKikimrQueryType::Query;
-    }
 };
 
 struct TKqpBuildQueryContext : TThrRefBase {
@@ -54,7 +50,7 @@ bool IsKqpEffectsStage(const NYql::NNodes::TDqStageBase& stage);
 
 TMaybe<NYql::NNodes::TKqlQueryList> BuildKqlQuery(NYql::NNodes::TKiDataQueryBlocks queryBlocks,
     const NYql::TKikimrTablesData& tablesData, NYql::TExprContext& ctx, bool withSystemColumns,
-    const TIntrusivePtr<TKqpOptimizeContext>& kqpCtx, NYql::TTypeAnnotationContext& typesCtx);
+    const TIntrusivePtr<TKqpOptimizeContext>& kqpCtx);
 
 TAutoPtr<NYql::IGraphTransformer> CreateKqpFinalizingOptTransformer(const TIntrusivePtr<TKqpOptimizeContext>& kqpCtx);
 TAutoPtr<NYql::IGraphTransformer> CreateKqpQueryPhasesTransformer();

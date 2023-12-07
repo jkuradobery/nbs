@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-from contrib.ydb.tests.library.nemesis.safety_warden import AggregateSafetyWarden
+from ydb.tests.library.nemesis.safety_warden import AggregateSafetyWarden
 
-from contrib.ydb.tests.library.wardens.base import AggregateLivenessWarden
-from contrib.ydb.tests.library.wardens.datashard import TxCompleteLagLivenessWarden
-from contrib.ydb.tests.library.wardens.logs import kikimr_grep_dmesg_safety_warden_factory
-from contrib.ydb.tests.library.wardens.logs import kikimr_start_logs_safety_warden_factory
-from contrib.ydb.tests.library.wardens.logs import kikimr_crit_and_alert_logs_safety_warden_factory
-from contrib.ydb.tests.library.wardens.disk import AllPDisksAreInValidStateSafetyWarden
-from contrib.ydb.tests.library.wardens.hive import AllTabletsAliveLivenessWarden, BootQueueSizeWarden
-from contrib.ydb.tests.library.wardens.schemeshard import SchemeShardHasNoInFlightTransactions
+from ydb.tests.library.wardens.base import AggregateLivenessWarden
+from ydb.tests.library.wardens.datashard import TxCompleteLagLivenessWarden
+from ydb.tests.library.wardens.logs import kikimr_grep_dmesg_safety_warden_factory
+from ydb.tests.library.wardens.logs import kikimr_start_logs_safety_warden_factory
+from ydb.tests.library.wardens.logs import kikimr_crit_and_alert_logs_safety_warden_factory
+from ydb.tests.library.wardens.disk import AllPDisksAreInValidStateSafetyWarden
+from ydb.tests.library.wardens.hive import AllTabletsAliveLivenessWarden, BootQueueSizeWarden
+from ydb.tests.library.wardens.schemeshard import SchemeShardHasNoInFlightTransactions
 
 
 def safety_warden_factory(cluster):

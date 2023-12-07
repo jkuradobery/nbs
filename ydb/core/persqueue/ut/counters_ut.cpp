@@ -92,7 +92,6 @@ Y_UNIT_TEST(Partition) {
         TStringStream countersStr;
         dbGroup->OutputHtml(countersStr);
         TString referenceCounters = NResource::Find(TStringBuf("counters_pqproxy.html"));
-
         UNIT_ASSERT_EQUAL(countersStr.Str() + "\n", referenceCounters);
     }
 
@@ -124,7 +123,6 @@ Y_UNIT_TEST(PartitionFirstClass) {
         TStringStream countersStr;
         dbGroup->OutputHtml(countersStr);
         TString referenceCounters = NResource::Find(TStringBuf("counters_pqproxy_firstclass.html"));
-
         UNIT_ASSERT_EQUAL(countersStr.Str() + "\n", referenceCounters);
     }
 
@@ -164,13 +162,8 @@ void CompareJsons(const TString& inputStr, const TString& referenceStr) {
         if (getByPath(sensor, "kind") == "GAUGE" &&
             (getByPath(sensor, "labels.sensor") == "PQ/TimeSinceLastReadMs" ||
             getByPath(sensor, "labels.sensor") == "PQ/PartitionLifeTimeMs" ||
-            getByPath(sensor, "labels.sensor") == "PQ/TotalTimeLagMsByLastRead" ||
             getByPath(sensor, "labels.sensor") == "PQ/WriteTimeLagMsByLastReadOld")) {
             sensor.SetValueByPath("value", 5000);
-        } else if (getByPath(sensor, "kind") == "GAUGE" &&
-            (getByPath(sensor, "labels.sensor") == "PQ/WriteTimeLagMsByLastRead" ||
-            getByPath(sensor, "labels.sensor") == "PQ/WriteTimeLagMsByLastWrite")) {
-            sensor.SetValueByPath("value", 30);
         }
     }
 
@@ -255,13 +248,13 @@ Y_UNIT_TEST(PartitionFirstClass) {
 
         tc.Prepare(dispatchName, setup, activeZone, true, true, true);
         tc.Runtime->SetScheduledLimit(1000);
-        tc.Runtime->SetObserverFunc([&](TAutoPtr<IEventHandle>& event) {
+        tc.Runtime->SetObserverFunc([&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
             if (event->GetTypeRewrite() == NSysView::TEvSysView::EvRegisterDbCounters) {
                 auto database = event.Get()->Get<NSysView::TEvSysView::TEvRegisterDbCounters>()->Database;
                 UNIT_ASSERT_VALUES_EQUAL(database, "/Root/PQ");
                 dbRegistered = true;
             }
-            return TTestActorRuntime::DefaultObserverFunc(event);
+            return TTestActorRuntime::DefaultObserverFunc(runtime, event);
         });
 
         PQTabletPrepare({.deleteTime=3600, .meteringMode = NKikimrPQ::TPQTabletConfig::METERING_MODE_REQUEST_UNITS}, {{"client", true}}, tc);
@@ -315,18 +308,6 @@ Y_UNIT_TEST(PartitionFirstClass) {
         {
             auto counters = tc.Runtime->GetAppData(0).Counters;
             auto dbGroup = GetServiceCounters(counters, "topics_serverless", false);
-
-            auto group = dbGroup->GetSubgroup("host", "")->GetSubgroup("database", "/Root")->GetSubgroup("cloud_id", "cloud_id")->GetSubgroup("folder_id", "folder_id")
-                                ->GetSubgroup("database_id", "database_id")->GetSubgroup("topic", "topic");
-            group->GetNamedCounter("name", "topic.partition.uptime_milliseconds_min", false)->Set(30000);
-            group->GetNamedCounter("name", "topic.partition.write.lag_milliseconds_max", false)->Set(600);
-            group->GetNamedCounter("name", "topic.partition.uptime_milliseconds_min", false)->Set(30000);
-            group->GetNamedCounter("name", "topic.partition.write.lag_milliseconds_max", false)->Set(600);
-            group = group->GetSubgroup("consumer", "client");
-            group->GetNamedCounter("name", "topic.partition.end_to_end_lag_milliseconds_max", false)->Set(30000);
-            group->GetNamedCounter("name", "topic.partition.read.idle_milliseconds_max", false)->Set(30000);
-            group->GetNamedCounter("name", "topic.partition.write.lag_milliseconds_max", false)->Set(200);
-
             TStringStream countersStr;
             dbGroup->OutputHtml(countersStr);
             const TString referenceCounters = NResource::Find(TStringBuf("counters_topics.html"));

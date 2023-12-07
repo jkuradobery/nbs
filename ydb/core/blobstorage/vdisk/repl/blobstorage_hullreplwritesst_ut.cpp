@@ -16,7 +16,7 @@ std::shared_ptr<TReplCtx> CreateReplCtx(TVector<TVDiskID>& vdisks, const TIntrus
         nullptr, NPDisk::DEVICE_TYPE_UNKNOWN);
     auto hugeBlobCtx = std::make_shared<THugeBlobCtx>(512u << 10u, nullptr);
     auto dsk = MakeIntrusive<TPDiskParams>(ui8(1), 1u, 128u << 20, 4096u, 0u, 1000000000u, 1000000000u, 65536u, 65536u, 65536u);
-    auto pdiskCtx = std::make_shared<TPDiskCtx>(dsk, TActorId(), TString());
+    auto pdiskCtx = std::make_shared<TPDiskCtx>(dsk, TActorId());
     auto replCtx = std::make_shared<TReplCtx>(
         vctx,
         pdiskCtx,
@@ -67,7 +67,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
             ui32 offset = m.Offset;
             for (ui32 i = 0; i < m.PartsPtr->Size(); ++i) {
                 const auto& [ptr, size] = (*m.PartsPtr)[i];
-                Y_ABORT_UNLESS(offset + size <= data.size());
+                Y_VERIFY(offset + size <= data.size());
                 if (ptr) {
                     memcpy(data.Detach() + offset, ptr, size);
                 } else {
@@ -80,7 +80,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
         };
         auto read = [&](const TDiskPart& p) {
             const auto it = chunks.find(p.ChunkIdx);
-            Y_ABORT_UNLESS(it != chunks.end());
+            Y_VERIFY(it != chunks.end());
             const TString& s = it->second;
             return s.substr(p.Offset, p.Size);
         };
@@ -127,7 +127,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
 
                 case TReplSstStreamWriter::EState::PDISK_MESSAGE_PENDING: {
                     auto msg = writer.GetPendingPDiskMsg();
-                    Y_ABORT_UNLESS(msg);
+                    Y_VERIFY(msg);
                     if (auto *x = dynamic_cast<NPDisk::TEvChunkReserve*>(msg.get())) {
                         NPDisk::TEvChunkReserveResult res(NKikimrProto::OK, {});
                         for (ui32 i = 0; i < x->SizeChunks; ++i) {
@@ -141,13 +141,13 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
                             writeMsgs.emplace_back(static_cast<NPDisk::TEvChunkWrite*>(msg.release()));
                         }
                     } else {
-                        Y_ABORT();
+                        Y_FAIL();
                     }
                     break;
                 }
 
                 case TReplSstStreamWriter::EState::NOT_READY: {
-                    Y_ABORT_UNLESS(!writeMsgs.empty());
+                    Y_VERIFY(!writeMsgs.empty());
                     const size_t index = RandomNumber(writeMsgs.size());
                     handleWrite(*writeMsgs[index]);
                     writeMsgs.erase(writeMsgs.begin() + index);
@@ -199,7 +199,7 @@ Y_UNIT_TEST_SUITE(HullReplWriteSst) {
                 }
 
                 default:
-                    Y_ABORT();
+                    Y_FAIL();
             }
         }
     }

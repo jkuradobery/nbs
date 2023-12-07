@@ -5,18 +5,14 @@
 #include <ydb/core/testlib/basics/storage.h>
 #include <ydb/core/testlib/basics/helpers.h>
 #include <ydb/core/testlib/tablet_helpers.h>
-#include <ydb/core/testlib/fake_coordinator.h>
 
-#include <ydb/library/actors/interconnect/events_local.h>
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/interconnect/events_local.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include <ydb/core/base/tablet_resolver.h>
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/blobstorage/crypto/default.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_tools.h>
-#include <ydb/core/tablet_flat/shared_cache_events.h>
-#include <ydb/core/tablet_flat/shared_sausagecache.h>
-#include <ydb/core/tx/schemeshard/schemeshard.h>
 
 #include <google/protobuf/text_format.h>
 #include <library/cpp/malloc/api/malloc.h>
@@ -41,8 +37,6 @@ using namespace NKikimrNodeBroker;
 
 namespace {
 
-const TString DOMAIN_NAME = "dc-1";
-
 void SetupLogging(TTestActorRuntime& runtime)
 {
     NActors::NLog::EPriority priority = ENABLE_DETAILED_NODE_BROKER_LOG ? NLog::PRI_TRACE : NLog::PRI_ERROR;
@@ -63,22 +57,7 @@ void SetupServices(TTestActorRuntime &runtime,
     TAppPrepare app;
 
     app.ClearDomainsAndHive();
-    ui32 domainUid = TTestTxConfig::DomainUid;
-    ui32 ssId = 0;
-    ui32 planResolution = 50;
-    ui64 schemeRoot = TTestTxConfig::SchemeShard;
-    auto domain = TDomainsInfo::TDomain::ConstructDomainWithExplicitTabletIds(
-        DOMAIN_NAME, domainUid, schemeRoot, ssId, ssId, TVector<ui32>{ssId},
-        domainUid, TVector<ui32>{}, planResolution,
-        TVector<ui64>{TDomainsInfo::MakeTxCoordinatorIDFixed(domainUid, 1)},
-        TVector<ui64>{},
-        TVector<ui64>{TDomainsInfo::MakeTxAllocatorIDFixed(domainUid, 1)},
-        DefaultPoolKinds(2));
-
-    TVector<ui64> ids = runtime.GetTxAllocatorTabletIds();
-    ids.insert(ids.end(), domain->TxAllocators.begin(), domain->TxAllocators.end());
-    runtime.SetTxAllocatorTabletIds(ids);
-    app.AddDomain(domain.Release());
+    app.AddDomain(TDomainsInfo::TDomain::ConstructEmptyDomain("dc-1").Release());
 
     { // setup channel profiles
         TIntrusivePtr<TChannelProfiles> channelProfiles = new TChannelProfiles;
@@ -111,7 +90,7 @@ void SetupServices(TTestActorRuntime &runtime,
             new TNodeWardenConfig(STRAND_PDISK && !runtime.IsRealThreads()
                                   ? static_cast<IPDiskServiceFactory*>(new TStrandedPDiskServiceFactory(runtime))
                                   : static_cast<IPDiskServiceFactory*>(new TRealPDiskServiceFactory()));
-        google::protobuf::TextFormat::ParseFromString(staticConfig, nodeWardenConfig->BlobStorageConfig.MutableServiceSet());
+        google::protobuf::TextFormat::ParseFromString(staticConfig, &nodeWardenConfig->ServiceSet);
 
         TIntrusivePtr<TNodeWardenConfig> existingNodeWardenConfig = NodeWardenConfigs[nodeIndex];
         if (existingNodeWardenConfig != nullptr) {
@@ -136,7 +115,7 @@ void SetupServices(TTestActorRuntime &runtime,
                 static TTempDir tempDir;
                 pDiskPath = tempDir() + "/pdisk0.dat";
             }
-            nodeWardenConfig->BlobStorageConfig.MutableServiceSet()->MutablePDisks(0)->SetPath(pDiskPath);
+            nodeWardenConfig->ServiceSet.MutablePDisks(0)->SetPath(pDiskPath);
             ui64 pDiskGuid = 1;
             static ui64 iteration = 0;
             ++iteration;
@@ -161,11 +140,6 @@ void SetupServices(TTestActorRuntime &runtime,
         SetupBSNodeWarden(runtime, nodeIndex, nodeWardenConfig);
         SetupNodeWhiteboard(runtime, nodeIndex);
         SetupTabletResolver(runtime, nodeIndex);
-        SetupResourceBroker(runtime, nodeIndex);
-        SetupSharedPageCache(runtime, nodeIndex, NFake::TCaches{
-            .Shared = 1,
-        });
-        SetupSchemeCache(runtime, nodeIndex, DOMAIN_NAME);
     }
 
     runtime.Initialize(app.Unwrap());
@@ -173,7 +147,6 @@ void SetupServices(TTestActorRuntime &runtime,
     runtime.GetAppData().DynamicNameserviceConfig = new TDynamicNameserviceConfig;
     auto dnConfig = runtime.GetAppData().DynamicNameserviceConfig;
     dnConfig->MaxStaticNodeId = 1023;
-    dnConfig->MinDynamicNodeId = 1024;
     dnConfig->MaxDynamicNodeId = 1024 + (singleDomainMode ? (maxDynNodes - 1) : 32 * (maxDynNodes - 1));
     runtime.GetAppData().FeatureFlags.SetEnableNodeBrokerSingleDomainMode(singleDomainMode);
 
@@ -184,8 +157,6 @@ void SetupServices(TTestActorRuntime &runtime,
         runtime.DispatchEvents(options);
     }
 
-    CreateTestBootstrapper(runtime, CreateTestTabletInfo(TTestTxConfig::SchemeShard, TTabletTypes::SchemeShard), &CreateFlatTxSchemeShard);
-    BootFakeCoordinator(runtime, TTestTxConfig::Coordinator, MakeIntrusive<TFakeCoordinator::TState>());
     auto aid = CreateTestBootstrapper(runtime, CreateTestTabletInfo(MakeNodeBrokerID(0), TTabletTypes::NodeBroker), &CreateNodeBroker);
     runtime.EnableScheduleForActor(aid, true);
 }
@@ -235,7 +206,7 @@ void Setup(TTestActorRuntime& runtime,
 
     auto scheduledFilter = [](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event, TDuration delay, TInstant& deadline) {
         if (event->HasEvent()
-            && event->Type == TDynamicNameserver::TEvPrivate::TEvUpdateEpoch::EventType)
+            && (dynamic_cast<TDynamicNameserver::TEvPrivate::TEvUpdateEpoch*>(event->GetBase())))
             return false;
         return TTestActorRuntime::DefaultScheduledFilterFunc(runtime, event, delay, deadline);
     };
@@ -261,7 +232,6 @@ MakeRegistrationRequest(const TString &host,
                         ui16 port,
                         const TString &resolveHost,
                         const TString &address,
-                        const TString &path = DOMAIN_NAME,
                         ui64 dc = 0,
                         ui64 room = 0,
                         ui64 rack = 0,
@@ -279,7 +249,6 @@ MakeRegistrationRequest(const TString &host,
     loc.SetRack(ToString(rack));
     loc.SetUnit(ToString(body));
     event->Record.SetFixedNodeId(fixed);
-    event->Record.SetPath(path);
     return event;
 }
 
@@ -296,11 +265,9 @@ void CheckRegistration(TTestActorRuntime &runtime,
                        TStatus::ECode code = TStatus::OK,
                        ui32 nodeId = 0,
                        ui64 expire = 0,
-                       bool fixed = false,
-                       const TString &path = DOMAIN_NAME,
-                       const TMaybe<TKikimrScopeId> &scopeId = {})
+                       bool fixed = false)
 {
-    auto event = MakeRegistrationRequest(host, port, resolveHost, address, path, dc, room, rack, body, fixed);
+    auto event = MakeRegistrationRequest(host, port, resolveHost, address, dc, room, rack, body, fixed);
     runtime.SendToPipe(MakeNodeBrokerID(0), sender, event.Release(), 0, GetPipeConfigWithRetries());
 
     TAutoPtr<IEventHandle> handle;
@@ -322,10 +289,6 @@ void CheckRegistration(TTestActorRuntime &runtime,
         UNIT_ASSERT_VALUES_EQUAL(rec.GetNode().GetLocation().GetUnit(), ToString(body));
         if (expire)
             UNIT_ASSERT_VALUES_EQUAL(rec.GetNode().GetExpire(), expire);
-        if (scopeId) {
-            UNIT_ASSERT_VALUES_EQUAL(rec.GetScopeTabletId(), scopeId->GetSchemeshardId());
-            UNIT_ASSERT_VALUES_EQUAL(rec.GetScopePathId(), scopeId->GetPathItemId());
-        }
     }
 }
 
@@ -351,7 +314,7 @@ NKikimrNodeBroker::TEpoch WaitForEpochUpdate(TTestActorRuntime &runtime,
         struct TIsEvUpdateEpoch {
             bool operator()(IEventHandle &ev) {
                 if (ev.HasEvent()
-                    && ev.Type == TNodeBroker::TEvPrivate::TEvUpdateEpoch::EventType)
+                    && (dynamic_cast<TNodeBroker::TEvPrivate::TEvUpdateEpoch*>(ev.GetBase())))
                     return true;
                 return false;
             }
@@ -1096,283 +1059,6 @@ Y_UNIT_TEST_SUITE(TNodeBrokerTest) {
         CheckRegistration(runtime, sender, "host4", 1001, "host4.yandex.net", "1.2.3.7",
                           1, 2, 3, 7, TStatus::ERROR_TEMP);
     }
-
-    Y_UNIT_TEST(ExtendLeaseRestartRace) {
-        TTestBasicRuntime runtime(8, false);
-        Setup(runtime, 4);
-        TActorId sender = runtime.AllocateEdgeActor();
-
-        // There should be no dynamic nodes initially.
-        auto epoch = GetEpoch(runtime, sender);
-        // Register node 1024.
-        CheckRegistration(runtime, sender, "host1", 1001, "host1.yandex.net", "1.2.3.4",
-                          1, 2, 3, 4, TStatus::OK, 1024, epoch.GetNextEnd());
-
-        // Compact node broker tables to have page faults on reboot
-        runtime.SendToPipe(MakeNodeBrokerID(0), sender, new TEvNodeBroker::TEvCompactTables(), 0, GetPipeConfigWithRetries());
-        runtime.SimulateSleep(TDuration::Seconds(1));
-
-        // Wait until epoch expiration.
-        WaitForEpochUpdate(runtime, sender);
-        epoch = CheckNodesList(runtime, sender, {1024}, {}, 2);
-
-        class THooks : public INodeBrokerHooks {
-        public:
-            THooks(TTestActorRuntime& runtime)
-                : Runtime(runtime)
-            { }
-
-            virtual void OnActivateExecutor(ui64 tabletId) override {
-                Cerr << "... OnActivateExecutor tabletId# " << tabletId << Endl;
-                Y_UNUSED(tabletId);
-                Activated = true;
-            }
-
-            void Install() {
-                if (!Installed) {
-                    PrevObserverFunc = Runtime.SetObserverFunc([this](auto& event) {
-                        return this->OnEvent(event);
-                    });
-                    INodeBrokerHooks::Set(this);
-                    Installed = true;
-                }
-            }
-
-            void Uninstall() {
-                if (Installed) {
-                    INodeBrokerHooks::Set(nullptr);
-                    Runtime.SetObserverFunc(PrevObserverFunc);
-                    Installed = false;
-                }
-            }
-
-            bool HasCacheRequests() const {
-                return !CacheRequests.empty();
-            }
-
-            void WaitCacheRequests() {
-                while (!HasCacheRequests()) {
-                    Y_ABORT_UNLESS(Installed);
-                    TDispatchOptions options;
-                    options.CustomFinalCondition = [this]() {
-                        return HasCacheRequests();
-                    };
-                    Runtime.DispatchEvents(options);
-                }
-            }
-
-            void ResendCacheRequests() {
-                for (auto& ev : CacheRequests) {
-                    Runtime.Send(ev.Release(), 0, true);
-                }
-                CacheRequests.clear();
-            }
-
-        private:
-            TTestActorRuntime::EEventAction OnEvent(TAutoPtr<IEventHandle>& ev) {
-                switch (ev->GetTypeRewrite()) {
-                    case NSharedCache::EvRequest: {
-                        if (Activated) {
-                            Cerr << "... captured cache request" << Endl;
-                            CacheRequests.emplace_back(ev.Release());
-                            return TTestActorRuntime::EEventAction::DROP;
-                        }
-                        break;
-                    }
-                }
-
-                return PrevObserverFunc(ev);
-            }
-
-        private:
-            TTestActorRuntime& Runtime;
-            TTestActorRuntime::TEventObserver PrevObserverFunc;
-            bool Installed = false;
-            bool Activated = false;
-            TVector<THolder<IEventHandle>> CacheRequests;
-        } hooks(runtime);
-
-        hooks.Install();
-        Y_DEFER {
-            hooks.Uninstall();
-        };
-
-        Cerr << "... rebooting node broker" << Endl;
-        // runtime.SetLogPriority(NKikimrServices::TABLET_MAIN, NLog::PRI_TRACE);
-        // runtime.SetLogPriority(NKikimrServices::TABLET_EXECUTOR, NLog::PRI_TRACE);
-        runtime.Register(CreateTabletKiller(MakeNodeBrokerID(0)));
-        hooks.WaitCacheRequests();
-
-        // Open a new pipe
-        auto pipe = runtime.ConnectToPipe(MakeNodeBrokerID(0), sender, 0, GetPipeConfigWithRetries());
-
-        // Send an extend lease request while node broker is loading its state
-        Cerr << "... sending extend lease request" << Endl;
-        {
-            TAutoPtr<TEvNodeBroker::TEvExtendLeaseRequest> event = new TEvNodeBroker::TEvExtendLeaseRequest;
-            event->Record.SetNodeId(1024);
-            runtime.SendToPipe(pipe, sender, event.Release(), 0);
-        }
-
-        // Simulate some sleep, enough for buggy code to handle the request
-        runtime.SimulateSleep(TDuration::Seconds(1));
-
-        // Unblock state loading transaction
-        hooks.Uninstall();
-        hooks.ResendCacheRequests();
-
-        Cerr << "... waiting for response" << Endl;
-        {
-            auto reply = runtime.GrabEdgeEventRethrow<TEvNodeBroker::TEvExtendLeaseResponse>(sender);
-            UNIT_ASSERT(reply);
-            const auto &rec = reply->Get()->Record;
-            UNIT_ASSERT_VALUES_EQUAL(rec.GetStatus().GetCode(), TStatus::OK);
-            UNIT_ASSERT_VALUES_EQUAL(rec.GetNodeId(), 1024);
-            UNIT_ASSERT_VALUES_EQUAL(rec.GetEpoch().DebugString(), epoch.DebugString());
-            UNIT_ASSERT_VALUES_EQUAL(rec.GetExpire(), epoch.GetNextEnd());
-        }
-
-        // Wait until epoch expiration.
-        Cerr << "... waiting for epoch update" << Endl;
-        WaitForEpochUpdate(runtime, sender);
-        epoch = CheckNodesList(runtime, sender, {1024}, {}, 3);
-    }
-
-    Y_UNIT_TEST(MinDynamicNodeIdShifted)
-    {
-        TTestBasicRuntime runtime(8, false);
-        Setup(runtime);
-        TActorId sender = runtime.AllocateEdgeActor();
-
-        // There should be no dynamic nodes initially.
-        auto epoch = GetEpoch(runtime, sender);
-        // Register node 1024.
-        CheckRegistration(runtime, sender, "host1", 1001, "host1.yandex.net", "1.2.3.4",
-                          1, 2, 3, 4, TStatus::OK, 1024, epoch.GetNextEnd());
-        
-        // Update config and restart NodeBroker
-        auto dnConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dnConfig->MinDynamicNodeId += 64;
-        dnConfig->MaxDynamicNodeId += 64;
-        RestartNodeBroker(runtime);
-
-        // Register node 1088.
-        CheckRegistration(runtime, sender, "host2", 1001, "host2.yandex.net", "1.2.3.5",
-                          1, 2, 3, 5, TStatus::OK, 1088, epoch.GetNextEnd());
-
-        // Wait until epoch expiration.
-        WaitForEpochUpdate(runtime, sender);
-        epoch = GetEpoch(runtime, sender);
-
-        // Check lease extension for both nodes.
-        CheckLeaseExtension(runtime, sender, 1024, TStatus::OK, epoch);
-        CheckLeaseExtension(runtime, sender, 1088, TStatus::OK, epoch);
-    }
-
-    Y_UNIT_TEST(DoNotReuseDynnodeIdsBelowMinDynamicNodeId)
-    {
-        TTestBasicRuntime runtime(8, false);
-        Setup(runtime);
-        TActorId sender = runtime.AllocateEdgeActor();
-
-        // There should be no dynamic nodes initially.
-        auto epoch = GetEpoch(runtime, sender);
-    
-        // Register node 1024.
-        CheckRegistration(runtime, sender, "host1", 1001, "host1.yandex.net", "1.2.3.4",
-                          1, 2, 3, 4, TStatus::OK, 1024, epoch.GetNextEnd());
-        
-        // Update config and restart NodeBroker
-        auto dnConfig = runtime.GetAppData().DynamicNameserviceConfig;
-        dnConfig->MinDynamicNodeId += 64;
-        dnConfig->MaxDynamicNodeId += 64;
-        RestartNodeBroker(runtime);
-    
-        // Wait until epoch expiration.
-        WaitForEpochUpdate(runtime, sender);
-        epoch = GetEpoch(runtime, sender);
-        CheckLeaseExtension(runtime, sender, 1024, TStatus::OK, epoch);
-        CheckNodeInfo(runtime, sender, 1024, TStatus::OK);
-
-        WaitForEpochUpdate(runtime, sender);
-        CheckNodeInfo(runtime, sender, 1024, TStatus::OK);
-
-        // Wait until node's lease expires
-        WaitForEpochUpdate(runtime, sender);
-        WaitForEpochUpdate(runtime, sender);
-        WaitForEpochUpdate(runtime, sender);
-        WaitForEpochUpdate(runtime, sender);
-        epoch = GetEpoch(runtime, sender);
-
-        CheckNodeInfo(runtime, sender, 1024, TStatus::WRONG_REQUEST);
-
-        // Register node 1088.
-        CheckRegistration(runtime, sender, "host2", 1001, "host2.yandex.net", "1.2.3.5",
-                          1, 2, 3, 5, TStatus::OK, 1088, epoch.GetNextEnd());
-    }
-
-    Y_UNIT_TEST(ResolveScopeIdForServerless)
-    {
-        TTestBasicRuntime runtime(2, false);
-        Setup(runtime);
-        TActorId sender = runtime.AllocateEdgeActor();
-        auto epoch = GetEpoch(runtime, sender);
-        ui32 txId = 100;
-
-        // Create shared subdomain
-        TSubDomainKey sharedSubdomainKey;
-        do {
-            auto modifyScheme = MakeHolder<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction>();
-            modifyScheme->Record.SetTxId(++txId);
-            auto* transaction = modifyScheme->Record.AddTransaction();
-            transaction->SetWorkingDir(DOMAIN_NAME);
-            transaction->SetOperationType(NKikimrSchemeOp::ESchemeOpCreateExtSubDomain);
-            auto* subdomain = transaction->MutableSubDomain();
-            subdomain->SetName("SharedDB");
-            runtime.SendToPipe(TTestTxConfig::SchemeShard, sender, modifyScheme.Release());
-            TAutoPtr<IEventHandle> handle;
-            auto reply = runtime.GrabEdgeEventRethrow<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransactionResult>(handle, TDuration::MilliSeconds(100));
-            if (reply) {
-                sharedSubdomainKey = TSubDomainKey(reply->Record.GetSchemeshardId(), reply->Record.GetPathId());
-                UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetStatus(), NKikimrScheme::EStatus::StatusAccepted);
-                break;
-            }
-        } while (true);
-
-        // Check dynamic node in shared subdomain
-        TKikimrScopeId sharedScopeId{sharedSubdomainKey.GetSchemeShard(), sharedSubdomainKey.GetPathId()};
-        CheckRegistration(runtime, sender, "host1", 1001, "host1.yandex.net",
-                          "1.2.3.4", 1, 2, 3, 4, TStatus::OK, 1024,
-                          epoch.GetNextEnd(), false, "/dc-1/SharedDB",
-                          sharedScopeId);
-
-        // Create serverless subdomain that associated with shared
-        TSubDomainKey serverlessSubdomainKey;
-        do {
-            auto modifyScheme = MakeHolder<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction>();
-            modifyScheme->Record.SetTxId(++txId);
-            auto* transaction = modifyScheme->Record.AddTransaction();
-            transaction->SetWorkingDir(DOMAIN_NAME);
-            transaction->SetOperationType(NKikimrSchemeOp::ESchemeOpCreateExtSubDomain);
-            auto* subdomain = transaction->MutableSubDomain();
-            subdomain->SetName("ServerlessDB");
-            subdomain->MutableResourcesDomainKey()->CopyFrom(sharedSubdomainKey);
-            runtime.SendToPipe(TTestTxConfig::SchemeShard, sender, modifyScheme.Release());
-            TAutoPtr<IEventHandle> handle;
-            auto reply = runtime.GrabEdgeEventRethrow<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransactionResult>(handle, TDuration::MilliSeconds(100));
-            if (reply) {
-                serverlessSubdomainKey = TSubDomainKey(reply->Record.GetSchemeshardId(), reply->Record.GetPathId());
-                UNIT_ASSERT_VALUES_EQUAL(reply->Record.GetStatus(), NKikimrScheme::EStatus::StatusAccepted);
-                break;
-            }
-        } while (true);
-        
-        // Check that dynamic node in serverless subdomain has shared scope id
-        CheckRegistration(runtime, sender, "host2", 1001, "host2.yandex.net",
-                          "1.2.3.5", 1, 2, 3, 5, TStatus::OK, 1056,
-                          epoch.GetNextEnd(), false, "/dc-1/ServerlessDB",
-                          sharedScopeId);
-    }
 }
 
 Y_UNIT_TEST_SUITE(TDynamicNameserverTest) {
@@ -1429,7 +1115,7 @@ Y_UNIT_TEST_SUITE(TDynamicNameserverTest) {
         TVector<NKikimrNodeBroker::TListNodes> listRequests;
         TVector<NKikimrNodeBroker::TResolveNode> resolveRequests;
 
-        auto logRequests = [&](TAutoPtr<IEventHandle> &event) -> auto {
+        auto logRequests = [&](TTestActorRuntimeBase &, TAutoPtr<IEventHandle> &event) -> auto {
             if (event->GetTypeRewrite() == TEvNodeBroker::EvListNodes)
                 listRequests.push_back(event->Get<TEvNodeBroker::TEvListNodes>()->Record);
             else if (event->GetTypeRewrite() == TEvNodeBroker::EvResolveNode)
@@ -1440,7 +1126,7 @@ Y_UNIT_TEST_SUITE(TDynamicNameserverTest) {
         struct TIsEvUpdateEpoch {
             bool operator()(IEventHandle &ev) {
                 if (ev.HasEvent()
-                    && (dynamic_cast<TDynamicNameserver::TEvPrivate::TEvUpdateEpoch*>(ev.StaticCastAsLocal<IEventBase>())))
+                    && (dynamic_cast<TDynamicNameserver::TEvPrivate::TEvUpdateEpoch*>(ev.GetBase())))
                     return true;
                 return false;
             }

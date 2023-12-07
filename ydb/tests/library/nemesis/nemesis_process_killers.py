@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import logging
 import random
-from contrib.ydb.tests.library.nemesis.nemesis_core import AbstractNemesisNodeTerrorist
-from contrib.ydb.tests.library.nemesis.remote_execution import execute_command_with_output
+from ydb.tests.library.nemesis.nemesis_core import AbstractNemesisNodeTerrorist
+from ydb.tests.library.nemesis.remote_execution import execute_command_with_output
 
 logger = logging.getLogger(__name__)
 

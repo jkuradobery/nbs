@@ -1,7 +1,6 @@
 #pragma once
 
 #include "defs.h"
-#include <library/cpp/random_provider/random_provider.h>
 
 namespace NKikimr {
 

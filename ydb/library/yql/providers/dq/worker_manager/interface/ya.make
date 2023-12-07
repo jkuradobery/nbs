@@ -1,8 +1,8 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect
+    library/cpp/actors/core
+    library/cpp/actors/interconnect
     ydb/library/yql/utils/log
     ydb/library/yql/dq/common
     ydb/library/yql/providers/common/metrics

@@ -1,0 +1,15 @@
+syntax = "proto3";
+option cc_enable_arenas = true;
+
+package NYq.NConfig;
+option java_package = "ru.yandex.kikimr.proto";
+
+////////////////////////////////////////////////////////////
+
+message TControlPlaneProxyConfig {
+    bool Enabled = 1;
+    string RequestTimeout = 2;
+    bool EnablePermissions = 3;
+    string MetricsTtl = 4;
+    string ConfigRetryPeriod = 31;
+}

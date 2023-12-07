@@ -55,10 +55,10 @@ public:
             , HopTime(hopTime)
             , IntervalHopCount(intervalHopCount)
             , DelayHopCount(delayHopCount)
-            , Watermark(watermark)
-            , WatermarkMode(watermarkMode)
             , StatesMap(0, hash, equal)
             , Ctx(ctx)
+            , Watermark(watermark)
+            , WatermarkMode(watermarkMode)
         {
             if (!watermarkMode && dataWatermarks) {
                 DataWatermarkTracker.emplace(TWatermarkTracker(delayHopCount * hopTime, hopTime));
@@ -135,7 +135,7 @@ public:
                 const auto statesMapSize = ReadUi32(in);
                 ClearState();
                 StatesMap.reserve(statesMapSize);
-                for (auto i = 0U; i < statesMapSize; ++i) {
+                for (int i = 0; i < statesMapSize; i++) {
                     auto key = ReadUnboxedValue(in, Self->KeyPacker.RefMutableObject(Ctx, false, Self->KeyType), Ctx);
                     const auto hopIndex = ReadUi64(in);
                     const auto bucketsSize = ReadUi32(in);
@@ -297,7 +297,7 @@ public:
             auto& bucketsForKey = keyState.Buckets;
 
             bool becameEmpty = false;
-            for (auto i = 0U; i < bucketsForKey.size(); ++i) {
+            for (auto i = 0; i < bucketsForKey.size(); i++) {
                 const auto curHopIndex = keyState.HopIndex;
                 if (curHopIndex >= closeBeforeIndex) {
                     break;
@@ -467,7 +467,7 @@ public:
         Stateless = false;
         bool encoded;
         GetDictionaryKeyTypes(keyType, KeyTypes, IsTuple, encoded, UseIHash);
-        Y_ABORT_UNLESS(!encoded, "TODO");
+        Y_VERIFY(!encoded, "TODO");
         Equate = UseIHash ? MakeEquateImpl(KeyType) : nullptr;
         Hash = UseIHash ? MakeHashImpl(KeyType) : nullptr;
     }

@@ -279,7 +279,7 @@ namespace NMiniKQL {
             , AllocCounters(allocCounters)
             , ForceOnline(false)
         {
-            Y_ABORT_UNLESS(FunctionRegistry);
+            Y_VERIFY(FunctionRegistry);
         }
     };
 

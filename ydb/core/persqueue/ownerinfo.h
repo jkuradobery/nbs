@@ -2,7 +2,7 @@
 #include <ydb/core/keyvalue/keyvalue_events.h>
 #include <ydb/core/persqueue/events/internal.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 
 namespace NKikimr {
@@ -39,13 +39,13 @@ namespace NPQ {
             if (!lastRequest) {
                 Requests.push_back(size);
             } else {
-                Y_ABORT_UNLESS(!Requests.empty());
+                Y_VERIFY(!Requests.empty());
                 Requests.back() += size;
             }
         }
 
         ui64 DecReservedSize() {
-            //TODO: Y_ABORT_UNLESS(!Requests.empty());
+            //TODO: Y_VERIFY(!Requests.empty());
             if (Requests.empty())
                 return 0;
             ui64 size = Requests.front();

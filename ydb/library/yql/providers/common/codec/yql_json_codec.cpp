@@ -36,7 +36,7 @@ TJsonWriterConfig MakeJsonConfig() {
     config.FormatOutput = false;
     config.SortKeys = false;
     config.ValidateUtf8 = false;
-    config.DontEscapeStrings = false;
+    config.DontEscapeStrings = true;
     config.WriteNanAsString = true;
 
     return config;

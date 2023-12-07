@@ -5,7 +5,6 @@
 #include <ydb/library/yql/dq/opt/dq_opt_phy.h>
 #include <ydb/library/yql/dq/opt/dq_opt_join.h>
 #include <ydb/library/yql/dq/opt/dq_opt.h>
-#include <ydb/library/yql/dq/type_ann/dq_type_ann.h>
 #include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 #include <ydb/library/yql/core/yql_opt_utils.h>
 
@@ -19,9 +18,10 @@ using namespace NYql::NNodes;
 
 class TDqsPhysicalOptProposalTransformer : public TOptimizeTransformerBase {
 public:
-    TDqsPhysicalOptProposalTransformer(TTypeAnnotationContext* typeCtx, const TDqConfiguration::TPtr& config)
+    TDqsPhysicalOptProposalTransformer(TTypeAnnotationContext* typeCtx, const TDqConfiguration::TPtr& config, bool useBlocks)
         : TOptimizeTransformerBase(typeCtx, NLog::EComponent::ProviderDq, {})
         , Config(config)
+        , UseBlocks(useBlocks)
     {
         const bool enablePrecompute = Config->_EnablePrecompute.Get().GetOrElse(false);
 
@@ -32,18 +32,16 @@ public:
         AddHandler(0, &TCoExtractMembers::Match, HNDL(PushExtractMembersToStage<false>));
         AddHandler(0, &TCoFlatMapBase::Match, HNDL(BuildFlatmapStage<false>));
         AddHandler(0, &TCoCombineByKey::Match, HNDL(PushCombineToStage<false>));
-        AddHandler(0, &TCoPartitionsByKeys::Match, HNDL(BuildPartitionsStage<false>));
-        AddHandler(0, &TCoShuffleByKeys::Match, HNDL(BuildShuffleStage<false>));
-        AddHandler(0, &TCoFinalizeByKey::Match, HNDL(BuildFinalizeByKeyStage<false>));
-        AddHandler(0, &TDqCnHashShuffle::Match, HNDL(BuildHashShuffleByKeyStage));
-        AddHandler(0, &TCoPartitionByKey::Match, HNDL(BuildPartitionStage<false>));
+        AddHandler(0, &TCoPartitionsByKeys::Match, HNDL(BuildPartitionsStage));
+        AddHandler(0, &TCoShuffleByKeys::Match, HNDL(BuildShuffleStage));
+        AddHandler(0, &TCoFinalizeByKey::Match, HNDL(BuildFinalizeByKeyStage));
+        AddHandler(0, &TCoPartitionByKey::Match, HNDL(BuildPartitionStage));
         AddHandler(0, &TCoAsList::Match, HNDL(BuildAggregationResultStage));
         AddHandler(0, &TCoTopSort::Match, HNDL(BuildTopSortStage<false>));
         AddHandler(0, &TCoSort::Match, HNDL(BuildSortStage<false>));
         AddHandler(0, &TCoTakeBase::Match, HNDL(BuildTakeOrTakeSkipStage<false>));
-        AddHandler(0, &TCoLength::Match, HNDL(RewriteLengthOfStageOutput<false>));
+        AddHandler(0, &TCoLength::Match, HNDL(RewriteLengthOfStageOutput));
         AddHandler(0, &TCoExtendBase::Match, HNDL(BuildExtendStage));
-        AddHandler(0, &TDqJoin::Match, HNDL(SuppressSortOnJoinInput));
         AddHandler(0, &TDqJoin::Match, HNDL(RewriteRightJoinToLeft));
         AddHandler(0, &TDqJoin::Match, HNDL(RewriteLeftPureJoin<false>));
         AddHandler(0, &TDqJoin::Match, HNDL(BuildJoin<false>));
@@ -53,7 +51,7 @@ public:
         AddHandler(0, &TCoOrderedLMap::Match, HNDL(BuildOrderedLMapOverMuxStage));
         AddHandler(0, &TCoLMap::Match, HNDL(BuildLMapOverMuxStage));
         if (enablePrecompute) {
-            AddHandler(0, &TCoHasItems::Match, HNDL(BuildHasItems<false>));
+            AddHandler(0, &TCoHasItems::Match, HNDL(BuildHasItems));
             AddHandler(0, &TCoSqlIn::Match, HNDL(BuildSqlIn<false>));
             AddHandler(0, &TCoToOptional::Match, HNDL(BuildScalarPrecompute<false>));
             AddHandler(0, &TCoHead::Match, HNDL(BuildScalarPrecompute<false>));
@@ -67,21 +65,15 @@ public:
         AddHandler(1, &TCoExtractMembers::Match, HNDL(PushExtractMembersToStage<true>));
         AddHandler(1, &TCoFlatMapBase::Match, HNDL(BuildFlatmapStage<true>));
         AddHandler(1, &TCoCombineByKey::Match, HNDL(PushCombineToStage<true>));
-        AddHandler(1, &TCoPartitionsByKeys::Match, HNDL(BuildPartitionsStage<true>));
-        AddHandler(1, &TCoShuffleByKeys::Match, HNDL(BuildShuffleStage<true>));
-        AddHandler(1, &TCoFinalizeByKey::Match, HNDL(BuildFinalizeByKeyStage<true>));
-        AddHandler(1, &TCoPartitionByKey::Match, HNDL(BuildPartitionStage<true>));
         AddHandler(1, &TCoTopSort::Match, HNDL(BuildTopSortStage<true>));
         AddHandler(1, &TCoSort::Match, HNDL(BuildSortStage<true>));
         AddHandler(1, &TCoTakeBase::Match, HNDL(BuildTakeOrTakeSkipStage<true>));
-        AddHandler(1, &TCoLength::Match, HNDL(RewriteLengthOfStageOutput<true>));
         AddHandler(1, &TDqJoin::Match, HNDL(RewriteLeftPureJoin<true>));
         AddHandler(1, &TDqJoin::Match, HNDL(BuildJoin<true>));
         AddHandler(1, &TCoAssumeSorted::Match, HNDL(BuildSortStage<true>));
         AddHandler(1, &TCoOrderedLMap::Match, HNDL(PushOrderedLMapToStage<true>));
         AddHandler(1, &TCoLMap::Match, HNDL(PushLMapToStage<true>));
         if (enablePrecompute) {
-            AddHandler(1, &TCoHasItems::Match, HNDL(BuildHasItems<true>));
             AddHandler(1, &TCoSqlIn::Match, HNDL(BuildSqlIn<true>));
             AddHandler(1, &TCoToOptional::Match, HNDL(BuildScalarPrecompute<true>));
             AddHandler(1, &TCoHead::Match, HNDL(BuildScalarPrecompute<true>));
@@ -95,7 +87,102 @@ public:
 
 protected:
     TMaybeNode<TExprBase> BuildStageWithSourceWrap(TExprBase node, TExprContext& ctx) {
-        return DqBuildStageWithSourceWrap(node, ctx);
+        const auto wrap = node.Cast<TDqSourceWrap>();
+        if (IsSameAnnotation(GetSeqItemType(*wrap.Ref().GetTypeAnn()), GetSeqItemType(*wrap.Input().Ref().GetTypeAnn()))) {
+        return Build<TDqCnUnionAll>(ctx, node.Pos())
+            .Output()
+                .Stage<TDqStage>()
+                .Inputs()
+                    .Add<TDqSource>()
+                        .DataSource(wrap.DataSource())
+                        .Settings(wrap.Input())
+                        .Build()
+                    .Build()
+                .Program()
+                    .Args({"source"})
+                    .Body<TCoToStream>()
+                        .Input("source")
+                        .Build()
+                    .Build()
+                .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
+                .Build()
+                .Index().Build("0")
+            .Build().Done();
+        }
+        const auto& items = GetSeqItemType(*wrap.Ref().GetTypeAnn()).Cast<TStructExprType>()->GetItems();
+        auto sourceArg = ctx.NewArgument(node.Pos(), "source");
+        auto inputType = &GetSeqItemType(*wrap.Input().Ref().GetTypeAnn());
+        while (inputType->GetKind() == ETypeAnnotationKind::Tuple) {
+            auto tupleType = inputType->Cast<TTupleExprType>();
+            if (tupleType->GetSize() > 0) {
+                inputType = tupleType->GetItems()[0];
+            }
+        }
+
+        bool supportsBlocks = inputType->GetKind() == ETypeAnnotationKind::Struct &&
+            inputType->Cast<TStructExprType>()->FindItem("_yql_block_length").Defined();
+
+        auto wideWrap = ctx.Builder(node.Pos())
+            .Callable(UseBlocks && supportsBlocks ? TDqSourceWideBlockWrap::CallableName() : TDqSourceWideWrap::CallableName())
+                .Add(0, sourceArg)
+                .Add(1, wrap.DataSource().Ptr())
+                .Add(2, wrap.RowType().Ptr())
+                .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
+                    if (wrap.Settings()) {
+                        parent.Add(3, wrap.Settings().Cast().Ptr());
+                    }
+
+                    return parent;
+                })
+            .Seal()
+            .Build();
+
+        if (UseBlocks && supportsBlocks) {
+            wideWrap = ctx.Builder(node.Pos())
+                .Callable("WideFromBlocks")
+                    .Add(0, wideWrap)
+                .Seal()
+                .Build();
+        }
+
+        auto narrow = ctx.Builder(node.Pos())
+            .Callable("NarrowMap")
+                .Add(0, wideWrap)
+                .Lambda(1)
+                    .Params("fields", items.size())
+                    .Callable(TCoAsStruct::CallableName())
+                        .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
+                            ui32 i = 0U;
+                            for (const auto& item : items) {
+                                parent.List(i)
+                                    .Atom(0, item->GetName())
+                                    .Arg(1, "fields", i)
+                                .Seal();
+                                ++i;
+                            }
+                            return parent;
+                        })
+                    .Seal()
+                .Seal()
+            .Seal()
+            .Build();
+
+        auto program = ctx.NewLambda(node.Pos(), ctx.NewArguments(node.Pos(), { sourceArg }), std::move(narrow));
+
+        return Build<TDqCnUnionAll>(ctx, node.Pos())
+            .Output()
+                .Stage<TDqStage>()
+                .Inputs()
+                    .Add<TDqSource>()
+                        .DataSource(wrap.DataSource())
+                        .Settings(wrap.Input())
+                        .Build()
+                    .Build()
+                .Program(program)
+                .Settings(TDqStageSettings().BuildNode(ctx, node.Pos()))
+                .Build()
+                .Index().Build("0")
+            .Build().Done();
     }
 
     TMaybeNode<TExprBase> BuildStageWithReadWrap(TExprBase node, TExprContext& ctx) {
@@ -179,28 +266,20 @@ protected:
         return DqPushCombineToStage(node, ctx, optCtx, *getParents(), IsGlobal);
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> BuildPartitionsStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TGetParents& getParents) {
-        return DqBuildPartitionsStage(node, ctx, optCtx, *getParents(), IsGlobal);
+    TMaybeNode<TExprBase> BuildPartitionsStage(TExprBase node, TExprContext& ctx, const TGetParents& getParents) {
+        return DqBuildPartitionsStage(node, ctx, *getParents());
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> BuildPartitionStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TGetParents& getParents) {
-        return DqBuildPartitionStage(node, ctx, optCtx, *getParents(), IsGlobal);
+    TMaybeNode<TExprBase> BuildPartitionStage(TExprBase node, TExprContext& ctx, const TGetParents& getParents) {
+        return DqBuildPartitionStage(node, ctx, *getParents());
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> BuildShuffleStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TGetParents& getParents) {
-        return DqBuildShuffleStage(node, ctx, optCtx, *getParents(), IsGlobal);
+    TMaybeNode<TExprBase> BuildShuffleStage(TExprBase node, TExprContext& ctx, const TGetParents& getParents) {
+        return DqBuildShuffleStage(node, ctx, *getParents());
     }
 
-    TMaybeNode<TExprBase> BuildHashShuffleByKeyStage(TExprBase node, TExprContext& ctx, const TGetParents& getParents) {
-        return DqBuildHashShuffleByKeyStage(node, ctx, *getParents());
-    }
-
-    template<bool IsGlobal>
     TMaybeNode<TExprBase> BuildFinalizeByKeyStage(TExprBase node, TExprContext& ctx, const TGetParents& getParents) {
-        return DqBuildFinalizeByKeyStage(node, ctx, *getParents(), IsGlobal);
+        return DqBuildFinalizeByKeyStage(node, ctx, *getParents());
     }
 
     TMaybeNode<TExprBase> BuildAggregationResultStage(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx) {
@@ -226,9 +305,8 @@ protected:
         }
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> RewriteLengthOfStageOutput(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TGetParents& getParents) {
-        return DqRewriteLengthOfStageOutput(node, ctx, optCtx, *getParents(), IsGlobal);
+    TMaybeNode<TExprBase> RewriteLengthOfStageOutput(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx) {
+        return DqRewriteLengthOfStageOutputLegacy(node, ctx, optCtx);
     }
 
     TMaybeNode<TExprBase> BuildExtendStage(TExprBase node, TExprContext& ctx) {
@@ -237,10 +315,6 @@ protected:
 
     TMaybeNode<TExprBase> RewriteRightJoinToLeft(TExprBase node, TExprContext& ctx) {
         return DqRewriteRightJoinToLeft(node, ctx);
-    }
-
-    TMaybeNode<TExprBase> SuppressSortOnJoinInput(TExprBase node, TExprContext& ctx) {
-        return DqSuppressSortOnJoinInput(node.Cast<TDqJoin>(),ctx);
     }
 
     template <bool IsGlobal>
@@ -256,9 +330,8 @@ protected:
         return DqBuildJoin(join, ctx, optCtx, *parentsMap, IsGlobal, /* pushLeftStage = */ false /* TODO */, mode);
     }
 
-    template <bool IsGlobal>
-    TMaybeNode<TExprBase> BuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx, const TGetParents& getParents) {
-        return DqBuildHasItems(node, ctx, optCtx, *getParents(), IsGlobal);
+    TMaybeNode<TExprBase> BuildHasItems(TExprBase node, TExprContext& ctx, IOptimizationContext& optCtx) {
+        return DqBuildHasItems(node, ctx, optCtx);
     }
 
     template <bool IsGlobal>
@@ -295,10 +368,11 @@ protected:
 
 private:
     TDqConfiguration::TPtr Config;
+    const bool UseBlocks;
 };
 
-THolder<IGraphTransformer> CreateDqsPhyOptTransformer(TTypeAnnotationContext* typeCtx, const TDqConfiguration::TPtr& config) {
-    return THolder(new TDqsPhysicalOptProposalTransformer(typeCtx, config));
+THolder<IGraphTransformer> CreateDqsPhyOptTransformer(TTypeAnnotationContext* typeCtx, const TDqConfiguration::TPtr& config, bool useBlocks) {
+    return THolder(new TDqsPhysicalOptProposalTransformer(typeCtx, config, useBlocks));
 }
 
 } // NYql::NDqs

@@ -16,6 +16,7 @@ void TReplicationSourceOffsetsServer::Unlink() {
 }
 
 void TReplicationSourceOffsetsServer::StateWork(STFUNC_SIG) {
+    Y_UNUSED(ctx);
     switch (ev->GetTypeRewrite()) {
         hFunc(TEvents::TEvUndelivered, Handle);
         hFunc(TEvInterconnect::TEvNodeConnected, Handle);
@@ -43,7 +44,7 @@ void TReplicationSourceOffsetsServer::Handle(TEvDataShard::TEvGetReplicationSour
     state.NextSplitKeyId = msg->Record.GetFromSplitKeyId();
 
     if (readId.ActorId.NodeId() != SelfId().NodeId()) {
-        Y_ABORT_UNLESS(ev->InterconnectSession);
+        Y_VERIFY(ev->InterconnectSession);
         state.InterconnectSession = ev->InterconnectSession;
         auto& nodeState = Nodes[readId.ActorId.NodeId()];
         auto& sessionState = Sessions[ev->InterconnectSession];
@@ -153,7 +154,7 @@ void TReplicationSourceOffsetsServer::ProcessNode(TNodeState& node) {
     while (node.InFlightTotal < node.WindowSize && !node.WaitingReads.empty()) {
         auto waitingRead = node.WaitingReads.front();
         auto& waitingState = Reads.at(waitingRead);
-        Y_ABORT_UNLESS(waitingState.WaitingNode);
+        Y_VERIFY(waitingState.WaitingNode);
         node.WaitingReads.pop_front();
         waitingState.WaitingNode = false;
         ProcessRead(waitingRead, waitingState);
@@ -195,7 +196,7 @@ void TReplicationSourceOffsetsServer::Handle(TEvDataShard::TEvReplicationSourceO
         ProcessRead(readId, state);
     } else if (state.InFlight.empty()) {
         // Forget this read
-        Y_ABORT_UNLESS(!state.WaitingNode);
+        Y_VERIFY(!state.WaitingNode);
         if (sessionState) {
             sessionState->Reads.erase(readId);
         }
@@ -234,7 +235,7 @@ void TReplicationSourceOffsetsServer::Handle(TEvDataShard::TEvReplicationSourceO
         nodeState->InFlightTotal -= state.InFlightTotal;
     }
 
-    Y_ABORT_UNLESS(!state.WaitingNode);
+    Y_VERIFY(!state.WaitingNode);
     if (sessionState) {
         sessionState->Reads.erase(readId);
     }
@@ -295,7 +296,7 @@ void TReplicationSourceOffsetsServer::NodeDisconnected(const TActorId& sessionId
 
     if (node.Sessions.empty()) {
         // We no longer need this node
-        Y_ABORT_UNLESS(node.WaitingReads.empty());
+        Y_VERIFY(node.WaitingReads.empty());
         Nodes.erase(session.NodeId);
     } else {
         ProcessNode(node);
@@ -313,7 +314,8 @@ void TDataShard::HandleByReplicationSourceOffsetsServer(STATEFN_SIG) {
     InvokeOtherActor(
         *ReplicationSourceOffsetsServer,
         &TReplicationSourceOffsetsServer::Receive,
-        ev);
+        ev,
+        TActivationContext::ActorContextFor(ReplicationSourceOffsetsServer->SelfId()));
 }
 
 } // namespace NKikimr::NDataShard

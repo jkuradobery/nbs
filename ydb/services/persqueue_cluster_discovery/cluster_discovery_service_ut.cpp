@@ -9,7 +9,7 @@
 
 #include <ydb/public/api/grpc/draft/ydb_persqueue_v1.grpc.pb.h>
 
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/http/http_proxy.h>
 
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
@@ -277,7 +277,7 @@ public:
     void SetNetDataViaFile(const TString& netDataTsv) {
         UNIT_ASSERT(!Server_);
 
-        NetDataFile = MakeHolder<TTempFileHandle>();
+        NetDataFile = MakeHolder<TTempFileHandle>("netData.tsv");
         NetDataFile->Write(netDataTsv.Data(), netDataTsv.Size());
         NetDataFile->FlushData();
 
@@ -286,7 +286,7 @@ public:
 
     void Run() {
         Server_ = MakeHolder<TServer>(Settings_);
-        Server_->EnableGRpc(NYdbGrpc::TServerOptions().SetHost("localhost").SetPort(GrpcPort_));
+        Server_->EnableGRpc(NGrpc::TServerOptions().SetHost("localhost").SetPort(GrpcPort_));
     }
 
     NPersQueueTests::TFlatMsgBusPQClient& PQClient() {

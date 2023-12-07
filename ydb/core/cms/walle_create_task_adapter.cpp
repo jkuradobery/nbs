@@ -1,11 +1,9 @@
-#include "cms_impl.h"
-#include "info_collector.h"
 #include "walle.h"
+#include "info_collector.h"
+#include "cms_impl.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-
-#include <optional>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NCms {
 
@@ -23,13 +21,26 @@ public:
     {
     }
 
-    void Bootstrap(const TActorContext &ctx) {
+    void Bootstrap(const TActorContext &ctx)
+    {
         auto &rec = RequestEvent->Get()->Record;
 
         LOG_INFO(ctx, NKikimrServices::CMS, "Processing Wall-E request: %s",
                   rec.ShortDebugString().data());
 
-        if (!Actions.contains(rec.GetAction())) {
+        if (rec.GetAction() != "reboot"
+            && rec.GetAction() != "power-off"
+            && rec.GetAction() != "change-disk"
+            && rec.GetAction() != "change-memory"
+            && rec.GetAction() != "profile"
+            && rec.GetAction() != "redeploy"
+            && rec.GetAction() != "prepare"
+            && rec.GetAction() != "repair-link"
+            && rec.GetAction() != "repair-bmc"
+            && rec.GetAction() != "repair-overheat"
+            && rec.GetAction() != "repair-capping"
+            && rec.GetAction() != "deactivate"
+            && rec.GetAction() != "temporary-unreachable") {
             ReplyWithErrorAndDie(TStatus::WRONG_REQUEST, "Unsupported action", ctx);
             return;
         }
@@ -45,20 +56,22 @@ public:
     }
 
 private:
-    STFUNC(StateWork) {
+    STFUNC(StateWork)
+    {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvCms::TEvPermissionResponse, Handle);
             HFunc(TEvCms::TEvGetClusterInfoResponse, Handle);
             CFunc(TEvCms::EvWalleTaskStored, Finish);
             HFunc(TEvCms::TEvStoreWalleTaskFailed, Handle);
         default:
-            LOG_DEBUG(*TlsActivationContext, NKikimrServices::CMS,
+            LOG_DEBUG(ctx, NKikimrServices::CMS,
                       "TWalleCreateTaskAdapter::StateWork ignored event type: %" PRIx32 " event: %s",
-                      ev->GetTypeRewrite(), ev->ToString().data());
+                      ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
         }
     }
 
-    void ReplyWithErrorAndDie(TStatus::ECode code, const TString &err, const TActorContext &ctx) {
+    void ReplyWithErrorAndDie(TStatus::ECode code, const TString &err, const TActorContext &ctx)
+    {
         auto &rec = RequestEvent->Get()->Record;
         TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> resp = new TEvCms::TEvWalleCreateTaskResponse;
         resp->Record.MutableStatus()->SetCode(code);
@@ -68,13 +81,15 @@ private:
         ReplyAndDie(resp.Release(), ctx);
     }
 
-    void ReplyAndDie(TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> resp, const TActorContext &ctx) {
+    void ReplyAndDie(TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> resp, const TActorContext &ctx)
+    {
         WalleAuditLog(RequestEvent->Get(), resp.Get(), ctx);
         ctx.Send(RequestEvent->Sender, resp.Release());
         Die(ctx);
     }
 
-    void Handle(TEvCms::TEvPermissionResponse::TPtr &ev, const TActorContext &ctx) {
+    void Handle(TEvCms::TEvPermissionResponse::TPtr &ev, const TActorContext &ctx)
+    {
         auto &rec = ev->Get()->Record;
 
         Response = new TEvCms::TEvWalleCreateTaskResponse;
@@ -101,7 +116,9 @@ private:
         ReplyAndDie(Response, ctx);
     }
 
-    void Handle(TEvCms::TEvGetClusterInfoResponse::TPtr &ev, const TActorContext &ctx) {
+
+    void Handle(TEvCms::TEvGetClusterInfoResponse::TPtr &ev, const TActorContext &ctx)
+    {
         if (ev->Get()->Info->IsOutdated()) {
             ReplyWithErrorAndDie(TStatus::ERROR_TEMP, "Cannot collect cluster info", ctx);
             return;
@@ -122,10 +139,9 @@ private:
         request->Record.SetSchedule(true);
         request->Record.SetDryRun(task.GetDryRun());
 
-        auto it = Actions.find(task.GetAction());
-        Y_ABORT_UNLESS(it != Actions.end());
-
-        if (!it->second) {
+        TAction action;
+        if (task.GetAction() == "prepare"
+            || task.GetAction() == "deactivate") {
             TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> resp = new TEvCms::TEvWalleCreateTaskResponse;
             resp->Record.SetTaskId(task.GetTaskId());
             resp->Record.MutableHosts()->CopyFrom(task.GetHosts());
@@ -133,17 +149,53 @@ private:
             ReplyAndDie(resp.Release(), ctx);
             return;
         } else {
-            for (auto &host : task.GetHosts()) {
-                auto &action = *request->Record.AddActions();
-                action.SetHost(host);
-                action.SetType(*it->second);
-                // We always use infinite duration.
-                // Wall-E MUST delete processed tasks.
+            // We always use infinite duration.
+            // Wall-E MUST delete processed tasks.
+            if (task.GetAction() == "reboot") {
+                action.SetType(TAction::SHUTDOWN_HOST);
                 action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "power-off") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "change-disk") {
+                action.SetType(TAction::REPLACE_DEVICES);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "change-memory") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "profile") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "redeploy") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-link") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-bmc") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-overheat") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "repair-capping") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else if (task.GetAction() == "temporary-unreachable") {
+                action.SetType(TAction::SHUTDOWN_HOST);
+                action.SetDuration(TDuration::Max().GetValue());
+            } else
+                Y_FAIL("Unknown action");
+
+
+            for (auto &host : task.GetHosts()) {
+                auto &hostAction = *request->Record.AddActions();
+                hostAction.CopyFrom(action);
+                hostAction.SetHost(host);
                 if (action.GetType() == TAction::REPLACE_DEVICES) {
                     for (const auto node : cluster->HostNodes(host)) {
                         for (auto &pdiskId : node->PDisks)
-                            *action.AddDevices() = cluster->PDisk(pdiskId).GetDeviceName();
+                            *hostAction.AddDevices() = cluster->PDisk(pdiskId).GetDeviceName();
                     }
                 }
             }
@@ -152,37 +204,23 @@ private:
         ctx.Send(Cms, request.Release());
     }
 
-    void Handle(TEvCms::TEvStoreWalleTaskFailed::TPtr &ev, const TActorContext &ctx) {
+    void Handle(TEvCms::TEvStoreWalleTaskFailed::TPtr &ev, const TActorContext &ctx) { 
         ReplyWithErrorAndDie(TStatus::ERROR_TEMP, ev.Get()->Get()->Reason, ctx);
     }
 
-    void Finish(const TActorContext &ctx) {
+    void Finish(const TActorContext& ctx)
+    {
         ReplyAndDie(Response, ctx);
     }
 
-    static const THashMap<TString, std::optional<TAction::EType>> Actions;
     TEvCms::TEvWalleCreateTaskRequest::TPtr RequestEvent;
     TAutoPtr<TEvCms::TEvWalleCreateTaskResponse> Response;
     TActorId Cms;
 };
 
-const THashMap<TString, std::optional<TAction::EType>> TWalleCreateTaskAdapter::Actions = {
-    {"reboot", TAction::REBOOT_HOST},
-    {"power-off", TAction::SHUTDOWN_HOST},
-    {"change-disk", TAction::REPLACE_DEVICES},
-    {"change-memory", TAction::SHUTDOWN_HOST},
-    {"profile", TAction::SHUTDOWN_HOST},
-    {"redeploy", TAction::SHUTDOWN_HOST},
-    {"repair-link", TAction::SHUTDOWN_HOST},
-    {"repair-bmc", TAction::SHUTDOWN_HOST},
-    {"repair-overheat", TAction::SHUTDOWN_HOST},
-    {"repair-capping", TAction::SHUTDOWN_HOST},
-    {"temporary-unreachable", TAction::SHUTDOWN_HOST},
-    {"prepare", std::nullopt},
-    {"deactivate", std::nullopt},
-};
 
-IActor *CreateWalleAdapter(TEvCms::TEvWalleCreateTaskRequest::TPtr &ev, TActorId cms) {
+IActor *CreateWalleAdapter(TEvCms::TEvWalleCreateTaskRequest::TPtr &ev, TActorId cms)
+{
     return new TWalleCreateTaskAdapter(ev, cms);
 }
 

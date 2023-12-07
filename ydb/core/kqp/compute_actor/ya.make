@@ -9,21 +9,15 @@ SRCS(
     kqp_scan_compute_stat.cpp
     kqp_scan_compute_manager.cpp
     kqp_scan_compute_actor.cpp
-    kqp_scan_fetcher_actor.cpp
-    kqp_scan_common.cpp
-    kqp_scan_events.cpp
 )
 
 PEERDIR(
     ydb/core/actorlib_impl
     ydb/core/base
-    ydb/core/kqp/federated_query
     ydb/core/kqp/runtime
     ydb/core/tx/datashard
     ydb/core/tx/scheme_cache
     ydb/library/yql/dq/actors/compute
-    ydb/library/yql/providers/generic/actors
-    ydb/library/yql/providers/s3/actors
     ydb/library/yql/public/issue
 )
 

@@ -4,7 +4,7 @@ namespace NKikimr::NMetadata::NProvider {
 
 void TDSAccessorRefresher::OnBootstrap() {
     TBase::OnBootstrap();
-    UnsafeBecome(&TDSAccessorRefresher::StateMain);
+    Become(&TDSAccessorRefresher::StateMain);
     Sender<TEvRefresh>().SendTo(SelfId());
 }
 
@@ -28,8 +28,13 @@ void TDSAccessorRefresher::OnNewParsedSnapshot(Ydb::Table::ExecuteQueryResult&& 
     }
 }
 
-void TDSAccessorRefresher::OnConstructSnapshotError(const TString& errorMessage) {
-    TBase::OnConstructSnapshotError(errorMessage);
+void TDSAccessorRefresher::OnIncorrectSnapshotFromYQL(const TString& errorMessage) {
+    TBase::OnIncorrectSnapshotFromYQL(errorMessage);
+    Schedule(Config.GetRefreshPeriod(), new TEvRefresh());
+}
+
+void TDSAccessorRefresher::OnSnapshotEnrichingError(const TString& errorMessage) {
+    TBase::OnSnapshotEnrichingError(errorMessage);
     Schedule(Config.GetRefreshPeriod(), new TEvRefresh());
 }
 

@@ -33,7 +33,7 @@ namespace NTable {
         bool AddTable(const TString& name, ui32 id);
         bool DropTable(ui32 id);
         bool AddColumn(ui32 table, const TString& name, ui32 id, ui32 type, bool notNull, TCell null = { });
-        bool AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type, ui32 pgType, const TString& pgTypeMod, bool notNull, TCell null = { });
+        bool AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type, ui32 pgType, bool notNull, TCell null = { });
         bool DropColumn(ui32 table, ui32 id);
         bool AddColumnToFamily(ui32 table, ui32 column, ui32 family);
         bool AddColumnToKey(ui32 table, ui32 column);
@@ -49,7 +49,7 @@ namespace NTable {
         TTable* Table(ui32 tid) const noexcept
         {
             auto* table = Scheme.GetTableInfo(tid);
-            Y_ABORT_UNLESS(table, "Acccessing table that doesn't exist");
+            Y_VERIFY(table, "Acccessing table that doesn't exist");
             return table;
         }
 

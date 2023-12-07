@@ -46,7 +46,7 @@ namespace NKikimr::NStorage {
             size_t tokenCount = Split(path, ":", splitted);
 
             if (splitted[0] == "SectorMap") {
-                Y_ABORT_UNLESS(tokenCount >= 2);
+                Y_VERIFY(tokenCount >= 2);
                 ui64 size = (ui64)100 << 30; // 100GB is default
                 if (splitted.size() >= 3) {
                     ui64 minSize = (ui64)100 << 30;
@@ -111,13 +111,13 @@ namespace NKikimr::NStorage {
             pdiskConfig->EnableSectorEncryption = !pdiskConfig->SectorMap;
         }
 
-        const NPDisk::TMainKey& pdiskKey = Cfg->PDiskKey;
+        NPDisk::TMainKey pdiskKey = Cfg->CreatePDiskKey();
         TString keyPrintSalt = "@N2#_lW19)2-31!iifI@n1178349617";
-        pdiskConfig->HashedMainKey.resize(pdiskKey.Keys.size());
-        for (ui32 i = 0; i < pdiskKey.Keys.size(); ++i) {
+        pdiskConfig->HashedMainKey.resize(pdiskKey.size());
+        for (ui32 i = 0; i < pdiskKey.size(); ++i) {
             THashCalculator hasher;
             hasher.Hash(keyPrintSalt.Detach(), keyPrintSalt.Size());
-            hasher.Hash(&pdiskKey.Keys[i], sizeof(pdiskKey.Keys[i]));
+            hasher.Hash(&pdiskKey[i], sizeof(pdiskKey[i]));
             pdiskConfig->HashedMainKey[i] = TStringBuilder() << Hex(hasher.GetHashResult(), HF_ADDX);
         }
 
@@ -131,13 +131,13 @@ namespace NKikimr::NStorage {
         auto [it, inserted] = LocalPDisks.try_emplace(key, pdisk);
         TPDiskRecord& record = it->second;
         if (!inserted) {
-            Y_ABORT_UNLESS(record.Record.GetPDiskGuid() == pdisk.GetPDiskGuid());
+            Y_VERIFY(record.Record.GetPDiskGuid() == pdisk.GetPDiskGuid());
             return;
         }
 
         TPDiskCategory category(record.Record.GetPDiskCategory());
         std::optional<ui64> readBytesPerSecond, writeBytesPerSecond;
-        for (const auto& item : Cfg->BlobStorageConfig.GetServiceSet().GetReplBrokerConfig().GetMediaTypeQuota()) {
+        for (const auto& item : Cfg->ServiceSet.GetReplBrokerConfig().GetMediaTypeQuota()) {
             if (PDiskTypeToPDiskType(item.GetType()) == category.Type()) {
                 if (item.HasReadBytesPerSecond()) {
                     readBytesPerSecond.emplace(item.GetReadBytesPerSecond());
@@ -170,8 +170,8 @@ namespace NKikimr::NStorage {
         const TString& path = pdisk.GetPath();
         const ui64 pdiskGuid = pdisk.GetPDiskGuid();
         const ui64 pdiskCategory = pdisk.GetPDiskCategory();
-        Cfg->PDiskKey.Initialize();
-        Cfg->PDiskServiceFactory->Create(ActorContext(), pdiskID, pdiskConfig, Cfg->PDiskKey, AppData()->SystemPoolId, LocalNodeId);
+        Cfg->PDiskServiceFactory->Create(TActivationContext::ActorContextFor(SelfId()), pdiskID, pdiskConfig,
+            Cfg->CreatePDiskKey(), AppData()->SystemPoolId, LocalNodeId);
         Send(WhiteboardId, new NNodeWhiteboard::TEvWhiteboard::TEvPDiskStateUpdate(pdiskID, path, pdiskGuid, pdiskCategory));
         Send(WhiteboardId, new NNodeWhiteboard::TEvWhiteboard::TEvSystemStateAddRole("Storage"));
     }
@@ -208,8 +208,7 @@ namespace NKikimr::NStorage {
         }
 
         const TActorId actorId = MakeBlobStoragePDiskID(LocalNodeId, pdiskId);
-        Cfg->PDiskKey.Initialize();
-        Send(actorId, new TEvBlobStorage::TEvRestartPDisk(pdiskId, Cfg->PDiskKey, pdiskConfig));
+        Send(actorId, new TEvBlobStorage::TEvRestartPDisk(pdiskId, Cfg->CreatePDiskKey(), pdiskConfig));
         STLOG(PRI_NOTICE, BS_NODE, NW69, "RestartLocalPDisk is started", (PDiskId, pdiskId));
     }
 

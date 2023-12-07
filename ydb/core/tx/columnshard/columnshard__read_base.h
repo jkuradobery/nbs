@@ -1,5 +1,4 @@
 #pragma once
-#include "engines/reader/description.h"
 #include <ydb/core/tx/columnshard/columnshard_impl.h>
 
 namespace NKikimr::NColumnShard {
@@ -12,17 +11,20 @@ protected:
     {}
 
     std::shared_ptr<NOlap::TReadMetadata> PrepareReadMetadata(
-                                    const NOlap::TReadDescription& readDescription,
+                                    const TActorContext& ctx,
+                                    const TReadDescription& readDescription,
                                     const std::unique_ptr<NOlap::TInsertTable>& insertTable,
                                     const std::unique_ptr<NOlap::IColumnEngine>& index,
-                                    TString& error, const bool isReverse) const;
+                                    const TBatchCache& batchCache,
+                                    TString& error) const;
 
 protected:
     bool ParseProgram(
+        const TActorContext& ctx,
         NKikimrSchemeOp::EOlapProgramType programType,
         TString serializedProgram,
-        NOlap::TReadDescription& read,
-        const NOlap::IColumnResolver& columnResolver
+        TReadDescription& read,
+        const IColumnResolver& columnResolver
     );
 
 protected:

@@ -3,27 +3,17 @@
 #include "yql_kikimr_gateway.h"
 #include "yql_kikimr_settings.h"
 
-#include <ydb/core/kqp/common/simple/temp_tables.h>
-#include <ydb/core/external_sources/external_source_factory.h>
-#include <ydb/core/kqp/query_data/kqp_query_data.h>
 #include <ydb/library/yql/ast/yql_gc_nodes.h>
 #include <ydb/library/yql/core/yql_type_annotation.h>
 #include <ydb/library/yql/minikql/mkql_function_registry.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <ydb/core/kqp/gateway/kqp_query_data.h>
+
+#include <library/cpp/actors/core/actor.h>
 #include <library/cpp/cache/cache.h>
 
-#include <util/generic/flags.h>
-#include <util/generic/is_in.h>
 #include <util/generic/strbuf.h>
-
-namespace NKikimr {
-namespace NGRpcService {
-
-class IRequestCtxMtSafe;
-
-}
-}
+#include <util/generic/flags.h>
 
 namespace NYql {
 
@@ -77,8 +67,7 @@ enum class EKikimrQueryType {
     YqlInternal,
     Scan,
     YqlScriptStreaming,
-    Query, // ExecuteQuery
-    Script, // ExecuteScript
+    Query,
 };
 
 struct TKikimrQueryContext : TThrRefBase {
@@ -106,8 +95,6 @@ struct TKikimrQueryContext : TThrRefBase {
     // Operations on document API tables are performed in restricted mode by default,
     // full mode can be enabled explicitly.
     bool DocumentApiRestricted = true;
-    bool IsInternalCall = false;
-    bool ConcurrentResults = true;
 
     std::unique_ptr<NKikimrKqp::TPreparedQuery> PreparingQuery;
     std::shared_ptr<const NKikimrKqp::TPreparedQuery> PreparedQuery;
@@ -119,9 +106,6 @@ struct TKikimrQueryContext : TThrRefBase {
 
     NActors::TActorId ReplyTarget;
     TMaybe<NKikimrKqp::TRlPath> RlPath;
-    // All rpc calls should be made via Session actor.
-    // we do not want add extra life time for query context here
-    std::shared_ptr<NKikimr::NGRpcService::IRequestCtxMtSafe> RpcCtx;
 
     void Reset() {
         PrepareOnly = false;
@@ -140,7 +124,6 @@ struct TKikimrQueryContext : TThrRefBase {
         ExecutionOrder.clear();
 
         RlPath.Clear();
-        RpcCtx.reset();
     }
 };
 
@@ -199,17 +182,8 @@ public:
         Tables.clear();
     }
 
-    void SetTempTables(NKikimr::NKqp::TKqpTempTablesState::TConstPtr tempTablesState) {
-        if (tempTablesState) {
-            for (const auto& [path, info] : tempTablesState->TempTables) {
-                TempTables[path.second + *tempTablesState->SessionId] = path.second;
-            }
-        }
-    }
-
 private:
     THashMap<std::pair<TString, TString>, TKikimrTableDescription> Tables;
-    THashMap<TString, TString> TempTables;
 };
 
 enum class TYdbOperation : ui32 {
@@ -229,29 +203,25 @@ enum class TYdbOperation : ui32 {
     CreateUser           = 1 << 13,
     AlterUser            = 1 << 14,
     DropUser             = 1 << 15,
-    CreateGroup          = 1 << 16,
-    AlterGroup           = 1 << 17,
-    DropGroup            = 1 << 18,
-    CreateTopic          = 1 << 19,
-    AlterTopic           = 1 << 20,
-    DropTopic            = 1 << 21,
-    ModifyPermission     = 1 << 22
+    CreateGroup           = 1 << 16,
+    AlterGroup            = 1 << 17,
+    DropGroup             = 1 << 18
 };
 
-Y_DECLARE_FLAGS(TYdbOperations, TYdbOperation);
-Y_DECLARE_OPERATORS_FOR_FLAGS(TYdbOperations);
+Y_DECLARE_FLAGS(TYdbOperations, TYdbOperation)
+Y_DECLARE_OPERATORS_FOR_FLAGS(TYdbOperations)
 
 const TYdbOperations& KikimrSchemeOps();
 const TYdbOperations& KikimrDataOps();
 const TYdbOperations& KikimrModifyOps();
 const TYdbOperations& KikimrReadOps();
 
-TIssue AddDmlIssue(const TIssue& issue);
 bool AddDmlIssue(const TIssue& issue, TExprContext& ctx);
 
 class TKikimrTransactionContextBase : public TThrRefBase {
 public:
-    explicit TKikimrTransactionContextBase(bool enableImmediateEffects) : EnableImmediateEffects(enableImmediateEffects) {
+    explicit TKikimrTransactionContextBase(bool enableImmediateEffects)
+        : EnableImmediateEffects(enableImmediateEffects) {
     }
 
     bool HasStarted() const {
@@ -286,24 +256,20 @@ public:
         HasUncommittedChangesRead = false;
     }
 
-    void SetTempTables(NKikimr::NKqp::TKqpTempTablesState::TConstPtr tempTablesState) {
-        if (tempTablesState) {
-            for (const auto& [path, info] : tempTablesState->TempTables) {
-                TempTables[path.second] = path.second + *tempTablesState->SessionId;
-            }
-        }
-    }
-
     template<class IterableKqpTableOps, class IterableKqpTableInfos>
-    std::pair<bool, TIssues> ApplyTableOperations(const IterableKqpTableOps& operations,
-        const IterableKqpTableInfos& tableInfos, EKikimrQueryType queryType)
+    bool ApplyTableOperations(const IterableKqpTableOps& operations,
+        const IterableKqpTableInfos& tableInfos, NKikimrKqp::EIsolationLevel isolationLevel,
+        EKikimrQueryType queryType, TExprContext& ctx)
     {
-        TIssues issues;
         if (IsClosed()) {
             TString message = TStringBuilder() << "Cannot perform operations on closed transaction.";
-            issues.AddIssue(YqlIssue({}, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-            return {false, issues};
+            ctx.AddError(YqlIssue({}, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+            return false;
         }
+
+        isolationLevel = EffectiveIsolationLevel
+            ? *EffectiveIsolationLevel
+            : isolationLevel;
 
         bool hasScheme = false;
         bool hasData = false;
@@ -321,73 +287,59 @@ public:
         }
 
         for (const auto& op : operations) {
-            auto table = op.GetTable();
+            const auto& table = op.GetTable();
 
             auto newOp = TYdbOperation(op.GetOperation());
             TPosition pos(op.GetPosition().GetColumn(), op.GetPosition().GetRow());
-
-            auto tempTable = TempTables.FindPtr(table);
-            if (tempTable) {
-                table = *tempTable;
-            }
 
             const auto info = tableInfoMap.FindPtr(table);
             if (!info) {
                 TString message = TStringBuilder()
                     << "Unable to find table info for table '" << table << "'";
-                issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_SCHEME_ERROR, message));
-                return {false, issues};
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_SCHEME_ERROR, message));
+                return false;
             }
 
             if (queryType == EKikimrQueryType::Dml && (newOp & KikimrSchemeOps())) {
                 TString message = TStringBuilder() << "Operation '" << newOp
                     << "' can't be performed in data query";
-                issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-                return {false, issues};
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+                return false;
             }
 
-            if (IsIn({EKikimrQueryType::Query, EKikimrQueryType::Script}, queryType) && (newOp & KikimrSchemeOps())) {
-                if (EffectiveIsolationLevel) {
-                    TString message = TStringBuilder() << "Scheme operations can't be performed inside transaction, "
-                        << "operation: " << newOp;
-                    issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-                    return {false, issues};
-                }
+            if (queryType == EKikimrQueryType::Query && (newOp & KikimrSchemeOps())) {
+                TString message = TStringBuilder() << "Operation '" << newOp
+                    << "' can't be performed in query";
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+                return false;
             }
 
             if (queryType == EKikimrQueryType::Ddl && (newOp & KikimrDataOps())) {
                 TString message = TStringBuilder() << "Operation '" << newOp
                     << "' can't be performed in scheme query";
-                issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-                return {false, issues};
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+                return false;
             }
 
             if (queryType == EKikimrQueryType::Scan && (newOp & KikimrModifyOps())) {
                 TString message = TStringBuilder() << "Operation '" << newOp
                     << "' can't be performed in scan query";
-                issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-                return {false, issues};
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+                return false;
             }
 
             if (hasData && (newOp & KikimrSchemeOps()) ||
                 hasScheme && (newOp & KikimrDataOps()))
             {
-                TString message = "Cannot mix scheme and data operations inside transaction.";
-
-                if (IsIn({EKikimrQueryType::YqlScript, EKikimrQueryType::YqlScriptStreaming}, queryType)) {
-                    message = TStringBuilder() << message
-                        << " Use COMMIT statement to indicate end of transaction between scheme and data operations.";
-                }
-
-                issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_MIXED_SCHEME_DATA_TX, message));
-                return {false, issues};
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_MIXED_SCHEME_DATA_TX));
+                return false;
             }
 
             if (Readonly && (newOp & KikimrModifyOps())) {
                 TString message = TStringBuilder() << "Operation '" << newOp
                     << "' can't be performed in read only transaction";
-                issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-                return {false, issues};
+                ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+                return false;
             }
 
             auto& currentOps = TableOperations[table];
@@ -396,11 +348,10 @@ public:
                 if (KikimrReadOps() & newOp) {
                     if (!EnableImmediateEffects) {
                         TString message = TStringBuilder() << "Data modifications previously made to table '" << table
-                            << "' in current transaction won't be seen by operation: '"
-                            << newOp << "'";
-                        auto newIssue = AddDmlIssue(YqlIssue(pos, TIssuesIds::KIKIMR_READ_MODIFIED_TABLE, message));
-                        issues.AddIssue(newIssue);
-                        return {false, issues};
+                            << "' in current transaction won't be seen by operation: '" << newOp << "'";
+                            if (!AddDmlIssue(YqlIssue(pos, TIssuesIds::KIKIMR_READ_MODIFIED_TABLE, message), ctx)) {
+                                return false;
+                            }
                     }
 
                     HasUncommittedChangesRead = true;
@@ -410,8 +361,8 @@ public:
                     if (!EnableImmediateEffects) {
                         TString message = TStringBuilder()
                             << "Multiple modification of table with secondary indexes is not supported yet";
-                        issues.AddIssue(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
-                        return {false, issues};
+                        ctx.AddError(YqlIssue(pos, TIssuesIds::KIKIMR_BAD_OPERATION, message));
+                        return false;
                     }
 
                     HasUncommittedChangesRead = true;
@@ -421,7 +372,7 @@ public:
             currentOps |= newOp;
         }
 
-        return {true, issues};
+        return true;
     }
 
     virtual ~TKikimrTransactionContextBase() = default;
@@ -432,7 +383,6 @@ public:
     const bool EnableImmediateEffects;
     THashMap<TKikimrPathId, TString> TableByIdMap;
     TMaybe<NKikimrKqp::EIsolationLevel> EffectiveIsolationLevel;
-    THashMap<TString, TString> TempTables;
     bool Readonly = false;
     bool Invalidated = false;
     bool Closed = false;
@@ -456,20 +406,16 @@ public:
     TKikimrConfiguration& Config() { return *Configuration; }
     TKikimrTablesData& Tables() { return *TablesData; }
     TKikimrQueryContext& Query() { return *QueryCtx; }
-    TKikimrTransactionContextBase& Tx() { Y_ABORT_UNLESS(HasTx()); return *TxCtx; }
+    TKikimrTransactionContextBase& Tx() { Y_VERIFY(HasTx()); return *TxCtx; }
 
     TKikimrConfiguration::TPtr ConfigPtr() { return Configuration; }
     TIntrusivePtr<TKikimrTablesData> TablesPtr() { return TablesData; }
     TIntrusivePtr<TKikimrQueryContext> QueryPtr() { return QueryCtx; }
     TIntrusivePtr<TKikimrTransactionContextBase> TxPtr() { return TxCtx; }
 
-
     bool HasTx() const { return !!TxCtx; }
     void ClearTx() { TxCtx.Reset(); }
-    void SetTx(TIntrusivePtr<TKikimrTransactionContextBase>& txCtx) {
-        TxCtx.Reset(txCtx);
-        TxCtx->SetTempTables(TempTablesState);
-    }
+    void SetTx(TIntrusivePtr<TKikimrTransactionContextBase>& txCtx) { TxCtx.Reset(txCtx); }
 
     TString GetUserName() const {
         return UserName;
@@ -487,10 +433,6 @@ public:
         Database = database;
     }
 
-    NKikimr::NKqp::TKqpTempTablesState::TConstPtr GetTempTablesState() const {
-        return TempTablesState;
-    }
-
     void Reset(bool keepConfigChanges) {
         TablesData->Reset();
         QueryCtx->Reset();
@@ -501,14 +443,6 @@ public:
         }
     }
 
-    void SetTempTables(NKikimr::NKqp::TKqpTempTablesState::TConstPtr tempTablesState) {
-        TablesData->SetTempTables(tempTablesState);
-        if (TxCtx) {
-            TxCtx->SetTempTables(tempTablesState);
-        }
-        TempTablesState = tempTablesState;
-    }
-
 private:
     TString UserName;
     TString Database;
@@ -516,23 +450,19 @@ private:
     TIntrusivePtr<TKikimrTablesData> TablesData;
     TIntrusivePtr<TKikimrQueryContext> QueryCtx;
     TIntrusivePtr<TKikimrTransactionContextBase> TxCtx;
-    NKikimr::NKqp::TKqpTempTablesState::TConstPtr TempTablesState;
 };
 
 TIntrusivePtr<IDataProvider> CreateKikimrDataSource(
     const NKikimr::NMiniKQL::IFunctionRegistry& functionRegistry,
     TTypeAnnotationContext& types,
     TIntrusivePtr<IKikimrGateway> gateway,
-    TIntrusivePtr<TKikimrSessionContext> sessionCtx,
-    const NKikimr::NExternalSource::IExternalSourceFactory::TPtr& sourceFactory,
-    bool isInternalCall);
+    TIntrusivePtr<TKikimrSessionContext> sessionCtx);
 
 TIntrusivePtr<IDataProvider> CreateKikimrDataSink(
     const NKikimr::NMiniKQL::IFunctionRegistry& functionRegistry,
     TTypeAnnotationContext& types,
     TIntrusivePtr<IKikimrGateway> gateway,
     TIntrusivePtr<TKikimrSessionContext> sessionCtx,
-    const NKikimr::NExternalSource::IExternalSourceFactory::TPtr& sourceFactory,
     TIntrusivePtr<IKikimrQueryExecutor> queryExecutor);
 
 } // namespace NYql

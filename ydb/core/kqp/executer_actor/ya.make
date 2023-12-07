@@ -3,7 +3,6 @@ LIBRARY()
 SRCS(
     kqp_data_executer.cpp
     kqp_scan_executer.cpp
-    kqp_scheme_executer.cpp
     kqp_executer_impl.cpp
     kqp_executer_stats.cpp
     kqp_literal_executer.cpp
@@ -19,7 +18,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/containers/absl_flat_hash
     ydb/core/actorlib_impl
     ydb/core/base
@@ -29,7 +28,6 @@ PEERDIR(
     ydb/core/kqp/query_compiler
     ydb/core/kqp/rm_service
     ydb/core/kqp/topics
-    ydb/core/kqp/gateway/local_rpc
     ydb/core/protos
     ydb/core/tx/long_tx_service/public
     ydb/core/ydb_convert
@@ -38,7 +36,6 @@ PEERDIR(
     ydb/library/yql/dq/actors/compute
     ydb/library/yql/dq/runtime
     ydb/library/yql/dq/tasks
-    ydb/library/yql/providers/common/http_gateway
 )
 
 YQL_LAST_ABI_VERSION()

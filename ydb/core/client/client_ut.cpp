@@ -1,6 +1,6 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/compile_time_flags.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tablet/tablet_impl.h>
 #include <ydb/core/testlib/test_client.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
@@ -8,7 +8,7 @@
 #include <ydb/core/client/minikql_compile/yql_expr_minikql.h>
 #include <ydb/public/lib/deprecated/kicli/kicli.h>
 
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/diff/diff.h>
@@ -2349,7 +2349,7 @@ Y_UNIT_TEST_SUITE(TClientTest) {
             ))__";
 
         TDeque<THolder<IEventHandle>> blockedConfirmations;
-        auto blockConfirmations = [&](TAutoPtr<IEventHandle>& ev) {
+        auto blockConfirmations = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvBlobStorage::TEvPut::EventType: {
                     const auto* msg = ev->Get<TEvBlobStorage::TEvPut>();
@@ -2584,7 +2584,7 @@ Y_UNIT_TEST_SUITE(TClientTest) {
         ui64 detachCounter = 0;
         ui64 gcWaitCounter = 0;
         ui64 gcAppliedCounter = 0;
-        auto nemesis = [&](TAutoPtr<IEventHandle>& ev) {
+        auto nemesis = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvTablet::TEvFollowerDetach::EventType: {
                     // Drop TEvFollowerDetach and simulate interconnect disconnection
@@ -2705,7 +2705,7 @@ Y_UNIT_TEST_SUITE(TClientTest) {
 
         bool logResultsCapture = true;
         TVector<THolder<IEventHandle>> logResultsEvents;
-        auto observer = [&](TAutoPtr<IEventHandle>& ev) {
+        auto observer = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvTabletBase::TEvWriteLogResult::EventType: {
                     if (logResultsCapture) {
@@ -2805,7 +2805,7 @@ Y_UNIT_TEST_SUITE(TClientTest) {
         TDeque<THolder<IEventHandle>> blockedConfirmations;
         bool blockConfirmations = true;
         std::pair<ui32, ui32> maxGc{ 0, 0 };
-        auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
+        auto observerFunc = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
                 case TEvBlobStorage::TEvPut::EventType: {
                     const auto* msg = ev->Get<TEvBlobStorage::TEvPut>();

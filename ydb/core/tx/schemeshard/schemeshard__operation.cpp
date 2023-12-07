@@ -58,7 +58,7 @@ struct TSchemeShard::TTxOperationProposeCancelTx: public NTabletFlatExecutor::TT
 
         txc.DB.NoMoreReadsForTx();
 
-        ISubOperation::TPtr part = CreateTxCancelTx(Ev);
+        ISubOperationBase::TPtr part = CreateTxCancelTx(Ev);
         TOperationContext context{Self, txc, ctx, OnComplete, MemChanges, DbChanges};
         auto fakeResponse = part->Propose(TString(), context);
         Y_UNUSED(fakeResponse);
@@ -155,7 +155,7 @@ THolder<TProposeResponse> TSchemeShard::IgniteOperation(TProposeRequest& request
                 response = part->Propose(owner, context);
             }
 
-            Y_ABORT_UNLESS(response);
+            Y_VERIFY(response);
 
             LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                          "IgniteOperation"
@@ -264,7 +264,7 @@ struct TSchemeShard::TTxOperationPropose: public NTabletFlatExecutor::TTransacti
     }
 
     void Complete(const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
 
         const auto& record = Request->Get()->Record;
         const auto txId = TTxId(record.GetTxId());
@@ -326,7 +326,7 @@ struct TSchemeShard::TTxOperationProgress: public NTabletFlatExecutor::TTransact
             return true;
         }
 
-        ISubOperation::TPtr part = operation->Parts.at(ui64(OpId.GetSubTxId()));
+        ISubOperationBase::TPtr part = operation->Parts.at(ui64(OpId.GetSubTxId()));
 
         TOperationContext context{Self, txc, ctx, OnComplete, MemChanges, DbChanges};
 
@@ -343,137 +343,62 @@ struct TSchemeShard::TTxOperationProgress: public NTabletFlatExecutor::TTransact
 };
 
 
-//NOTE: There is certain time frame between initial event handling at TSchemeShard::Handle(*)
-// and actual event processing at TTxOperationReply*::Execute() method.
-// While TSchemeShard::Handle() tries to determine suboperation/operation part it should
-// route event processing to, TTxOperationReply*::Execute() checks if those operation
-// and suboperation are still exist and active.
-// And it is perfectly ok if (sub)operation will manage to change their state within that
-// time frame between TSchemeShard::Handle(*) and TTxOperationReply*::Execute().
-// And it is generally ok if in that situation TTxOperationReply*::Execute() will skip
-// to do anything with an incoming event.
-//
-// Generally, but not in all cases.
-//
-// There could be communication patterns that require other party to receive reaction
-// from schemeshard (ack or reply) unconditionally, no matter what, possibly out-of-scope
-// of any (sub)operation that initiated communication in the first place.
-//
-// Right now there is the case with DataShard's TEvDataShard::TEvSchemaChanged event.
-// See below.
-//
 template <class TEvType>
-void OutOfScopeEventHandler(const typename TEvType::TPtr&, TOperationContext&) {
-    // Do nothing by default
-}
+struct TSchemeShard::TTxOperationReply {};
 
-// DataShard should receive reply on any single TEvDataShard::TEvSchemaChanged it will send
-// to schemeshard even if that particular DataShard goes offline and back online right at
-// perfect peculiar moments during (sub)operations.
-// Not serving reply to a TEvDataShard::TEvSchemaChanged will leave Datashard
-// in some transitional state which, for example, will prevent it from being stopped
-// and deleted until schemeshard or datashard restart.
-//
-template <>
-void OutOfScopeEventHandler<TEvDataShard::TEvSchemaChanged>(const TEvDataShard::TEvSchemaChanged::TPtr& ev, TOperationContext& context) {
-    const auto txId = ev->Get()->Record.GetTxId();
-    LOG_DEBUG_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
-        "TTxOperationReply<" <<  ev->GetTypeName() << "> execute"
-            << ", at schemeshard: " << context.SS->TabletID()
-            << ", send out-of-scope reply, for txId " << txId
-    );
-    const TActorId ackTo = ev->Get()->GetSource();
-
-    auto event = MakeHolder<TEvDataShard::TEvSchemaChangedResult>(txId);
-    context.OnComplete.Send(ackTo, event.Release());
-}
-
-template <class TEvType>
-struct TTxTypeFrom;
-
-#define DefineTxTypeFromSpecialization(TEvType, TxTypeValue)  \
-    template <> \
-    struct TTxTypeFrom<TEvType> { \
-        static constexpr TTxType TxType = TxTypeValue; \
+#define DefineTTxOperationReply(TEvType, TxType) \
+    template<> \
+    struct TSchemeShard::TTxOperationReply<TEvType>: public NTabletFlatExecutor::TTransactionBase<TSchemeShard> { \
+        TOperationId OperationId; \
+        TEvType::TPtr EvReply; \
+        TSideEffects OnComplete; \
+        TMemoryChanges MemChanges; \
+        TStorageChanges DbChanges; \
+\
+        TTxType GetTxType() const override { return TxType; } \
+\
+        TTxOperationReply(TSchemeShard* self, TOperationId id, TEvType::TPtr& ev) \
+            : TBase(self) \
+            , OperationId(id) \
+            , EvReply(ev) \
+        { \
+            Y_VERIFY(TEvType::EventType != TEvPrivate::TEvOperationPlan::EventType); \
+            Y_VERIFY(TEvType::EventType != TEvTxProcessing::TEvPlanStep::EventType); \
+        } \
+\
+        bool Execute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& ctx) override { \
+            LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, \
+                        "TTxOperationReply<" #TEvType "> execute " \
+                            << ", operationId: " << OperationId \
+                            << ", at schemeshard: " << Self->TabletID() \
+                            << ", message: " << IOperationBase::DebugReply(EvReply)); \
+            if (!Self->Operations.contains(OperationId.GetTxId())) { \
+                return true; \
+            } \
+            TOperation::TPtr operation = Self->Operations.at(OperationId.GetTxId()); \
+            if (operation->DoneParts.contains(OperationId.GetSubTxId())) { \
+                LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, \
+                            "TTxOperationReply<" #TEvType "> execute " \
+                               << ", operation already done" \
+                               << ", operationId: " << OperationId \
+                               << ", at schemeshard: " << Self->TabletID()); \
+                return true; \
+            } \
+            ISubOperationBase::TPtr part = operation->Parts.at(ui64(OperationId.GetSubTxId())); \
+            TOperationContext context{Self, txc, ctx, OnComplete, MemChanges, DbChanges}; \
+            Y_VERIFY(EvReply); \
+            part->HandleReply(EvReply, context); \
+            OnComplete.ApplyOnExecute(Self, txc, ctx); \
+            DbChanges.Apply(Self, txc, ctx); \
+            return true; \
+        } \
+        void Complete(const TActorContext& ctx) override { \
+            OnComplete.ApplyOnComplete(Self, ctx); \
+        } \
     };
 
-    SCHEMESHARD_INCOMING_EVENTS(DefineTxTypeFromSpecialization)
-#undef DefineTxTypeFromSpecialization
-
-
-template <class TEvType>
-struct TTxOperationReply : public NTabletFlatExecutor::TTransactionBase<TSchemeShard> {
-    TOperationId OperationId;
-    typename TEvType::TPtr EvReply;
-    TSideEffects OnComplete;
-    TMemoryChanges MemChanges;
-    TStorageChanges DbChanges;
-
-    TTxType GetTxType() const override {
-        return TTxTypeFrom<TEvType>::TxType;
-    }
-
-    TTxOperationReply(TSchemeShard* self, TOperationId id, typename TEvType::TPtr& ev)
-        : TBase(self)
-        , OperationId(id)
-        , EvReply(ev)
-    {
-        Y_ABORT_UNLESS(TEvType::EventType != TEvPrivate::TEvOperationPlan::EventType);
-        Y_ABORT_UNLESS(TEvType::EventType != TEvTxProcessing::TEvPlanStep::EventType);
-    }
-
-    bool Execute(NTabletFlatExecutor::TTransactionContext& txc, const TActorContext& ctx) override {
-
-        auto findActiveSubOperation = [this](const TOperationId& operationId) -> ISubOperation::TPtr {
-            if (auto found = Self->Operations.find(operationId.GetTxId()); found != Self->Operations.cend()) {
-                const auto operation = found->second;
-                const auto subOperationId = operationId.GetSubTxId();
-                if (!operation->DoneParts.contains(subOperationId)) {
-                    return operation->Parts.at(subOperationId);
-                }
-            }
-            return nullptr;
-        };
-
-        ISubOperation::TPtr part = findActiveSubOperation(OperationId);
-
-        LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "TTxOperationReply<" <<  EvReply->GetTypeName() << "> execute"
-            << ", operationId: " << OperationId
-            << ", at schemeshard: " << Self->TabletID()
-            << ", message: " << ISubOperationState::DebugReply(EvReply)
-        );
-
-        {
-            TOperationContext context{Self, txc, ctx, OnComplete, MemChanges, DbChanges};
-
-            if (part) {
-                part->HandleReply(EvReply, context);
-
-            } else {
-                LOG_WARN_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "TTxOperationReply<" <<  EvReply->GetTypeName() << "> execute"
-                    << ", operationId: " << OperationId
-                    << ", at schemeshard: " << Self->TabletID()
-                    << ", unknown operation or suboperation is already done, event is out-of-scope"
-                );
-
-                OutOfScopeEventHandler<TEvType>(EvReply, context);
-            }
-        }
-        OnComplete.ApplyOnExecute(Self, txc, ctx);
-        DbChanges.Apply(Self, txc, ctx);
-
-        return true;
-    }
-
-    void Complete(const TActorContext& ctx) override {
-        LOG_DEBUG_S(ctx, NKikimrServices::FLAT_TX_SCHEMESHARD, "TTxOperationReply<" << EvReply->GetTypeName() << "> complete"
-            << ", operationId: " << OperationId
-            << ", at schemeshard: " << Self->TabletID()
-        );
-        OnComplete.ApplyOnComplete(Self, ctx);
-    }
-};
-
+    SCHEMESHARD_INCOMING_EVENTS(DefineTTxOperationReply)
+#undef DefineTxOperationReply
 
 struct TSchemeShard::TTxOperationPlanStep: public NTabletFlatExecutor::TTransactionBase<TSchemeShard> {
     TEvTxProcessing::TEvPlanStep::TPtr Ev;
@@ -574,21 +499,16 @@ NTabletFlatExecutor::ITransaction* TSchemeShard::CreateTxOperationProgress(TOper
     return new TTxOperationProgress(this, opId);
 }
 
-template <EventBasePtr TEvPtr>
-NTabletFlatExecutor::ITransaction* TSchemeShard::CreateTxOperationReply(TOperationId id, TEvPtr& ev) {
-    using TEvType = typename EventTypeFromTEvPtr<TEvPtr>::type;
-    return new TTxOperationReply<TEvType>(this, id, ev);
-}
+#define DefineCreateTxOperationReply(TEvType, TxType)          \
+    NTabletFlatExecutor::ITransaction* TSchemeShard::CreateTxOperationReply(TOperationId id, TEvType::TPtr& ev) { \
+        return new TTxOperationReply<TEvType>(this, id, ev);    \
+    }
 
-#define DefineCreateTxOperationReplyFunc(TEvType, ...) \
-    template NTabletFlatExecutor::ITransaction* TSchemeShard::CreateTxOperationReply(TOperationId id, TEvType::TPtr& ev);
-
-    SCHEMESHARD_INCOMING_EVENTS(DefineCreateTxOperationReplyFunc)
-#undef DefineCreateTxOperationReplyFunc
-
+    SCHEMESHARD_INCOMING_EVENTS(DefineCreateTxOperationReply)
+#undef DefineTxOperationReply
 
 TString JoinPath(const TString& workingDir, const TString& name) {
-    Y_ABORT_UNLESS(!name.StartsWith('/') && !name.EndsWith('/'));
+    Y_VERIFY(!name.StartsWith('/') && !name.EndsWith('/'));
     return TStringBuilder()
                << workingDir
                << (workingDir.EndsWith('/') ? "" : "/")
@@ -715,15 +635,6 @@ TOperation::TSplitTransactionsResult TOperation::SplitIntoTransactions(const TTx
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnTable:
         targetName = tx.GetCreateColumnTable().GetName();
         break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalTable:
-        targetName = tx.GetCreateExternalTable().GetName();
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalDataSource:
-        targetName = tx.GetCreateExternalDataSource().GetName();
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateView:
-        targetName = tx.GetCreateView().GetName();
-        break;
     default:
         result.Transactions.push_back(tx);
         return result;
@@ -811,15 +722,6 @@ TOperation::TSplitTransactionsResult TOperation::SplitIntoTransactions(const TTx
         case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnTable:
             create.MutableCreateColumnTable()->SetName(name);
             break;
-        case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalTable:
-            create.MutableCreateExternalTable()->SetName(name);
-            break;
-        case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalDataSource:
-            create.MutableCreateExternalDataSource()->SetName(name);
-            break;
-        case NKikimrSchemeOp::EOperationType::ESchemeOpCreateView:
-            create.MutableCreateView()->SetName(name);
-            break;
         default:
             Y_UNREACHABLE();
         }
@@ -886,7 +788,7 @@ TOperation::TSplitTransactionsResult TOperation::SplitIntoTransactions(const TTx
     return result;
 }
 
-ISubOperation::TPtr TOperation::RestorePart(TTxState::ETxType txType, TTxState::ETxState txState) const {
+ISubOperationBase::TPtr TOperation::RestorePart(TTxState::ETxType txType, TTxState::ETxState txState) const {
     switch (txType) {
     case TTxState::ETxType::TxMkDir:
         return CreateMkDir(NextPartId(), txState);
@@ -1030,12 +932,12 @@ ISubOperation::TPtr TOperation::RestorePart(TTxState::ETxType txType, TTxState::
     case TTxState::ETxType::TxCreateSequence:
         return CreateNewSequence(NextPartId(), txState);
     case TTxState::ETxType::TxAlterSequence:
-        Y_ABORT("TODO: implement");
+        Y_FAIL("TODO: implement");
     case TTxState::ETxType::TxDropSequence:
         return CreateDropSequence(NextPartId(), txState);
 
     case TTxState::ETxType::TxFillIndex:
-        Y_ABORT("deprecated");
+        Y_FAIL("deprecated");
 
     case TTxState::ETxType::TxMoveTable:
         return CreateMoveTable(NextPartId(), txState);
@@ -1046,7 +948,7 @@ ISubOperation::TPtr TOperation::RestorePart(TTxState::ETxType txType, TTxState::
     case TTxState::ETxType::TxCreateReplication:
         return CreateNewReplication(NextPartId(), txState);
     case TTxState::ETxType::TxAlterReplication:
-        Y_ABORT("TODO: implement");
+        Y_FAIL("TODO: implement");
     case TTxState::ETxType::TxDropReplication:
         return CreateDropReplication(NextPartId(), txState);
 
@@ -1057,26 +959,6 @@ ISubOperation::TPtr TOperation::RestorePart(TTxState::ETxType txType, TTxState::
         return CreateAlterBlobDepot(NextPartId(), txState);
     case TTxState::ETxType::TxDropBlobDepot:
         return CreateDropBlobDepot(NextPartId(), txState);
-    case TTxState::ETxType::TxCreateExternalTable:
-        return CreateNewExternalTable(NextPartId(), txState);
-    case TTxState::ETxType::TxDropExternalTable:
-        return CreateDropExternalTable(NextPartId(), txState);
-    case TTxState::ETxType::TxAlterExternalTable:
-        Y_ABORT("TODO: implement");
-    case TTxState::ETxType::TxCreateExternalDataSource:
-        return CreateNewExternalDataSource(NextPartId(), txState);
-    case TTxState::ETxType::TxDropExternalDataSource:
-        return CreateDropExternalDataSource(NextPartId(), txState);
-    case TTxState::ETxType::TxAlterExternalDataSource:
-        Y_ABORT("TODO: implement");
-    
-    // View
-    case TTxState::ETxType::TxCreateView:
-        return CreateNewView(NextPartId(), txState);
-    case TTxState::ETxType::TxDropView:
-        return CreateDropView(NextPartId(), txState);
-    case TTxState::ETxType::TxAlterView:
-        Y_ABORT("TODO: implement");
 
     case TTxState::ETxType::TxInvalid:
         Y_UNREACHABLE();
@@ -1085,7 +967,7 @@ ISubOperation::TPtr TOperation::RestorePart(TTxState::ETxType txType, TTxState::
     Y_UNREACHABLE();
 }
 
-ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType opType, const TTxTransaction& tx) const {
+ISubOperationBase::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType opType, const TTxTransaction& tx) const {
     switch (opType) {
     case NKikimrSchemeOp::EOperationType::ESchemeOpMkDir:
         return CreateMkDir(NextPartId(), tx);
@@ -1100,7 +982,7 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateTable:
         return CreateNewTable(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterTable:
-        Y_ABORT("in general, alter table is multipart operation now due table indexes");
+        Y_FAIL("in general, alter table is multipart operation now due table indexes");
     case NKikimrSchemeOp::EOperationType::ESchemeOpSplitMergeTablePartitions:
         return CreateSplitMerge(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpBackup:
@@ -1108,15 +990,15 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
     case NKikimrSchemeOp::EOperationType::ESchemeOpRestore:
         return CreateRestore(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropTable:
-        Y_ABORT("in general, drop table is multipart operation now due table indexes");
+        Y_FAIL("in general, drop table is multipart operation now due table indexes");
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateIndexedTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateTableIndex:
-        Y_ABORT("is handled as part of ESchemeOpCreateIndexedTable");
+        Y_FAIL("is handled as part of ESchemeOpCreateIndexedTable");
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropTableIndex:
-        Y_ABORT("is handled as part of ESchemeOpDropTable");
+        Y_FAIL("is handled as part of ESchemeOpDropTable");
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateConsistentCopyTables:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateRtmrVolume:
         return CreateNewRTMR(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnStore:
@@ -1151,11 +1033,11 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateSubDomain:
         return CreateSubDomain(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterSubDomain:
-        Y_ABORT("run in compatible");
+        Y_FAIL("run in compatible");
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropSubDomain:
         return CreateDropSubdomain(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpForceDropSubDomain:
-        Y_ABORT("run in compatible");
+        Y_FAIL("run in compatible");
 
     // ExtSubDomain
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExtSubDomain:
@@ -1163,7 +1045,7 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExtSubDomain:
         return CreateAlterExtSubDomain(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExtSubDomainCreateHive:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpForceDropExtSubDomain:
         return CreateForceDropExtSubDomain(NextPartId(), tx);
 
@@ -1177,9 +1059,8 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
         return CreateUpgradeSubDomain(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpUpgradeSubDomainDecision:
         return CreateUpgradeSubDomainDecision(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnBuild:
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateIndexBuild:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateLock:
         return CreateLock(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropLock:
@@ -1211,50 +1092,50 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateSequence:
         return CreateNewSequence(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterSequence:
-        Y_ABORT("TODO: implement");
+        Y_FAIL("TODO: implement");
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropSequence:
         return CreateDropSequence(NextPartId(), tx);
 
     // Index
     case NKikimrSchemeOp::EOperationType::ESchemeOpApplyIndexBuild:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterTableIndex:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
 
     case NKikimrSchemeOp::EOperationType::ESchemeOpInitiateBuildIndexImplTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpFinalizeBuildIndexImplTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
 
     case NKikimrSchemeOp::EOperationType::ESchemeOpInitiateBuildIndexMainTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpFinalizeBuildIndexMainTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
 
     case NKikimrSchemeOp::EOperationType::ESchemeOpCancelIndexBuild:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
 
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropIndex:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropTableIndexAtMainTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
 
     // CDC
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateCdcStream:
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateCdcStreamImpl:
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateCdcStreamAtTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterCdcStream:
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterCdcStreamImpl:
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterCdcStreamAtTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropCdcStream:
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropCdcStreamImpl:
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropCdcStreamAtTable:
-        Y_ABORT("multipart operations are handled before, also they require transaction details");
+        Y_FAIL("multipart operations are handled before, also they require transaction details");
 
     case NKikimrSchemeOp::EOperationType::ESchemeOp_DEPRECATED_35:
-        Y_ABORT("impossible");
+        Y_FAIL("impossible");
 
     // Move
     case NKikimrSchemeOp::EOperationType::ESchemeOpMoveTable:
@@ -1262,13 +1143,13 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
     case NKikimrSchemeOp::EOperationType::ESchemeOpMoveTableIndex:
         return CreateMoveTableIndex(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpMoveIndex:
-        Y_ABORT("impossible");
+        Y_FAIL("impossible");
 
     // Replication
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateReplication:
         return CreateNewReplication(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpAlterReplication:
-        Y_ABORT("TODO: implement");
+        Y_FAIL("TODO: implement");
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropReplication:
         return CreateDropReplication(NextPartId(), tx);
 
@@ -1279,36 +1160,12 @@ ISubOperation::TPtr TOperation::ConstructPart(NKikimrSchemeOp::EOperationType op
         return CreateAlterBlobDepot(NextPartId(), tx);
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropBlobDepot:
         return CreateDropBlobDepot(NextPartId(), tx);
-
-    // ExternalTable
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalTable:
-        return CreateNewExternalTable(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalTable:
-        return CreateDropExternalTable(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExternalTable:
-        Y_ABORT("TODO: implement");
-
-    // ExternalDataSource
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalDataSource:
-        return CreateNewExternalDataSource(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalDataSource:
-        return CreateDropExternalDataSource(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExternalDataSource:
-        Y_ABORT("TODO: implement");
-
-    // View
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateView:
-        return CreateNewView(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropView:
-        return CreateDropView(NextPartId(), tx);
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterView:
-        Y_ABORT("TODO: implement");
     }
 
     Y_UNREACHABLE();
 }
 
-TVector<ISubOperation::TPtr> TOperation::ConstructParts(const TTxTransaction& tx, TOperationContext& context) const {
+TVector<ISubOperationBase::TPtr> TOperation::ConstructParts(const TTxTransaction& tx, TOperationContext& context) const {
     const auto& opType = tx.GetOperationType();
 
     switch (opType) {
@@ -1325,8 +1182,6 @@ TVector<ISubOperation::TPtr> TOperation::ConstructParts(const TTxTransaction& tx
         return CreateDropIndexedTable(NextPartId(), tx, context);
     case NKikimrSchemeOp::EOperationType::ESchemeOpForceDropSubDomain:
         return {CreateCompatibleSubdomainDrop(context.SS, NextPartId(), tx)};
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnBuild:
-        return CreateBuildColumn(NextPartId(), tx, context);
     case NKikimrSchemeOp::EOperationType::ESchemeOpCreateIndexBuild:
         return CreateBuildIndex(NextPartId(), tx, context);
     case NKikimrSchemeOp::EOperationType::ESchemeOpApplyIndexBuild:
@@ -1356,12 +1211,12 @@ TVector<ISubOperation::TPtr> TOperation::ConstructParts(const TTxTransaction& tx
     }
 }
 
-void TOperation::AddPart(ISubOperation::TPtr part) {
+void TOperation::AddPart(ISubOperationBase::TPtr part) {
     Parts.push_back(part);
 }
 
 bool TOperation::AddPublishingPath(TPathId pathId, ui64 version) {
-    Y_ABORT_UNLESS(!IsReadyToNotify());
+    Y_VERIFY(!IsReadyToNotify());
     return Publications.emplace(pathId, version).second;
 }
 
@@ -1388,12 +1243,12 @@ bool TOperation::IsReadyToNotify() const {
 }
 
 void TOperation::AddNotifySubscriber(const TActorId& actorId) {
-    Y_ABORT_UNLESS(!IsReadyToNotify());
+    Y_VERIFY(!IsReadyToNotify());
     Subscribers.insert(actorId);
 }
 
 void TOperation::DoNotify(TSchemeShard*, TSideEffects& sideEffects, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(IsReadyToNotify());
+    Y_VERIFY(IsReadyToNotify());
 
     for (auto& subscriber: Subscribers) {
         THolder<TEvSchemeShard::TEvNotifyTxCompletionResult> msg = MakeHolder<TEvSchemeShard::TEvNotifyTxCompletionResult>(ui64(TxId));
@@ -1442,7 +1297,7 @@ void TOperation::ProposePart(TSubTxId partId, TTabletId tableId) {
 }
 
 void TOperation::DoPropose(TSchemeShard* ss, TSideEffects& sideEffects, const TActorContext& ctx) const {
-    Y_ABORT_UNLESS(IsReadyToPropose());
+    Y_VERIFY(IsReadyToPropose());
 
     //aggregate
     TTabletId selfTabletId = ss->SelfTabletId();
@@ -1455,7 +1310,7 @@ void TOperation::DoPropose(TSchemeShard* ss, TSideEffects& sideEffects, const TA
             if (coordinatorId == InvalidTabletId) {
                 coordinatorId = curCoordinatorId;
             }
-            Y_ABORT_UNLESS(coordinatorId == curCoordinatorId);
+            Y_VERIFY(coordinatorId == curCoordinatorId);
         }
 
         effectiveMinStep = Max<TStepId>(effectiveMinStep, minStep);
@@ -1538,7 +1393,7 @@ TSubTxId TOperation::FindRelatedPartByTabletId(TTabletId tablet, const TActorCon
 
 void TOperation::RegisterRelationByShardIdx(TSubTxId partId, TShardIdx shardIdx, const TActorContext& ctx) {
     if (RelationsByShardIdx.contains(shardIdx)) {
-        Y_ABORT_UNLESS(RelationsByShardIdx.at(shardIdx) == partId);
+        Y_VERIFY(RelationsByShardIdx.at(shardIdx) == partId);
         return;
     }
 
@@ -1577,7 +1432,7 @@ TVector<TSubTxId> TOperation::ActivateShardCreated(TShardIdx shardIdx) {
     if (it != WaitingShardCreatedByShard.end()) {
         for (auto partId : it->second) {
             auto itByPart = WaitingShardCreatedByPart.find(partId);
-            Y_ABORT_UNLESS(itByPart != WaitingShardCreatedByPart.end());
+            Y_VERIFY(itByPart != WaitingShardCreatedByPart.end());
             itByPart->second.erase(shardIdx);
             if (itByPart->second.empty()) {
                 WaitingShardCreatedByPart.erase(itByPart);

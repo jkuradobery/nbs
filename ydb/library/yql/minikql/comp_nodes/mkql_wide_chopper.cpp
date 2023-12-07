@@ -129,7 +129,7 @@ private:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValuesInput(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto load = BasicBlock::Create(context, "load", ctx.Func);
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
@@ -138,9 +138,8 @@ private:
         const auto resultType = Type::getInt32Ty(context);
         const auto result = PHINode::Create(resultType, 4U, "result", done);
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto statePtr = GetElementPtrInst::CreateInBounds(valueType, ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), static_cast<const IComputationNode*>(this)->GetIndex())}, "state_ptr", block);
-        const auto entry = new LoadInst(valueType, statePtr, "entry", block);
+        const auto statePtr = GetElementPtrInst::CreateInBounds(ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), static_cast<const IComputationNode*>(this)->GetIndex())}, "state_ptr", block);
+        const auto entry = new LoadInst(statePtr, "entry", block);
         const auto next = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, entry, GetConstant(ui64(EState::Next), context), "next", block);
 
         BranchInst::Create(load, work, next, block);
@@ -193,7 +192,7 @@ public:
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
         EnsureDynamicCast<IWideFlowProxyCodegeneratorNode*>(Input)->SetGenerator(std::bind(&TWideChopperWrapper::DoGenGetValuesInput, this, _1, _2));
 
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto loop = BasicBlock::Create(context, "loop", ctx.Func);
@@ -203,8 +202,7 @@ public:
         const auto resultType = Type::getInt32Ty(context);
         const auto result = PHINode::Create(resultType, 5U, "result", exit);
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto first = new LoadInst(valueType, statePtr, "first", block);
+        const auto first = new LoadInst(statePtr, "first", block);
         const auto enter = SwitchInst::Create(first, loop, 2U, block);
         enter->addCase(GetInvalid(context), init);
         enter->addCase(GetConstant(ui64(EState::Skip), context), pass);
@@ -248,7 +246,7 @@ public:
         block = loop;
 
         auto getres = GetNodeValues(Output, ctx, block);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto finish = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_SLT, getres.first, ConstantInt::get(getres.first->getType(), 0), "finish", block);
         result->addIncoming(getres.first, block);
         BranchInst::Create(part, exit, finish, block);
@@ -343,8 +341,7 @@ private:
 IComputationNode* WrapWideChopper(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
     MKQL_ENSURE(callable.GetInputsCount() >= 4U, "Expected at least four args.");
 
-    const auto wideComponents = GetWideComponents(AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType()));
-    const ui32 width = wideComponents.size();
+    const auto width = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType())->GetItemType())->GetElementsCount();
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
     const auto keysSize = (callable.GetInputsCount() - width - 4U) >> 1U;
 

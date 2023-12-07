@@ -1,7 +1,7 @@
 #include "dq_transport.h"
+#include "dq_arrow_helpers.h"
 
 #include <ydb/library/mkql_proto/mkql_proto.h>
-#include <ydb/library/yql/minikql/computation/mkql_block_reader.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/comp_factory.h>
@@ -19,93 +19,99 @@ using namespace NYql;
 
 namespace {
 
-TDqSerializedBatch SerializeValue(NDqProto::EDataTransportVersion version, const TType* type, const NUdf::TUnboxedValuePod& value) {
-    TRope packResult;
-    switch (version) {
-        case NDqProto::DATA_TRANSPORT_VERSION_UNSPECIFIED:
-            version = NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0;
-            [[fallthrough]];
-        case NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_PICKLE_1_0: {
-            TValuePackerTransport<false> packer(/* stable */ false, type);
-            packResult = packer.Pack(value);
-            break;
-        }
-        case NDqProto::DATA_TRANSPORT_UV_FAST_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_FAST_PICKLE_1_0: {
-            TValuePackerTransport<true> packer(/* stable */ false, type);
-            packResult = packer.Pack(value);
-            break;
-        }
-        default:
-            YQL_ENSURE(false, "Unsupported TransportVersion");
-    }
+NDqProto::TData SerializeBufferArrowV1(TUnboxedValueVector& buffer, const TType* itemType);
 
-    TDqSerializedBatch result;
-    result.Proto.SetTransportVersion(version);
-    result.Proto.SetRows(1);
-    result.SetPayload(std::move(packResult));
-    return result;
+void DeserializeBufferArrowV1(const NDqProto::TData& data, const TType* itemType,
+                              const THolderFactory& holderFactory, TUnboxedValueVector& buffer);
+
+NDqProto::TData SerializeValuePickleV1(const TType* type, const NUdf::TUnboxedValuePod& value) {
+    TValuePacker packer(/* stable */ false, type);
+    TStringBuf packResult = packer.Pack(value);
+
+    NDqProto::TData data;
+    data.SetTransportVersion(NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0);
+    data.SetRaw(packResult.data(), packResult.size());
+    data.SetRows(1);
+
+    return data;
 }
 
-template<bool Fast>
-TRope DoSerializeBuffer(const TType* type, const TUnboxedValueBatch& buffer) {
-    using TPacker = TValuePackerTransport<Fast>;
-
-    TPacker packer(/* stable */ false, type);
-    if (type->IsMulti()) {
-        buffer.ForEachRowWide([&packer](const auto* values, ui32 width) {
-            packer.AddWideItem(values, width);
-        });
-    } else {
-        buffer.ForEachRow([&packer](const auto value) {
-            packer.AddItem(value);
-        });
-    }
-    return packer.Finish();
+NDqProto::TData SerializeValueArrowV1(const TType* type, const NUdf::TUnboxedValuePod& value) {
+    TUnboxedValueVector buffer;
+    buffer.push_back(value);
+    return SerializeBufferArrowV1(buffer, type);
 }
 
-TDqSerializedBatch SerializeBuffer(NDqProto::EDataTransportVersion version, const TType* type, const TUnboxedValueBatch& buffer) {
-    TRope packResult;
-    switch (version) {
-        case NDqProto::DATA_TRANSPORT_VERSION_UNSPECIFIED:
-            version = NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0;
-            [[fallthrough]];
-        case NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_PICKLE_1_0: {
-            packResult = DoSerializeBuffer<false>(type, buffer);
-            break;
-        }
-        case NDqProto::DATA_TRANSPORT_UV_FAST_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_FAST_PICKLE_1_0: {
-            packResult = DoSerializeBuffer<true>(type, buffer);
-            break;
-        }
-        default:
-            YQL_ENSURE(false, "Unsupported TransportVersion");
-    }
-
-    TDqSerializedBatch result;
-    result.Proto.SetTransportVersion(version);
-    result.Proto.SetRows(buffer.RowCount());
-    result.SetPayload(std::move(packResult));
-    return result;
-}
-
-template<bool Fast>
-void DeserializeValue(const TType* type, TRope&& data, const THolderFactory& holderFactory, NUdf::TUnboxedValue& value)
+void DeserializeValuePickleV1(const TType* type, const NDqProto::TData& data, NUdf::TUnboxedValue& value,
+    const THolderFactory& holderFactory)
 {
-    using TPacker = TValuePackerTransport<Fast>;
-    TPacker packer(/* stable */ false, type);
-    value = packer.Unpack(std::move(data), holderFactory);
+    YQL_ENSURE(data.GetTransportVersion() == (ui32) NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0);
+    TValuePacker packer(/* stable */ false, type);
+    value = packer.Unpack(data.GetRaw(), holderFactory);
 }
 
-template<bool Fast>
-void DeserializeBuffer(const TType* itemType, TRope&& data, const THolderFactory& holderFactory, TUnboxedValueBatch& buffer)
+void DeserializeValueArrowV1(const TType* type, const NDqProto::TData& data, NUdf::TUnboxedValue& value,
+    const THolderFactory& holderFactory)
 {
-    using TPacker = TValuePackerTransport<Fast>;
-    TPacker packer(/* stable */ false, itemType);
-    packer.UnpackBatch(std::move(data), holderFactory, buffer);
+    TUnboxedValueVector buffer;
+    DeserializeBufferArrowV1(data, type, holderFactory, buffer);
+    value = buffer[0];
+}
+
+NDqProto::TData SerializeBufferPickleV1(TUnboxedValueVector& buffer, const TType* itemType,
+    const TTypeEnvironment& typeEnv, const THolderFactory& holderFactory)
+{
+    const auto listType = TListType::Create(const_cast<TType*>(itemType), typeEnv);
+    const NUdf::TUnboxedValue listValue = holderFactory.VectorAsArray(buffer);
+
+    auto data = SerializeValuePickleV1(listType, listValue);
+    data.SetRows(buffer.size());
+    return data;
+}
+
+NDqProto::TData SerializeBufferArrowV1(TUnboxedValueVector& buffer, const TType* itemType) {
+    auto array = NArrow::MakeArray(buffer, itemType);
+
+    auto serialized = NArrow::SerializeArray(array);
+
+    NDqProto::TData data;
+    data.SetTransportVersion(NDqProto::DATA_TRANSPORT_ARROW_1_0);
+    data.SetRaw(serialized.data(), serialized.size());
+    data.SetRows(buffer.size());
+    return data;
+}
+
+void DeserializeBufferPickleV1(const NDqProto::TData& data, const TType* itemType, const TTypeEnvironment& typeEnv,
+    const THolderFactory& holderFactory, TUnboxedValueVector& buffer)
+{
+    auto listType = TListType::Create(const_cast<TType*>(itemType), typeEnv);
+
+    NUdf::TUnboxedValue value;
+    DeserializeValuePickleV1(listType, data, value, holderFactory);
+
+    const auto iter = value.GetListIterator();
+    for (NUdf::TUnboxedValue item; iter.Next(item);) {
+        buffer.emplace_back(std::move(item));
+    }
+}
+
+void DeserializeBufferArrowV1(const NDqProto::TData& data, const TType* itemType, const THolderFactory& holderFactory,
+    TUnboxedValueVector& buffer)
+{
+    YQL_ENSURE(data.GetTransportVersion() == (ui32) NDqProto::DATA_TRANSPORT_ARROW_1_0);
+
+    auto array = NArrow::DeserializeArray(data.GetRaw(), NArrow::GetArrowType(itemType));
+    YQL_ENSURE(array->length() == data.GetRows());
+    auto newElements = NArrow::ExtractUnboxedValues(array, itemType, holderFactory);
+    for (NUdf::TUnboxedValue item: newElements) {
+        buffer.emplace_back(std::move(item));
+    }
+}
+
+void DeserializeParamV1(const NDqProto::TData& data, const TType* type, const THolderFactory& holderFactory,
+    NUdf::TUnboxedValue& value)
+{
+    DeserializeValuePickleV1(type, data, value, holderFactory);
 }
 
 } // namespace
@@ -114,45 +120,61 @@ NDqProto::EDataTransportVersion TDqDataSerializer::GetTransportVersion() const {
     return TransportVersion;
 }
 
-TDqSerializedBatch TDqDataSerializer::Serialize(const NUdf::TUnboxedValue& value, const TType* itemType) const {
-    auto guard = TypeEnv.BindAllocator();
-    return SerializeValue(TransportVersion, itemType, value);
-}
-
-TDqSerializedBatch TDqDataSerializer::Serialize(const NKikimr::NMiniKQL::TUnboxedValueBatch& buffer,
-    const NKikimr::NMiniKQL::TType* itemType) const
-{
-    auto guard = TypeEnv.BindAllocator();
-    return SerializeBuffer(TransportVersion, itemType, buffer);
-}
-
-void TDqDataSerializer::Deserialize(TDqSerializedBatch&& data, const TType* itemType, TUnboxedValueBatch& buffer) const
-{
-    auto guard = TypeEnv.BindAllocator();
-    switch (data.Proto.GetTransportVersion()) {
+NDqProto::TData TDqDataSerializer::Serialize(const NUdf::TUnboxedValue& value, const TType* itemType) const {
+    switch (TransportVersion) {
         case NDqProto::DATA_TRANSPORT_VERSION_UNSPECIFIED:
         case NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_PICKLE_1_0:
-            return DeserializeBuffer<false>(itemType, data.PullPayload(), HolderFactory, buffer);
-        case NDqProto::DATA_TRANSPORT_UV_FAST_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_FAST_PICKLE_1_0:
-            return DeserializeBuffer<true>(itemType, data.PullPayload(), HolderFactory, buffer);
+            return SerializeValuePickleV1(itemType, value);
+        case NDqProto::DATA_TRANSPORT_ARROW_1_0:
+            return SerializeValueArrowV1(itemType, value);
         default:
             YQL_ENSURE(false, "Unsupported TransportVersion");
     }
 }
 
-void TDqDataSerializer::Deserialize(TDqSerializedBatch&& data, const TType* itemType, NUdf::TUnboxedValue& value) const
-{
-    auto guard = TypeEnv.BindAllocator();
-    switch (data.Proto.GetTransportVersion()) {
+NDqProto::TData TDqDataSerializer::Serialize(TUnboxedValueVector& buffer, const TType* itemType) const {
+    switch (TransportVersion) {
         case NDqProto::DATA_TRANSPORT_VERSION_UNSPECIFIED:
         case NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_PICKLE_1_0:
-            return DeserializeValue<false>(itemType, data.PullPayload(), HolderFactory, value);
-        case NDqProto::DATA_TRANSPORT_UV_FAST_PICKLE_1_0:
-        case NDqProto::DATA_TRANSPORT_OOB_FAST_PICKLE_1_0:
-            return DeserializeValue<true>(itemType, data.PullPayload(), HolderFactory, value);
+            return SerializeBufferPickleV1(buffer, itemType, TypeEnv, HolderFactory);
+        case NDqProto::DATA_TRANSPORT_ARROW_1_0:
+            return SerializeBufferArrowV1(buffer, itemType);
+        default:
+            YQL_ENSURE(false, "Unsupported TransportVersion");
+    }
+}
+
+void TDqDataSerializer::Deserialize(const NDqProto::TData& data, const TType* itemType,
+    TUnboxedValueVector& buffer) const
+{
+    switch (TransportVersion) {
+        case NDqProto::DATA_TRANSPORT_VERSION_UNSPECIFIED:
+        case NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0: {
+            DeserializeBufferPickleV1(data, itemType, TypeEnv, HolderFactory, buffer);
+            break;
+        }
+        case NDqProto::DATA_TRANSPORT_ARROW_1_0: {
+            DeserializeBufferArrowV1(data, itemType, HolderFactory, buffer);
+            break;
+        }
+        default:
+            YQL_ENSURE(false, "Unsupported TransportVersion");
+    }
+}
+
+void TDqDataSerializer::Deserialize(const NDqProto::TData& data, const TType* itemType,
+    NUdf::TUnboxedValue& value) const
+{
+    switch (TransportVersion) {
+        case NDqProto::DATA_TRANSPORT_VERSION_UNSPECIFIED:
+        case NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0: {
+            DeserializeValuePickleV1(itemType, data, value, HolderFactory);
+            break;
+        }
+        case NDqProto::DATA_TRANSPORT_ARROW_1_0: {
+            DeserializeValueArrowV1(itemType, data, value, HolderFactory);
+            break;
+        }
         default:
             YQL_ENSURE(false, "Unsupported TransportVersion");
     }
@@ -162,23 +184,19 @@ void TDqDataSerializer::DeserializeParam(const NDqProto::TData& data, const TTyp
     const NKikimr::NMiniKQL::THolderFactory& holderFactory, NUdf::TUnboxedValue& value)
 {
     YQL_ENSURE(data.GetTransportVersion() == (ui32) NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0);
-    using TPacker = TValuePackerGeneric<false>;
-    TPacker packer(/* stable */ false, type);
-    value = packer.Unpack(data.GetRaw(), holderFactory);
+
+    return DeserializeParamV1(data, type, holderFactory, value);
 }
 
 NDqProto::TData TDqDataSerializer::SerializeParamValue(const TType* type, const NUdf::TUnboxedValuePod& value) {
-    using TPacker = TValuePackerGeneric<false>;
+    return SerializeValuePickleV1(type, value);
+}
 
-    TPacker packer(/* stable */ false, type);
-    TStringBuf packResult = packer.Pack(value);
-
-    NDqProto::TData data;
-    data.SetTransportVersion(NDqProto::DATA_TRANSPORT_UV_PICKLE_1_0);
-    data.SetRaw(packResult.data(), packResult.size());
-    data.SetRows(1);
-
-    return data;
+ui64 TDqDataSerializer::CalcSerializedSize(NUdf::TUnboxedValue& value, const NKikimr::NMiniKQL::TType* itemType) {
+    auto data = SerializeValuePickleV1(itemType, value);
+    // YQL-9648
+    DeserializeValuePickleV1(itemType, data, value, HolderFactory);
+    return data.GetRaw().size();
 }
 
 namespace {
@@ -199,7 +217,6 @@ std::optional<ui64> EstimateIntegralDataSize(const TDataType* dataType) {
         case NUdf::EDataSlot::TzDate:
         case NUdf::EDataSlot::Datetime:
         case NUdf::EDataSlot::TzDatetime:
-        case NUdf::EDataSlot::Date32:
             return 4;
         case NUdf::EDataSlot::Int64:
         case NUdf::EDataSlot::Uint64:
@@ -207,9 +224,6 @@ std::optional<ui64> EstimateIntegralDataSize(const TDataType* dataType) {
         case NUdf::EDataSlot::Timestamp:
         case NUdf::EDataSlot::TzTimestamp:
         case NUdf::EDataSlot::Interval:
-        case NUdf::EDataSlot::Datetime64:
-        case NUdf::EDataSlot::Timestamp64:
-        case NUdf::EDataSlot::Interval64:
             return 8;
         case NUdf::EDataSlot::Uuid:
         case NUdf::EDataSlot::Decimal:
@@ -360,29 +374,6 @@ ui64 EstimateSizeImpl(const NUdf::TUnboxedValuePod& value, const NKikimr::NMiniK
             }
             return 0;
         }
-
-        case TType::EKind::Tagged: {
-            auto taggedType = static_cast<const TTaggedType*>(type);
-            return EstimateSizeImpl(value, taggedType->GetBaseType(), fixed, settings);
-        }
-
-        case TType::EKind::Block: {
-            auto blockType = static_cast<const TBlockType*>(type);
-            if (fixed) {
-                *fixed = false;
-            }
-
-            auto reader = MakeBlockReader(TTypeInfoHelper(), blockType->GetItemType());
-            ui64 size;
-            if (blockType->GetShape() == TBlockType::EShape::Many) {
-                size = reader->GetDataWeight(*TArrowBlock::From(value).GetDatum().array());
-            } else {
-                auto blockItem = reader->GetScalarItem(*TArrowBlock::From(value).GetDatum().scalar());
-                size = reader->GetDataWeight(blockItem);
-            }
-            return size;
-        }
-
         case TType::EKind::Type:
         case TType::EKind::Stream:
         case TType::EKind::Callable:
@@ -390,7 +381,8 @@ ui64 EstimateSizeImpl(const NUdf::TUnboxedValuePod& value, const NKikimr::NMiniK
         case TType::EKind::Resource:
         case TType::EKind::Flow:
         case TType::EKind::ReservedKind:
-        case TType::EKind::Multi: {
+        case TType::EKind::Tagged:
+        case TType::EKind::Block: {
             if (settings.DiscardUnsupportedTypes) {
                 return 0;
             }

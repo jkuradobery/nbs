@@ -9,7 +9,6 @@ SRCS(
 PEERDIR(
     contrib/libs/apache/arrow
     ydb/library/yql/minikql
-    ydb/library/yql/public/udf/arrow
 )
 
 IF (MKQL_RUNTIME_VERSION)

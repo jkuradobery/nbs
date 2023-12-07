@@ -69,12 +69,12 @@ struct TMockProcessorFactory : public ISessionConnectionProcessorFactory<TReques
     void CreateProcessor( // ISessionConnectionProcessorFactory method.
         typename IFactory::TConnectedCallback callback,
         const TRpcRequestSettings& requestSettings,
-        NYdbGrpc::IQueueClientContextPtr connectContext,
+        NGrpc::IQueueClientContextPtr connectContext,
         TDuration connectTimeout,
-        NYdbGrpc::IQueueClientContextPtr connectTimeoutContext,
+        NGrpc::IQueueClientContextPtr connectTimeoutContext,
         typename IFactory::TConnectTimeoutCallback connectTimeoutCallback,
         TDuration connectDelay,
-        NYdbGrpc::IQueueClientContextPtr connectDelayOperationContext) override
+        NGrpc::IQueueClientContextPtr connectDelayOperationContext) override
     {
         UNIT_ASSERT_C(!ConnectedCallback, "Only one connect at a time is expected");
         UNIT_ASSERT_C(!ConnectTimeoutCallback, "Only one connect at a time is expected");
@@ -181,9 +181,6 @@ struct TMockProcessorFactory : public ISessionConnectionProcessorFactory<TReques
     }
 
     void Validate() {
-        UNIT_ASSERT(CallbackFutures.empty());
-        ConnectedCallback = nullptr;
-        ConnectTimeoutCallback = nullptr;
     }
 
     std::atomic<size_t> CreateCallsCount = 0;
@@ -208,7 +205,7 @@ struct TMockReadSessionProcessor : public TMockProcessorFactory<Ydb::PersQueue::
 
     // Response from server.
     struct TServerReadInfo {
-        NYdbGrpc::TGrpcStatus Status;
+        NGrpc::TGrpcStatus Status;
         Ydb::PersQueue::V1::MigrationStreamingReadServerMessage Response;
 
         TServerReadInfo& Failure(grpc::StatusCode status = grpc::StatusCode::UNAVAILABLE, const TString& message = {}, bool internal = false) {
@@ -406,15 +403,11 @@ struct TMockReadSessionProcessor : public TMockProcessorFactory<Ydb::PersQueue::
     void Validate() {
         with_lock (Lock) {
             UNIT_ASSERT(ReadResponses.empty());
-            UNIT_ASSERT(CallbackFutures.empty());
-
-            ActiveRead = TClientReadInfo{};
         }
     }
 
-
     void ProcessRead() {
-        NYdbGrpc::TGrpcStatus status;
+        NGrpc::TGrpcStatus status;
         TReadCallback callback;
         with_lock (Lock) {
             *ActiveRead.Dst = ReadResponses.front().Response;
@@ -443,7 +436,6 @@ struct TMockReadSessionProcessor : public TMockProcessorFactory<Ydb::PersQueue::
         }
     }
 
-
     TAdaptiveLock Lock;
     TClientReadInfo ActiveRead;
     std::queue<TServerReadInfo> ReadResponses;
@@ -458,8 +450,11 @@ public:
     using IReadSessionConnectionProcessorFactory = ISessionConnectionProcessorFactory<Ydb::PersQueue::V1::MigrationStreamingReadClientMessage, Ydb::PersQueue::V1::MigrationStreamingReadServerMessage>;
     using TMockProcessorFactory = ::TMockProcessorFactory<Ydb::PersQueue::V1::MigrationStreamingReadClientMessage, Ydb::PersQueue::V1::MigrationStreamingReadServerMessage>;
 
+    struct TMockErrorHandler : public IErrorHandler<true> {
+        MOCK_METHOD(void, AbortSession, (TSessionClosedEvent&& closeEvent), (override));
+    };
 
-    struct TFakeContext : public NYdbGrpc::IQueueClientContext {
+    struct TFakeContext : public NGrpc::IQueueClientContext {
         IQueueClientContextPtr CreateContext() override {
             return std::make_shared<TFakeContext>();
         }
@@ -504,13 +499,13 @@ public:
     TString ClusterName = "cluster";
     TLog Log = CreateLogBackend("cerr");
     std::shared_ptr<TReadSessionEventsQueue<true>> EventsQueue;
+    TIntrusivePtr<testing::StrictMock<TMockErrorHandler>> MockErrorHandler = MakeIntrusive<testing::StrictMock<TMockErrorHandler>>();
     std::shared_ptr<TFakeContext> FakeContext = std::make_shared<TFakeContext>();
     std::shared_ptr<TMockProcessorFactory> MockProcessorFactory = std::make_shared<TMockProcessorFactory>();
     TIntrusivePtr<TMockReadSessionProcessor> MockProcessor = MakeIntrusive<TMockReadSessionProcessor>();
     ui64 PartitionIdStart = 1;
     ui64 PartitionIdStep = 1;
     typename TSingleClusterReadSessionImpl<true>::TPtr Session;
-    std::shared_ptr<TCallbackContext<TSingleClusterReadSessionImpl<true>>> CbContext;
     std::shared_ptr<TThreadPool> ThreadPool;
     ::IExecutor::TPtr DefaultExecutor;
 };
@@ -588,6 +583,9 @@ TReadSessionImplTestSetup::TReadSessionImplTestSetup() {
 
     Log.SetFormatter(GetPrefixLogFormatter(""));
 
+    Mock::AllowLeak(MockProcessor.Get());
+    Mock::AllowLeak(MockProcessorFactory.get());
+    Mock::AllowLeak(MockErrorHandler.Get());
 }
 
 TReadSessionImplTestSetup::~TReadSessionImplTestSetup() noexcept(false) {
@@ -598,10 +596,7 @@ TReadSessionImplTestSetup::~TReadSessionImplTestSetup() noexcept(false) {
         MockProcessorFactory->Validate();
         MockProcessor->Validate();
     }
-
-    CbContext->Cancel();
     Session = nullptr;
-
     ThreadPool->Stop();
 }
 
@@ -622,7 +617,7 @@ TSingleClusterReadSessionImpl<true>* TReadSessionImplTestSetup::GetSession() {
         if (!Settings.EventHandlers_.HandlersExecutor_) {
             Settings.EventHandlers_.HandlersExecutor(GetDefaultExecutor());
         }
-        CbContext = MakeWithCallbackContext<TSingleClusterReadSessionImpl<true>>(
+        Session = std::make_shared<TSingleClusterReadSessionImpl<true>>(
             Settings,
             "db",
             "sessionid",
@@ -630,16 +625,16 @@ TSingleClusterReadSessionImpl<true>* TReadSessionImplTestSetup::GetSession() {
             Log,
             MockProcessorFactory,
             GetEventsQueue(),
+            MockErrorHandler,
             FakeContext,
             PartitionIdStart, PartitionIdStep);
-        Session = CbContext->TryGet();
     }
     return Session.get();
 }
 
 std::shared_ptr<TReadSessionEventsQueue<true>> TReadSessionImplTestSetup::GetEventsQueue() {
     if (!EventsQueue) {
-        EventsQueue = std::make_shared<TReadSessionEventsQueue<true>>(Settings);
+        EventsQueue = std::make_shared<TReadSessionEventsQueue<true>>(Settings, std::weak_ptr<IUserRetrievedEventCallback<true>>());
     }
     return EventsQueue;
 }
@@ -730,14 +725,14 @@ Y_UNIT_TEST_SUITE(PersQueueSdkReadSessionTest) {
         }
 
         // Event 4: commit ack.
-        if (commit) {  // (commit && close) branch check is broken with current TReadSession::Close quick fix
+        if (commit) {
             TMaybe<TReadSessionEvent::TEvent> event = session->GetEvent(!close); // Event is expected to be already in queue if closed.
             UNIT_ASSERT(event);
-            Cerr << "commit ack or close event " << DebugString(*event) << Endl;
-            UNIT_ASSERT(std::holds_alternative<TReadSessionEvent::TCommitAcknowledgementEvent>(*event) || std::holds_alternative<TSessionClosedEvent>(*event));
+            Cerr << "commit ack event " << DebugString(*event) << Endl;
+            UNIT_ASSERT(std::holds_alternative<TReadSessionEvent::TCommitAcknowledgementEvent>(*event));
         }
 
-        if (close && !commit) {
+        if (close) {
             TMaybe<TReadSessionEvent::TEvent> event = session->GetEvent(false);
             UNIT_ASSERT(event);
             Cerr << "close event " << DebugString(*event) << Endl;
@@ -1018,13 +1013,11 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
                     setup.MockProcessorFactory->FailCreation();
             });
 
-        //EXPECT_CALL(*setup.MockErrorHandler, AbortSession(_));
+        EXPECT_CALL(*setup.MockErrorHandler, AbortSession(_));
 
         setup.GetSession()->Start();
         setup.MockProcessorFactory->Wait();
-        UNIT_ASSERT(setup.GetEventsQueue()->IsClosed());
     }
-
 
     Y_UNIT_TEST(StopsRetryAfterFailedAttempt) {
         StopsRetryAfterFailedAttemptImpl(false);
@@ -1056,9 +1049,11 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
             .WillByDefault([state](TDuration timeout) mutable {
                     UNIT_ASSERT_VALUES_EQUAL(timeout, *state->GetNextRetryDelay(NYdb::EStatus::INTERNAL_ERROR));
             });
+
         auto failCreation = [&]() {
             setup.MockProcessorFactory->FailCreation();
         };
+
         EXPECT_CALL(*setup.MockProcessorFactory, OnCreateProcessor(_))
             .WillOnce(failCreation)
             .WillOnce(failCreation)
@@ -1083,15 +1078,6 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
             .WillOnce([&](){ setup.MockProcessorFactory->CreateProcessor(secondProcessor); });
 
         setup.MockProcessor->AddServerResponse(TMockReadSessionProcessor::TServerReadInfo().Failure()); // Callback will be called.
-
-        setup.Session->Abort();
-
-        setup.AssertNoEvents();
-
-        setup.MockProcessor->Wait();
-        secondProcessor->Wait();
-        secondProcessor->Validate();
-
     }
 
     Y_UNIT_TEST(CreatePartitionStream) {
@@ -1772,7 +1758,7 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
         auto dataReceived = std::make_shared<NThreading::TPromise<void>>(NThreading::NewPromise<void>());
         auto dataReceivedFuture = dataReceived->GetFuture();
         std::shared_ptr<TMaybe<TReadSessionEvent::TDataReceivedEvent>> dataReceivedEvent = std::make_shared<TMaybe<TReadSessionEvent::TDataReceivedEvent>>();
-        setup.Settings.EventHandlers_.SimpleDataHandlers([dataReceivedEvent,dataReceived](TReadSessionEvent::TDataReceivedEvent& event) mutable {
+        setup.Settings.EventHandlers_.SimpleDataHandlers([=](TReadSessionEvent::TDataReceivedEvent& event) mutable {
             *dataReceivedEvent = std::move(event);
             dataReceived->SetValue();
         }, withCommit, withGracefulRelease);
@@ -1781,15 +1767,15 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
         auto commitCalled = std::make_shared<NThreading::TPromise<void>>(NThreading::NewPromise<void>());
         auto commitCalledFuture = commitCalled->GetFuture();
 
-        if (withCommit) {
-            EXPECT_CALL(*setup.MockProcessor, OnCommitRequest(_))
-                .WillOnce([commitCalled](){ commitCalled->SetValue(); });
-        }
+        Mock::AllowLeak(setup.MockProcessor.Get());
+
+        EXPECT_CALL(*setup.MockProcessor, OnCommitRequest(_))
+            .WillOnce([=](){ commitCalled->SetValue(); });
 
         auto destroyCalled = std::make_shared<NThreading::TPromise<void>>(NThreading::NewPromise<void>());
         auto destroyCalledFuture = destroyCalled->GetFuture();
         EXPECT_CALL(*setup.MockProcessor, OnReleasedRequest(_))
-            .WillOnce([destroyCalled](){ destroyCalled->SetValue(); });
+            .WillOnce([=](){ destroyCalled->SetValue(); });
 
         EXPECT_CALL(*setup.MockProcessor, OnStartReadRequest(_));
         setup.MockProcessor->AddServerResponse(TMockReadSessionProcessor::TServerReadInfo()
@@ -1827,8 +1813,7 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
 
         if (withCommit) {
             commitCalledFuture.Wait();
-        }
-        if (withCommit || withGracefulRelease) {
+        } if (withCommit || withGracefulRelease) {
             setup.MockProcessor->AddServerResponse(TMockReadSessionProcessor::TServerReadInfo()
                                                    .CommitAcknowledgement(1));
         }
@@ -1888,8 +1873,7 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
 
         TAReadSessionSettings<true> settings;
         std::shared_ptr<TSingleClusterReadSessionImpl<true>> session;
-        auto cbCtx = std::make_shared<TCallbackContext<TSingleClusterReadSessionImpl<true>>>(session);
-        TReadSessionEventsQueue<true> sessionQueue{settings};
+        TReadSessionEventsQueue<true> sessionQueue{settings, session};
 
         auto stream = MakeIntrusive<TPartitionStreamImpl<true>>(1ull,
                                                                 "",
@@ -1898,7 +1882,8 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
                                                                 1ull,
                                                                 1ull,
                                                                 0ull,
-                                                                cbCtx);
+                                                                session,
+                                                                nullptr);
 
         TPartitionData<true> message;
         Ydb::PersQueue::V1::MigrationStreamingReadServerMessage_DataBatch_Batch* batch =
@@ -1908,7 +1893,7 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
         *messageData->mutable_data() = "*";
 
         auto data = std::make_shared<TDataDecompressionInfo<true>>(std::move(message),
-                                                                   cbCtx,
+                                                                   session,
                                                                    false,
                                                                    0);
 
@@ -1937,7 +1922,5 @@ Y_UNIT_TEST_SUITE(ReadSessionImplTest) {
 
 #undef UNIT_ASSERT_CONTROL_EVENT
 #undef UNIT_ASSERT_DATA_EVENT
-
-        cbCtx->Cancel();
     }
 }

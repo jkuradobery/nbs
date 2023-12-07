@@ -64,19 +64,6 @@
             "ListBase": "TCoChangefeed"
         },
         {
-            "Name": "TCoTopicConsumer",
-            "Base": "TExprBase",
-            "Match": {"Type": "Tuple"},
-            "Children": [
-                {"Index": 0, "Name": "Name", "Type": "TCoAtom"},
-                {"Index": 1, "Name": "Settings", "Type": "TCoNameValueTupleList"}
-            ]
-        },
-        {
-            "Name": "TCoTopicConsumerList",
-            "ListBase": "TCoTopicConsumer"
-        },
-        {
             "Name": "TCoWorld",
             "Base": "TExprBase",
             "Match": {"Type": "NodeType", "TypeName": "World"},
@@ -384,11 +371,6 @@
             "Name": "TCoUnorderedSubquery",
             "Base": "TCoUnorderedBase",
             "Match": {"Type": "Callable", "Name": "UnorderedSubquery"}
-        },
-        {
-            "Name": "TCoEmptyFrom",
-            "Base": "TCoInputBase",
-            "Match": {"Type": "Callable", "Name": "EmptyFrom"}
         },
         {
             "Name": "TCoConditionalValueBase",
@@ -1472,17 +1454,6 @@
             ]
         },
         {
-            "Name": "TCoMatchRecognize",
-            "Base": "TCoInputBase",
-            "Match": {"Type": "Callable", "Name": "MatchRecognize"},
-            "Children": [
-                {"Index": 1, "Name": "partitionKeySelector", "Type": "TExprBase"},
-                {"Index": 2, "Name": "partitionColumns", "Type": "TExprBase"},
-                {"Index": 3, "Name": "sortTraits", "Type": "TExprBase"},
-                {"Index": 4, "Name": "params", "Type": "TExprBase"}
-            ]
-        },
-        {
             "Name": "TCoEquiJoinTuple",
             "Base": "TExprBase",
             "Match": {"Type": "Tuple"},
@@ -1518,9 +1489,8 @@
                 {"Index": 1, "Name": "RightDict", "Type": "TExprBase"},
                 {"Index": 2, "Name": "JoinKind", "Type": "TCoAtom"},
                 {"Index": 3, "Name": "LeftKeysColumns", "Type": "TCoAtomList"},
-                {"Index": 4, "Name": "RightKeysColumns", "Type": "TCoAtomList"},
-                {"Index": 5, "Name": "LeftRenames", "Type": "TCoAtomList"},
-                {"Index": 6, "Name": "RightRenames", "Type": "TCoAtomList"}
+                {"Index": 4, "Name": "LeftRenames", "Type": "TCoAtomList"},
+                {"Index": 5, "Name": "RightRenames", "Type": "TCoAtomList"}
             ]
         },
         {
@@ -1534,24 +1504,10 @@
                 {"Index": 3, "Name": "LeftKeysColumns", "Type": "TCoAtomList"},
                 {"Index": 4, "Name": "RightKeysColumns", "Type": "TCoAtomList"},
                 {"Index": 5, "Name": "LeftRenames", "Type": "TCoAtomList"},
-                {"Index": 6, "Name": "RightRenames", "Type": "TCoAtomList"},
-                {"Index": 7, "Name": "Flags", "Type": "TCoAtomList"}
+                {"Index": 6, "Name": "RightRenames", "Type": "TCoAtomList"}
             ]
         },
-        {
-            "Name": "TCoGraceSelfJoinCore",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "GraceSelfJoinCore"},
-            "Children": [
-                {"Index": 0, "Name": "Input", "Type": "TExprBase"},
-                {"Index": 1, "Name": "JoinKind", "Type": "TCoAtom"},
-                {"Index": 2, "Name": "LeftKeysColumns", "Type": "TCoAtomList"},
-                {"Index": 3, "Name": "RightKeysColumns", "Type": "TCoAtomList"},
-                {"Index": 4, "Name": "LeftRenames", "Type": "TCoAtomList"},
-                {"Index": 5, "Name": "RightRenames", "Type": "TCoAtomList"},
-                {"Index": 6, "Name": "Flags", "Type": "TCoAtomList"}
-            ]
-        },
+
         {
             "Name": "TCoJoinDict",
             "Base": "TCallable",
@@ -1587,6 +1543,7 @@
             "Name": "TCoTopBase",
             "Base": "TCoInputBase",
             "Match": {"Type": "CallableBase"},
+            "Builder": {"Generate": "None"},
             "Children": [
                 {"Index": 1, "Name": "Count", "Type": "TExprBase"},
                 {"Index": 2, "Name": "SortDirections",    "Type": "TExprBase"},
@@ -1623,47 +1580,6 @@
             "Name": "TCoDescending",
             "Base": "TCoInputBase",
             "Match": {"Type": "Callable", "Name": "Descending"}
-        },
-        {
-            "Name": "TCoSortKey",
-            "Base": "TExprBase",
-            "Match": {"Type": "Tuple"},
-            "Children": [
-                {"Index": 0, "Name": "Index", "Type": "TCoAtom"},
-                {"Index": 1, "Name": "Direction", "Type": "TExprBase"}
-            ]
-        },
-        {
-            "Name": "TCoSortKeys",
-            "ListBase": "TCoSortKey"
-        },
-        {
-            "Name": "TCoWideTopBase",
-            "Base": "TCoInputBase",
-            "Builder": {"Generate": "None"},
-            "Match": {"Type": "CallableBase"},
-            "Children": [
-                {"Index": 1, "Name": "Count", "Type": "TExprBase"},
-                {"Index": 2, "Name": "Keys", "Type": "TCoSortKeys"}
-            ]
-        },
-        {
-            "Name": "TCoWideTop",
-            "Base": "TCoWideTopBase",
-            "Match": {"Type": "Callable", "Name": "WideTop"}
-        },
-        {
-            "Name": "TCoWideTopSort",
-            "Base": "TCoWideTopBase",
-            "Match": {"Type": "Callable", "Name": "WideTopSort"}
-        },
-        {
-            "Name": "TCoWideSort",
-            "Base": "TCoInputBase",
-            "Match": {"Type": "Callable", "Name": "WideSort"},
-            "Children": [
-                {"Index": 1, "Name": "Keys", "Type": "TCoSortKeys"}
-            ]
         },
         {
             "Name": "TCoAddMember",
@@ -1736,14 +1652,6 @@
             "Name": "TCoAssumeUnique",
             "Base": "TFreeArgCallable",
             "Match": {"Type": "Callable", "Name": "AssumeUnique"},
-            "Children": [
-                {"Index": 0, "Name": "Input", "Type": "TExprBase"}
-            ]
-        },
-        {
-            "Name": "TCoAssumeDistinct",
-            "Base": "TFreeArgCallable",
-            "Match": {"Type": "Callable", "Name": "AssumeDistinct"},
             "Children": [
                 {"Index": 0, "Name": "Input", "Type": "TExprBase"}
             ]
@@ -2386,38 +2294,6 @@
             "Children": [
                 {"Index": 1, "Name": "KeySelectorLambda", "Type": "TCoLambda"},
                 {"Index": 2, "Name": "ListHandlerLambda", "Type": "TCoLambda"}
-            ]
-        },
-        {
-            "Name": "TCoWideFromBlocks",
-            "Base": "TCoInputBase",
-            "Match": {"Type": "Callable", "Name": "WideFromBlocks"}
-        },
-
-        {
-            "Name": "TCoPgSelect",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "PgSelect"},
-            "Children": [
-                {"Index": 0, "Name": "SelectOptions", "Type": "TCoNameValueTupleList"}
-            ]
-        },
-        {
-            "Name": "TCoPgSetItem",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "PgSetItem"},
-            "Children": [
-                {"Index": 0, "Name": "SetItemOptions", "Type": "TExprList"}
-            ]
-        },
-        {
-            "Name": "TCoPgResultItem",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "PgResultItem"},
-            "Children": [
-                {"Index": 0, "Name": "ExpandedColumns", "Type": "TExprBase"},
-                {"Index": 1, "Name": "Type", "Type": "TCallable"},
-                {"Index": 2, "Name": "Lambda", "Type": "TCoLambda"}
             ]
         }
     ]

@@ -231,11 +231,7 @@ const char* const PurgeQueueStage2Query = R"__(
                     (Length recordsExisted)
                     (Uint64 '0))
             ))
-            (AsList (SetResult 'newMessagesCount
-                (If versionIsSame
-                    count
-                    (Member stateRead 'MessageCount))
-            ))
+
             (If versionIsSame
                 (AsList (UpdateRow stateTable stateRow stateUpdate))
             (AsList (Void)))
@@ -404,7 +400,6 @@ const char* const DeleteMessageQuery = R"__(
 
         (return (Extend
             (AsList (SetResult 'deleted result))
-            (AsList (SetResult 'newMessagesCount count))
             (ListIf (HasItems valid) (UpdateRow stateTable stateRow stateUpdate))
 
             (Map valid (lambda '(item) (block '(
@@ -537,11 +532,8 @@ const char* const InternalGetQueueAttributesQuery = R"__(
             'VisibilityTimeout
             'ShowDetailedCountersDeadline))
 
-        (let attrsRead (SelectRow attrsTable attrsRow attrsSelect))
-
         (return (AsList
-            (SetResult 'queueExists (Exists attrsRead))
-            (SetResult 'attrs attrsRead)))
+            (SetResult 'attrs (SelectRow attrsTable attrsRow attrsSelect))))
     )
 )__";
 
@@ -873,7 +865,6 @@ const char* const ReadOrRedriveMessageQuery = R"__(
             (AsList (SetResult 'dlqExists dlqExists))
             (AsList (SetResult 'result messagesToReturnAsStruct))
             (AsList (SetResult 'movedMessagesCount (Length messagesToMoveAsStruct)))
-            (AsList (SetResult 'movedMessages messagesToMoveAsStruct))
             (AsList (SetResult 'newMessagesCount newSourceMsgCount))
             (ListIf (And (HasItems messagesToMoveAsStruct) dlqExists) (UpdateRow dlqStateTable dlqStateRow dlqStateUpdate))
             (ListIf (And (HasItems messagesToMoveAsStruct) dlqExists) (UpdateRow sourceStateTable sourceStateRow sourceStateUpdate))
@@ -1141,7 +1132,6 @@ const char* const WriteMessageQuery = R"__(
 
         (return (Extend
             (AsList (SetResult 'result result))
-            (AsList (SetResult 'newMessagesCount newMessagesCount))
 
             (AsList (If (Greater (Length messagesAdded) (Uint64 '0)) (UpdateRow stateTable stateRow stateUpdate) (Void)))
 
@@ -1420,8 +1410,7 @@ const char* const GetOldestMessageTimestampMetricsQuery = R"__(
             '('SentTimestamp timeFrom (Uint64 '18446744073709551615))
             '('Offset (Uint64 '0) (Uint64 '18446744073709551615))))
         (let sentIdxSelect '(
-            'SentTimestamp
-            'Offset))
+            'SentTimestamp))
         (let selectResult (SelectRange sentTsIdx sentIdxRange sentIdxSelect '('('"ItemsLimit" (Uint64 '1)))))
         (let messages (Member selectResult 'List))
 
@@ -1506,71 +1495,46 @@ const char* const ListDeadLetterSourceQueuesQuery = R"__(
     )
 )__";
 
-const char* const GetStateQuery = R"__(
-    (
-        (let queueIdNumber      (Parameter 'QUEUE_ID_NUMBER (DataType 'Uint64)))
-        (let queueIdNumberHash  (Parameter 'QUEUE_ID_NUMBER_HASH (DataType 'Uint64)))
-
-        (let stateTable ')__" QUEUE_TABLES_FOLDER_PARAM R"__(/State)
-
-        (let stateRange '(
-            )__" ALL_SHARDS_RANGE_PARAM R"__(
-        ))
-        (let stateSelect '(
-            'MessageCount
-            'InflyCount
-            'InflyVersion
-            'CreatedTimestamp
-            'RetentionBoundary))
-
-        (let stateRead (Member (SelectRange stateTable stateRange stateSelect '()) 'List))
-
-        (return (AsList (SetResult 'state stateRead)))
-    )
-)__";
-
 } // namespace
 
 const char* GetFifoQueryById(size_t id) {
     switch (id) {
-    case DELETE_MESSAGE_ID:
+    case DELETE_MESSAGE_ID: // 0
         return DeleteMessageQuery;
-    case LOCK_GROUP_ID:
+    case LOCK_GROUP_ID: // 1
         return LockGroupsQuery;
-    case READ_MESSAGE_ID:
+    case READ_MESSAGE_ID: // 2
         return ReadMessageQuery;
-    case WRITE_MESSAGE_ID:
+    case WRITE_MESSAGE_ID: // 3
         return WriteMessageQuery;
-    case PURGE_QUEUE_ID:
+    case PURGE_QUEUE_ID: // 4
         return PurgeQueueQuery;
-    case CHANGE_VISIBILITY_ID:
+    case CHANGE_VISIBILITY_ID: // 5
         return ChangeMessageVisibilityQuery;
-    case CLEANUP_DEDUPLICATION_ID:
+    case CLEANUP_DEDUPLICATION_ID: // 6
         return DeduplicationCleanupQuery;
-    case CLEANUP_READS_ID:
+    case CLEANUP_READS_ID: // 7
         return ReadsCleanupQuery;
-    case LIST_QUEUES_ID:
+    case LIST_QUEUES_ID: // 8
         return ListQueuesQuery;
-    case SET_QUEUE_ATTRIBUTES_ID:
+    case SET_QUEUE_ATTRIBUTES_ID: // 9
         return SetQueueAttributesQuery;
-    case SET_RETENTION_ID:
+    case SET_RETENTION_ID: // 10
         return SetRetentionQuery;
-    case INTERNAL_GET_QUEUE_ATTRIBUTES_ID:
+    case INTERNAL_GET_QUEUE_ATTRIBUTES_ID: // 13
         return InternalGetQueueAttributesQuery;
-    case PURGE_QUEUE_STAGE2_ID:
+    case PURGE_QUEUE_STAGE2_ID: // 14
         return PurgeQueueStage2Query;
-    case GET_MESSAGE_COUNT_METRIC_ID:
+    case GET_MESSAGE_COUNT_METRIC_ID: // 15
         return GetMessageCountMetricsQuery;
-    case GET_OLDEST_MESSAGE_TIMESTAMP_METRIC_ID:
+    case GET_OLDEST_MESSAGE_TIMESTAMP_METRIC_ID: // 16
         return GetOldestMessageTimestampMetricsQuery;
-    case GET_RETENTION_OFFSET_ID:
+    case GET_RETENTION_OFFSET_ID: // 17
         return GetRetentionOffsetQuery;
-    case LIST_DEAD_LETTER_SOURCE_QUEUES_ID:
+    case LIST_DEAD_LETTER_SOURCE_QUEUES_ID: // 18
         return ListDeadLetterSourceQueuesQuery;
-    case READ_OR_REDRIVE_MESSAGE_ID:
+    case READ_OR_REDRIVE_MESSAGE_ID: // 22
         return ReadOrRedriveMessageQuery;
-    case GET_STATE_ID:
-        return GetStateQuery;
     }
 
     return nullptr;

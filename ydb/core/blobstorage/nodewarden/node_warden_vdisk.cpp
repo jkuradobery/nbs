@@ -6,11 +6,9 @@
 
 namespace NKikimr::NStorage {
 
-    constexpr TDuration PDISK_CONFIDENCE_DELAY = TDuration::Seconds(15);
-
     void TNodeWarden::DestroyLocalVDisk(TVDiskRecord& vdisk) {
         STLOG(PRI_INFO, BS_NODE, NW35, "DestroyLocalVDisk", (VDiskId, vdisk.GetVDiskId()), (VSlotId, vdisk.GetVSlotId()));
-        Y_ABORT_UNLESS(!vdisk.RuntimeData);
+        Y_VERIFY(!vdisk.RuntimeData);
 
         const TVSlotId vslotId = vdisk.GetVSlotId();
         StopAggregator(MakeBlobStorageVDiskID(vslotId.NodeId, vslotId.PDiskId, vslotId.VDiskSlotId));
@@ -22,7 +20,7 @@ namespace NKikimr::NStorage {
     }
 
     void TNodeWarden::PoisonLocalVDisk(TVDiskRecord& vdisk) {
-        STLOG(PRI_INFO, BS_NODE, NW00, "PoisonLocalVDisk", (VDiskId, vdisk.GetVDiskId()), (VSlotId, vdisk.GetVSlotId()),
+        STLOG(PRI_INFO, BS_NODE, NW35, "PoisonLocalVDisk", (VDiskId, vdisk.GetVDiskId()), (VSlotId, vdisk.GetVSlotId()),
             (RuntimeData, vdisk.RuntimeData.has_value()));
 
         if (vdisk.RuntimeData) {
@@ -59,8 +57,6 @@ namespace NKikimr::NStorage {
         const ui64 pdiskGuid = vdisk.Config.GetVDiskLocation().GetPDiskGuid();
         const bool restartInFlight = InFlightRestartedPDisks.count({vslotId.NodeId, vslotId.PDiskId});
         const bool donorMode = vdisk.Config.HasDonorMode();
-        const bool readOnly = vdisk.Config.GetReadOnly();
-        Y_VERIFY_S(!donorMode || !readOnly, "Only one of modes should be enabled: donorMode " << donorMode << ", readOnly " << readOnly);
 
         STLOG(PRI_DEBUG, BS_NODE, NW23, "StartLocalVDiskActor", (RestartInFlight, restartInFlight),
             (SlayInFlight, SlayInFlight.contains(vslotId)), (VDiskId, vdisk.GetVDiskId()), (VSlotId, vslotId),
@@ -81,7 +77,7 @@ namespace NKikimr::NStorage {
         const TActorId vdiskServiceId = MakeBlobStorageVDiskID(vslotId.NodeId, vslotId.PDiskId, vslotId.VDiskSlotId);
 
         // generate correct VDiskId (based on relevant generation of containing group) and groupInfo pointer
-        Y_ABORT_UNLESS(!vdisk.RuntimeData);
+        Y_VERIFY(!vdisk.RuntimeData);
         TVDiskID vdiskId = vdisk.GetVDiskId();
         TIntrusivePtr<TBlobStorageGroupInfo> groupInfo;
 
@@ -162,7 +158,7 @@ namespace NKikimr::NStorage {
 
         TVDiskConfig::TBaseInfo baseInfo(vdiskId, pdiskServiceId, pdiskGuid, vslotId.PDiskId, deviceType,
             vslotId.VDiskSlotId, kind, NextLocalPDiskInitOwnerRound(), groupInfo->GetStoragePoolName(), donorMode,
-            donorDiskIds, scrubCookie, whiteboardInstanceGuid, readOnly);
+            donorDiskIds, scrubCookie, whiteboardInstanceGuid);
 
         baseInfo.ReplPDiskReadQuoter = pdiskIt->second.ReplPDiskReadQuoter;
         baseInfo.ReplPDiskWriteQuoter = pdiskIt->second.ReplPDiskWriteQuoter;
@@ -194,15 +190,14 @@ namespace NKikimr::NStorage {
             StartAggregator(vdiskServiceId, groupInfo->GroupID);
         }
 
-        Y_ABORT_UNLESS(vdisk.ScrubState == TVDiskRecord::EScrubState::IDLE);
-        Y_ABORT_UNLESS(!vdisk.QuantumFinished.ByteSizeLong());
-        Y_ABORT_UNLESS(!vdisk.ScrubCookie);
+        Y_VERIFY(vdisk.ScrubState == TVDiskRecord::EScrubState::IDLE);
+        Y_VERIFY(!vdisk.QuantumFinished.ByteSizeLong());
+        Y_VERIFY(!vdisk.ScrubCookie);
 
         vdisk.RuntimeData.emplace(TVDiskRecord::TRuntimeData{
             .GroupInfo = groupInfo,
             .OrderNumber = groupInfo->GetOrderNumber(TVDiskIdShort(vdiskId)),
-            .DonorMode = donorMode,
-            .ReadOnly = readOnly,
+            .DonorMode = donorMode
         });
 
         vdisk.Status = NKikimrBlobStorage::EVDiskStatus::INIT_PENDING;
@@ -226,10 +221,9 @@ namespace NKikimr::NStorage {
         // 4. Deleting VSlot during group reconfiguration or donor termination.
         // 5. Making VDisk a donor one.
         // 6. Updating VDisk generation when modifying group.
-        // 7. Putting VDisk into or out of read-only
         //
         // The main idea of this command is when VDisk is created, it does not change its configuration. It may be
-        // wiped out several times, it may become a donor or read-only and then it may be destroyed. That is a possible life cycle
+        // wiped out several times, it may become a donor and then it may be destroyed. That is a possible life cycle
         // of a VDisk in the occupied slot.
 
         if (!vdisk.HasVDiskID() || !vdisk.HasVDiskLocation()) {
@@ -267,9 +261,9 @@ namespace NKikimr::NStorage {
             Slay(record);
         } else if (!record.RuntimeData) {
             StartLocalVDiskActor(record, TDuration::Zero());
-        } else if (record.RuntimeData->DonorMode < record.Config.HasDonorMode() || record.RuntimeData->ReadOnly != record.Config.GetReadOnly()) {
+        } else if (record.RuntimeData->DonorMode < record.Config.HasDonorMode()) {
             PoisonLocalVDisk(record);
-            StartLocalVDiskActor(record, PDISK_CONFIDENCE_DELAY);
+            StartLocalVDiskActor(record, TDuration::Seconds(15) /* PDisk confidence delay */);
         }
     }
 
@@ -284,21 +278,6 @@ namespace NKikimr::NStorage {
             const ui64 round = NextLocalPDiskInitOwnerRound();
             Send(pdiskServiceId, new NPDisk::TEvSlay(vdisk.GetVDiskId(), round, vslotId.PDiskId, vslotId.VDiskSlotId));
             SlayInFlight.emplace(vslotId, round);
-        }
-    }
-
-    void TNodeWarden::Handle(TEvBlobStorage::TEvAskRestartVDisk::TPtr ev) {
-        const auto& [pDiskId, vDiskId] = *ev->Get();
-        const auto nodeId = SelfId().NodeId();  // Skeleton and NodeWarden are on the same node
-        TVSlotId slotId(nodeId, pDiskId, 0);
-
-        for (auto it = LocalVDisks.lower_bound(slotId); it != LocalVDisks.end() && it->first.NodeId == nodeId && it->first.PDiskId == pDiskId; ++it) {
-            auto& record = it->second;
-            if (record.GetVDiskId() == vDiskId) {
-                PoisonLocalVDisk(record);
-                StartLocalVDiskActor(record, PDISK_CONFIDENCE_DELAY);
-                break;
-            }
         }
     }
 
@@ -328,7 +307,7 @@ namespace NKikimr::NStorage {
         }
 
         TIntrusivePtr<TBlobStorageGroupInfo>& currentInfo = vdisk.RuntimeData->GroupInfo;
-        Y_ABORT_UNLESS(newInfo->GroupID == currentInfo->GroupID);
+        Y_VERIFY(newInfo->GroupID == currentInfo->GroupID);
 
         const ui32 orderNumber = vdisk.RuntimeData->OrderNumber;
         const TActorId vdiskServiceId = vdisk.GetVDiskServiceId();

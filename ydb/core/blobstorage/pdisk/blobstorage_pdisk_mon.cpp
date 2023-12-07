@@ -88,7 +88,6 @@ TPDiskMon::TPDiskMon(const TIntrusivePtr<::NMonitoring::TDynamicCounters>& count
     DeviceSubmitThreadBusyTimeNs = DeviceGroup->GetCounter("DeviceSubmitThreadBusyTimeNs", true);
     DeviceCompletionThreadBusyTimeNs = DeviceGroup->GetCounter("DeviceCompletionThreadBusyTimeNs", true);
     DeviceIoErrors = DeviceGroup->GetCounter("DeviceIoErrors", true);
-    DeviceWaitTimeMs = DeviceGroup->GetCounter("DeviceWaitTimeMs", true);
 
     UpdateDurationTracker.SetCounter(DeviceGroup->GetCounter("PDiskThreadBusyTimeNs", true));
 

@@ -2,7 +2,7 @@ LIBRARY()
 
 PEERDIR(
     library/cpp/lwtrace/protos
-    ydb/library/actors/protos
+    library/cpp/actors/protos
     ydb/core/protos
 )
 

@@ -1,12 +1,12 @@
 
 #pragma once
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
 #include <ydb/library/yql/minikql/mkql_alloc.h>
 #include <ydb/library/yql/minikql/aligned_page_pool.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/size_literals.h>
 #include <util/system/types.h>
@@ -36,11 +36,9 @@ namespace NYql::NDq {
             , ProfileStats(profileStats ? MakeHolder<TProfileStats>() : nullptr)
             , CanAllocateExtraMemory(canAllocateExtraMemory)
             , ActorSystem(actorSystem) {
-
-            Y_ABORT_UNLESS(MemoryLimits.MemoryQuotaManager->AllocateQuota(MkqlMemoryLimit));
-            if (MkqlMemoryQuota) {
-                MkqlMemoryQuota->Add(MkqlMemoryLimit);
-            }
+                if (MkqlMemoryQuota) {
+                    MkqlMemoryQuota->Add(MkqlMemoryLimit);
+                }
         }
 
         ui64 GetMkqlMemoryLimit() const {
@@ -58,16 +56,18 @@ namespace NYql::NDq {
         void TryShrinkMemory(NKikimr::NMiniKQL::TScopedAlloc* alloc) {
             if (alloc->GetAllocated() - alloc->GetUsed() > MemoryLimits.MinMemFreeSize) {
                 alloc->ReleaseFreePages();
-                auto newLimit = std::max(alloc->GetAllocated(), InitialMkqlMemoryLimit);
-                if (MkqlMemoryLimit > newLimit) {
-                    auto freedSize = MkqlMemoryLimit - newLimit;
-                    MkqlMemoryLimit = newLimit;
-                    alloc->SetLimit(newLimit);
-                    MemoryLimits.MemoryQuotaManager->FreeQuota(freedSize);
-                    if (MkqlMemoryQuota) {
-                        MkqlMemoryQuota->Sub(freedSize);
+                if (MemoryLimits.FreeMemoryFn) {
+                    auto newLimit = std::max(alloc->GetAllocated(), InitialMkqlMemoryLimit);
+                    if (MkqlMemoryLimit > newLimit) {
+                        auto freedSize = MkqlMemoryLimit - newLimit;
+                        MkqlMemoryLimit = newLimit;
+                        alloc->SetLimit(newLimit);
+                        MemoryLimits.FreeMemoryFn(TxId, TaskId, freedSize);
+                        if (MkqlMemoryQuota) {
+                            MkqlMemoryQuota->Sub(freedSize);
+                        }
+                        CAMQ_LOG_D("[Mem] memory shrinked, new limit: " << MkqlMemoryLimit);
                     }
-                    CAMQ_LOG_D("[Mem] memory shrinked, new limit: " << MkqlMemoryLimit);
                 }
             }
 
@@ -94,8 +94,8 @@ namespace NYql::NDq {
         }
 
         void TryReleaseQuota() {
-            if (MkqlMemoryLimit) {
-                MemoryLimits.MemoryQuotaManager->FreeQuota(MkqlMemoryLimit);
+            if (MkqlMemoryLimit && MemoryLimits.FreeMemoryFn) {
+                MemoryLimits.FreeMemoryFn(TxId, TaskId, MkqlMemoryLimit);
                 if (MkqlMemoryQuota) {
                     MkqlMemoryQuota->Sub(MkqlMemoryLimit);
                 }
@@ -119,7 +119,7 @@ namespace NYql::NDq {
                 throw THardMemoryLimitException();
             }
 
-            if (MemoryLimits.MemoryQuotaManager->AllocateQuota(memory)) {
+            if (MemoryLimits.AllocateMemoryFn(TxId, TaskId, memory)) {
                 MkqlMemoryLimit += memory;
                 if (MkqlMemoryQuota) {
                     MkqlMemoryQuota->Add(memory);

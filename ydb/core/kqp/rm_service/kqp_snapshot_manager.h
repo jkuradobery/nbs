@@ -3,7 +3,7 @@
 #include <ydb/core/kqp/common/kqp_event_ids.h>
 #include <ydb/core/kqp/gateway/kqp_gateway.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 
 namespace NKikimr {
@@ -13,42 +13,37 @@ struct TEvKqpSnapshot {
     struct TEvCreateSnapshotRequest : public TEventLocal<TEvCreateSnapshotRequest,
         TKqpSnapshotEvents::EvCreateSnapshotRequest>
     {
-        explicit TEvCreateSnapshotRequest(const TVector<TString>& tables, ui64 cookie, NLWTrace::TOrbit&& orbit = {})
+        explicit TEvCreateSnapshotRequest(const TVector<TString>& tables)
             : Tables(tables)
-            , MvccSnapshot(false)
-            , Orbit(std::move(orbit))
-            , Cookie(cookie) {}
+            , MvccSnapshot(false){}
 
-        explicit TEvCreateSnapshotRequest(ui64 cookie, NLWTrace::TOrbit&& orbit = {})
+        explicit TEvCreateSnapshotRequest()
             : Tables({})
-            , MvccSnapshot(true)
-            , Orbit(std::move(orbit))
-            , Cookie(cookie) {}
+            , MvccSnapshot(true){}
 
         const TVector<TString> Tables;
         const bool MvccSnapshot;
-        NLWTrace::TOrbit Orbit;
-        ui64 Cookie;
     };
 
     struct TEvCreateSnapshotResponse : public TEventLocal<TEvCreateSnapshotResponse,
         TKqpSnapshotEvents::EvCreateSnapshotResponse>
     {
         TEvCreateSnapshotResponse(const IKqpGateway::TKqpSnapshot& snapshot,
-            NKikimrIssues::TStatusIds::EStatusCode status, NYql::TIssues&& issues, NLWTrace::TOrbit&& orbit)
+            NKikimrIssues::TStatusIds::EStatusCode status, NYql::TIssues&& issues)
             : Snapshot(snapshot)
             , Status(status)
-            , Issues(std::move(issues))
-            , Orbit(std::move(orbit)) {}
+            , Issues(std::move(issues)) {}
 
         const IKqpGateway::TKqpSnapshot Snapshot;
         const NKikimrIssues::TStatusIds::EStatusCode Status;
         const NYql::TIssues Issues;
-        NLWTrace::TOrbit Orbit;
     };
 
     struct TEvDiscardSnapshot : public TEventLocal<TEvDiscardSnapshot, TKqpSnapshotEvents::EvDiscardSnapshot> {
-        TEvDiscardSnapshot() = default;
+        explicit TEvDiscardSnapshot(const IKqpGateway::TKqpSnapshot& snapshot)
+            : Snapshot(snapshot)
+        {}
+        const IKqpGateway::TKqpSnapshot Snapshot;
     };
 };
 

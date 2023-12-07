@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import six.moves
 
-from contrib.ydb.tests.library.wardens.base import LivenessWarden
-from contrib.ydb.core.protos import counters_schemeshard_pb2 as counters
+from ydb.tests.library.wardens.base import LivenessWarden
+from ydb.core.protos import counters_schemeshard_pb2 as counters
 
 SS_COUNTER_PREFIX = 'COUNTER_IN_FLIGHT_OPS_Tx'
 

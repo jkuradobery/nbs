@@ -14,30 +14,19 @@ public:
     using TBase::TBase;
     void CreateTestOlapStore(TActorId sender, TString scheme);
     void CreateTestOlapTable(TActorId sender, TString storeOrDirName, TString scheme);
-    void SendDataViaActorSystem(TString testTable, ui64 pathIdBegin, ui64 tsBegin, size_t rowCount, const ui32 tsStepUs = 1) const;
-    void SendDataViaActorSystem(TString testTable, std::shared_ptr<arrow::RecordBatch> batch, const Ydb::StatusIds_StatusCode& expectedStatus =  Ydb::StatusIds::SUCCESS) const;
+    void SendDataViaActorSystem(TString testTable, ui64 pathIdBegin, ui64 tsBegin, size_t rowCount);
+    void SendDataViaActorSystem(TString testTable, std::shared_ptr<arrow::RecordBatch> batch);
 
-    virtual std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64 pathIdBegin, ui64 tsBegin, size_t rowCount, const ui32 tsStepUs = 1) const = 0;
+    virtual std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64 pathIdBegin, ui64 tsBegin, size_t rowCount) = 0;
 };
 
 class THelper: public THelperSchemaless {
 private:
     using TBase = THelperSchemaless;
 
-    std::shared_ptr<arrow::Schema> GetArrowSchema() const;
-    YDB_FLAG_ACCESSOR(WithJsonDocument, false);
-    TString ShardingMethod = "HASH_FUNCTION_CONSISTENCY_64";
-protected:
-    void CreateOlapTableWithStore(TString tableName = "olapTable", TString storeName = "olapStore",
-        ui32 storeShardsCount = 4, ui32 tableShardsCount = 3);
+    std::shared_ptr<arrow::Schema> GetArrowSchema();
 public:
     using TBase::TBase;
-
-    THelper& SetShardingMethod(const TString& value) {
-        Y_ABORT_UNLESS(value == "HASH_FUNCTION_CLOUD_LOGS" || value == "HASH_FUNCTION_MODULO_N" || value == "HASH_FUNCTION_CONSISTENCY_64");
-        ShardingMethod = value;
-        return *this;
-    }
 
     static constexpr const char * PROTO_SCHEMA = R"(
         Columns { Name: "timestamp" Type: "Timestamp" NotNull: true }
@@ -54,19 +43,14 @@ public:
         Engine: COLUMN_ENGINE_REPLACING_TIMESERIES
     )";
 
-    virtual std::vector<TString> GetShardingColumns() const {
-        return {"timestamp", "uid"};
-    }
-    virtual TString GetTestTableSchema() const;
-
-    virtual std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64 pathIdBegin, ui64 tsBegin, size_t rowCount, const ui32 tsStepUs = 1) const override;
+    std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64 pathIdBegin, ui64 tsBegin, size_t rowCount) override;
 };
 
 class TCickBenchHelper: public THelperSchemaless {
 private:
     using TBase = THelperSchemaless;
 
-    std::shared_ptr<arrow::Schema> GetArrowSchema() const;
+    std::shared_ptr<arrow::Schema> GetArrowSchema();
 
 public:
     using TBase::TBase;
@@ -180,14 +164,14 @@ public:
         KeyColumnNames: ["EventTime", "EventDate", "CounterID", "UserID", "WatchID"]
     )";
 
-    std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64, ui64 begin, size_t rowCount, const ui32 tsStepUs = 1) const override;
+    std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64, ui64 begin, size_t rowCount) override;
 };
 
 class TTableWithNullsHelper: public THelperSchemaless {
 private:
     using TBase = THelperSchemaless;
 
-    std::shared_ptr<arrow::Schema> GetArrowSchema() const;
+    std::shared_ptr<arrow::Schema> GetArrowSchema();
 public:
     using TBase::TBase;
 
@@ -196,13 +180,11 @@ public:
         Columns { Name: "resource_id" Type: "Utf8" }
         Columns { Name: "level" Type: "Int32" }
         Columns { Name: "binary_str" Type: "String" }
-        Columns { Name: "jsonval" Type: "Json" }
-        Columns { Name: "jsondoc" Type: "JsonDocument" }
         KeyColumnNames: "id"
     )";
 
-    std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64, ui64, size_t rowCount = 10, const ui32 tsStepUs = 1) const override;
-    std::shared_ptr<arrow::RecordBatch> TestArrowBatch() const;
+    std::shared_ptr<arrow::RecordBatch> TestArrowBatch(ui64, ui64, size_t rowCount = 10) override;
+    std::shared_ptr<arrow::RecordBatch> TestArrowBatch();
 };
 
 }

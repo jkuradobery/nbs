@@ -1,14 +1,14 @@
 #include "service_fq_internal.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_deferrable.h"
 
-#include <ydb/core/fq/libs/events/events.h>
-#include <ydb/core/fq/libs/actors/proxy_private.h>
-#include <ydb/core/fq/libs/protos/fq_private.pb.h>
+#include <ydb/core/yq/libs/events/events.h>
+#include <ydb/core/yq/libs/actors/proxy_private.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <ydb/core/grpc_services/base/base.h>
+#include <ydb/core/yq/libs/protos/fq_private.pb.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -42,9 +42,9 @@ public:
         const auto req = this->GetProtoRequest();
         auto ev = MakeHolder<EvRequestType>();
         auto request = dynamic_cast<RpcRequestType*>(this->Request_.get());
-        Y_ABORT_UNLESS(request);
+        Y_VERIFY(request);
         auto proxyCtx = dynamic_cast<IRequestProxyCtx*>(request);
-        Y_ABORT_UNLESS(proxyCtx);
+        Y_VERIFY(proxyCtx);
         TString user;
         const TString& internalToken = proxyCtx->GetSerializedToken();
         if (internalToken) {
@@ -53,7 +53,7 @@ public:
         }
         ev->Record = *req;
         ev->User = user;
-        this->Send(NFq::MakeYqPrivateProxyId(), ev.Release());
+        this->Send(NYq::MakeYqPrivateProxyId(), ev.Release());
         this->Become(&TFqPrivateRequestRPC<RpcRequestType, EvRequestType, EvResponseType>::StateFunc);
     }
 
@@ -80,56 +80,56 @@ private:
 
 using TFqPrivatePingTaskRPC = TFqPrivateRequestRPC<
     TEvFqPrivatePingTaskRequest,
-    NFq::TEvents::TEvPingTaskRequest,
-    NFq::TEvents::TEvPingTaskResponse>;
+    NYq::TEvents::TEvPingTaskRequest,
+    NYq::TEvents::TEvPingTaskResponse>;
 
 using TFqPrivateGetTaskRPC = TFqPrivateRequestRPC<
     TEvFqPrivateGetTaskRequest,
-    NFq::TEvents::TEvGetTaskRequest,
-    NFq::TEvents::TEvGetTaskResponse>;
+    NYq::TEvents::TEvGetTaskRequest,
+    NYq::TEvents::TEvGetTaskResponse>;
 
 using TFqPrivateWriteTaskResultRPC = TFqPrivateRequestRPC<
     TEvFqPrivateWriteTaskResultRequest,
-    NFq::TEvents::TEvWriteTaskResultRequest,
-    NFq::TEvents::TEvWriteTaskResultResponse>;
+    NYq::TEvents::TEvWriteTaskResultRequest,
+    NYq::TEvents::TEvWriteTaskResultResponse>;
 
 using TFqPrivateNodesHealthCheckRPC = TFqPrivateRequestRPC<
     TEvFqPrivateNodesHealthCheckRequest,
-    NFq::TEvents::TEvNodesHealthCheckRequest,
-    NFq::TEvents::TEvNodesHealthCheckResponse>;
+    NYq::TEvents::TEvNodesHealthCheckRequest,
+    NYq::TEvents::TEvNodesHealthCheckResponse>;
 
 using TFqPrivateCreateRateLimiterResourceRPC = TFqPrivateRequestRPC<
     TEvFqPrivateCreateRateLimiterResourceRequest,
-    NFq::TEvents::TEvCreateRateLimiterResourceRequest,
-    NFq::TEvents::TEvCreateRateLimiterResourceResponse>;
+    NYq::TEvents::TEvCreateRateLimiterResourceRequest,
+    NYq::TEvents::TEvCreateRateLimiterResourceResponse>;
 
 using TFqPrivateDeleteRateLimiterResourceRPC = TFqPrivateRequestRPC<
     TEvFqPrivateDeleteRateLimiterResourceRequest,
-    NFq::TEvents::TEvDeleteRateLimiterResourceRequest,
-    NFq::TEvents::TEvDeleteRateLimiterResourceResponse>;
+    NYq::TEvents::TEvDeleteRateLimiterResourceRequest,
+    NYq::TEvents::TEvDeleteRateLimiterResourceResponse>;
 
-void DoFqPrivatePingTaskRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TFqPrivatePingTaskRPC(p.release()));
+void DoFqPrivatePingTaskRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TFqPrivatePingTaskRPC(p.release()));
 }
 
-void DoFqPrivateGetTaskRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TFqPrivateGetTaskRPC(p.release()));
+void DoFqPrivateGetTaskRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TFqPrivateGetTaskRPC(p.release()));
 }
 
-void DoFqPrivateWriteTaskResultRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TFqPrivateWriteTaskResultRPC(p.release()));
+void DoFqPrivateWriteTaskResultRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TFqPrivateWriteTaskResultRPC(p.release()));
 }
 
-void DoFqPrivateNodesHealthCheckRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TFqPrivateNodesHealthCheckRPC(p.release()));
+void DoFqPrivateNodesHealthCheckRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TFqPrivateNodesHealthCheckRPC(p.release()));
 }
 
-void DoFqPrivateCreateRateLimiterResourceRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TFqPrivateCreateRateLimiterResourceRPC(p.release()));
+void DoFqPrivateCreateRateLimiterResourceRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TFqPrivateCreateRateLimiterResourceRPC(p.release()));
 }
 
-void DoFqPrivateDeleteRateLimiterResourceRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TFqPrivateDeleteRateLimiterResourceRPC(p.release()));
+void DoFqPrivateDeleteRateLimiterResourceRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TFqPrivateDeleteRateLimiterResourceRPC(p.release()));
 }
 
 } // namespace NGRpcService

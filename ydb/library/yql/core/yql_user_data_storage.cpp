@@ -40,22 +40,9 @@ namespace NYql {
 TUserDataStorage::TUserDataStorage(TFileStoragePtr fileStorage, TUserDataTable data, IUdfResolver::TPtr udfResolver, TUdfIndex::TPtr udfIndex)
     : FileStorage_(std::move(fileStorage))
     , UserData_(std::move(data))
-    , UdfResolver_(std::move(udfResolver))
-    , UdfIndex_(std::move(udfIndex))
+    , UdfResolver(std::move(udfResolver))
+    , UdfIndex(std::move(udfIndex))
 {
-}
-
-void TUserDataStorage::SetTokenResolver(TTokenResolver tokenResolver) {
-    TokenResolver_ = std::move(tokenResolver);
-}
-
-void TUserDataStorage::SetUrlPreprocessor(IUrlPreprocessing::TPtr urlPreprocessing) {
-    UrlPreprocessing_ = std::move(urlPreprocessing);
-}
-
-void TUserDataStorage::SetUserDataTable(TUserDataTable data) {
-     UserData_ = std::move(data);
-     FillUserDataUrls();
 }
 
 void TUserDataStorage::AddUserDataBlock(const TStringBuf& name, const TUserDataBlock& block) {
@@ -64,11 +51,9 @@ void TUserDataStorage::AddUserDataBlock(const TStringBuf& name, const TUserDataB
 }
 
 void TUserDataStorage::AddUserDataBlock(const TUserDataKey& key, const TUserDataBlock& block) {
-    auto res = UserData_.emplace(key, block);
-    if (!res.second) {
+    if (!UserData_.emplace(key, block).second) {
         throw yexception() << "Failed to add user data block, key " << key << " already registered";
     }
-    TryFillUserDataUrl(res.first->second);
 }
 
 bool TUserDataStorage::ContainsUserDataBlock(const TStringBuf& name) const {
@@ -167,26 +152,6 @@ TMaybe<std::map<TUserDataKey, const TUserDataBlock*>> TUserDataStorage::FindUser
     return res;
 }
 
-void TUserDataStorage::FillUserDataUrls() {
-    for (auto& p : UserData_) {
-        TryFillUserDataUrl(p.second);
-    }
-}
-
-void TUserDataStorage::TryFillUserDataUrl(TUserDataBlock& block) const {
-    if (block.Type != EUserDataType::URL) {
-        return;
-    }
-
-    TString alias;
-    if (UrlPreprocessing_) {
-        std::tie(block.Data, alias) = UrlPreprocessing_->Preprocess(block.Data);
-    }
-    if (!block.UrlToken && TokenResolver_) {
-        block.UrlToken = TokenResolver_(block.Data, alias);
-    }
-}
-
 std::map<TString, const TUserDataBlock*> TUserDataStorage::GetDirectoryContent(const TStringBuf& path, ui32 maxFileCount) const {
     const auto fullPath = MakeFolderName(path);
 
@@ -231,21 +196,21 @@ TUserDataBlock* TUserDataStorage::FreezeUdfNoThrow(const TUserDataKey& key,
     }
     block->CustomUdfPrefix = customUdfPrefix;
 
-    if (!ScannedUdfs_.insert(key).second) {
+    if (!ScannedUdfs.insert(key).second) {
         // already scanned
         return block;
     }
 
-    if (!UdfIndex_) {
+    if (!UdfIndex) {
         return block;
     }
 
     try {
         TString scope = "ScanUdfStrategy " + key.Alias();
         YQL_PROFILE_SCOPE(DEBUG, scope.c_str());
-        Y_ENSURE(UdfResolver_);
-        Y_ENSURE(UdfIndex_);
-        LoadRichMetadataToUdfIndex(*UdfResolver_, *block, TUdfIndex::EOverrideMode::ReplaceWithNew, *UdfIndex_);
+        Y_ENSURE(UdfResolver);
+        Y_ENSURE(UdfIndex);
+        LoadRichMetadataToUdfIndex(*UdfResolver, *block, TUdfIndex::EOverrideMode::ReplaceWithNew, *UdfIndex);
     } catch (const std::exception& e) {
         errorMessage = TStringBuilder() << "Failed to scan udf with key " << key << ", details: " << e.what();
         return nullptr;

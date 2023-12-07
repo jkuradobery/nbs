@@ -8,12 +8,8 @@ TDirectTxUpload::TDirectTxUpload(TEvDataShard::TEvUploadRowsRequest::TPtr& ev)
 {
 }
 
-bool TDirectTxUpload::Execute(TDataShard* self, TTransactionContext& txc,
-        const TRowVersion& readVersion, const TRowVersion& writeVersion,
-        ui64 globalTxId, absl::flat_hash_set<ui64>& volatileReadDependencies)
-{
-    return TCommonUploadOps::Execute(self, txc, readVersion, writeVersion,
-        globalTxId, &volatileReadDependencies);
+bool TDirectTxUpload::Execute(TDataShard* self, TTransactionContext& txc, const TRowVersion& readVersion, const TRowVersion& writeVersion) {
+    return TCommonUploadOps::Execute(self, txc, readVersion, writeVersion);
 }
 
 TDirectTxResult TDirectTxUpload::GetResult(TDataShard* self) {

@@ -1,7 +1,6 @@
 #include "service_yql_scripting.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
-#include "audit_dml_operations.h"
+#include "rpc_common.h"
 
 #include <ydb/public/api/protos/ydb_scripting.pb.h>
 
@@ -21,13 +20,7 @@ public:
     using TResult = Ydb::Scripting::ExecuteYqlResult;
 
     TExecuteYqlScriptRPC(IRequestOpCtx* msg)
-        : TBase(msg)
-    {
-        // StreamExecuteYqlScript allows write in to table.
-        // But CanselAfter should not trigger cancelation if we chage table
-        // This logic is broken - just disable CancelAfter_ for a while
-        CancelAfter_ = TDuration();
-    }
+        : TBase(msg) {}
 
     void Bootstrap(const TActorContext &ctx) {
         TBase::Bootstrap(ctx);
@@ -36,10 +29,10 @@ public:
         Proceed(ctx);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -47,34 +40,31 @@ public:
         const auto req = GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
-        AuditContextAppend(Request_.get(), *req);
+        auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
+        SetAuthToken(ev, *Request_);
+        SetDatabase(ev, *Request_);
 
-        auto script = req->script();
+        if (traceId) {
+            ev->Record.SetTraceId(traceId.GetRef());
+        }
+
+        ev->Record.MutableRequest()->SetCancelAfterMs(GetCancelAfter().MilliSeconds());
+        ev->Record.MutableRequest()->SetTimeoutMs(GetOperationTimeout().MilliSeconds());
+        ev->Record.MutableRequest()->MutableYdbParameters()->insert(req->parameters().begin(), req->parameters().end());
+
+        auto& script = req->script();
 
         NYql::TIssues issues;
         if (!CheckQuery(script, issues)) {
             return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
-        ::Ydb::Operations::OperationParams operationParams;
-
-        auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>(
-            NKikimrKqp::QUERY_ACTION_EXECUTE,
-            NKikimrKqp::QUERY_TYPE_SQL_SCRIPT,
-            SelfId(),
-            Request_,
-            TString(), //sessionId
-            std::move(script),
-            TString(), //queryId
-            nullptr, //tx_control
-            &req->parameters(),
-            req->collect_stats(),
-            nullptr, // query_cache_policy
-            req->has_operation_params() ? &req->operation_params() : nullptr,
-            false, // keep session
-            false, // use cancelAfter
-            req->syntax()
-        );
+        ev->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
+        ev->Record.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_SCRIPT);
+        ev->Record.MutableRequest()->SetQuery(script);
+        ev->Record.MutableRequest()->SetKeepSession(false);
+        ev->Record.MutableRequest()->SetStatsMode(GetKqpStatsMode(req->collect_stats()));
+        ev->Record.MutableRequest()->SetCollectStats(req->collect_stats());
 
         ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
     }
@@ -107,19 +97,12 @@ public:
             queryResult->mutable_query_stats()->set_query_plan(kqpResponse.GetQueryPlan());
         }
 
-        AuditContextAppend(Request_.get(), *GetProtoRequest(), *queryResult);
-
         ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, *queryResult, ctx);
     }
 };
 
-void DoExecuteYqlScript(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TExecuteYqlScriptRPC(p.release()));
-}
-
-template<>
-IActor* TEvExecuteYqlScriptRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TExecuteYqlScriptRPC(msg);
+void DoExecuteYqlScript(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TExecuteYqlScriptRPC(p.release()));
 }
 
 } // namespace NGRpcService

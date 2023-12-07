@@ -12,9 +12,11 @@ ELSE()
     SIZE(MEDIUM)
 ENDIF()
 
+ENV(PERSQUEUE_NEW_SCHEMECACHE="true")
+
 SRCS(
     persqueue_new_schemecache_ut.cpp
-    persqueue_common_new_schemecache_ut.cpp
+    persqueue_common_ut.cpp
     ut/api_test_setup.h
     ut/test_utils.h
     ut/pq_data_writer.h
@@ -25,7 +27,6 @@ SRCS(
 PEERDIR(
     library/cpp/getopt
     library/cpp/svnversion
-    ydb/library/persqueue/tests
     ydb/core/testlib/default
     ydb/public/api/grpc
     ydb/public/sdk/cpp/client/resources

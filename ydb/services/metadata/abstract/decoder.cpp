@@ -1,7 +1,7 @@
 #include "decoder.h"
 #include <library/cpp/protobuf/json/proto2json.h>
 #include <contrib/libs/protobuf/src/google/protobuf/text_format.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/json/json_reader.h>
 
 namespace NKikimr::NMetadata::NInternal {
@@ -30,28 +30,6 @@ bool TDecoderBase::Read(const i32 columnIdx, TString& result, const Ydb::Value& 
         result = "";
     }
     return true;
-}
-
-bool TDecoderBase::Read(const i32 columnIdx, ui64& result, const Ydb::Value& r) const {
-    if (columnIdx >= (i32)r.items().size() || columnIdx < 0) {
-        return false;
-    }
-    if (r.items()[columnIdx].has_uint64_value()) {
-        result = r.items()[columnIdx].uint64_value();
-        return true;
-    }
-    return false;
-}
-
-bool TDecoderBase::Read(const i32 columnIdx, ui32& result, const Ydb::Value& r) const {
-    if (columnIdx >= (i32)r.items().size() || columnIdx < 0) {
-        return false;
-    }
-    if (r.items()[columnIdx].has_uint32_value()) {
-        result = r.items()[columnIdx].uint32_value();
-        return true;
-    }
-    return false;
 }
 
 bool TDecoderBase::Read(const i32 columnIdx, TDuration& result, const Ydb::Value& r) const {

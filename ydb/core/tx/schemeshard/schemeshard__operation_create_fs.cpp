@@ -42,9 +42,9 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateFileStore);
-        Y_ABORT_UNLESS(txState->State == TTxState::ConfigureParts);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateFileStore);
+        Y_VERIFY(txState->State == TTxState::ConfigureParts);
 
         auto tabletId = TTabletId(ev->Get()->Record.GetOrigin());
         auto status = ev->Get()->Record.GetStatus();
@@ -88,18 +88,18 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateFileStore);
-        Y_ABORT_UNLESS(!txState->Shards.empty());
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateFileStore);
+        Y_VERIFY(!txState->Shards.empty());
 
         txState->ClearShardsInProgress();
 
         auto fs = context.SS->FileStoreInfos[txState->TargetPathId];
         Y_VERIFY_S(fs, "FileStore info is null. PathId: " << txState->TargetPathId);
 
-        Y_ABORT_UNLESS(txState->Shards.size() == 1);
+        Y_VERIFY(txState->Shards.size() == 1);
         for (const auto& shard: txState->Shards) {
-            Y_ABORT_UNLESS(shard.TabletType == ETabletType::FileStore);
+            Y_VERIFY(shard.TabletType == ETabletType::FileStore);
             auto shardIdx = shard.Idx;
             auto tabletId = context.SS->ShardInfos[shardIdx].TabletID;
 
@@ -157,7 +157,7 @@ public:
             return false;
         }
 
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateFileStore);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateFileStore);
         TPathId pathId = txState->TargetPathId;
 
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
@@ -187,8 +187,8 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxCreateFileStore);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxCreateFileStore);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -206,7 +206,7 @@ public:
         TOperationContext& context) override;
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreateFileStore");
+        Y_FAIL("no AbortPropose for TCreateFileStore");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -393,7 +393,7 @@ THolder<TProposeResponse> TCreateFileStore::Propose(
     }
 
     auto domainDir = context.SS->PathsById.at(dstPath.GetPathIdForDomain());
-    Y_ABORT_UNLESS(domainDir);
+    Y_VERIFY(domainDir);
 
     const auto newFileStoreSpace = fs->GetFileStoreSpace();
     if (!domainDir->CheckFileStoreSpaceChange(newFileStoreSpace, { }, errStr)) {
@@ -509,7 +509,7 @@ TTxState& TCreateFileStore::PrepareChanges(
     context.SS->PersistUpdateNextShardIdx(db);
 
     for (const auto& shard: txState.Shards) {
-        Y_ABORT_UNLESS(shard.Operation == TTxState::CreateParts);
+        Y_VERIFY(shard.Operation == TTxState::CreateParts);
         context.SS->PersistChannelsBinding(db, shard.Idx, context.SS->ShardInfos[shard.Idx].BindedChannels);
         context.SS->PersistShardMapping(db, shard.Idx, InvalidTabletId, pathId, operationId.GetTxId(), shard.TabletType);
     }
@@ -521,12 +521,12 @@ TTxState& TCreateFileStore::PrepareChanges(
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateNewFileStore(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateNewFileStore(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TCreateFileStore>(id, tx);
 }
 
-ISubOperation::TPtr CreateNewFileStore(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateNewFileStore(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TCreateFileStore>(id, state);
 }
 

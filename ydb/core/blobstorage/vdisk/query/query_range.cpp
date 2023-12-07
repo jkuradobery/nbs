@@ -88,7 +88,7 @@ namespace NKikimr {
 
         void Bootstrap(const TActorContext &ctx) {
             Prepare();
-            Y_DEBUG_ABORT_UNLESS(!Merger.HaveToMergeData());
+            Y_VERIFY_DEBUG(!Merger.HaveToMergeData());
             MainCycleIndexOnly(ctx);
         }
 
@@ -123,12 +123,12 @@ namespace NKikimr {
         template<typename TMerger>
         void AddIndexOnly(const TLogoBlobID &logoBlobId, const TMerger &merger) {
             const auto &status = BarriersEssence->Keep(logoBlobId, merger.GetMemRec(), merger.GetMemRecsMerged(),
-                                                       QueryCtx->HullCtx->AllowKeepFlags, true /*allowGarbageCollection*/);
+                                                       QueryCtx->HullCtx->AllowKeepFlags);
             if (status.KeepData) {
                 const TIngress &ingress = merger.GetMemRec().GetIngress();
                 ui64 ingr = ingress.Raw();
                 ui64 *pingr = (ShowInternals ? &ingr : nullptr);
-                Y_ABORT_UNLESS(logoBlobId.PartId() == 0); // Index-only response must contain a single record for the blob
+                Y_VERIFY(logoBlobId.PartId() == 0); // Index-only response must contain a single record for the blob
                 const NMatrix::TVectorType local = ingress.LocalParts(QueryCtx->HullCtx->VCtx->Top->GType);
 
                 const int mode = ingress.GetCollectMode(TIngress::IngressMode(QueryCtx->HullCtx->VCtx->Top->GType));
@@ -159,7 +159,7 @@ namespace NKikimr {
             , TActorBootstrapped<TLevelIndexRangeQueryViaBatcherIndexOnly>()
             , Merger(QueryCtx->HullCtx->VCtx->Top->GType)
         {
-            Y_DEBUG_ABORT_UNLESS(Record.GetIndexOnly());
+            Y_VERIFY_DEBUG(Record.GetIndexOnly());
         }
     };
 

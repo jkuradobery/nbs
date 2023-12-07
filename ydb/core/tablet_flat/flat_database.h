@@ -45,7 +45,6 @@ public:
 
     struct TProd {
         THolder<TChange> Change;
-        TVector<std::function<void()>> OnPersistent;
     };
 
     struct TChg {
@@ -103,10 +102,6 @@ public:
             ui32 table, TRawVals key, ui64 readFlags = 0,
             const ITransactionMapPtr& visible = nullptr,
             const ITransactionObserverPtr& observer = nullptr) const noexcept;
-    TSelectRowVersionResult SelectRowVersion(
-            ui32 table, TArrayRef<const TCell> key, ui64 readFlags = 0,
-            const ITransactionMapPtr& visible = nullptr,
-            const ITransactionObserverPtr& observer = nullptr) const noexcept;
 
     bool Precharge(ui32 table, TRawVals minKey, TRawVals maxKey,
                         TTagsRef tags, ui64 readFlags, ui64 itemsLimit, ui64 bytesLimit,
@@ -133,18 +128,11 @@ public:
     bool HasRemovedTx(ui32 table, ui64 txId) const;
 
     /**
-     * Returns a set of open transactions in the provided table. This only
+     * Returns a list of open transactions in the provided table. This only
      * includes transactions with changes that are neither committed nor
      * removed.
      */
-    const absl::flat_hash_set<ui64>& GetOpenTxs(ui32 table) const;
-
-    /**
-     * Returns a number of open transactions in the provided table. This only
-     * includes transactions with changes that are neither committed nor
-     * removed.
-     */
-    size_t GetOpenTxCount(ui32 table) const;
+    TVector<ui64> GetOpenTxs(ui32 table) const;
 
     /**
      * Remove row versions [lower, upper) from the given table
@@ -213,13 +201,6 @@ public:
      */
     bool HasChanges() const;
 
-    /**
-     * Rollback all current transaction changes
-     *
-     * Similar to aborting transaction and then starting a new one
-     */
-    void RollbackChanges();
-
     // executor interface
     void Begin(TTxStamp, IPages& env);
     TProd Commit(TTxStamp, bool commit, TCookieAllocator* = nullptr);
@@ -227,13 +208,12 @@ public:
 
     void RollUpRemoveRowVersions(ui32 table, const TRowVersion& lower, const TRowVersion& upper);
 
-    size_t GetCommitRedoBytes() const;
     bool ValidateCommit(TString&);
 
     TCompactionStats GetCompactionStats(ui32 table) const;
 
     /**
-     * Adds a callback, which is called when database changes are committed
+     * Adds callback, which is called when database changes are committed
      */
     template<class TCallback>
     void OnCommit(TCallback&& callback) {
@@ -241,21 +221,13 @@ public:
     }
 
     /**
-     * Adds a callback, which is called when database changes are rolled back
+     * Adds callback, which is called when database changes are rolled back
      * 
      * @param callback 
      */
     template<class TCallback>
     void OnRollback(TCallback&& callback) {
         OnRollback_.emplace_back(std::forward<TCallback>(callback));
-    }
-
-    /**
-     * Adds a callback, which is called when database changes are persistent
-     */
-    template<class TCallback>
-    void OnPersistent(TCallback&& callback) {
-        OnPersistent_.emplace_back(std::forward<TCallback>(callback));
     }
 
 private:
@@ -280,7 +252,6 @@ private:
 
     TVector<std::function<void()>> OnCommit_;
     TVector<std::function<void()>> OnRollback_;
-    TVector<std::function<void()>> OnPersistent_;
 };
 
 

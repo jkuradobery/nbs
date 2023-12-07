@@ -2,7 +2,6 @@
 
 #include "command.h"
 #include "formats.h"
-#include "pretty_table.h"
 
 #include <ydb/public/lib/json_value/ydb_json_value.h>
 #include <ydb/public/sdk/cpp/client/ydb_result/result.h>
@@ -22,12 +21,8 @@ protected:
 
 class TCommandWithFormat {
 protected:
-    void AddInputFormats(TClientCommand::TConfig& config, 
-                         const TVector<EOutputFormat>& allowedFormats, EOutputFormat defaultFormat = EOutputFormat::JsonUnicode);
-    void AddStdinFormats(TClientCommand::TConfig& config, const TVector<EOutputFormat>& allowedStdinFormats, 
-                         const TVector<EOutputFormat>& allowedFramingFormats);
-    void AddFormats(TClientCommand::TConfig& config, 
-                         const TVector<EOutputFormat>& allowedFormats, EOutputFormat defaultFormat = EOutputFormat::Pretty);
+    void AddInputFormats(TClientCommand::TConfig& config, const TVector<EOutputFormat>& allowedFormats);
+    void AddFormats(TClientCommand::TConfig& config, const TVector<EOutputFormat>& allowedFormats);
     void AddMessagingFormats(TClientCommand::TConfig& config, const TVector<EMessagingFormat>& allowedFormats);
     void ParseFormats();
     void ParseMessagingFormats();
@@ -40,22 +35,13 @@ protected:
 protected:
     EOutputFormat OutputFormat = EOutputFormat::Default;
     EOutputFormat InputFormat = EOutputFormat::Default;
-    EOutputFormat FramingFormat = EOutputFormat::Default;
-    EOutputFormat StdinFormat = EOutputFormat::Default;
-    TVector<EOutputFormat> StdinFormats;
     EMessagingFormat MessagingFormat = EMessagingFormat::SingleMessage;
 
 private:
     TVector<EOutputFormat> AllowedInputFormats;
-    TVector<EOutputFormat> AllowedStdinFormats;
-    TVector<EOutputFormat> AllowedFramingFormats;
     TVector<EOutputFormat> AllowedFormats;
     TVector<EMessagingFormat> AllowedMessagingFormats;
     bool DeprecatedOptionUsed = false;
-    
-protected:
-    bool IsStdinFormatSet = false;
-    bool IsFramingFormatSet = false;
 };
 
 class TResultSetPrinter {
@@ -85,30 +71,20 @@ private:
 
 class TQueryPlanPrinter {
 public:
-    TQueryPlanPrinter(EOutputFormat format, bool analyzeMode = false, IOutputStream& output = Cout)
+    TQueryPlanPrinter(EOutputFormat format, bool analyzeMode = false)
         : Format(format)
-        , AnalyzeMode(analyzeMode)
-        , Output(output) {}
+        , AnalyzeMode(analyzeMode) {}
 
     void Print(const TString& plan);
 
 private:
     void PrintPretty(const NJson::TJsonValue& plan);
     void PrintPrettyImpl(const NJson::TJsonValue& plan, TVector<TString>& offsets);
-    void PrintPrettyTable(const NJson::TJsonValue& plan);
-    void PrintPrettyTableImpl(const NJson::TJsonValue& plan, TString& offset, TPrettyTable& table);
     void PrintJson(const TString& plan);
     TString JsonToString(const NJson::TJsonValue& jsonValue);
 
-    void SimplifyQueryPlan(NJson::TJsonValue& plan);
-    TVector<NJson::TJsonValue> RemoveRedundantNodes(NJson::TJsonValue& plan, const THashSet<TString>& redundantNodes);
-    THashMap<TString, NJson::TJsonValue> ExtractPrecomputes(NJson::TJsonValue& planJson);
-    void ResolvePrecomputeLinks(NJson::TJsonValue& planJson, const THashMap<TString, NJson::TJsonValue>& precomputes);
-
-private:
     EOutputFormat Format;
     bool AnalyzeMode;
-    IOutputStream& Output;
 };
 
 }

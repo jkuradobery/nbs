@@ -34,16 +34,7 @@ TRuntimeNode BuildSerializeCall(
             }
         );
     } else if (format == "json_list") {
-        ui64 jsonListSizeLimit = 10'000;
-        if (const auto userLimit = config->JsonListSizeLimit.Get()) {
-            jsonListSizeLimit = *userLimit;
-        }
-        auto groupBySize = ctx.ProgramBuilder.Condense1(input,
-                        [&](TRuntimeNode item) { return ctx.ProgramBuilder.AsList(item); },
-                        [&](TRuntimeNode, TRuntimeNode state) { return ctx.ProgramBuilder.AggrGreaterOrEqual(ctx.ProgramBuilder.Length(state), ctx.ProgramBuilder.NewDataLiteral<ui64>(jsonListSizeLimit)); },
-                        [&](TRuntimeNode item, TRuntimeNode state) { return ctx.ProgramBuilder.Append(state, item); }
-                    );
-        return ctx.ProgramBuilder.FlatMap(groupBySize,
+        return ctx.ProgramBuilder.FlatMap(ctx.ProgramBuilder.SqueezeToList(input, ctx.ProgramBuilder.NewEmptyOptionalDataLiteral(NUdf::TDataType<ui64>::Id)),
             [&ctx] (TRuntimeNode list) {
                 TRuntimeNode listNotEmpty = ctx.ProgramBuilder.HasItems(list);
                 const auto userType = ctx.ProgramBuilder.NewTupleType({ctx.ProgramBuilder.NewTupleType({list.GetStaticType()})});

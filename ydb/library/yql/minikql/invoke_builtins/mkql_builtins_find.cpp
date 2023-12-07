@@ -25,7 +25,7 @@ struct TFind {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* string, Value* sub, Value* p, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto doFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(Find<Reverse>));
         const auto pos = PosOptional ?
             SelectInst::Create(
@@ -34,10 +34,10 @@ struct TFind {
                 StaticCast<ui32, std::string_view::size_type>(GetterFor<ui32>(p, context, block), context, block),
             "pos", block):
             StaticCast<ui32, std::string_view::size_type>(GetterFor<ui32>(p, context, block), context, block);
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(string->getType(), {string->getType(), sub->getType(), pos->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "func", block);
-            const auto result = CallInst::Create(funType, funcPtr, {string, sub, pos}, "find", block);
+            const auto result = CallInst::Create(funcPtr, {string, sub, pos}, "find", block);
             return result;
         } else {
             const auto ptrArg = new AllocaInst(string->getType(), 0U, "arg", block);
@@ -47,8 +47,8 @@ struct TFind {
             new StoreInst(sub, ptrSub, block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {ptrResult->getType(), ptrArg->getType(), ptrSub->getType(), pos->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "func", block);
-            CallInst::Create(funType, funcPtr, {ptrResult, ptrArg, ptrSub, pos}, "", block);
-            const auto result = new LoadInst(string->getType(), ptrResult, "find", block);
+            CallInst::Create(funcPtr, {ptrResult, ptrArg, ptrSub, pos}, "", block);
+            const auto result = new LoadInst(ptrResult, "find", block);
             return result;
         }
     }

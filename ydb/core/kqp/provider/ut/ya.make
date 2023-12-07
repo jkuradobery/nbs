@@ -2,7 +2,6 @@ UNITTEST_FOR(ydb/core/kqp/provider)
 
 SRCS(
     yql_kikimr_gateway_ut.cpp
-    yql_kikimr_provider_ut.cpp
 )
 
 PEERDIR(
@@ -15,7 +14,7 @@ YQL_LAST_ABI_VERSION()
 
 FORK_SUBTESTS()
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(1800)
     SIZE(LARGE)
     TAG(ya:fat)

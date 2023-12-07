@@ -1,8 +1,8 @@
-YQL_UDF_CONTRIB(dsv_udf)
+YQL_UDF(dsv_udf)
 
 YQL_ABI_VERSION(
     2
-    28
+    27
     0
 )
 

@@ -1,7 +1,6 @@
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/core/protos/base.proto";
-import "ydb/core/scheme/protos/pathid.proto";
-import "ydb/core/scheme/protos/type_info.proto";
+import "ydb/core/protos/type_info.proto";
 import "ydb/core/protos/subdomains.proto";
 import "ydb/core/protos/bind_channel_storage_pool.proto";
 import "ydb/core/protos/flat_scheme_op.proto";
@@ -141,7 +140,6 @@ message TEvUpdateConfigResult {
 message TEvLogin {
     optional string User = 1;
     optional string Password = 2;
-    optional string ExternalAuth = 3;
 }
 
 message TEvLoginResult {
@@ -211,8 +209,6 @@ message TEvInitTenantSchemeShard {
 
     optional NKikimrSubDomains.TSchemeQuotas DeclaredSchemeQuotas = 16;
     optional Ydb.Cms.DatabaseQuotas DatabaseQuotas = 17;
-    optional NKikimrSubDomains.TAuditSettings AuditSettings = 18;
-    optional NKikimrSubDomains.EServerlessComputeResourcesMode ServerlessComputeResourcesMode = 19;
 }
 
 message TEvInitTenantSchemeShardResult {
@@ -355,7 +351,6 @@ message TEvSyncTenantSchemeShard {
 
     optional uint64 TenantHive = 8;
     optional uint64 TenantSysViewProcessor = 9;
-    optional uint64 TenantStatisticsAggregator = 11;
 
     optional string TenantRootACL = 10;
 }
@@ -376,15 +371,11 @@ message TEvUpdateTenantSchemeShard {
 
     optional uint64 TenantHive = 10;
     optional uint64 TenantSysViewProcessor = 11;
-    optional uint64 TenantStatisticsAggregator = 16;
 
     optional NKikimrSubDomains.TSchemeQuotas DeclaredSchemeQuotas = 12;
     optional Ydb.Cms.DatabaseQuotas DatabaseQuotas = 14;
 
     optional string UpdateTenantRootACL = 13;
-
-    optional NKikimrSubDomains.TAuditSettings AuditSettings = 15;
-    optional NKikimrSubDomains.EServerlessComputeResourcesMode ServerlessComputeResourcesMode = 17;
 }
 
 message TEvFindTabletSubDomainPathId {

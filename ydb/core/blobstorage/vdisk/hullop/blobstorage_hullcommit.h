@@ -36,7 +36,7 @@ namespace NKikimr {
             , HugeKeeperId(hugeKeeperId)
             , SkeletonId(skeletonId)
         {
-            Y_ABORT_UNLESS(PDiskCtx && HullCtx && LsnMngr && LoggerId && HugeKeeperId && SkeletonId);
+            Y_VERIFY(PDiskCtx && HullCtx && LsnMngr && LoggerId && HugeKeeperId && SkeletonId);
         }
     };
 
@@ -119,8 +119,7 @@ namespace NKikimr {
             }
 
             LOG_DEBUG(ctx, NKikimrServices::BS_VDISK_CHUNKS,
-                      VDISKP(HullLogCtx->VCtx->VDiskLogPrefix, "COMMIT: PDiskId# %s Lsn# %s type# %s msg# %s",
-                            Ctx->PDiskCtx->PDiskIdString.data(), LsnSeg.ToString().data(),
+                      VDISKP(HullLogCtx->VCtx->VDiskLogPrefix,"COMMIT: type# %s msg# %s",
                             THullCommitFinished::TypeToString(NotifyType), CommitMsg->CommitRecord.ToString().data()));
 
             ctx.Send(Ctx->LoggerId, CommitMsg.release());
@@ -140,8 +139,7 @@ namespace NKikimr {
             // order of increasing LSN's; this is achieved automatically as all actors reside on the same mailbox
             LevelIndex->DelayedCompactionDeleterInfo->Update(LsnSeg.Last, std::move(Metadata.RemovedHugeBlobs),
                 CommitRecord.DeleteToDecommitted ? CommitRecord.DeleteChunks : TVector<TChunkIdx>(),
-                PDiskSignatureForHullDbKey<TKey>(), ctx, Ctx->HugeKeeperId, Ctx->SkeletonId, Ctx->PDiskCtx,
-                Ctx->HullCtx->VCtx);
+                PDiskSignatureForHullDbKey<TKey>(), ctx, Ctx->HugeKeeperId, Ctx->SkeletonId, Ctx->PDiskCtx);
 
             NPDisk::TEvLogResult* msg = ev->Get();
 
@@ -150,7 +148,7 @@ namespace NKikimr {
 
             // update current entry point for desired level index
             const auto& results = msg->Results;
-            Y_DEBUG_ABORT_UNLESS(results.size() == 1 && results.front().Lsn == LsnSeg.Last);
+            Y_VERIFY_DEBUG(results.size() == 1 && results.front().Lsn == LsnSeg.Last);
 
             LOG_INFO(ctx, NKikimrServices::BS_HULLCOMP,
                      VDISKP(HullLogCtx->VCtx->VDiskLogPrefix, "%s lsn# %s done",
@@ -187,9 +185,9 @@ namespace NKikimr {
             std::sort(commitRecord.DeleteChunks.begin(), commitRecord.DeleteChunks.end());
 
             // verify that chunk ids do not repeat in both of arrays
-            Y_ABORT_UNLESS(std::adjacent_find(commitRecord.CommitChunks.begin(), commitRecord.CommitChunks.end()) ==
+            Y_VERIFY(std::adjacent_find(commitRecord.CommitChunks.begin(), commitRecord.CommitChunks.end()) ==
                     commitRecord.CommitChunks.end());
-            Y_ABORT_UNLESS(std::adjacent_find(commitRecord.DeleteChunks.begin(), commitRecord.DeleteChunks.end()) ==
+            Y_VERIFY(std::adjacent_find(commitRecord.DeleteChunks.begin(), commitRecord.DeleteChunks.end()) ==
                     commitRecord.DeleteChunks.end());
 
             // ensure that there are no intersections between chunks being committed and deleted
@@ -197,7 +195,7 @@ namespace NKikimr {
             std::set_intersection(commitRecord.CommitChunks.begin(), commitRecord.CommitChunks.end(),
                     commitRecord.DeleteChunks.begin(), commitRecord.DeleteChunks.end(),
                     std::back_inserter(isect));
-            Y_ABORT_UNLESS(isect.empty());
+            Y_VERIFY(isect.empty());
         }
 
         void VerifyRemovedHugeBlobs(TDiskPartVec& v) {
@@ -212,7 +210,7 @@ namespace NKikimr {
             auto it = std::adjacent_find(v.Vec.begin(), v.Vec.end(), pred);
             if (it != v.end()) {
                 auto second = std::next(it);
-                Y_ABORT("%s", VDISKP(HullLogCtx->VCtx->VDiskLogPrefix, "duplicate removed huge slots: x# %s y# %s",
+                Y_FAIL("%s", VDISKP(HullLogCtx->VCtx->VDiskLogPrefix, "duplicate removed huge slots: x# %s y# %s",
                     it->ToString().data(), second->ToString().data()).data());
             }
         }
@@ -241,7 +239,7 @@ namespace NKikimr {
                 // for replicated SST -- generate LSN range; do it now, because in serialization we need actual data
                 // generate range of LSN's covering newly generated blobs
                 const ui64 lsnAdvance = Metadata.NumRecoveredBlobs;
-                Y_ABORT_UNLESS(lsnAdvance > 0);
+                Y_VERIFY(lsnAdvance > 0);
                 LsnSeg = Ctx->LsnMngr->AllocLsnForHull(lsnAdvance);
                 // store first/last LSN into level segment
                 Metadata.ReplSst->Info.FirstLsn = LsnSeg.First;

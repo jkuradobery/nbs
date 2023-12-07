@@ -59,10 +59,10 @@ void TEventsCollector::Initialized(const TString& initId) {
 
 void TRegistrationData::InitializationFinished(const TString& initId) {
     auto it = InRegistration.find(initId);
-    Y_ABORT_UNLESS(it != InRegistration.end());
+    Y_VERIFY(it != InRegistration.end());
 
     if (initId == NInitializer::TDBInitialization::GetTypeId()) {
-        Y_ABORT_UNLESS(Stage == EStage::WaitInitializerInfo);
+        Y_VERIFY(Stage == EStage::WaitInitializerInfo);
         Stage = EStage::Active;
     }
 
@@ -79,14 +79,14 @@ void TRegistrationData::InitializationFinished(const TString& initId) {
 void TRegistrationData::SetInitializationSnapshot(NFetcher::ISnapshot::TPtr s) {
     const bool notInitializedBefore = !InitializationSnapshot;
     InitializationSnapshot = dynamic_pointer_cast<NInitializer::TSnapshot>(s);
-    Y_ABORT_UNLESS(InitializationSnapshot);
+    Y_VERIFY(InitializationSnapshot);
     if (notInitializedBefore) {
         EventsWaiting->TryResendOne();
     }
 }
 
 void TRegistrationData::StartInitialization() {
-    Y_ABORT_UNLESS(Stage == EStage::Created);
+    Y_VERIFY(Stage == EStage::Created);
     Stage = EStage::WaitInitializerInfo;
 }
 

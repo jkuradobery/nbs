@@ -1,9 +1,17 @@
-GTEST()
+UNITTEST_FOR(ydb/core/blobstorage/base)
 
-SIZE(SMALL)
+FORK_SUBTESTS()
+
+IF (WITH_VALGRIND)
+    TIMEOUT(1800)
+    SIZE(LARGE)
+    TAG(ya:fat)
+ELSE()
+    TIMEOUT(600)
+    SIZE(MEDIUM)
+ENDIF()
 
 PEERDIR(
-    ydb/core/blobstorage/base
     library/cpp/getopt
     library/cpp/svnversion
     ydb/core/erasure
@@ -11,9 +19,9 @@ PEERDIR(
 )
 
 SRCS(
-    ydb/core/blobstorage/base/batched_vec_ut.cpp
-    ydb/core/blobstorage/base/bufferwithgaps_ut.cpp
-    ydb/core/blobstorage/base/ptr_ut.cpp
+    batched_vec_ut.cpp
+    bufferwithgaps_ut.cpp
+    ptr_ut.cpp
 )
 
 END()

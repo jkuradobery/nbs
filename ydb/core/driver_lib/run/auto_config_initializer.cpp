@@ -2,7 +2,7 @@
 
 #include <ydb/core/protos/config.pb.h>
 
-#include <ydb/library/actors/util/affinity.h>
+#include <library/cpp/actors/util/affinity.h>
 #include <util/system/info.h>
 
 namespace {
@@ -169,11 +169,11 @@ namespace {
 namespace NKikimr::NAutoConfigInitializer {
 
     TASPools GetASPools(i16 cpuCount) {
-        Y_ABORT_UNLESS(cpuCount >= 0);
+        Y_VERIFY(cpuCount >= 0);
         if (cpuCount == 0) {
             cpuCount = GetCpuCount();
         }
-        Y_ABORT_UNLESS(cpuCount > 0, "Can't read cpu count of this system");
+        Y_VERIFY(cpuCount > 0, "Can't read cpu count of this system");
         if (cpuCount >= 4) {
             return TASPools();
         } else if (cpuCount == 3) {
@@ -232,7 +232,7 @@ namespace NKikimr::NAutoConfigInitializer {
         config->ClearExecutor();
 
         i16 cpuCount = config->HasCpuCount() ? config->GetCpuCount() : GetCpuCount();
-        Y_ABORT_UNLESS(cpuCount);
+        Y_VERIFY(cpuCount);
         config->SetCpuCount(cpuCount);
 
         if (!config->HasScheduler()) {
@@ -256,14 +256,6 @@ namespace NKikimr::NAutoConfigInitializer {
         config->SetBatchExecutor(pools.BatchPoolId);
         config->SetIoExecutor(pools.IOPoolId);
         serviceExecutor->SetExecutorId(pools.ICPoolId);
-
-        if (!config->HasActorSystemProfile()) {
-            if (cpuCount <= 4) {
-                config->SetActorSystemProfile(NKikimrConfig::TActorSystemConfig::LOW_CPU_CONSUMPTION);
-            } else {
-                config->SetActorSystemProfile(NKikimrConfig::TActorSystemConfig::LOW_LATENCY);
-            }
-        }
 
         TVector<NKikimrConfig::TActorSystemConfig::TExecutor *> executors;
         for (ui32 poolIdx = 0; poolIdx < poolCount; ++poolIdx) {

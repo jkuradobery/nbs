@@ -1,19 +1,15 @@
 #include "type_ann_blocks.h"
 #include "type_ann_list.h"
-#include "type_ann_wide.h"
-#include "type_ann_pg.h"
 
 #include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/core/yql_opt_utils.h>
 
-#include <ydb/library/yql/parser/pg_catalog/catalog.h>
-#include <ydb/library/yql/parser/pg_wrapper/interface/utils.h>
 
 namespace NYql {
 namespace NTypeAnnImpl {
 
-IGraphTransformer::TStatus AsScalarWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExtContext& ctx) {
+IGraphTransformer::TStatus AsScalarWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
     Y_UNUSED(output);
     if (!EnsureArgsCount(*input, 1U, ctx.Expr)) {
         return IGraphTransformer::TStatus::Error;
@@ -29,36 +25,7 @@ IGraphTransformer::TStatus AsScalarWrapper(const TExprNode::TPtr& input, TExprNo
         return IGraphTransformer::TStatus::Error;
     }
 
-    if (!EnsureSupportedAsBlockType(input->Pos(), *type, ctx.Expr, ctx.Types)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
     input->SetTypeAnn(ctx.Expr.MakeType<TScalarExprType>(type));
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus ReplicateScalarWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 2, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto source = input->Child(0);
-    if (!EnsureScalarType(*source, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto length = input->Child(1);
-    if (!EnsureScalarType(*length, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    const TTypeAnnotationNode* lengthItemType = length->GetTypeAnn()->Cast<TScalarExprType>()->GetItemType();
-    if (!EnsureSpecificDataType(length->Pos(), *lengthItemType, EDataSlot::Uint64, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    input->SetTypeAnn(ctx.Expr.MakeType<TBlockExprType>(source->GetTypeAnn()->Cast<TScalarExprType>()->GetItemType()));
     return IGraphTransformer::TStatus::Ok;
 }
 
@@ -132,7 +99,6 @@ IGraphTransformer::TStatus BlockExpandChunkedWrapper(const TExprNode::TPtr& inpu
 }
 
 IGraphTransformer::TStatus BlockCoalesceWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
     if (!EnsureArgsCount(*input, 2U, ctx.Expr)) {
         return IGraphTransformer::TStatus::Error;
     }
@@ -147,24 +113,29 @@ IGraphTransformer::TStatus BlockCoalesceWrapper(const TExprNode::TPtr& input, TE
 
     bool firstIsScalar;
     auto firstItemType = GetBlockItemType(*first->GetTypeAnn(), firstIsScalar);
-    if (firstItemType->GetKind() != ETypeAnnotationKind::Optional && firstItemType->GetKind() != ETypeAnnotationKind::Pg) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(first->Pos()), TStringBuilder() <<
-            "Expecting Optional or Pg type as first argument, but got: " << *firstItemType));
-        return IGraphTransformer::TStatus::Error;
-    }
+    bool firstIsOptional = firstItemType->GetKind() == ETypeAnnotationKind::Optional;
+    firstItemType = RemoveOptionalType(firstItemType);
 
     bool secondIsScalar;
     auto secondItemType = GetBlockItemType(*second->GetTypeAnn(), secondIsScalar);
+    bool secondIsOptional = secondItemType->GetKind() == ETypeAnnotationKind::Optional;
+    secondItemType = RemoveOptionalType(secondItemType);
 
-    if (!IsSameAnnotation(*firstItemType, *secondItemType) &&
-        !IsSameAnnotation(*RemoveOptionalType(firstItemType), *secondItemType))
-    {
+    if (!IsSameAnnotation(*firstItemType, *secondItemType)) {
         ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()), TStringBuilder() <<
-            "Uncompatible coalesce types: first is " << *firstItemType << ", second is " << *secondItemType));
+            "Mismatch item types: first is " << *firstItemType << ", second is " << *secondItemType));
         return IGraphTransformer::TStatus::Error;
     }
 
+    if (!firstIsOptional) {
+        output = input->HeadPtr();
+        return IGraphTransformer::TStatus::Repeat;
+    }
+
     auto outputItemType = secondItemType;
+    if (secondIsOptional) {
+        outputItemType = ctx.Expr.MakeType<TOptionalExprType>(outputItemType);
+    }
     if (firstIsScalar && secondIsScalar) {
         input->SetTypeAnn(ctx.Expr.MakeType<TScalarExprType>(outputItemType));
     } else {
@@ -261,186 +232,6 @@ IGraphTransformer::TStatus BlockIfWrapper(const TExprNode::TPtr& input, TExprNod
     return IGraphTransformer::TStatus::Ok;
 }
 
-IGraphTransformer::TStatus BlockJustWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 1, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto child = input->Child(0);
-    if (!EnsureBlockOrScalarType(*child, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-    bool isScalar;
-    const TTypeAnnotationNode* blockItemType = GetBlockItemType(*child->GetTypeAnn(), isScalar);
-    const TTypeAnnotationNode* resultType = ctx.Expr.MakeType<TOptionalExprType>(blockItemType);
-
-    if (isScalar) {
-        resultType = ctx.Expr.MakeType<TScalarExprType>(resultType);
-    } else {
-        resultType = ctx.Expr.MakeType<TBlockExprType>(resultType);
-    }
-    input->SetTypeAnn(resultType);
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockAsTupleWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureMinArgsCount(*input, 1, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TTypeAnnotationNode::TListType items;
-    bool onlyScalars = true;
-    for (const auto& child : input->Children()) {
-        if (!EnsureBlockOrScalarType(*child, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        bool isScalar;
-        const TTypeAnnotationNode* blockItemType = GetBlockItemType(*child->GetTypeAnn(), isScalar);
-        onlyScalars = onlyScalars && isScalar;
-        items.push_back(blockItemType);
-    }
-
-    const TTypeAnnotationNode* resultType = ctx.Expr.MakeType<TTupleExprType>(items);
-    if (onlyScalars) {
-        resultType = ctx.Expr.MakeType<TScalarExprType>(resultType);
-    } else {
-        resultType = ctx.Expr.MakeType<TBlockExprType>(resultType);
-    }
-
-    input->SetTypeAnn(resultType);
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockNthWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 2, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto child = input->Child(0);
-    if (!EnsureBlockOrScalarType(*child, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    bool isScalar;
-    const TTypeAnnotationNode* blockItemType = GetBlockItemType(*child->GetTypeAnn(), isScalar);
-    const TTypeAnnotationNode* resultType;
-    if (IsNull(*blockItemType)) {
-        resultType = blockItemType;
-    } else {
-        const TTupleExprType* tupleType;
-        bool isOptional;
-        if (blockItemType->GetKind() == ETypeAnnotationKind::Optional) {
-            auto itemType = blockItemType->Cast<TOptionalExprType>()->GetItemType();
-            if (!EnsureTupleType(child->Pos(), *itemType, ctx.Expr)) {
-                return IGraphTransformer::TStatus::Error;
-            }
-
-            tupleType = itemType->Cast<TTupleExprType>();
-            isOptional = true;
-        }
-        else {
-            if (!EnsureTupleType(child->Pos(), *blockItemType, ctx.Expr)) {
-                return IGraphTransformer::TStatus::Error;
-            }
-
-            tupleType = blockItemType->Cast<TTupleExprType>();
-            isOptional = false;
-        }
-
-        if (!EnsureAtom(input->Tail(), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        ui32 index = 0;
-        if (!TryFromString(input->Tail().Content(), index)) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()), TStringBuilder() << "Failed to convert to integer: " << input->Tail().Content()));
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (index >= tupleType->GetSize()) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()), TStringBuilder() << "Index out of range. Index: " <<
-                index << ", size: " << tupleType->GetSize()));
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (!EnsureComputableType(input->Head().Pos(), *tupleType, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        resultType = tupleType->GetItems()[index];
-        if (isOptional && !resultType->IsOptionalOrNull()) {
-            resultType = ctx.Expr.MakeType<TOptionalExprType>(resultType);
-        }
-    }
-
-    if (isScalar) {
-        resultType = ctx.Expr.MakeType<TScalarExprType>(resultType);
-    } else {
-        resultType = ctx.Expr.MakeType<TBlockExprType>(resultType);
-    }
-
-    input->SetTypeAnn(resultType);
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockToPgWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 1, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto child = input->Child(0);
-    if (!EnsureBlockOrScalarType(*child, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-    bool isScalar;
-    const TTypeAnnotationNode* blockItemType = GetBlockItemType(*child->GetTypeAnn(), isScalar);
-    auto resultType = ToPgImpl(input->Pos(), blockItemType, ctx.Expr);
-    if (!resultType) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (isScalar) {
-        resultType = ctx.Expr.MakeType<TScalarExprType>(resultType);
-    } else {
-        resultType = ctx.Expr.MakeType<TBlockExprType>(resultType);
-    }
-
-    input->SetTypeAnn(resultType);
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockFromPgWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 1, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto child = input->Child(0);
-    if (!EnsureBlockOrScalarType(*child, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-    bool isScalar;
-    const TTypeAnnotationNode* blockItemType = GetBlockItemType(*child->GetTypeAnn(), isScalar);
-    auto resultType = FromPgImpl(input->Pos(), blockItemType, ctx.Expr);
-    if (!resultType) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (isScalar) {
-        resultType = ctx.Expr.MakeType<TScalarExprType>(resultType);
-    } else {
-        resultType = ctx.Expr.MakeType<TBlockExprType>(resultType);
-    }
-
-    input->SetTypeAnn(resultType);
-    return IGraphTransformer::TStatus::Ok;
-}
-
 IGraphTransformer::TStatus BlockFuncWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExtContext& ctx) {
     Y_UNUSED(output);
     if (!EnsureMinArgsCount(*input, 2U, ctx.Expr)) {
@@ -514,7 +305,7 @@ IGraphTransformer::TStatus BlockBitCastWrapper(const TExprNode::TPtr& input, TEx
 }
 
 bool ValidateBlockKeys(TPositionHandle pos, const TTypeAnnotationNode::TListType& inputItems,
-    TExprNode& keys, TTypeAnnotationNode::TListType& retMultiType, TExprContext& ctx) {
+    const TExprNode& keys, TTypeAnnotationNode::TListType& retMultiType, TExprContext& ctx) {
     if (!EnsureTupleMinSize(keys, 1, ctx)) {
         return IGraphTransformer::TStatus::Error;
     }
@@ -536,7 +327,7 @@ bool ValidateBlockKeys(TPositionHandle pos, const TTypeAnnotationNode::TListType
     return true;
 }
 
-bool ValidateBlockAggs(TPositionHandle pos, const TTypeAnnotationNode::TListType& inputItems, TExprNode& aggs,
+bool ValidateBlockAggs(TPositionHandle pos, const TTypeAnnotationNode::TListType& inputItems, const TExprNode& aggs,
     TTypeAnnotationNode::TListType& retMultiType, TExprContext& ctx, bool overState, bool many) {
     if (!EnsureTuple(aggs, ctx)) {
         return false;
@@ -559,7 +350,7 @@ bool ValidateBlockAggs(TPositionHandle pos, const TTypeAnnotationNode::TListType
             return false;
         }
 
-        if (agg->ChildrenSize() + (overState ? 1 : 0) != agg->Head().ChildrenSize()) {
+        if (agg->ChildrenSize() != agg->Head().ChildrenSize()) {
             ctx.AddError(TIssue(ctx.GetPosition(pos), "Different amount of input arguments"));
             return false;
         }
@@ -577,7 +368,7 @@ bool ValidateBlockAggs(TPositionHandle pos, const TTypeAnnotationNode::TListType
                 return false;
             }
 
-            auto applyArgType = agg->Head().Child(i + (overState ? 1 : 0))->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
+            auto applyArgType = agg->Head().Child(i)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
             auto expectedType = many ? ctx.MakeType<TOptionalExprType>(applyArgType) : applyArgType;
             if (!IsSameAnnotation(*inputItems[argColumnIndex], *expectedType)) {
                 ctx.AddError(TIssue(ctx.GetPosition(pos), TStringBuilder() <<
@@ -688,10 +479,9 @@ IGraphTransformer::TStatus BlockMergeFinalizeHashedWrapper(const TExprNode::TPtr
     }
 
     TTypeAnnotationNode::TListType blockItemTypes;
-    if (!EnsureWideFlowBlockType(input->Head(), blockItemTypes, ctx.Expr)) {
+    if (!EnsureWideFlowBlockType(input->Head(), blockItemTypes, ctx.Expr, !many)) {
         return IGraphTransformer::TStatus::Error;
     }
-    YQL_ENSURE(blockItemTypes.size() > 0);
 
     TTypeAnnotationNode::TListType retMultiType;
     if (!ValidateBlockKeys(input->Pos(), blockItemTypes, *input->Child(1), retMultiType, ctx.Expr)) {
@@ -712,7 +502,7 @@ IGraphTransformer::TStatus BlockMergeFinalizeHashedWrapper(const TExprNode::TPtr
         }
 
         ui32 streamIndex;
-        if (!TryFromString(input->Child(3)->Content(), streamIndex) || streamIndex >= blockItemTypes.size() - 1) {
+        if (!TryFromString(input->Child(3)->Content(), streamIndex) || streamIndex >= blockItemTypes.size()) {
             ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Child(3)->Pos()), "Bad stream index"));
             return IGraphTransformer::TStatus::Error;
         }
@@ -724,344 +514,11 @@ IGraphTransformer::TStatus BlockMergeFinalizeHashedWrapper(const TExprNode::TPtr
         if (!ValidateAggManyStreams(*input->Child(4), input->Child(2)->ChildrenSize(), ctx.Expr)) {
             return IGraphTransformer::TStatus::Error;
         }
-
-        // disallow any scalar columns except for streamIndex column
-        auto itemTypes = input->Head().GetTypeAnn()->Cast<TFlowExprType>()->GetItemType()->Cast<TMultiExprType>()->GetItems();
-        for (ui32 i = 0; i + 1 < itemTypes.size(); ++i) {
-            bool isScalar = itemTypes[i]->GetKind() == ETypeAnnotationKind::Scalar;
-            if (isScalar && i != streamIndex) {
-                ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Head().Pos()), TStringBuilder() << "Unexpected scalar type " << *itemTypes[i] << ", on input column #" << i));
-                return IGraphTransformer::TStatus::Error;
-            }
-        }
     }
 
     retMultiType.push_back(ctx.Expr.MakeType<TScalarExprType>(ctx.Expr.MakeType<TDataExprType>(EDataSlot::Uint64)));
     auto outputItemType = ctx.Expr.MakeType<TMultiExprType>(retMultiType);
     input->SetTypeAnn(ctx.Expr.MakeType<TFlowExprType>(outputItemType));
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus WideToBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExtContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 1U, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (!EnsureWideFlowType(input->Head(), ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    const auto multiType = input->Head().GetTypeAnn()->Cast<TFlowExprType>()->GetItemType()->Cast<TMultiExprType>();
-    TTypeAnnotationNode::TListType retMultiType;
-    for (const auto& type : multiType->GetItems()) {
-        if (type->IsBlockOrScalar()) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()), "Input type should not be a block or scalar"));
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (!EnsurePersistableType(input->Pos(), *type, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (!EnsureSupportedAsBlockType(input->Pos(), *type, ctx.Expr, ctx.Types)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        retMultiType.push_back(ctx.Expr.MakeType<TBlockExprType>(type));
-    }
-
-    retMultiType.push_back(ctx.Expr.MakeType<TScalarExprType>(ctx.Expr.MakeType<TDataExprType>(EDataSlot::Uint64)));
-    auto outputItemType = ctx.Expr.MakeType<TMultiExprType>(retMultiType);
-    input->SetTypeAnn(ctx.Expr.MakeType<TFlowExprType>(outputItemType));
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus WideFromBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 1U, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TTypeAnnotationNode::TListType retMultiType;
-    if (!EnsureWideFlowBlockType(input->Head(), retMultiType, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    YQL_ENSURE(!retMultiType.empty());
-    retMultiType.pop_back();
-    auto outputItemType = ctx.Expr.MakeType<TMultiExprType>(retMultiType);
-    input->SetTypeAnn(ctx.Expr.MakeType<TFlowExprType>(outputItemType));
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus WideSkipTakeBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    if (!EnsureArgsCount(*input, 2U, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TTypeAnnotationNode::TListType blockItemTypes;
-    if (!EnsureWideFlowBlockType(input->Head(), blockItemTypes, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    output = input;
-    const TTypeAnnotationNode* expectedType = ctx.Expr.MakeType<TDataExprType>(EDataSlot::Uint64);
-    auto convertStatus = TryConvertTo(input->ChildRef(1), *expectedType, ctx.Expr);
-    if (convertStatus.Level == IGraphTransformer::TStatus::Error) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Child(1)->Pos()), "Can not convert argument to Uint64"));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (convertStatus.Level != IGraphTransformer::TStatus::Ok) {
-        return convertStatus;
-    }
-
-    input->SetTypeAnn(input->Head().GetTypeAnn());
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus WideTopBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    if (!EnsureArgsCount(*input, 3U, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TTypeAnnotationNode::TListType blockItemTypes;
-    if (!EnsureWideFlowBlockType(input->Head(), blockItemTypes, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    output = input;
-    const TTypeAnnotationNode* expectedType = ctx.Expr.MakeType<TDataExprType>(EDataSlot::Uint64);
-    auto convertStatus = TryConvertTo(input->ChildRef(1), *expectedType, ctx.Expr);
-    if (convertStatus.Level == IGraphTransformer::TStatus::Error) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Child(1)->Pos()), "Can not convert argument to Uint64"));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (convertStatus.Level != IGraphTransformer::TStatus::Ok) {
-        return convertStatus;
-    }
-
-    if (!ValidateWideTopKeys(input->Tail(), blockItemTypes, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    input->SetTypeAnn(input->Head().GetTypeAnn());
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus WideSortBlocksWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureArgsCount(*input, 2U, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TTypeAnnotationNode::TListType blockItemTypes;
-    if (!EnsureWideFlowBlockType(input->Head(), blockItemTypes, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (!ValidateWideTopKeys(input->Tail(), blockItemTypes, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    input->SetTypeAnn(input->Head().GetTypeAnn());
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockPgOpWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureMinArgsCount(*input, 3, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (!EnsureMaxArgsCount(*input, 4, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (!EnsureAtom(input->Head(), ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto name = input->Head().Content();
-    if (!EnsureAtom(*input->Child(1), ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TVector<ui32> argTypes;
-    bool allScalars = true;
-    for (ui32 i = 2; i < input->ChildrenSize(); ++i) {
-        if (!EnsureBlockOrScalarType(*input->Child(i), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        bool isScalar;
-        auto itemType = GetBlockItemType(*input->Child(i)->GetTypeAnn(), isScalar);
-        if (itemType->GetKind() != ETypeAnnotationKind::Pg) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-                TStringBuilder() << "Expected PG type, but got: " << *itemType));
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        allScalars = allScalars && isScalar;
-        ui32 argType = itemType->Cast<TPgExprType>()->GetId();
-        argTypes.push_back(argType);
-    }
-
-    auto operId = FromString<ui32>(input->Child(1)->Content());
-    const auto& oper = NPg::LookupOper(operId, argTypes);
-    if (oper.Name != name) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-            TStringBuilder() << "Mismatch of resolved operator name, expected: " << name << ", but got:" << oper.Name));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto result = ctx.Expr.MakeType<TPgExprType>(oper.ResultType);
-    if (allScalars) {
-        input->SetTypeAnn(ctx.Expr.MakeType<TScalarExprType>(result));
-    } else {
-        input->SetTypeAnn(ctx.Expr.MakeType<TBlockExprType>(result));
-    }
-
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockPgCallWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureMinArgsCount(*input, 3, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (!EnsureAtom(input->Head(), ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    auto name = input->Head().Content();
-
-    if (!EnsureAtom(*input->Child(1), ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (!EnsureTuple(*input->Child(2), ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    for (const auto& setting : input->Child(2)->Children()) {
-        if (!EnsureTupleMinSize(*setting, 1, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (!EnsureAtom(setting->Head(), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        auto content = setting->Head().Content();
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-            TStringBuilder() << "Unexpected setting " << content << " in function " << name));
-
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TVector<ui32> argTypes;
-    bool allScalars = true;
-    for (ui32 i = 3; i < input->ChildrenSize(); ++i) {
-        if (!EnsureBlockOrScalarType(*input->Child(i), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        bool isScalar;
-        auto itemType = GetBlockItemType(*input->Child(i)->GetTypeAnn(), isScalar);
-        if (itemType->GetKind() != ETypeAnnotationKind::Pg) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-                TStringBuilder() << "Expected PG type, but got: " << *itemType));
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        allScalars = allScalars && isScalar;
-        ui32 argType = itemType->Cast<TPgExprType>()->GetId();
-        argTypes.push_back(argType);
-    }
-
-    auto procId = FromString<ui32>(input->Child(1)->Content());
-    const auto& proc = NPg::LookupProc(procId, argTypes);
-    if (proc.Name != name) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-            TStringBuilder() << "Mismatch of resolved function name, expected: " << name << ", but got:" << proc.Name));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (proc.Kind == NPg::EProcKind::Window) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-            TStringBuilder() << "Window function " << name << " cannot be called directly"));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (proc.Kind == NPg::EProcKind::Aggregate) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-            TStringBuilder() << "Aggregate function " << name << " cannot be called directly"));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    const TTypeAnnotationNode* result = ctx.Expr.MakeType<TPgExprType>(proc.ResultType);
-    if (proc.ReturnSet) {
-        ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->Pos()),
-            TStringBuilder() << "Not supported return set"));
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    if (allScalars) {
-        input->SetTypeAnn(ctx.Expr.MakeType<TScalarExprType>(result));
-    } else {
-        input->SetTypeAnn(ctx.Expr.MakeType<TBlockExprType>(result));
-    }
-
-    return IGraphTransformer::TStatus::Ok;
-}
-
-IGraphTransformer::TStatus BlockExtendWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-    Y_UNUSED(output);
-    if (!EnsureMinArgsCount(*input, 1, ctx.Expr)) {
-        return IGraphTransformer::TStatus::Error;
-    }
-
-    TTypeAnnotationNode::TListType commonItemTypes;
-    for (size_t idx = 0; idx < input->ChildrenSize(); ++idx) {
-        auto child = input->Child(idx);        
-        TTypeAnnotationNode::TListType currentItemTypes;
-        if (!EnsureWideFlowBlockType(*child, idx ? currentItemTypes : commonItemTypes, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        if (idx == 0) {
-            continue;
-        }
-
-        if (currentItemTypes.size() != commonItemTypes.size()) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(child->Pos()),
-                TStringBuilder() << "Expected same width ( " << commonItemTypes.size() << ") on all inputs, but got: " << *child->GetTypeAnn() << " on input #" << idx));
-            return IGraphTransformer::TStatus::Error;
-        }
-
-
-        for (size_t i = 0; i < currentItemTypes.size(); ++i) {
-            if (!IsSameAnnotation(*currentItemTypes[i], *commonItemTypes[i])) {
-                ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(child->Pos()),
-                    TStringBuilder() << "Expected item type " << *commonItemTypes[i] << " at column #" << i << " on input #" << idx << ", but got : " << *currentItemTypes[i]));
-                return IGraphTransformer::TStatus::Error;
-            }
-        }
-    }
-
-    TTypeAnnotationNode::TListType resultItemTypes;
-    for (size_t i = 0; i < commonItemTypes.size(); ++i) {
-        if (i + 1 == commonItemTypes.size()) {
-            resultItemTypes.emplace_back(ctx.Expr.MakeType<TScalarExprType>(commonItemTypes[i]));
-        } else {
-            resultItemTypes.emplace_back(ctx.Expr.MakeType<TBlockExprType>(commonItemTypes[i]));
-        }
-    }
-    input->SetTypeAnn(ctx.Expr.MakeType<TFlowExprType>(ctx.Expr.MakeType<TMultiExprType>(std::move(resultItemTypes))));
     return IGraphTransformer::TStatus::Ok;
 }
 

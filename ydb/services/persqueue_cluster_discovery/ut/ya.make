@@ -17,7 +17,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/http
+    library/cpp/actors/http
     ydb/core/testlib/default
     ydb/public/api/grpc
     ydb/services/persqueue_cluster_discovery

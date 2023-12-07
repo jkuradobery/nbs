@@ -4,12 +4,9 @@ option cc_enable_arenas = true;
 package NKqpProto;
 option java_package = "ru.yandex.kikimr.proto";
 
-import "google/protobuf/any.proto";
-import "ydb/core/protos/flat_scheme_op.proto";
 import "ydb/library/mkql_proto/protos/minikql.proto";
 import "ydb/library/yql/dq/proto/dq_tasks.proto";
 import "ydb/public/api/protos/ydb_value.proto";
-import "ydb/core/protos/index_builder.proto";
 
 message TKqpPhyExternalBinding {
 }
@@ -44,15 +41,10 @@ message TKqpPhyParamBinding {
     }
 }
 
-message TResultSetMeta {
-    repeated Ydb.Column columns = 1;
-};
-
 message TKqpPhyResultBinding {
     oneof Type {
         TKqpPhyTxResultBinding TxResultBinding = 1;
     }
-    TResultSetMeta ResultSetMeta = 2;
 }
 
 message TKqpPhyColumnId {
@@ -64,11 +56,6 @@ message TKqpPhyColumn {
     TKqpPhyColumnId Id = 1;
     uint32 TypeId = 2;
     string PgTypeName = 3;
-    oneof DefaultKind {
-        string DefaultFromSequence = 4;
-        Ydb.TypedValue DefaultFromLiteral = 5;
-    }
-    bool NotNull = 6;
 }
 
 enum EKqpPhyTableKind {
@@ -76,7 +63,6 @@ enum EKqpPhyTableKind {
     TABLE_KIND_DS = 1;
     TABLE_KIND_OLAP = 2;
     TABLE_KIND_SYS_VIEW = 3;
-    TABLE_KIND_EXTERNAL = 4;
 }
 
 message TKqpPhyTableId {
@@ -140,7 +126,6 @@ message TKqpPhyKeyBound {
 message TKqpPhyKeyRange {
     TKqpPhyKeyBound From = 1;
     TKqpPhyKeyBound To = 2;
-    bool RangeIsPoint = 3;
 }
 
 message TKqpPhyOpReadRange {
@@ -163,10 +148,6 @@ message TKqpPhyOpLookup {
 }
 
 message TKqpPhyOpReadOlapRanges {
-    enum EReadType {
-        ROWS = 0;
-        BLOCKS = 1;
-    }
     // Parameter come here from computation stage. It has type Tuple(List(Tuple(RangeBegin, RangeEnd))))
     // Where RangeBegin and RangeEnd are Tuple(KeyColumns, Inclusive)
     // Where KeyColumns is values of start/end of range for corresponding key column in table
@@ -189,11 +170,6 @@ message TKqpPhyOpReadOlapRanges {
 
     // Stores type of read result from Column Shard
     Ydb.Type ResultType = 7;
-
-    // Type of read result: unboxed values or Arrow blocks of data
-    EReadType ReadType = 13;
-
-    repeated string GroupByColumnNames = 14;
 }
 
 message TKqpPhyOpReadRanges {
@@ -256,27 +232,12 @@ message TKqpPhyCnMerge {
     repeated TKqpPhySortColumn SortColumns = 1;
 }
 
-enum EStreamLookupStrategy {
-    UNSPECIFIED = 0;
-    LOOKUP = 1;
-    JOIN = 2;
-};
-
 message TKqpPhyCnStreamLookup {
     TKqpPhyTableId Table = 1;
     repeated string KeyColumns = 2;
     repeated string Columns = 3;
     bytes LookupKeysType = 4;
     bytes ResultType = 5;
-    EStreamLookupStrategy LookupStrategy = 6;
-}
-
-message TKqpPhyCnSequencer {
-    TKqpPhyTableId Table = 1;
-    repeated string Columns = 2;
-    repeated string AutoIncrementColumns = 3;
-    bytes InputType = 4;
-    bytes OutputType = 5;
 }
 
 message TKqpPhyConnection {
@@ -295,7 +256,6 @@ message TKqpPhyConnection {
         TKqpPhyCnValue Value = 10;
         TKqpPhyCnMerge Merge = 11;
         TKqpPhyCnStreamLookup StreamLookup = 12;
-        TKqpPhyCnSequencer Sequencer = 14;
     };
 }
 
@@ -312,19 +272,6 @@ message TKqpReadRangesSource {
     }
 
     repeated string SkipNullKeys = 8;
-    uint64 SequentialInFlightShards = 9;
-}
-
-message TKqpExternalSource {
-    string Type = 1;
-    google.protobuf.Any Settings = 2;
-
-    // Partitioning
-    string TaskParamKey = 3;
-    repeated string PartitionedTaskParams = 4;
-
-    string SourceName = 5;
-    string AuthInfo = 6;
 }
 
 message TKqpSource {
@@ -332,25 +279,8 @@ message TKqpSource {
 
     oneof Type {
         TKqpReadRangesSource ReadRangesSource = 3;
-        TKqpExternalSource ExternalSource = 4;
     }
-}
-
-message TKqpExternalSink {
-    string Type = 1;
-    google.protobuf.Any Settings = 2;
-
-    string SinkName = 3;
-    string AuthInfo = 4;
-}
-
-message TKqpSink {
-    uint32 OutputIndex = 1;
-
-    oneof Type {
-        TKqpExternalSink ExternalSink = 2;
-    }
-}
+};
 
 message TKqpPhyStage {
     NYql.NDqProto.TProgram Program = 1;
@@ -362,8 +292,6 @@ message TKqpPhyStage {
     bool IsEffectsStage = 7;
     string StageGuid = 8;
     repeated TKqpSource Sources = 9;
-    bool IsSinglePartition = 10;
-    repeated TKqpSink Sinks = 11;
 }
 
 message TKqpPhyResult {
@@ -371,28 +299,6 @@ message TKqpPhyResult {
     NKikimrMiniKQL.TType ItemType = 2;
     bool IsStream = 3;
     repeated string ColumnHints = 4;
-    optional uint32 QueryResultIndex = 5;
-}
-
-message TKqpSchemeOperation {
-    enum EFlags {
-        FLAG_UNSPECIFIED = 0;
-        FLAG_PG_MODE = 1; // set if pg compatible mode
-        FLAG_IF_NOT_EXISTS = 2; // set if IF_NOT_EXISTS modificator present
-    };
-
-    oneof Operation {
-        NKikimrSchemeOp.TModifyScheme CreateTable = 1;
-        NKikimrSchemeOp.TModifyScheme DropTable = 2;
-        NKikimrSchemeOp.TModifyScheme AlterTable = 3;
-        NKikimrIndexBuilder.TIndexBuildSettings BuildOperation = 4;
-        NKikimrSchemeOp.TModifyScheme CreateUser = 5;
-        NKikimrSchemeOp.TModifyScheme AlterUser = 6;
-        NKikimrSchemeOp.TModifyScheme DropUser = 7;
-
-        string Type = 9;
-        uint64 Flags = 10;
-    }
 }
 
 message TKqpPhyTx {
@@ -402,7 +308,6 @@ message TKqpPhyTx {
         TYPE_DATA = 2;
         TYPE_SCAN = 3;
         TYPE_GENERIC = 4;
-        TYPE_SCHEME = 5;
     };
 
     EType Type = 1;
@@ -412,8 +317,6 @@ message TKqpPhyTx {
     string Plan = 5;
     bool HasEffects = 6; // at least one stage has flag TKqpPhyStage::IsEffectStage set
     repeated TKqpPhyTable Tables = 7;
-    TKqpSchemeOperation SchemeOperation = 8;
-    repeated string SecretNames = 9;
 }
 
 message TKqpTableInfo {
@@ -445,7 +348,6 @@ message TKqpPhyQuery {
         TYPE_DATA = 1;
         TYPE_SCAN = 2;
         TYPE_QUERY = 3;
-        TYPE_SCRIPT = 4;
     };
 
     EType Type = 1;
@@ -459,6 +361,4 @@ message TKqpPhyQuery {
     repeated TKqpTableOp TableOps = 7;
     repeated TKqpTableInfo TableInfos = 8;
     bool HasUncommittedChangesRead = 9;
-
-    string QueryDiagnostics = 10;
 }

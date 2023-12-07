@@ -4,8 +4,6 @@
 #include <ydb/library/yql/core/yql_opt_utils.h>
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/providers/result/expr_nodes/yql_res_expr_nodes.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
-#include <ydb/library/yql/providers/dq/common/yql_dq_settings.h>
 
 namespace NYql {
 namespace {
@@ -70,8 +68,8 @@ enum class TPrimitiveYdbOperation : ui32 {
     Write = 1 << 1
 };
 
-Y_DECLARE_FLAGS(TPrimitiveYdbOperations, TPrimitiveYdbOperation);
-Y_DECLARE_OPERATORS_FOR_FLAGS(TPrimitiveYdbOperations);
+Y_DECLARE_FLAGS(TPrimitiveYdbOperations, TPrimitiveYdbOperation)
+Y_DECLARE_OPERATORS_FOR_FLAGS(TPrimitiveYdbOperations)
 
 struct TKiExploreTxResults {
     struct TKiQueryBlock {
@@ -81,8 +79,6 @@ struct TKiExploreTxResults {
         TVector<TKiOperation> TableOperations;
         bool HasUncommittedChangesRead = false;
     };
-
-    bool ConcurrentResults = true;
 
     THashSet<const TExprNode*> Ops;
     TVector<TExprBase> Sync;
@@ -123,9 +119,8 @@ struct TKiExploreTxResults {
         YQL_ENSURE(tableMeta, "Empty table metadata");
 
         bool uncommittedChangesRead = false;
-        auto view = key.GetView();
-        if (view && view->Name) {
-            const auto& indexName = view->Name;
+        if (key.GetView()) {
+            const auto& indexName = key.GetView().GetRef();
             const auto indexTablePath = IKikimrGateway::CreateIndexTablePath(tableMeta->Name, indexName);
 
             auto indexIt = std::find_if(tableMeta->Indexes.begin(), tableMeta->Indexes.end(), [&indexName](const auto& index){
@@ -248,10 +243,6 @@ struct TKiExploreTxResults {
             AddQueryBlock();
         }
 
-        if (!ConcurrentResults && QueryBlocks.back().Results.size() > 0) {
-            AddQueryBlock();
-        }
-
         auto& curBlock = QueryBlocks.back();
         curBlock.Results.push_back(result);
     }
@@ -280,54 +271,8 @@ struct TKiExploreTxResults {
         : HasExecute(false) {}
 };
 
-bool IsDqRead(const TExprBase& node, TExprContext& ctx, TTypeAnnotationContext& types, bool estimateReadSize = true) {
-    if (node.Ref().ChildrenSize() <= 1) {
-        return false;
-    }
-
-    TExprBase providerArg(node.Ref().Child(1));
-    if (auto maybeDataSource = providerArg.Maybe<TCoDataSource>()) {
-        TStringBuf dataSourceCategory = maybeDataSource.Cast().Category();
-        auto dataSourceProviderIt = types.DataSourceMap.find(dataSourceCategory);
-        if (dataSourceProviderIt != types.DataSourceMap.end()) {
-            if (auto* dqIntegration = dataSourceProviderIt->second->GetDqIntegration()) {
-                if (dqIntegration->CanRead(*node.Ptr(), ctx) &&
-                    (!estimateReadSize || dqIntegration->EstimateReadSize(
-                        TDqSettings::TDefault::DataSizePerJob,
-                        TDqSettings::TDefault::MaxTasksPerStage,
-                        {node.Raw()},
-                        ctx))) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-bool IsDqWrite(const TExprBase& node, TExprContext& ctx, TTypeAnnotationContext& types) {
-    if (node.Ref().ChildrenSize() <= 1) {
-        return false;
-    }
-
-    TExprBase providerArg(node.Ref().Child(1));
-    if (auto maybeDataSink = providerArg.Maybe<TCoDataSink>()) {
-        TStringBuf dataSinkCategory = maybeDataSink.Cast().Category();
-        auto dataSinkProviderIt = types.DataSinkMap.find(dataSinkCategory);
-        if (dataSinkProviderIt != types.DataSinkMap.end()) {
-            if (auto* dqIntegration = dataSinkProviderIt->second->GetDqIntegration()) {
-                if (auto canWrite = dqIntegration->CanWrite(*node.Ptr(), ctx)) {
-                    YQL_ENSURE(*canWrite, "Errors handling write");
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
 bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, TKiExploreTxResults& txRes,
-    TIntrusivePtr<TKikimrTablesData> tablesData, TTypeAnnotationContext& types) {
+    TIntrusivePtr<TKikimrTablesData> tablesData) {
 
     if (txRes.Ops.cend() != txRes.Ops.find(node.Raw())) {
         return true;
@@ -340,7 +285,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
     if (auto maybeLeft = node.Maybe<TCoLeft>()) {
         txRes.Ops.insert(node.Raw());
-        return ExploreTx(maybeLeft.Cast().Input(), ctx, dataSink, txRes, tablesData, types);
+        return ExploreTx(maybeLeft.Cast().Input(), ctx, dataSink, txRes, tablesData);
     }
 
     auto checkDataSource = [dataSink] (const TKiDataSource& ds) {
@@ -364,7 +309,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         YQL_ENSURE(key.GetKeyType() == TKikimrKey::Type::Table);
         auto table = key.GetTablePath();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(maybeRead.Cast().World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(maybeRead.Cast().World(), ctx, dataSink, txRes, tablesData);
 
         YQL_ENSURE(tablesData);
         const auto& tableData = tablesData->ExistingTable(cluster, table);
@@ -375,12 +320,6 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         return result;
     }
 
-    if (IsDqRead(node, ctx, types)) {
-        txRes.Ops.insert(node.Raw());
-        TExprNode::TPtr worldChild = node.Raw()->ChildPtr(0);
-        return ExploreTx(TExprBase(worldChild), ctx, dataSink, txRes, tablesData, types);
-    }
-
     if (auto maybeWrite = node.Maybe<TKiWriteTable>()) {
         auto write = maybeWrite.Cast();
         if (!checkDataSink(write.DataSink())) {
@@ -389,7 +328,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
         auto table = write.Table().Value();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(write.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(write.World(), ctx, dataSink, txRes, tablesData);
         auto tableOp = GetTableOp(write);
 
         YQL_ENSURE(tablesData);
@@ -413,13 +352,6 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         return result;
     }
 
-    if (IsDqWrite(node, ctx, types)) {
-        txRes.Ops.insert(node.Raw());
-        txRes.AddEffect(node, THashMap<TString, TPrimitiveYdbOperations>{});
-        TExprNode::TPtr worldChild = node.Raw()->ChildPtr(0);
-        return ExploreTx(TExprBase(worldChild), ctx, dataSink, txRes, tablesData, types);
-    }
-
     if (auto maybeUpdate = node.Maybe<TKiUpdateTable>()) {
         auto update = maybeUpdate.Cast();
         if (!checkDataSink(update.DataSink())) {
@@ -428,13 +360,13 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
         auto table = update.Table().Value();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(update.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(update.World(), ctx, dataSink, txRes, tablesData);
         const auto tableOp = TYdbOperation::Update;
 
         YQL_ENSURE(tablesData);
         const auto& tableData = tablesData->ExistingTable(cluster, table);
         YQL_ENSURE(tableData.Metadata);
-
+        
         THashSet<std::string_view> updateColumns;
         const auto& updateStructType = update.Update().Ref().GetTypeAnn()->Cast<TStructExprType>();
         for (const auto& item : updateStructType->GetItems()) {
@@ -453,7 +385,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
         auto table = del.Table().Value();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(del.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(del.World(), ctx, dataSink, txRes, tablesData);
         const auto tableOp = TYdbOperation::Delete;
 
         YQL_ENSURE(tablesData);
@@ -472,7 +404,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
         auto table = create.Table().Value();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(create.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(create.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildTableOpNode(cluster, table, TYdbOperation::CreateTable, create.Pos(), ctx));
         return result;
     }
@@ -485,7 +417,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
         auto table = drop.Table().Value();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(drop.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(drop.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildTableOpNode(cluster, table, TYdbOperation::DropTable, drop.Pos(), ctx));
         return result;
     }
@@ -498,7 +430,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
 
         auto table = alter.Table().Value();
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(alter.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(alter.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildTableOpNode(cluster, table, TYdbOperation::AlterTable, alter.Pos(), ctx));
         return result;
     }
@@ -510,7 +442,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         }
 
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(createUser.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(createUser.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildYdbOpNode(cluster, TYdbOperation::CreateUser, createUser.Pos(), ctx));
         return result;
     }
@@ -522,7 +454,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         }
 
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(alterUser.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(alterUser.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildYdbOpNode(cluster, TYdbOperation::AlterUser, alterUser.Pos(), ctx));
         return result;
     }
@@ -534,7 +466,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         }
 
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(dropUser.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(dropUser.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildYdbOpNode(cluster, TYdbOperation::DropUser, dropUser.Pos(), ctx));
         return result;
     }
@@ -546,7 +478,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         }
 
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(createGroup.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(createGroup.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildYdbOpNode(cluster, TYdbOperation::CreateGroup, createGroup.Pos(), ctx));
         return result;
     }
@@ -558,7 +490,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         }
 
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(alterGroup.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(alterGroup.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildYdbOpNode(cluster, TYdbOperation::AlterGroup, alterGroup.Pos(), ctx));
         return result;
     }
@@ -570,7 +502,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         }
 
         txRes.Ops.insert(node.Raw());
-        auto result = ExploreTx(dropGroup.World(), ctx, dataSink, txRes, tablesData, types);
+        auto result = ExploreTx(dropGroup.World(), ctx, dataSink, txRes, tablesData);
         txRes.AddTableOperation(BuildYdbOpNode(cluster, TYdbOperation::DropGroup, dropGroup.Pos(), ctx));
         return result;
     }
@@ -593,13 +525,13 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
             return true;
         }
 
-        return ExploreTx(commit.World(), ctx, dataSink, txRes, tablesData, types);
+        return ExploreTx(commit.World(), ctx, dataSink, txRes, tablesData);
     }
 
     if (auto maybeSync = node.Maybe<TCoSync>()) {
         txRes.Ops.insert(node.Raw());
         for (auto child : maybeSync.Cast()) {
-            if (!ExploreTx(child, ctx, dataSink, txRes, tablesData, types)) {
+            if (!ExploreTx(child, ctx, dataSink, txRes, tablesData)) {
                 return false;
             }
 
@@ -611,7 +543,7 @@ bool ExploreTx(TExprBase node, TExprContext& ctx, const TKiDataSink& dataSink, T
         node.Maybe<TResPull>())
     {
         txRes.Ops.insert(node.Raw());
-        bool result = ExploreTx(TExprBase(node.Ref().ChildPtr(0)), ctx, dataSink, txRes, tablesData, types);
+        bool result = ExploreTx(TExprBase(node.Ref().ChildPtr(0)), ctx, dataSink, txRes, tablesData);
         txRes.AddResult(node);
         return result;
     }
@@ -692,7 +624,7 @@ TExprNode::TPtr MakeSchemeTx(TCoCommit commit, TExprContext& ctx) {
         .Ptr();
 }
 
-TVector<TKiDataQueryBlock> MakeKiDataQueryBlocks(TExprBase node, const TKiExploreTxResults& txExplore, TExprContext& ctx, TTypeAnnotationContext& types) {
+TVector<TKiDataQueryBlock> MakeKiDataQueryBlocks(TExprBase node, const TKiExploreTxResults& txExplore, TExprContext& ctx) {
     TVector<TKiDataQueryBlock> queryBlocks;
     queryBlocks.reserve(txExplore.QueryBlocks.size());
 
@@ -734,7 +666,7 @@ TVector<TKiDataQueryBlock> MakeKiDataQueryBlocks(TExprBase node, const TKiExplor
         TOptimizeExprSettings optSettings(nullptr);
         optSettings.VisitChanges = true;
         auto status = OptimizeExpr(queryBlock.Ptr(), optResult,
-            [world, &txSyncSet, &types](const TExprNode::TPtr& input, TExprContext& ctx) {
+            [world, &txSyncSet](const TExprNode::TPtr& input, TExprContext &ctx) {
                 auto node = TExprBase(input);
 
                 if (txSyncSet.contains(node.Raw())) {
@@ -744,9 +676,7 @@ TVector<TKiDataQueryBlock> MakeKiDataQueryBlocks(TExprBase node, const TKiExplor
                 if (node.Maybe<TKiReadTable>() ||
                     node.Maybe<TKiWriteTable>() ||
                     node.Maybe<TKiUpdateTable>() ||
-                    node.Maybe<TKiDeleteTable>() ||
-                    IsDqRead(node, ctx, types, false) ||
-                    IsDqWrite(node, ctx, types))
+                    node.Maybe<TKiDeleteTable>())
                 {
                     return ctx.ChangeChild(node.Ref(), 0, world.Ptr());
                 }
@@ -764,8 +694,7 @@ TVector<TKiDataQueryBlock> MakeKiDataQueryBlocks(TExprBase node, const TKiExplor
 
 } // namespace
 
-TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TKikimrTablesData> tablesData,
-    TTypeAnnotationContext& types, bool concurrentResults) {
+TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TKikimrTablesData> tablesData) {
     if (!node.Maybe<TCoCommit>().DataSink().Maybe<TKiDataSink>()) {
         return node.Ptr();
     }
@@ -775,8 +704,7 @@ TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TK
     auto kiDataSink = commit.DataSink().Cast<TKiDataSink>();
 
     TKiExploreTxResults txExplore;
-    txExplore.ConcurrentResults = concurrentResults;
-    if (!ExploreTx(commit.World(), ctx, kiDataSink, txExplore, tablesData, types)) {
+    if (!ExploreTx(commit.World(), ctx, kiDataSink, txExplore, tablesData)) {
         return node.Ptr();
     }
 
@@ -794,10 +722,7 @@ TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TK
     txExplore.GetTableOperations(hasScheme, hasData);
 
     if (hasData && hasScheme) {
-        TString message = TStringBuilder() << "Queries with mixed data and scheme operations "
-            << "are not supported. Use separate queries for different types of operations.";
-
-        ctx.AddError(YqlIssue(ctx.GetPosition(commit.Pos()), TIssuesIds::KIKIMR_MIXED_SCHEME_DATA_TX, message));
+        ctx.AddError(YqlIssue(ctx.GetPosition(commit.Pos()), TIssuesIds::KIKIMR_MIXED_SCHEME_DATA_TX));
         return nullptr;
     }
 
@@ -805,7 +730,7 @@ TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TK
         return MakeSchemeTx(commit, ctx);
     }
 
-    auto dataQueryBlocks = MakeKiDataQueryBlocks(commit.World(), txExplore, ctx, types);
+    auto dataQueryBlocks = MakeKiDataQueryBlocks(commit.World(), txExplore, ctx);
 
     TKiExecDataQuerySettings execSettings;
     if (settings.Mode) {
@@ -844,14 +769,13 @@ TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TK
             .Done()
             .Ptr();
 
-        int resultIndex = 0;
         for (auto& block : txExplore.QueryBlocks) {
             for (size_t i = 0; i < block.Results.size(); ++i) {
                 auto result = block.Results[i].Cast<TResWriteBase>();
 
                 auto extractValue = Build<TCoNth>(ctx, node.Pos())
                     .Tuple(execRight)
-                    .Index().Build(resultIndex)
+                    .Index().Build(i)
                     .Done()
                     .Ptr();
 
@@ -870,8 +794,6 @@ TExprNode::TPtr KiBuildQuery(TExprBase node, TExprContext& ctx, TIntrusivePtr<TK
                     .DataSink<TResultDataSink>()
                         .Build()
                     .Done();
-
-                ++resultIndex;
             }
         }
     }
@@ -952,7 +874,7 @@ TYdbOperation GetTableOp(const TKiWriteTable& write) {
         return TYdbOperation::Replace;
     } else if (mode == "insert_revert") {
         return TYdbOperation::InsertRevert;
-    } else if (mode == "insert_abort" || mode == "append") {
+    } else if (mode == "insert_abort") {
         return TYdbOperation::InsertAbort;
     } else if (mode == "delete_on") {
         return TYdbOperation::DeleteOn;

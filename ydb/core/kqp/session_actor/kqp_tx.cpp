@@ -83,6 +83,26 @@ std::pair<bool, std::vector<TIssue>> MergeLocks(const NKikimrMiniKQL::TType& typ
     return res;
 }
 
+bool MergeLocks(const NKikimrMiniKQL::TType& type, const NKikimrMiniKQL::TValue& value, TKqpTransactionContext& txCtx,
+        TExprContext& ctx) {
+    auto [success, issues] = MergeLocks(type, value, txCtx);
+    if (!success) {
+        if (!txCtx.GetSnapshot().IsValid()) {
+            for (auto& issue : issues) {
+                ctx.AddError(std::move(issue));
+            }
+            return false;
+        } else {
+            txCtx.Locks.MarkBroken(issues.back());
+            if (txCtx.TxHasEffects()) {
+                txCtx.Locks.ReportIssues(ctx);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 TKqpTransactionInfo TKqpTransactionContext::GetInfo() const {
     TKqpTransactionInfo txInfo;
 
@@ -156,7 +176,7 @@ bool NeedSnapshot(const TKqpTransactionContext& txCtx, const NYql::TKikimrConfig
         }
     }
 
-    if (txCtx.HasUncommittedChangesRead || AppData()->FeatureFlags.GetEnableForceImmediateEffectsExecution()) {
+    if (txCtx.HasUncommittedChangesRead) {
         YQL_ENSURE(txCtx.EnableImmediateEffects);
         return true;
     }
@@ -177,19 +197,6 @@ bool NeedSnapshot(const TKqpTransactionContext& txCtx, const NYql::TKikimrConfig
     // for read-only transactions, and costs less than a final distributed
     // commit.
     return readPhases > 1;
-}
-
-bool HasOlapTableInTx(const NKqpProto::TKqpPhyQuery& physicalQuery) {
-    for (const auto &tx : physicalQuery.GetTransactions()) {
-        for (const auto &stage : tx.GetStages()) {
-            for (const auto &tableOp : stage.GetTableOps()) {
-                if (tableOp.GetTypeCase() == NKqpProto::TKqpPhyTableOperation::kReadOlapRange) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
 }
 
 } // namespace NKqp

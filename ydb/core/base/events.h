@@ -1,11 +1,11 @@
 #pragma once
 #include "defs.h"
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/event_pb.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_pb.h>
 #include <ydb/library/yql/dq/actors/dq_events_ids.h>
 
-#include <ydb/core/fq/libs/events/event_ids.h>
+#include <ydb/core/yq/libs/events/event_ids.h>
 
 namespace NKikimr {
 
@@ -98,7 +98,7 @@ struct TKikimrEvents : TEvents {
         ES_IAM_SERVICE,
         ES_FOLDER_SERVICE,
         ES_GRPC_MON,
-        ES_QUOTA, // must be in sync with ydb/core/quoter/public/quoter.h
+        ES_QUOTA,
         ES_COORDINATED_QUOTA,
         ES_ACCESS_SERVICE,
         ES_USER_ACCOUNT_SERVICE,
@@ -126,7 +126,7 @@ struct TKikimrEvents : TEvents {
         ES_TX_COLUMNSHARD,
         ES_CROSSREF,
         ES_SCHEME_BOARD_MON,
-        ES_YQL_ANALYTICS_PROXY = NFq::TEventIds::ES_YQL_ANALYTICS_PROXY,
+        ES_YQL_ANALYTICS_PROXY = NYq::TEventIds::ES_YQL_ANALYTICS_PROXY,
         ES_BLOB_CACHE,
         ES_LONG_TX_SERVICE,
         ES_TEST_SHARD,
@@ -158,18 +158,6 @@ struct TKikimrEvents : TEvents {
         ES_METADATA_SECRET,
         ES_TEST_LOAD,
         ES_GRPC_CANCELATION,
-        ES_DISCOVERY,
-        ES_EXT_INDEX,
-        ES_CONVEYOR,
-        ES_KQP_SCAN_EXCHANGE,
-        ES_IC_NODE_CACHE,
-        ES_DATA_OPERATIONS,
-        ES_KAFKA,
-        ES_STATISTICS,
-        ES_LDAP_AUTH_PROVIDER,
-        ES_DB_METADATA_CACHE,
-        ES_TABLE_CREATOR,
-        ES_PQ_PARTITION_CHOOSER,
     };
 };
 

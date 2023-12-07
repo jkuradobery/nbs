@@ -14,7 +14,7 @@ CFLAGS(
 PEERDIR(
     contrib/libs/double-conversion
     library/cpp/string_utils/quote
-    ydb/core/formats/arrow
+    ydb/core/formats
     ydb/core/scheme
     ydb/library/binary_json
     ydb/library/dynumber

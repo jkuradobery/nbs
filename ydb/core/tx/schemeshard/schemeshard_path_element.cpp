@@ -1,8 +1,7 @@
 #include "schemeshard_path_element.h"
 
-#include <library/cpp/json/json_reader.h>
-
-namespace NKikimr::NSchemeShard {
+namespace NKikimr {
+namespace NSchemeShard {
 
 namespace {
 
@@ -22,7 +21,7 @@ void UpdateSpaceCommit(TSpaceLimits& limits, ui64 newValue, ui64 oldValue) {
 
     // Space decrease is handled at tx commit
     const ui64 diff = oldValue - newValue;
-    Y_ABORT_UNLESS(limits.Allocated >= diff);
+    Y_VERIFY(limits.Allocated >= diff);
     limits.Allocated -= diff;
 }
 
@@ -68,21 +67,21 @@ ui64 TPathElement::GetBackupChildren() const {
 }
 
 void TPathElement::IncAliveChildren(ui64 delta, bool isBackup) {
-    Y_ABORT_UNLESS(Max<ui64>() - AliveChildrenCount >= delta);
+    Y_VERIFY(Max<ui64>() - AliveChildrenCount >= delta);
     AliveChildrenCount += delta;
 
     if (isBackup) {
-        Y_ABORT_UNLESS(Max<ui64>() - BackupChildrenCount >= delta);
+        Y_VERIFY(Max<ui64>() - BackupChildrenCount >= delta);
         BackupChildrenCount += delta;
     }
 }
 
 void TPathElement::DecAliveChildren(ui64 delta, bool isBackup) {
-    Y_ABORT_UNLESS(AliveChildrenCount >= delta);
+    Y_VERIFY(AliveChildrenCount >= delta);
     AliveChildrenCount -= delta;
 
     if (isBackup) {
-        Y_ABORT_UNLESS(BackupChildrenCount >= delta);
+        Y_VERIFY(BackupChildrenCount >= delta);
         BackupChildrenCount -= delta;
     }
 }
@@ -96,12 +95,12 @@ void TPathElement::SetShardsInside(ui64 val) {
 }
 
 void TPathElement::IncShardsInside(ui64 delta) {
-    Y_ABORT_UNLESS(Max<ui64>() - ShardsInsideCount >= delta);
+    Y_VERIFY(Max<ui64>() - ShardsInsideCount >= delta);
     ShardsInsideCount += delta;
 }
 
 void TPathElement::DecShardsInside(ui64 delta) {
-    Y_ABORT_UNLESS(ShardsInsideCount >= delta);
+    Y_VERIFY(ShardsInsideCount >= delta);
     ShardsInsideCount -= delta;
 }
 
@@ -199,24 +198,12 @@ bool TPathElement::IsCreateFinished() const {
     return (IsRoot() && CreateTxId) || StepCreated;
 }
 
-TVirtualTimestamp TPathElement::GetCreateTS() const {
-    return TVirtualTimestamp(StepCreated, CreateTxId);
+TGlobalTimestamp TPathElement::GetCreateTS() const {
+    return TGlobalTimestamp(StepCreated, CreateTxId);
 }
 
-TVirtualTimestamp TPathElement::GetDropTS() const {
-    return TVirtualTimestamp(StepDropped, DropTxId);
-}
-
-bool TPathElement::IsExternalTable() const {
-    return PathType == EPathType::EPathTypeExternalTable;
-}
-
-bool TPathElement::IsExternalDataSource() const {
-    return PathType == EPathType::EPathTypeExternalDataSource;
-}
-
-bool TPathElement::IsView() const {
-    return PathType == EPathType::EPathTypeView;
+TGlobalTimestamp TPathElement::GetDropTS() const {
+    return TGlobalTimestamp(StepDropped, DropTxId);
 }
 
 void TPathElement::SetDropped(TStepId step, TTxId txId) {
@@ -305,40 +292,37 @@ void TPathElement::ApplySpecialAttributes() {
     FileStoreSpaceSSD.Limit = Max<ui64>();
     FileStoreSpaceHDD.Limit = Max<ui64>();
     ExtraPathSymbolsAllowed = TString();
-    DocumentApiVersion = 0;
-    AsyncReplication = NJson::TJsonValue();
-
-    for (const auto& [key, value] : UserAttrs->Attrs) {
-        switch (TUserAttributes::ParseName(key)) {
+    for (const auto& item : UserAttrs->Attrs) {
+        switch (TUserAttributes::ParseName(item.first)) {
             case EAttribute::VOLUME_SPACE_LIMIT:
-                HandleAttributeValue(value, VolumeSpaceRaw.Limit);
+                HandleAttributeValue(item.second, VolumeSpaceRaw.Limit);
                 break;
             case EAttribute::VOLUME_SPACE_LIMIT_SSD:
-                HandleAttributeValue(value, VolumeSpaceSSD.Limit);
+                HandleAttributeValue(item.second, VolumeSpaceSSD.Limit);
                 break;
             case EAttribute::VOLUME_SPACE_LIMIT_HDD:
-                HandleAttributeValue(value, VolumeSpaceHDD.Limit);
+                HandleAttributeValue(item.second, VolumeSpaceHDD.Limit);
                 break;
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_NONREPL:
-                HandleAttributeValue(value, VolumeSpaceSSDNonrepl.Limit);
+                HandleAttributeValue(item.second, VolumeSpaceSSDNonrepl.Limit);
                 break;
             case EAttribute::VOLUME_SPACE_LIMIT_SSD_SYSTEM:
-                HandleAttributeValue(value, VolumeSpaceSSDSystem.Limit);
+                HandleAttributeValue(item.second, VolumeSpaceSSDSystem.Limit);
                 break;
             case EAttribute::FILESTORE_SPACE_LIMIT_SSD:
-                HandleAttributeValue(value, FileStoreSpaceSSD.Limit);
+                HandleAttributeValue(item.second, FileStoreSpaceSSD.Limit);
                 break;
             case EAttribute::FILESTORE_SPACE_LIMIT_HDD:
-                HandleAttributeValue(value, FileStoreSpaceHDD.Limit);
+                HandleAttributeValue(item.second, FileStoreSpaceHDD.Limit);
                 break;
             case EAttribute::EXTRA_PATH_SYMBOLS_ALLOWED:
-                HandleAttributeValue(value, ExtraPathSymbolsAllowed);
+                HandleAttributeValue(item.second, ExtraPathSymbolsAllowed);
                 break;
             case EAttribute::DOCUMENT_API_VERSION:
-                HandleAttributeValue(value, DocumentApiVersion);
+                HandleAttributeValue(item.second, DocumentApiVersion);
                 break;
             case EAttribute::ASYNC_REPLICATION:
-                HandleAttributeValue(value, AsyncReplication);
+                HandleAttributeValue(item.second, AsyncReplication);
                 break;
             default:
                 break;
@@ -435,5 +419,5 @@ void TPathElement::SerializeRuntimeAttrs(
     process(FileStoreSpaceSSD, "__filestore_space_allocated_ssd");
     process(FileStoreSpaceHDD, "__filestore_space_allocated_hdd");
 }
-
+}
 }

@@ -42,11 +42,28 @@ namespace NTabletFlatExecutor {
     private:
         const TSharedData* Lookup(TPrivatePageCache::TInfo *info, TPageId id) noexcept
         {
-            return Cache.Lookup(id, info);
+            if (auto *page = Cache.Lookup(id, info)) {
+                if (Touches[info].insert(id).second) {
+                    ++CacheHits;
+                }
+                return page;
+            } else {
+                if (ToLoad[info].insert(id).second) {
+                    ++CacheMisses;
+                }
+                return nullptr;
+            }
         }
 
     public:
         TPrivatePageCache& Cache;
+
+        /*_ Page collection cache pages load trace */
+
+        THashMap<TPrivatePageCache::TInfo*, THashSet<ui32>> Touches;
+        THashMap<TPrivatePageCache::TInfo*, THashSet<ui32>> ToLoad;
+        size_t CacheHits = 0;
+        size_t CacheMisses = 0;
     };
 
     struct TPageCollectionTxEnv : public TPageCollectionReadEnv, public IExecuting {
@@ -122,22 +139,12 @@ namespace NTabletFlatExecutor {
                 || LoanConfirmation;
         }
 
-    protected:
-        void OnRollbackChanges() noexcept override {
-            MakeSnap.clear();
-            DropSnap.Reset();
-            BorrowUpdates.clear();
-            LoanBundle.clear();
-            LoanTxStatus.clear();
-            LoanConfirmation.clear();
-        }
-
     protected: /* IExecuting, tx stage func implementation */
         void MakeSnapshot(TIntrusivePtr<TTableSnapshotContext> snap) override;
 
         void DropSnapshot(TIntrusivePtr<TTableSnapshotContext> snap) override
         {
-            Y_ABORT_UNLESS(!DropSnap, "only one snapshot per transaction");
+            Y_VERIFY(!DropSnap, "only one snapshot per transaction");
 
             DropSnap.Reset(new TBorrowSnap{ snap });
         }
@@ -161,7 +168,7 @@ namespace NTabletFlatExecutor {
             const ui32 source = proto.GetSourceTable();
 
             for (auto &part : proto.GetParts()) {
-                Y_ABORT_UNLESS(part.HasBundle(), "Cannot find attached hotdogs in borrow");
+                Y_VERIFY(part.HasBundle(), "Cannot find attached hotdogs in borrow");
 
                 LoanBundle.emplace_back(new TLoanBundle(source, tableId, lender,
                         TPageCollectionProtoHelper::MakePageCollectionComponents(part.GetBundle(), /* unsplit */ true)));
@@ -178,7 +185,7 @@ namespace NTabletFlatExecutor {
 
         void CleanupLoan(const TLogoId &bundle, ui64 from) override
         {
-            Y_ABORT_UNLESS(!DropSnap, "must not drop snapshot and update loan in same transaction");
+            Y_VERIFY(!DropSnap, "must not drop snapshot and update loan in same transaction");
             BorrowUpdates[bundle].StoppedLoans.push_back(from);
         }
 

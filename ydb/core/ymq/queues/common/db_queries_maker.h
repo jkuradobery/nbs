@@ -5,8 +5,6 @@
 #include <ydb/core/ymq/queues/fifo/queries.h>
 #include <ydb/core/ymq/queues/std/queries.h>
 
-#include <ydb/library/yverify_stream/yverify_stream.h>
-
 #include <util/string/builder.h>
 #include <util/string/printf.h>
 #include <util/datetime/base.h>
@@ -135,7 +133,7 @@ private:
 
     const char* GetQueryById(EQueryId id) const {
         const char* query = IsFifo_ ? GetFifoQueryById(id) : GetStdQueryById(id);
-        Y_VERIFY_S(query, "unknown query id " << id << " fifo=" << IsFifo_);
+        Y_VERIFY(query);
         return query;
     }
 

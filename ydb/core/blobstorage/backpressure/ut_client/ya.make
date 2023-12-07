@@ -3,7 +3,7 @@ UNITTEST()
 SIZE(MEDIUM)
 
 PEERDIR(
-    ydb/library/actors/interconnect/mock
+    library/cpp/actors/interconnect/mock
     ydb/core/blobstorage/backpressure
     ydb/core/blobstorage/base
     ydb/core/blobstorage/vdisk

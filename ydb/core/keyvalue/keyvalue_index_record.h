@@ -10,11 +10,11 @@ namespace NKeyValue {
 struct TIndexRecord {
     struct TChainItem {
         TLogoBlobID LogoBlobId;
-        TRope InlineData;
+        TString InlineData;
         ui64 Offset;
 
         TChainItem(const TLogoBlobID &id, ui64 offset);
-        TChainItem(TRope&& inlineData, ui64 offset);
+        TChainItem(TString &inlineData, ui64 offset);
         bool IsInline() const;
         ui64 GetSize() const;
 

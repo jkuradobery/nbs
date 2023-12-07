@@ -1,4 +1,5 @@
 #include <ydb/public/api/protos/ydb_value.pb.h>
+#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_value/value.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/exceptions/exceptions.h>
 #include <ydb/public/lib/json_value/ydb_json_value.h>
@@ -8,7 +9,6 @@
 #include <library/cpp/testing/unittest/tests_data.h>
 
 #include <google/protobuf/messagext.h>
-#include <google/protobuf/text_format.h>
 
 namespace NYdb {
 
@@ -142,7 +142,7 @@ Y_UNIT_TEST_SUITE(YdbValue) {
                     .AddElement()
                         .Decimal(TDecimalType(8, 13))
                     .AddElement()
-                        .Pg(TPgType("pgint2"))
+                        .Pg(TPgType(1, 2, -3))
                     .AddElement()
                         .BeginOptional()
                             .Primitive(EPrimitiveType::Utf8)
@@ -153,7 +153,7 @@ Y_UNIT_TEST_SUITE(YdbValue) {
             .Build();
 
         UNIT_ASSERT_NO_DIFF(FormatType(type),
-            R"(Struct<'Member1':List<Uint32?>,'Member2':Dict<Int64,Tuple<Decimal(8,13),Pg('pgint2','',0,0,0),Utf8?>>>)");
+            R"(Struct<'Member1':List<Uint32?>,'Member2':Dict<Int64,Tuple<Decimal(8,13),Pg(1,2,-3),Utf8?>>>)");
     }
 
     Y_UNIT_TEST(BuildTypeReuse) {
@@ -782,7 +782,7 @@ Y_UNIT_TEST_SUITE(YdbValue) {
             "}\n";
 
         TString protoValueStr;
-        NProtoBuf::TextFormat::PrintToString(value.GetProto(), &protoValueStr);
+        NProtoBuf::TextFormat::PrintToString(TProtoAccessor::GetProto(value), &protoValueStr);
         UNIT_ASSERT_NO_DIFF(protoValueStr, expectedProtoValueStr);
     }
 
@@ -844,7 +844,7 @@ Y_UNIT_TEST_SUITE(YdbValue) {
             "}\n";
 
         TString protoValueStr;
-        NProtoBuf::TextFormat::PrintToString(value.GetProto(), &protoValueStr);
+        NProtoBuf::TextFormat::PrintToString(TProtoAccessor::GetProto(value), &protoValueStr);
         UNIT_ASSERT_NO_DIFF(protoValueStr, expectedProtoValueStr);
     }
 

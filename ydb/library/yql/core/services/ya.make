@@ -7,8 +7,6 @@ SRCS(
     yql_eval_params.h
     yql_out_transformers.cpp
     yql_out_transformers.h
-    yql_lineage.cpp
-    yql_lineage.h
     yql_plan.cpp
     yql_plan.h
     yql_transform_pipeline.cpp
@@ -36,7 +34,3 @@ PEERDIR(
 YQL_LAST_ABI_VERSION()
 
 END()
-
-RECURSE(
-    mounts
-)

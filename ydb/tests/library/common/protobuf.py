@@ -6,8 +6,8 @@ from collections import namedtuple
 import six
 from hamcrest import has_properties
 
-import contrib.ydb.core.protos.msgbus_kv_pb2 as msgbus_kv
-import contrib.ydb.core.protos.msgbus_pb2 as msgbus
+import ydb.core.protos.msgbus_kv_pb2 as msgbus_kv
+import ydb.core.protos.msgbus_pb2 as msgbus
 
 
 def build_protobuf_if_necessary(protobuf_builder):

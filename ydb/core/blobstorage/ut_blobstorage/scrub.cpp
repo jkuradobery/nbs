@@ -53,7 +53,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
                             } else if (item.Level == 18) {
                                 ++num18;
                             } else {
-                                Y_ABORT("unexpected level");
+                                Y_FAIL("unexpected level");
                             }
                         }
                     }
@@ -100,7 +100,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
                 for (const auto& item : r.GetResult()) {
                     if (item.GetStatus() == NKikimrProto::OK) {
                         const TLogoBlobID& id = LogoBlobIDFromLogoBlobID(item.GetBlobID());
-                        const TString buffer = res->Get()->GetBlobData(item).ConvertToString();
+                        const TString& buffer = item.GetBuffer();
                         const TString& hash = MD5::Calc(buffer);
                         data.emplace(id, hash);
                         Cerr << "BlobId# " << id.ToString() << " hash# " << hash << " size# " << buffer.size() << Endl;
@@ -149,7 +149,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
             for (const auto& result : r.GetResult()) {
                 const TLogoBlobID& key = LogoBlobIDFromLogoBlobID(result.GetBlobID());
                 UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NKikimrProto::OK, "Id# " << key);
-                UNIT_ASSERT_EQUAL(MD5::Calc(res->Get()->GetBlobData(result).ConvertToString()), data.at(key));
+                UNIT_ASSERT_EQUAL(MD5::Calc(result.GetBuffer()), data.at(key));
                 --numBlobs;
             }
         }
@@ -180,7 +180,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
         ui32 nodeId, pdiskId;
         std::tie(nodeId, pdiskId, std::ignore) = DecomposeVDiskServiceId(vdiskActorId);
         auto it = env.PDiskMockStates.find(std::make_pair(nodeId, pdiskId));
-        Y_ABORT_UNLESS(it != env.PDiskMockStates.end());
+        Y_VERIFY(it != env.PDiskMockStates.end());
         TPDiskMockState::TPtr snapshot = it->second->Snapshot();
 
         std::map<ui32, std::vector<const TLayout::TLayoutRecord*>> indexes;
@@ -226,19 +226,15 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
             BROKEN_HUGE_BLOB,
         };
 
-        const ui32 brokenChunks = 2;
-        const ui32 brokenIndices = 2;
-        const ui32 brokenBlobs = 10;
-
         std::map<ECheckpoint, std::pair<ui32, ui32>> checkpoints{
-            {ECheckpoint::BROKEN_CHUNK_L0, {0, brokenChunks}},
-            {ECheckpoint::BROKEN_INDEX_L0, {0, brokenIndices}},
-            {ECheckpoint::BROKEN_CHUNK_L1_8, {0, brokenChunks}},
-            {ECheckpoint::BROKEN_INDEX_L1_8, {0, brokenIndices}},
-            {ECheckpoint::BROKEN_CHUNK_L17, {0, brokenChunks}},
-            {ECheckpoint::BROKEN_INDEX_L17, {0, brokenIndices}},
-            {ECheckpoint::BROKEN_INPLACE_BLOB, {0, brokenBlobs}},
-            {ECheckpoint::BROKEN_HUGE_BLOB, {0, brokenBlobs}},
+            {ECheckpoint::BROKEN_CHUNK_L0, {0, 5}},
+            {ECheckpoint::BROKEN_INDEX_L0, {0, 5}},
+            {ECheckpoint::BROKEN_CHUNK_L1_8, {0, 5}},
+            {ECheckpoint::BROKEN_INDEX_L1_8, {0, 5}},
+            {ECheckpoint::BROKEN_CHUNK_L17, {0, 5}},
+            {ECheckpoint::BROKEN_INDEX_L17, {0, 5}},
+            {ECheckpoint::BROKEN_INPLACE_BLOB, {0, 100}},
+            {ECheckpoint::BROKEN_HUGE_BLOB, {0, 100}},
         };
 
         ui32 passedCheckpoints = 0; // from TEvScrubNotify
@@ -294,7 +290,7 @@ Y_UNIT_TEST_SUITE(BlobScrubbing) {
                         recs.insert(recs.end(), value.begin(), value.end());
                     }
                 }
-                Y_ABORT_UNLESS(!recs.empty());
+                Y_VERIFY(!recs.empty());
                 return recs[RandomNumber(recs.size())];
             };
 

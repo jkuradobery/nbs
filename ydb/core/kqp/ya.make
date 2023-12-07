@@ -5,11 +5,11 @@ SRCS(
 
 PEERDIR(
     contrib/libs/apache/arrow
-    ydb/library/actors/core
-    ydb/library/actors/helpers
+    library/cpp/actors/core
+    library/cpp/actors/helpers
     library/cpp/digest/md5
     library/cpp/string_utils/base64
-    ydb/library/actors/wilson
+    library/cpp/actors/wilson
     ydb/core/actorlib_impl
     ydb/core/base
     ydb/core/client/minikql_compile
@@ -61,8 +61,6 @@ RECURSE(
     counters
     executer_actor
     expr_nodes
-    federated_query
-    finalize_script_service
     gateway
     host
     node_service
@@ -70,7 +68,6 @@ RECURSE(
     provider
     proxy_service
     rm_service
-    run_script_actor
     runtime
     session_actor
 )

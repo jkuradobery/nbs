@@ -19,8 +19,8 @@ using TDataRef = NScheme::TDataRef;
 Y_UNIT_TEST_SUITE(TTypeCodecsTest) {
 
     void Metrics(const TVector<TDataRef>& values, const ICodec* codec) {
-        TBuffer output;
-        auto chunk = codec->MakeChunk(output);
+        TAutoPtr<TFlatBlobDataOutputStream> output(new TFlatBlobDataOutputStream());
+        auto chunk = codec->MakeChunk(output.Get());
 
         auto start = TInstant::Now();
         for (const auto& value : values) {
@@ -32,10 +32,11 @@ Y_UNIT_TEST_SUITE(TTypeCodecsTest) {
         chunk->Seal();
         auto duration = TInstant::Now() - start;
 
-        Cerr << "Size: " << output.Size() << Endl;
+        Cerr << "Size: " << output->GetCurrentOffset() << Endl;
         Cerr << "Create chunk: " << duration << Endl;
 
-        auto reading = codec->ReadChunk(output);
+        auto reading = codec->ReadChunk(output->GetBuffer());
+        output.Reset(nullptr);
 
         start = TInstant::Now();
         for (size_t i = 0, size = values.size(); i != size; ++i) {
@@ -54,8 +55,8 @@ Y_UNIT_TEST_SUITE(TTypeCodecsTest) {
     }
 
     void TestImpl(const TVector<TDataRef>& values, const ICodec* codec) {
-        TBuffer output;
-        auto chunk = codec->MakeChunk(output);
+        TAutoPtr<TFlatBlobDataOutputStream> output(new TFlatBlobDataOutputStream());
+        auto chunk = codec->MakeChunk(output.Get());
         for (const auto& value : values) {
             if (value.IsNull())
                 chunk->AddNull();
@@ -64,8 +65,9 @@ Y_UNIT_TEST_SUITE(TTypeCodecsTest) {
         }
         chunk->Seal();
 
-        auto reading = codec->ReadChunk(output);
+        auto reading = codec->ReadChunk(output->GetBuffer());
         auto iter = reading->MakeIterator();
+        output.Reset(nullptr);
 
         for (size_t i = 0; i != values.size(); ++i) {
             const auto& value = values[i];

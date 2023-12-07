@@ -5,10 +5,10 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/protos
-    ydb/library/actors/interconnect
-    ydb/library/actors/helpers
+    library/cpp/actors/core
+    library/cpp/actors/protos
+    library/cpp/actors/interconnect
+    library/cpp/actors/helpers
 )
 
 END()

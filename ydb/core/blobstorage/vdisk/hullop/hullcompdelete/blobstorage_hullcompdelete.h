@@ -71,7 +71,7 @@ namespace NKikimr {
 
     public:
         void SetActorId(const TActorId& actorId) {
-            Y_ABORT_UNLESS(!ActorId);
+            Y_VERIFY(!ActorId);
             ActorId = actorId;
         }
 
@@ -89,12 +89,11 @@ namespace NKikimr {
         // this function is called every time when compaction is about to commit new entrypoint containing at least
         // one removed huge blob; recordLsn is allocated LSN of this entrypoint
         void Update(ui64 recordLsn, TDiskPartVec&& removedHugeBlobs, TVector<TChunkIdx> chunksToForget, TLogSignature signature,
-                const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId, const TPDiskCtxPtr& pdiskCtx,
-                const TVDiskContextPtr& vctx) {
-            Y_ABORT_UNLESS(recordLsn > LastDeletionLsn);
+                const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId, const TPDiskCtxPtr& pdiskCtx) {
+            Y_VERIFY(recordLsn > LastDeletionLsn);
             LastDeletionLsn = recordLsn;
             ReleaseQueue.emplace_back(recordLsn, std::move(removedHugeBlobs), std::move(chunksToForget), signature);
-            ProcessReleaseQueue(ctx, hugeKeeperId, skeletonId, pdiskCtx, vctx);
+            ProcessReleaseQueue(ctx, hugeKeeperId, skeletonId, pdiskCtx);
         }
 
         void RenderState(IOutputStream &str) {
@@ -147,7 +146,7 @@ namespace NKikimr {
                             }
                             for (const TChunkIdx chunkIdx : record.ChunksToForget) {
                                 ui32& value = slots[chunkIdx];
-                                Y_ABORT_UNLESS(!value);
+                                Y_VERIFY(!value);
                                 value = Max<ui32>();
                             }
 
@@ -198,17 +197,17 @@ namespace NKikimr {
         friend class TDelayedCompactionDeleterActor;
 
         void ReleaseSnapshot(ui64 cookie, const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId,
-                const TPDiskCtxPtr& pdiskCtx, const TVDiskContextPtr& vctx) {
+                const TPDiskCtxPtr& pdiskCtx) {
             auto it = CurrentSnapshots.find(cookie);
-            Y_ABORT_UNLESS(it != CurrentSnapshots.end() && it->second > 0);
+            Y_VERIFY(it != CurrentSnapshots.end() && it->second > 0);
             if (!--it->second) {
                 CurrentSnapshots.erase(it);
-                ProcessReleaseQueue(ctx, hugeKeeperId, skeletonId, pdiskCtx, vctx);
+                ProcessReleaseQueue(ctx, hugeKeeperId, skeletonId, pdiskCtx);
             }
         }
 
         void ProcessReleaseQueue(const TActorContext& ctx, const TActorId& hugeKeeperId, const TActorId& skeletonId,
-                const TPDiskCtxPtr& pdiskCtx, const TVDiskContextPtr& vctx) {
+                const TPDiskCtxPtr& pdiskCtx) {
             // if we have no snapshots, we can safely process all messages; otherwise we can process only those messages
             // which do not have snapshots created before the point of compaction
             while (ReleaseQueue) {
@@ -218,9 +217,6 @@ namespace NKikimr {
                     ctx.Send(hugeKeeperId, new TEvHullFreeHugeSlots(std::move(item.RemovedHugeBlobs),
                         item.RecordLsn, item.Signature));
                     if (item.ChunksToForget) {
-                        LOG_DEBUG(ctx, NKikimrServices::BS_VDISK_CHUNKS, VDISKP(vctx->VDiskLogPrefix,
-                            "FORGET: PDiskId# %s ChunksToForget# %s", pdiskCtx->PDiskIdString.data(),
-                            FormatList(item.ChunksToForget).data()));
                         TActivationContext::Send(new IEventHandle(pdiskCtx->PDiskId, skeletonId, new NPDisk::TEvChunkForget(
                             pdiskCtx->Dsk->Owner, pdiskCtx->Dsk->OwnerRound, std::move(item.ChunksToForget))));
                     }
@@ -251,6 +247,6 @@ namespace NKikimr {
     };
 
     IActor *CreateDelayedCompactionDeleterActor(const TActorId hugeKeeperId, const TActorId skeletonId,
-        TPDiskCtxPtr pdiskCtx, TVDiskContextPtr vctx, TIntrusivePtr<TDelayedCompactionDeleterInfo> info);
+        TPDiskCtxPtr pdiskCtx, TIntrusivePtr<TDelayedCompactionDeleterInfo> info);
 
 } // NKikimr

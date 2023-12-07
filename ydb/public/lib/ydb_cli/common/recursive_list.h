@@ -4,7 +4,8 @@
 
 #include <util/generic/vector.h>
 
-namespace NYdb::NConsoleClient {
+namespace NYdb {
+namespace NConsoleClient {
 
 struct TRecursiveListSettings {
     using TSelf = TRecursiveListSettings;
@@ -28,4 +29,5 @@ struct TRecursiveListResult {
 TRecursiveListResult RecursiveList(NScheme::TSchemeClient& client, const TString& path,
     const TRecursiveListSettings& settings = {}, bool addSelf = true);
 
+}
 }

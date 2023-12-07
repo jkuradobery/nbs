@@ -26,15 +26,9 @@ struct TSetup {
             auto expected = c.second;
             SubstGlobal(expected, "\t", TString(NSQLFormat::OneIndent, ' '));
             UNIT_ASSERT_NO_DIFF(formatted, expected);
-
-            TString formatted2;
-            auto res2 = Formatter->Format(formatted, formatted2, issues);
-            UNIT_ASSERT_C(res2, issues.ToString());
-            UNIT_ASSERT_NO_DIFF(formatted, formatted2);
-
             auto mutatedQuery = NSQLFormat::MutateQuery(c.first);
-            auto res3 = Formatter->Format(mutatedQuery, formatted, issues);
-            UNIT_ASSERT_C(res3, issues.ToString());
+            auto res2 = Formatter->Format(mutatedQuery, formatted, issues);
+            UNIT_ASSERT_C(res2, issues.ToString());
         }
     }
 
@@ -67,51 +61,11 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
         setup.Run(cases);
     }
 
-    Y_UNIT_TEST(GrantPermissions) {
-        TCases cases {
-            {"use plato;grant connect, modify tables, list on `/Root` to user;", "USE plato;\n\nGRANT CONNECT, MODIFY TABLES, LIST ON `/Root` TO user;\n"},
-            {"use plato;grant select , select tables, select attributes on `/Root` to user;", "USE plato;\n\nGRANT SELECT, SELECT TABLES, SELECT ATTRIBUTES ON `/Root` TO user;\n"},
-            {"use plato;grant insert, modify attributes on `/Root` to user;", "USE plato;\n\nGRANT INSERT, MODIFY ATTRIBUTES ON `/Root` TO user;\n"},
-            {"use plato;grant use legacy, use on `/Root` to user1, user2;", "USE plato;\n\nGRANT USE LEGACY, USE ON `/Root` TO user1, user2;\n"},
-            {"use plato;grant manage, full legacy, full, create on `/Root` to user;", "USE plato;\n\nGRANT MANAGE, FULL LEGACY, FULL, CREATE ON `/Root` TO user;\n"},
-            {"use plato;grant drop, grant, select row, update row on `/Root` to user;", "USE plato;\n\nGRANT DROP, GRANT, SELECT ROW, UPDATE ROW ON `/Root` TO user;\n"},
-            {"use plato;grant erase row, create directory on `/Root` to user;", "USE plato;\n\nGRANT ERASE ROW, CREATE DIRECTORY ON `/Root` TO user;\n"},
-            {"use plato;grant create table, create queue, remove schema on `/Root` to user;", "USE plato;\n\nGRANT CREATE TABLE, CREATE QUEUE, REMOVE SCHEMA ON `/Root` TO user;\n"},
-            {"use plato;grant describe schema, alter schema on `/Root` to user;", "USE plato;\n\nGRANT DESCRIBE SCHEMA, ALTER SCHEMA ON `/Root` TO user;\n"},
-            {"use plato;grant select, on `/Root` to user, with grant option;", "USE plato;\n\nGRANT SELECT, ON `/Root` TO user, WITH GRANT OPTION;\n"},
-            {"use plato;grant all privileges on `/Root` to user;", "USE plato;\n\nGRANT ALL PRIVILEGES ON `/Root` TO user;\n"},
-            {"use plato;grant list on `/Root/db1`, `/Root/db2` to user;", "USE plato;\n\nGRANT LIST ON `/Root/db1`, `/Root/db2` TO user;\n"}
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(RevokePermissions) {
-        TCases cases {
-            {"use plato;revoke connect, modify tables, list on `/Root` from user;", "USE plato;\n\nREVOKE CONNECT, MODIFY TABLES, LIST ON `/Root` FROM user;\n"},
-            {"use plato;revoke select , select tables, select attributes on `/Root` from user;", "USE plato;\n\nREVOKE SELECT, SELECT TABLES, SELECT ATTRIBUTES ON `/Root` FROM user;\n"},
-            {"use plato;revoke insert, modify attributes on `/Root` from user;", "USE plato;\n\nREVOKE INSERT, MODIFY ATTRIBUTES ON `/Root` FROM user;\n"},
-            {"use plato;revoke use legacy, use on `/Root` from user1, user2;", "USE plato;\n\nREVOKE USE LEGACY, USE ON `/Root` FROM user1, user2;\n"},
-            {"use plato;revoke manage, full legacy, full, create on `/Root` from user;", "USE plato;\n\nREVOKE MANAGE, FULL LEGACY, FULL, CREATE ON `/Root` FROM user;\n"},
-            {"use plato;revoke drop, grant, select row, update row on `/Root` from user;", "USE plato;\n\nREVOKE DROP, GRANT, SELECT ROW, UPDATE ROW ON `/Root` FROM user;\n"},
-            {"use plato;revoke erase row, create directory on `/Root` from user;", "USE plato;\n\nREVOKE ERASE ROW, CREATE DIRECTORY ON `/Root` FROM user;\n"},
-            {"use plato;revoke create table, create queue, remove schema on `/Root` from user;", "USE plato;\n\nREVOKE CREATE TABLE, CREATE QUEUE, REMOVE SCHEMA ON `/Root` FROM user;\n"},
-            {"use plato;revoke describe schema, alter schema on `/Root` from user;", "USE plato;\n\nREVOKE DESCRIBE SCHEMA, ALTER SCHEMA ON `/Root` FROM user;\n"},
-            {"use plato;revoke grant option for insert, on `/Root` from user;", "USE plato;\n\nREVOKE GRANT OPTION FOR INSERT, ON `/Root` FROM user;\n"},
-            {"use plato;revoke all privileges on `/Root` from user;", "USE plato;\n\nREVOKE ALL PRIVILEGES ON `/Root` FROM user;\n"},
-            {"use plato;revoke list on `/Root/db1`, `/Root/db2` from user;", "USE plato;\n\nREVOKE LIST ON `/Root/db1`, `/Root/db2` FROM user;\n"}
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
     Y_UNIT_TEST(DropRole) {
         TCases cases = {
-            {"use plato;drop user user,user,user;","USE plato;\n\nDROP USER user, user, user;\n"},
-            {"use plato;drop group if exists user;","USE plato;\n\nDROP GROUP IF EXISTS user;\n"},
-            {"use plato;drop group user,;","USE plato;\n\nDROP GROUP user,;\n"},
+            {"use plato;drop user user,user,user;","USE plato;\nDROP USER user, user, user;\n"},
+            {"use plato;drop group if exists user;","USE plato;\nDROP GROUP IF EXISTS user;\n"},
+            {"use plato;drop group user,;","USE plato;\nDROP GROUP user,;\n"},
         };
 
         TSetup setup;
@@ -120,8 +74,8 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
 
     Y_UNIT_TEST(CreateUser) {
         TCases cases = {
-            {"use plato;create user user;","USE plato;\n\nCREATE USER user;\n"},
-            {"use plato;create user user encrypted password 'foo';","USE plato;\n\nCREATE USER user ENCRYPTED PASSWORD 'foo';\n"},
+            {"use plato;create user user;","USE plato;\nCREATE USER user;\n"},
+            {"use plato;create user user encrypted password 'foo';","USE plato;\nCREATE USER user ENCRYPTED PASSWORD 'foo';\n"},
         };
 
         TSetup setup;
@@ -130,7 +84,7 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
 
     Y_UNIT_TEST(CreateGroup) {
         TCases cases = {
-            {"use plato;create group user;","USE plato;\n\nCREATE GROUP user;\n"},
+            {"use plato;create group user;","USE plato;\nCREATE GROUP user;\n"},
         };
 
         TSetup setup;
@@ -139,9 +93,9 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
 
     Y_UNIT_TEST(AlterUser) {
         TCases cases = {
-            {"use plato;alter user user rename to user;","USE plato;\n\nALTER USER user RENAME TO user;\n"},
-            {"use plato;alter user user encrypted password 'foo';","USE plato;\n\nALTER USER user ENCRYPTED PASSWORD 'foo';\n"},
-            {"use plato;alter user user with encrypted password 'foo';","USE plato;\n\nALTER USER user WITH ENCRYPTED PASSWORD 'foo';\n"},
+            {"use plato;alter user user rename to user;","USE plato;\nALTER USER user RENAME TO user;\n"},
+            {"use plato;alter user user encrypted password 'foo';","USE plato;\nALTER USER user ENCRYPTED PASSWORD 'foo';\n"},
+            {"use plato;alter user user with encrypted password 'foo';","USE plato;\nALTER USER user WITH ENCRYPTED PASSWORD 'foo';\n"},
         };
 
         TSetup setup;
@@ -150,10 +104,10 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
 
     Y_UNIT_TEST(AlterGroup) {
         TCases cases = {
-            {"use plato;alter group user add user user;","USE plato;\n\nALTER GROUP user ADD USER user;\n"},
-            {"use plato;alter group user drop user user;","USE plato;\n\nALTER GROUP user DROP USER user;\n"},
-            {"use plato;alter group user add user user, user,;","USE plato;\n\nALTER GROUP user ADD USER user, user,;\n"},
-            {"use plato;alter group user rename to user;","USE plato;\n\nALTER GROUP user RENAME TO user;\n"},
+            {"use plato;alter group user add user user;","USE plato;\nALTER GROUP user ADD USER user;\n"},
+            {"use plato;alter group user drop user user;","USE plato;\nALTER GROUP user DROP USER user;\n"},
+            {"use plato;alter group user add user user, user,;","USE plato;\nALTER GROUP user ADD USER user, user,;\n"},
+            {"use plato;alter group user rename to user;","USE plato;\nALTER GROUP user RENAME TO user;\n"},
         };
 
         TSetup setup;
@@ -264,13 +218,13 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
             {"create table user(order by (user asc))","CREATE TABLE user (\n\tORDER BY (user ASC)\n);\n"},
             {"create table user(order by (user desc,user))","CREATE TABLE user (\n\tORDER BY (user DESC, user)\n);\n"},
             {"create table user(user int32) with (ttl=interval('P1D') on user as seconds)",
-             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS SECONDS);\n"},
+             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS SECONDS\n);\n"},
             {"create table user(user int32) with (ttl=interval('P1D') on user as MilliSeconds)",
-             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS MILLISECONDS);\n"},
+             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS MILLISECONDS\n);\n"},
             {"create table user(user int32) with (ttl=interval('P1D') on user as microSeconds)",
-             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS MICROSECONDS);\n"},
+             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS MICROSECONDS\n);\n"},
             {"create table user(user int32) with (ttl=interval('P1D') on user as nAnOsEcOnDs)",
-             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS NANOSECONDS);\n"},
+             "CREATE TABLE user (\n\tuser int32\n)\nWITH (ttl = interval('P1D') ON user AS NANOSECONDS\n);\n"},
             {"create table user(index user global unique sync with (user=user,user=user) on (user,user))",
              "CREATE TABLE user (\n\tINDEX user GLOBAL UNIQUE SYNC WITH (user = user, user = user) ON (user, user)\n);\n"},
             {"create table user(index user global async with (user=user,) on (user))",
@@ -321,56 +275,6 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
              "DROP OBJECT usEr (TYPE abcde) WITH (aeEE);\n"},
             {"dRop oBject usEr (tYpe abcde) With aeEE",
              "DROP OBJECT usEr (TYPE abcde) WITH aeEE;\n"}
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-    
-    Y_UNIT_TEST(TableStoreOperations) {
-        TCases cases = {
-            {"alter tableStore uSer aDd column usEr int32",
-             "ALTER TABLESTORE uSer ADD COLUMN usEr int32;\n"},
-             {"alter tableStore uSer drOp column usEr",
-             "ALTER TABLESTORE uSer DROP COLUMN usEr;\n"}
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(ExternalDataSourceOperations) {
-        TCases cases = {
-            {"creAte exTernAl daTa SouRce usEr With (a = \"b\")",
-             "CREATE EXTERNAL DATA SOURCE usEr WITH (a = \"b\");\n"},
-            {"dRop exTerNal Data SouRce usEr",
-             "DROP EXTERNAL DATA SOURCE usEr;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(AsyncReplication) {
-        TCases cases = {
-            {"create async replication user for table1 AS table2 with (user='foo')",
-             "CREATE ASYNC REPLICATION user FOR table1 AS table2 WITH (user = 'foo');\n"},
-            {"drop async replication user",
-             "DROP ASYNC REPLICATION user;\n"},
-            {"drop async replication user cascade",
-             "DROP ASYNC REPLICATION user CASCADE;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(ExternalTableOperations) {
-        TCases cases = {
-            {"creAte exTernAl TabLe usEr (a int) With (a = \"b\")",
-             "CREATE EXTERNAL TABLE usEr (\n\ta int\n)\nWITH (a = \"b\");\n"},
-            {"dRop exTerNal taBlE usEr",
-             "DROP EXTERNAL TABLE usEr;\n"},
         };
 
         TSetup setup;
@@ -439,51 +343,6 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
              "ALTER TABLE user\n\tADD CHANGEFEED user WITH (virtual_timestamps = TRUE);\n"},
             {"alter table user add changefeed user with (virtual_timestamps = fAlSe)",
              "ALTER TABLE user\n\tADD CHANGEFEED user WITH (virtual_timestamps = FALSE);\n"},
-            {"alter table user add changefeed user with (resolved_timestamps = Interval(\"PT1S\"))",
-             "ALTER TABLE user\n\tADD CHANGEFEED user WITH (resolved_timestamps = Interval(\"PT1S\"));\n"},
-            {"alter table user add changefeed user with (topic_min_active_partitions = 1)",
-             "ALTER TABLE user\n\tADD CHANGEFEED user WITH (topic_min_active_partitions = 1);\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(CreateTopic) {
-        TCases cases = {
-            {"create topic topic1",
-             "CREATE TOPIC topic1;\n"},
-             {"create topic topic1 (consumer c1)",
-             "CREATE TOPIC topic1 (\n\tCONSUMER c1\n);\n"},
-             {"create topic topic1 (consumer c1, consumer c2 with (important = True))",
-             "CREATE TOPIC topic1 (\n\tCONSUMER c1,\n\tCONSUMER c2 WITH (important = TRUE)\n);\n"},
-             {"create topic topic1 (consumer c1) with (partition_count_limit = 5)",
-             "CREATE TOPIC topic1 (\n\tCONSUMER c1\n) WITH (\n\tpartition_count_limit = 5\n);\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-    Y_UNIT_TEST(AlterTopic) {
-        TCases cases = {
-             {"alter topic topic1 alter consumer c1 set (important = false)",
-             "ALTER TOPIC topic1\n\tALTER CONSUMER c1 SET (important = FALSE);\n"},
-             {"alter topic topic1 alter consumer c1 set (important = false), alter consumer c2 reset (read_from)",
-              "ALTER TOPIC topic1\n\tALTER CONSUMER c1 SET (important = FALSE),\n\tALTER CONSUMER c2 RESET (read_from);\n"},
-             {"alter topic topic1 add consumer c1, drop consumer c2",
-              "ALTER TOPIC topic1\n\tADD CONSUMER c1,\n\tDROP CONSUMER c2;\n"},
-             {"alter topic topic1 set (supported_codecs = 'RAW'), RESET (retention_period)",
-              "ALTER TOPIC topic1\n\tSET (supported_codecs = 'RAW'),\n\tRESET (retention_period);\n"},
-
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-    Y_UNIT_TEST(DropTopic) {
-        TCases cases = {
-            {"drop topic topic1",
-             "DROP TOPIC topic1;\n"},
         };
 
         TSetup setup;
@@ -515,9 +374,9 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
              "process $c(); "
              "end define",
              "DEFINE ACTION $a() AS\n\tDEFINE ACTION $b() AS\n\t\t"
-             "VALUES\n\t\t\t(1);\n\tEND DEFINE;\n\n\t"
+             "VALUES\n\t\t\t(1);\n\tEND DEFINE;\n\t"
              "DEFINE SUBQUERY $c() AS\n\t\tSELECT\n\t\t\t1;\n\t"
-             "END DEFINE;\n\tDO $b();\n\n\tPROCESS $c();\nEND DEFINE;\n"},
+             "END DEFINE;\n\tDO $b();\n\tPROCESS $c();\nEND DEFINE;\n"},
         };
 
         TSetup setup;
@@ -790,7 +649,7 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
             {"select 1 from user assume order by key",
              "SELECT\n\t1\nFROM user\nASSUME ORDER BY\n\tkey;\n"},
             {"select 1 from user window w1 as (), w2 as ()",
-             "SELECT\n\t1\nFROM user\nWINDOW\n\tw1 AS (),\n\tw2 AS ();\n"},
+             "SELECT\n\t1\nFROM user\nWINDOW\n\tw1 AS (\n\t),\n\tw2 AS (\n\t);\n"},
             {"select 1 from user window w1 as (user)",
              "SELECT\n\t1\nFROM user\nWINDOW\n\tw1 AS (\n\t\tuser\n\t);\n"},
             {"select 1 from user window w1 as (partition by user)",
@@ -819,7 +678,7 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
         TCases cases = {
             {"declare $_x AS list<int32>??;declare $_y AS int32 ? ? ;select 1<>2, 1??2,"
              "formattype(list<int32>), formattype(resource<user>),formattype(tuple<>), formattype(tuple<  >), formattype(int32 ? ? )",
-             "DECLARE $_x AS list<int32>??;\nDECLARE $_y AS int32??;\n\nSELECT\n\t1 <> 2,\n\t1 ?? 2,\n\tformattype(list<int32>),"
+             "DECLARE $_x AS list<int32>??;\nDECLARE $_y AS int32??;\nSELECT\n\t1 <> 2,\n\t1 ?? 2,\n\tformattype(list<int32>),"
             "\n\tformattype(resource<user>),\n\tformattype(tuple<>),\n\tformattype(tuple< >),\n\tformattype(int32??" ");\n"
             },
         };
@@ -832,7 +691,7 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
         TCases cases = {
             {"$f=($a,$b)->{$x=$a+$b;return $a*$x};$g=($a,$b?)->($a+$b??0);select $f(10,4),$g(1,2);",
              "$f = ($a, $b) -> {\n\t$x = $a + $b;\n\tRETURN $a * $x\n};\n"
-             "$g = ($a, $b?) -> ($a + $b ?? 0);\n\n"
+             "$g = ($a, $b?) -> ($a + $b ?? 0);\n"
             "SELECT\n\t$f(10, 4),\n\t$g(1, 2);\n"},
         };
 
@@ -850,8 +709,6 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
              "SELECT\n\t1 IN (\n\t\tSELECT\n\t\t\t1\n\t);\n"},
             {"select 1 in ((select 1))",
              "SELECT\n\t1 IN (\n\t\t(\n\t\t\tSELECT\n\t\t\t\t1\n\t\t)\n\t);\n"},
-            {"select 1 in (\nselect 1)",
-             "SELECT\n\t1 IN (\n\t\tSELECT\n\t\t\t1\n\t);\n"},
         };
 
         TSetup setup;
@@ -896,7 +753,7 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
     Y_UNIT_TEST(BoolAsVariableName) {
         TCases cases = {
             {"$ False = True; select $ False;",
-             "$False = TRUE;\n\nSELECT\n\t$False;\n"},
+             "$False = TRUE;\nSELECT\n\t$False;\n"},
         };
 
         TSetup setup;
@@ -917,502 +774,6 @@ Y_UNIT_TEST_SUITE(CheckSqlFormatter) {
         TCases cases = {
             {"select a[0]",
              "SELECT\n\ta[0];\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineList) {
-        TCases cases = {
-            {"select [\n]",
-             "SELECT\n\t[\n\t];\n"},
-            {"select [1\n]",
-             "SELECT\n\t[\n\t\t1\n\t];\n"},
-            {"select [\n1]",
-             "SELECT\n\t[\n\t\t1\n\t];\n"},
-            {"select [1,\n]",
-             "SELECT\n\t[\n\t\t1,\n\t];\n"},
-            {"select [1\n,]",
-             "SELECT\n\t[\n\t\t1,\n\t];\n"},
-            {"select [\n1,]",
-             "SELECT\n\t[\n\t\t1,\n\t];\n"},
-            {"select [1,2,\n3,4]",
-             "SELECT\n\t[\n\t\t1, 2,\n\t\t3, 4\n\t];\n"},
-            {"select [1,2,\n3,4,]",
-             "SELECT\n\t[\n\t\t1, 2,\n\t\t3, 4,\n\t];\n"},
-            {"select [1,2\n,3,\n4\n,5]",
-             "SELECT\n\t[\n\t\t1, 2,\n\t\t3,\n\t\t4,\n\t\t5\n\t];\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineTuple) {
-        TCases cases = {
-            {"select (\n)",
-             "SELECT\n\t(\n\t);\n"},
-            {"select (1,\n)",
-             "SELECT\n\t(\n\t\t1,\n\t);\n"},
-            {"select (1\n,)",
-             "SELECT\n\t(\n\t\t1,\n\t);\n"},
-            {"select (\n1,)",
-             "SELECT\n\t(\n\t\t1,\n\t);\n"},
-            {"select (1,2,\n3,4)",
-             "SELECT\n\t(\n\t\t1, 2,\n\t\t3, 4\n\t);\n"},
-            {"select (1,2,\n3,4,)",
-             "SELECT\n\t(\n\t\t1, 2,\n\t\t3, 4,\n\t);\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineSet) {
-        TCases cases = {
-            {"select {\n}",
-             "SELECT\n\t{\n\t};\n"},
-            {"select {1\n}",
-             "SELECT\n\t{\n\t\t1\n\t};\n"},
-            {"select {\n1}",
-             "SELECT\n\t{\n\t\t1\n\t};\n"},
-            {"select {1,\n}",
-             "SELECT\n\t{\n\t\t1,\n\t};\n"},
-            {"select {1\n,}",
-             "SELECT\n\t{\n\t\t1,\n\t};\n"},
-            {"select {\n1,}",
-             "SELECT\n\t{\n\t\t1,\n\t};\n"},
-            {"select {1,2,\n3,4}",
-             "SELECT\n\t{\n\t\t1, 2,\n\t\t3, 4\n\t};\n"},
-            {"select {1,2,\n3,4,}",
-             "SELECT\n\t{\n\t\t1, 2,\n\t\t3, 4,\n\t};\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineDict) {
-        TCases cases = {
-            {"select {0:1\n}",
-             "SELECT\n\t{\n\t\t0: 1\n\t};\n"},
-            {"select {\n0:1}",
-             "SELECT\n\t{\n\t\t0: 1\n\t};\n"},
-            {"select {0:1,\n}",
-             "SELECT\n\t{\n\t\t0: 1,\n\t};\n"},
-            {"select {0:1\n,}",
-             "SELECT\n\t{\n\t\t0: 1,\n\t};\n"},
-            {"select {\n0:1,}",
-             "SELECT\n\t{\n\t\t0: 1,\n\t};\n"},
-            {"select {10:1,20:2,\n30:3,40:4}",
-             "SELECT\n\t{\n\t\t10: 1, 20: 2,\n\t\t30: 3, 40: 4\n\t};\n"},
-            {"select {10:1,20:2,\n30:3,40:4,}",
-             "SELECT\n\t{\n\t\t10: 1, 20: 2,\n\t\t30: 3, 40: 4,\n\t};\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineFuncCall) {
-        TCases cases = {
-            {"select f(\n)",
-             "SELECT\n\tf(\n\t);\n"},
-            {"select f(1\n)",
-             "SELECT\n\tf(\n\t\t1\n\t);\n"},
-            {"select f(\n1)",
-             "SELECT\n\tf(\n\t\t1\n\t);\n"},
-            {"select f(1,\n)",
-             "SELECT\n\tf(\n\t\t1,\n\t);\n"},
-            {"select f(1\n,)",
-             "SELECT\n\tf(\n\t\t1,\n\t);\n"},
-            {"select f(\n1,)",
-             "SELECT\n\tf(\n\t\t1,\n\t);\n"},
-            {"select f(1,2,\n3,4)",
-             "SELECT\n\tf(\n\t\t1, 2,\n\t\t3, 4\n\t);\n"},
-            {"select f(1,2,\n3,4,)",
-             "SELECT\n\tf(\n\t\t1, 2,\n\t\t3, 4,\n\t);\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineStruct) {
-        TCases cases = {
-            {"select <|\n|>",
-             "SELECT\n\t<|\n\t|>;\n"},
-            {"select <|a:1\n|>",
-             "SELECT\n\t<|\n\t\ta: 1\n\t|>;\n"},
-            {"select <|\na:1|>",
-             "SELECT\n\t<|\n\t\ta: 1\n\t|>;\n"},
-            {"select <|a:1,\n|>",
-             "SELECT\n\t<|\n\t\ta: 1,\n\t|>;\n"},
-            {"select <|a:1\n,|>",
-             "SELECT\n\t<|\n\t\ta: 1,\n\t|>;\n"},
-            {"select <|\na:1,|>",
-             "SELECT\n\t<|\n\t\ta: 1,\n\t|>;\n"},
-            {"select <|a:1,b:2,\nc:3,d:4|>",
-             "SELECT\n\t<|\n\t\ta: 1, b: 2,\n\t\tc: 3, d: 4\n\t|>;\n"},
-            {"select <|a:1,b:2,\nc:3,d:4,|>",
-             "SELECT\n\t<|\n\t\ta: 1, b: 2,\n\t\tc: 3, d: 4,\n\t|>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineListType) {
-        TCases cases = {
-            {"select list<int32\n>",
-             "SELECT\n\tlist<\n\t\tint32\n\t>;\n"},
-            {"select list<\nint32>",
-             "SELECT\n\tlist<\n\t\tint32\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineOptionalType) {
-        TCases cases = {
-            {"select optional<int32\n>",
-             "SELECT\n\toptional<\n\t\tint32\n\t>;\n"},
-            {"select optional<\nint32>",
-             "SELECT\n\toptional<\n\t\tint32\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineStreamType) {
-        TCases cases = {
-            {"select stream<int32\n>",
-             "SELECT\n\tstream<\n\t\tint32\n\t>;\n"},
-            {"select stream<\nint32>",
-             "SELECT\n\tstream<\n\t\tint32\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineFlowType) {
-        TCases cases = {
-            {"select flow<int32\n>",
-             "SELECT\n\tflow<\n\t\tint32\n\t>;\n"},
-            {"select flow<\nint32>",
-             "SELECT\n\tflow<\n\t\tint32\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineSetType) {
-        TCases cases = {
-            {"select set<int32\n>",
-             "SELECT\n\tset<\n\t\tint32\n\t>;\n"},
-            {"select set<\nint32>",
-             "SELECT\n\tset<\n\t\tint32\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineTupleType) {
-        TCases cases = {
-            {"select tuple<\n>",
-             "SELECT\n\ttuple<\n\t\t \n\t>;\n"},
-            {"select tuple<int32\n>",
-             "SELECT\n\ttuple<\n\t\tint32\n\t>;\n"},
-            {"select tuple<\nint32>",
-             "SELECT\n\ttuple<\n\t\tint32\n\t>;\n"},
-            {"select tuple<int32,\n>",
-             "SELECT\n\ttuple<\n\t\tint32,\n\t>;\n"},
-            {"select tuple<int32\n,>",
-             "SELECT\n\ttuple<\n\t\tint32,\n\t>;\n"},
-            {"select tuple<\nint32,>",
-             "SELECT\n\ttuple<\n\t\tint32,\n\t>;\n"},
-            {"select tuple<\nint32,string,\ndouble,bool>",
-             "SELECT\n\ttuple<\n\t\tint32, string,\n\t\tdouble, bool\n\t>;\n"},
-            {"select tuple<\nint32,string,\ndouble,bool,>",
-             "SELECT\n\ttuple<\n\t\tint32, string,\n\t\tdouble, bool,\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineStructType) {
-        TCases cases = {
-            {"select struct<\n>",
-             "SELECT\n\tstruct<\n\t\t \n\t>;\n"},
-            {"select struct<a:int32\n>",
-             "SELECT\n\tstruct<\n\t\ta: int32\n\t>;\n"},
-            {"select struct<\na:int32>",
-             "SELECT\n\tstruct<\n\t\ta: int32\n\t>;\n"},
-            {"select struct<a:int32,\n>",
-             "SELECT\n\tstruct<\n\t\ta: int32,\n\t>;\n"},
-            {"select struct<a:int32\n,>",
-             "SELECT\n\tstruct<\n\t\ta: int32,\n\t>;\n"},
-            {"select struct<\na:int32,>",
-             "SELECT\n\tstruct<\n\t\ta: int32,\n\t>;\n"},
-            {"select struct<\na:int32,b:string,\nc:double,d:bool>",
-             "SELECT\n\tstruct<\n\t\ta: int32, b: string,\n\t\tc: double, d: bool\n\t>;\n"},
-            {"select struct<\na:int32,b:string,\nc:double,d:bool,>",
-             "SELECT\n\tstruct<\n\t\ta: int32, b: string,\n\t\tc: double, d: bool,\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineVariantOverTupleType) {
-        TCases cases = {
-            {"select variant<int32\n>",
-             "SELECT\n\tvariant<\n\t\tint32\n\t>;\n"},
-            {"select variant<\nint32>",
-             "SELECT\n\tvariant<\n\t\tint32\n\t>;\n"},
-            {"select variant<int32,\n>",
-             "SELECT\n\tvariant<\n\t\tint32,\n\t>;\n"},
-            {"select variant<int32\n,>",
-             "SELECT\n\tvariant<\n\t\tint32,\n\t>;\n"},
-            {"select variant<\nint32,>",
-             "SELECT\n\tvariant<\n\t\tint32,\n\t>;\n"},
-            {"select variant<\nint32,string,\ndouble,bool>",
-             "SELECT\n\tvariant<\n\t\tint32, string,\n\t\tdouble, bool\n\t>;\n"},
-            {"select variant<\nint32,string,\ndouble,bool,>",
-             "SELECT\n\tvariant<\n\t\tint32, string,\n\t\tdouble, bool,\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineVariantOverStructType) {
-        TCases cases = {
-            {"select variant<a:int32\n>",
-             "SELECT\n\tvariant<\n\t\ta: int32\n\t>;\n"},
-            {"select variant<\na:int32>",
-             "SELECT\n\tvariant<\n\t\ta: int32\n\t>;\n"},
-            {"select variant<a:int32,\n>",
-             "SELECT\n\tvariant<\n\t\ta: int32,\n\t>;\n"},
-            {"select variant<a:int32\n,>",
-             "SELECT\n\tvariant<\n\t\ta: int32,\n\t>;\n"},
-            {"select variant<\na:int32,>",
-             "SELECT\n\tvariant<\n\t\ta: int32,\n\t>;\n"},
-            {"select variant<\na:int32,b:string,\nc:double,d:bool>",
-             "SELECT\n\tvariant<\n\t\ta: int32, b: string,\n\t\tc: double, d: bool\n\t>;\n"},
-            {"select variant<\na:int32,b:string,\nc:double,d:bool,>",
-             "SELECT\n\tvariant<\n\t\ta: int32, b: string,\n\t\tc: double, d: bool,\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineEnum) {
-        TCases cases = {
-            {"select enum<a\n>",
-             "SELECT\n\tenum<\n\t\ta\n\t>;\n"},
-            {"select enum<\na>",
-             "SELECT\n\tenum<\n\t\ta\n\t>;\n"},
-            {"select enum<a,\n>",
-             "SELECT\n\tenum<\n\t\ta,\n\t>;\n"},
-            {"select enum<a\n,>",
-             "SELECT\n\tenum<\n\t\ta,\n\t>;\n"},
-            {"select enum<\na,>",
-             "SELECT\n\tenum<\n\t\ta,\n\t>;\n"},
-            {"select enum<\na,b,\nc,d>",
-             "SELECT\n\tenum<\n\t\ta, b,\n\t\tc, d\n\t>;\n"},
-            {"select enum<\na,b,\nc,d,>",
-             "SELECT\n\tenum<\n\t\ta, b,\n\t\tc, d,\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineResourceType) {
-        TCases cases = {
-            {"select resource<foo\n>",
-             "SELECT\n\tresource<\n\t\tfoo\n\t>;\n"},
-            {"select resource<\nfoo>",
-             "SELECT\n\tresource<\n\t\tfoo\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineTaggedType) {
-        TCases cases = {
-            {"select tagged<int32,foo\n>",
-             "SELECT\n\ttagged<\n\t\tint32, foo\n\t>;\n"},
-            {"select tagged<int32,\nfoo>",
-             "SELECT\n\ttagged<\n\t\tint32,\n\t\tfoo\n\t>;\n"},
-            {"select tagged<int32\n,foo>",
-             "SELECT\n\ttagged<\n\t\tint32,\n\t\tfoo\n\t>;\n"},
-            {"select tagged<\nint32,foo>",
-             "SELECT\n\ttagged<\n\t\tint32, foo\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineDictType) {
-        TCases cases = {
-            {"select dict<int32,string\n>",
-             "SELECT\n\tdict<\n\t\tint32, string\n\t>;\n"},
-            {"select dict<int32,\nstring>",
-             "SELECT\n\tdict<\n\t\tint32,\n\t\tstring\n\t>;\n"},
-            {"select dict<int32\n,string>",
-             "SELECT\n\tdict<\n\t\tint32,\n\t\tstring\n\t>;\n"},
-            {"select dict<\nint32,string>",
-             "SELECT\n\tdict<\n\t\tint32, string\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MultiLineCallableType) {
-        TCases cases = {
-            {"select callable<()->int32\n>",
-             "SELECT\n\tcallable<\n\t\t() -> int32\n\t>;\n"},
-            {"select callable<\n()->int32>",
-             "SELECT\n\tcallable<\n\t\t() -> int32\n\t>;\n"},
-            {"select callable<\n(int32)->int32>",
-             "SELECT\n\tcallable<\n\t\t(int32) -> int32\n\t>;\n"},
-            {"select callable<\n(int32,\ndouble)->int32>",
-             "SELECT\n\tcallable<\n\t\t(\n\t\t\tint32,\n\t\t\tdouble\n\t\t) -> int32\n\t>;\n"},
-            {"select callable<\n(int32\n,double)->int32>",
-             "SELECT\n\tcallable<\n\t\t(\n\t\t\tint32,\n\t\t\tdouble\n\t\t) -> int32\n\t>;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(UnaryOp) {
-        TCases cases = {
-            {"select -x,+x,~x,-1,-1.0,+1,+1.0,~1u",
-             "SELECT\n\t-x,\n\t+x,\n\t~x,\n\t-1,\n\t-1.0,\n\t+1,\n\t+1.0,\n\t~1u;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(MatchRecognize) {
-        TCases cases = {{R"(
-pragma FeatureR010="prototype";
-USE plato;
-SELECT
-    *
-FROM Input MATCH_RECOGNIZE(
-    PATTERN ( A )
-    DEFINE A as A
-);
-)",
-R"(PRAGMA FeatureR010 = "prototype";
-USE plato;
-
-SELECT
-    *
-FROM Input MATCH_RECOGNIZE (PATTERN (A) DEFINE A AS A);
-)"
-    }};
-    TSetup setup;
-    setup.Run(cases);
-}
-
-    Y_UNIT_TEST(CreateTableTrailingComma) {
-        TCases cases = {
-            {"CREATE TABLE tableName (Key Uint32, PRIMARY KEY (Key),);",
-             "CREATE TABLE tableName (\n\tKey Uint32,\n\tPRIMARY KEY (Key),\n);\n"},
-            {"CREATE TABLE tableName (Key Uint32,);",
-             "CREATE TABLE tableName (\n\tKey Uint32,\n);\n"},
-        };
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(Union) {
-        TCases cases = {
-            {"select 1 union all select 2 union select 3 union all select 4 union select 5", 
-             "SELECT\n\t1\nUNION ALL\nSELECT\n\t2\nUNION\nSELECT\n\t3\nUNION ALL\nSELECT\n\t4\nUNION\nSELECT\n\t5;\n"},
-             };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(CommentAfterLastSelect) {
-        TCases cases = {
-            {"SELECT 1--comment\n",
-             "SELECT\n\t1--comment\n;\n"},
-            {"SELECT 1\n\n--comment\n",
-             "SELECT\n\t1--comment\n;\n"},
-            {"SELECT 1\n\n--comment",
-             "SELECT\n\t1--comment\n;\n"},
-            {"SELECT * FROM Input\n\n\n\n/* comment */\n\n\n",
-             "SELECT\n\t*\nFROM Input/* comment */;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(WindowFunctionInsideExpr) {
-        TCases cases = {
-            {"SELECT CAST(ROW_NUMBER() OVER () AS String) AS x,\nFROM Input;", 
-             "SELECT\n\tCAST(ROW_NUMBER() OVER () AS String) AS x,\nFROM Input;\n"},
-            {"SELECT CAST(ROW_NUMBER() OVER (PARTITION BY key) AS String) AS x,\nFROM Input;", 
-             "SELECT\n\tCAST(\n\t\tROW_NUMBER() OVER (\n\t\t\tPARTITION BY\n\t\t\t\tkey\n\t\t) AS String\n\t) AS x,\nFROM Input;\n"},
-            {"SELECT CAST(ROW_NUMBER() OVER (users) AS String) AS x,\nFROM Input;", 
-            "SELECT\n\tCAST(\n\t\tROW_NUMBER() OVER (\n\t\t\tusers\n\t\t) AS String\n\t) AS x,\nFROM Input;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(ExistsExpr) {
-        TCases cases = {
-            {"SELECT EXISTS (SELECT 1);", 
-             "SELECT\n\tEXISTS (\n\t\tSELECT\n\t\t\t1\n\t);\n"},
-            {"SELECT CAST(EXISTS(SELECT 1) AS Int) AS x,\nFROM Input;", 
-             "SELECT\n\tCAST(\n\t\tEXISTS (\n\t\t\tSELECT\n\t\t\t\t1\n\t\t) AS Int\n\t) AS x,\nFROM Input;\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(LambdaInsideExpr) {
-        TCases cases = {
-            {"SELECT ListMap(AsList(1,2),($x)->{return $x+1});", 
-             "SELECT\n\tListMap(\n\t\tAsList(1, 2), ($x) -> {\n\t\t\tRETURN $x + 1\n\t\t}\n\t);\n"},
-        };
-
-        TSetup setup;
-        setup.Run(cases);
-    }
-
-    Y_UNIT_TEST(CaseExpr) {
-        TCases cases = {
-            {"SELECT CASE WHEN 1 == 2 THEN 3 WHEN 4 == 5 THEN 6 WHEN 7 == 8 THEN 9 ELSE 10 END;", 
-             "SELECT\n\tCASE\n\t\tWHEN 1 == 2\n\t\t\tTHEN 3\n\t\tWHEN 4 == 5\n\t\t\tTHEN 6\n\t\tWHEN 7 == 8\n\t\t\tTHEN 9\n\t\tELSE 10\n\tEND;\n"},
-            {"SELECT CAST(CASE WHEN 1 == 2 THEN 3 WHEN 4 == 5 THEN 6 ELSE 10 END AS String);", 
-             "SELECT\n\tCAST(\n\t\tCASE\n\t\t\tWHEN 1 == 2\n\t\t\t\tTHEN 3\n\t\t\tWHEN 4 == 5\n\t\t\t\tTHEN 6\n\t\t\tELSE 10\n\t\tEND AS String\n\t);\n"},
-            {"SELECT CASE x WHEN 1 THEN 2 WHEN 3 THEN 4 WHEN 5 THEN 6 ELSE 10 END;", 
-             "SELECT\n\tCASE x\n\t\tWHEN 1\n\t\t\tTHEN 2\n\t\tWHEN 3\n\t\t\tTHEN 4\n\t\tWHEN 5\n\t\t\tTHEN 6\n\t\tELSE 10\n\tEND;\n"},
         };
 
         TSetup setup;

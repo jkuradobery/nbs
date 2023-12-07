@@ -3,7 +3,6 @@
 #include "hive.h"
 #include "tablet_info.h"
 #include "follower_tablet_info.h"
-#include <ydb/core/base/channel_profiles.h>
 
 namespace NKikimr {
 namespace NHive {
@@ -29,9 +28,10 @@ public:
     TTabletId Id;
     ETabletState State;
     TTabletTypes::EType Type;
-    TFullObjectId ObjectId;
+    TObjectId ObjectId;
     TSubDomainKey ObjectDomain;
-    TNodeFilter NodeFilter;
+    TVector<TNodeId> AllowedNodes;
+    TVector<TDataCenterId> AllowedDataCenters;
     NKikimrHive::TDataCentersPreference DataCentersPreference;
     TIntrusivePtr<TTabletStorageInfo> TabletStorageInfo;
     TChannelsBindings BoundChannels;
@@ -42,6 +42,7 @@ public:
     TList<TFollowerGroup> FollowerGroups;
     TList<TFollowerTabletInfo> Followers;
     TOwnerIdxType::TValueType Owner;
+    TVector<TSubDomainKey> EffectiveAllowedDomains; // AllowedDomains | ObjectDomain
     NKikimrHive::ETabletBootMode BootMode;
     TVector<TActorId> StorageInfoSubscribers;
     TActorId LockedToActor;
@@ -56,7 +57,7 @@ public:
         , Id(id)
         , State(ETabletState::Unknown)
         , Type(TTabletTypes::TypeInvalid)
-        , ObjectId(0, 0)
+        , ObjectId(0)
         , ChannelProfileReassignReason(NKikimrHive::TEvReassignTablet::HIVE_REASSIGN_REASON_NO)
         , KnownGeneration(0)
         , Category(nullptr)
@@ -205,7 +206,7 @@ public:
     bool InitiateDeleteStorage(TSideEffects& sideEffects);
 
     void IncreaseGeneration() {
-        Y_ABORT_UNLESS(KnownGeneration < Max<ui32>());
+        Y_VERIFY(KnownGeneration < Max<ui32>());
         ++KnownGeneration;
     }
 
@@ -265,7 +266,7 @@ public:
 
     TFollowerGroup& GetFollowerGroup(TFollowerGroupId followerGroupId) {
         auto it = std::find(FollowerGroups.begin(), FollowerGroups.end(), followerGroupId);
-        Y_ABORT_UNLESS(it != FollowerGroups.end(), "%s", (TStringBuilder()
+        Y_VERIFY(it != FollowerGroups.end(), "%s", (TStringBuilder()
                     << "TabletId=" << Id
                     << " FollowerGroupId=" << followerGroupId
                     << " FollowerGroupSize=" << FollowerGroups.size()

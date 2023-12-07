@@ -2,7 +2,7 @@
 
 #include "flat_row_nulls.h"
 #include <util/generic/vector.h>
-#include <library/cpp/containers/stack_vector/stack_vec.h>
+#include <array>
 
 namespace NKikimr {
 namespace NTable {
@@ -12,36 +12,18 @@ namespace NTable {
 
         TCelled(TRaw key, const TKeyCellDefaults &keyDefaults, bool extend)
             : Size(extend ? keyDefaults->size() : Min(keyDefaults->size(), key.size()))
-            , Storage(Size)
-            , Cells(Storage.data())
+            , Large(Size > Small.size() ? Size : 0)
+            , Cells(Large ? Large.begin() : Small.begin())
         {
-            Y_ABORT_UNLESS(key.size() <= keyDefaults->size(), "Key is too large");
+            Y_VERIFY(key.size() <= keyDefaults->size(), "Key is tool large");
 
             for (ui32 it = 0; it < Size; it++) {
                 if (it >= key.size()) {
                     Cells[it] = keyDefaults[it];
                 } else if (key[it] && key[it].Type() != keyDefaults.Types[it].GetTypeId()) {
-                    Y_ABORT("Key does not comply table schema");
+                    Y_FAIL("Key does not comply table schema");
                 } else {
                     Cells[it] = TCell((char*)key[it].Data(), key[it].Size());
-                }
-
-                Bytes += Cells[it].Size();
-            }
-        }
-
-        TCelled(TArrayRef<const TCell> key, const TKeyCellDefaults &keyDefaults, bool extend)
-            : Size(extend ? keyDefaults->size() : Min(keyDefaults->size(), key.size()))
-            , Storage(Size)
-            , Cells(Storage.data())
-        {
-            Y_ABORT_UNLESS(key.size() <= keyDefaults->size(), "Key is too large");
-
-            for (ui32 it = 0; it < Size; it++) {
-                if (it >= key.size()) {
-                    Cells[it] = keyDefaults[it];
-                } else {
-                    Cells[it] = key[it];
                 }
 
                 Bytes += Cells[it].Size();
@@ -58,10 +40,11 @@ namespace NTable {
             return { Cells, Size };
         }
 
-        const size_t Size;
+        const size_t Size = 0;
         size_t Bytes = 0;
-        TStackVec<TCell, 16> Storage;
-        TCell* const Cells;
+        std::array<TCell, 16> Small;
+        TVector<TCell> Large;
+        TCell * const Cells = nullptr;
     };
 
 }

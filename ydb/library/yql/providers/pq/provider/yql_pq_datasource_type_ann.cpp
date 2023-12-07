@@ -99,12 +99,11 @@ public:
             return TStatus::Error;
         }
 
-        auto format = read.Format().Ref().Content();
-        if (!NCommon::ValidateFormatForInput(format, ctx)) {
+        if (!NCommon::ValidateFormatForInput(read.Format().Ref().Content(), ctx)) {
             return TStatus::Error;
         }
 
-        if (!NCommon::ValidateCompressionForInput(format, read.Compression().Ref().Content(), ctx)) {
+        if (!NCommon::ValidateCompressionForInput(read.Compression().Ref().Content(), ctx)) {
             return TStatus::Error;
         }
 

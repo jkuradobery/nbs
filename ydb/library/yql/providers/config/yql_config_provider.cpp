@@ -18,9 +18,6 @@
 #include <library/cpp/json/json_reader.h>
 
 #include <util/string/cast.h>
-#include <util/generic/hash.h>
-#include <util/generic/utility.h>
-#include <util/string/builder.h>
 
 #include <vector>
 
@@ -146,24 +143,10 @@ namespace {
         }
 
         bool Initialize(TExprContext& ctx) override {
-            std::unordered_set<std::string_view> groups;
-            if (Types.Credentials != nullptr) {
-                groups.insert(Types.Credentials->GetGroups().begin(), Types.Credentials->GetGroups().end());
-            }
-            auto filter = [this, groups = std::move(groups)](const TCoreAttr& attr) {
-                if (!attr.HasActivation() || !Username) {
-                    return true;
-                }
-                if (NConfig::Allow(attr.GetActivation(), Username, groups)) {
-                    Statistics.Entries.emplace_back(TStringBuilder() << "Activation:" << attr.GetName(), 0, 0, 0, 0, 1);
-                    return true;
-                }
-                return false;
-            };
             if (CoreConfig) {
                 TPosition pos;
                 for (auto& flag: CoreConfig->GetFlags()) {
-                    if (filter(flag)) {
+                    if (!flag.HasActivation() || !Username || NConfig::Allow(flag.GetActivation(), Username)) {
                         TVector<TStringBuf> args;
                         for (auto& arg: flag.GetArgs()) {
                             args.push_back(arg);
@@ -174,18 +157,6 @@ namespace {
                     }
                 }
             }
-            return true;
-        }
-
-        bool CollectStatistics(NYson::TYsonWriter& writer, bool totalOnly) override {
-            if (Statistics.Entries.empty()) {
-                return false;
-            }
-
-            THashMap<ui32, TOperationStatistics> tmp;
-            tmp.emplace(Max<ui32>(), Statistics);
-            NCommon::WriteStatistics(writer, totalOnly, tmp);
-
             return true;
         }
 
@@ -251,11 +222,6 @@ namespace {
                         }
 
                         TStringBuf command = node->Child(2)->Content();
-                        if (command.length() && '_' == command[0]) {
-                            ctx.AddError(TIssue(ctx.GetPosition(node->Child(2)->Pos()), "Flags started with underscore are not allowed"));
-                            return {};
-                        }
-
                         TVector<TStringBuf> args;
                         for (size_t i = 3; i < node->ChildrenSize(); ++i) {
                             if (node->Child(i)->IsCallable("EvaluateAtom")) {
@@ -511,7 +477,12 @@ namespace {
                     ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
                     return false;
                 }
-                Types.OptLLVM = args.empty() ? TString() : TString(args[0]);
+                if (!Types.UseBlocks) {
+                    Types.OptLLVM = args.empty() ? TString() : TString(args[0]);
+                } else {
+                    ctx.AddError(TIssue(pos, TStringBuilder() << "UseBlocks isn't compatible with LLVM"));
+                    return false;
+                }
             }
             else if (name == "NodesAllocationLimit") {
                 if (args.size() != 1) {
@@ -754,8 +725,10 @@ namespace {
                     ctx.AddError(TIssue(pos, TStringBuilder() << "Expected 1 argument, but got " << args.size()));
                     return false;
                 }
-                auto& userDataBlock = (Types.UserDataStorageCrutches[TUserDataKey::File(TStringBuf("/home/geodata6.bin"))] = TUserDataBlock{EUserDataType::URL, {}, TString(args[0]), {}, {}});
-                userDataBlock.Usage.Set(EUserDataBlockUsage::Path);
+                Types.UserDataStorageCrutches
+                    .emplace(
+                        TUserDataKey::File(TStringBuf("/home/geodata6.bin")),
+                        TUserDataBlock{EUserDataType::URL, {}, TString(args[0]), {}, {}}).first->second.Usage.Set(EUserDataBlockUsage::Path);
             }
             else if (name == "JsonQueryReturnsJsonDocument" || name == "DisableJsonQueryReturnsJsonDocument") {
                 if (args.size() != 0) {
@@ -798,90 +771,8 @@ namespace {
                 }
 
                 Types.UseBlocks = (name == "UseBlocks");
-            }
-            else if (name == "PgEmitAggApply" || name == "DisablePgEmitAggApply") {
-                if (args.size() != 0) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected no arguments, but got " << args.size()));
-                    return false;
-                }
-
-                Types.PgEmitAggApply = (name == "PgEmitAggApply");
-            }
-            else if (name == "CostBasedOptimizer") {
-                if (args.size() != 1) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
-                    return false;
-                }
-
-                if (!TryFromString(args[0], Types.CostBasedOptimizer)) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected `disable|pg|native', but got: " << args[0]));
-                    return false;
-                }
-            }
-            else if (name == "_EnableMatchRecognize" || name == "DisableMatchRecognize") {
-                if (args.size() != 0) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected no arguments, but got " << args.size()));
-                    return false;
-                }
-                Types.MatchRecognize = name == "_EnableMatchRecognize";
-            }
-            else if (name == "TimeOrderRecoverDelay") {
-                if (args.size() != 1) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected one argument, but got " << args.size()));
-                    return false;
-                }
-                if (!TryFromString(args[0], Types.TimeOrderRecoverDelay)) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
-                    return false;
-                }
-                if (Types.TimeOrderRecoverDelay >= 0) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected negative value, but got: " << args[0]));
-                    return false;
-                }
-            }
-            else if (name == "TimeOrderRecoverAhead") {
-                if (args.size() != 1) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected one argument, but got " << args.size()));
-                    return false;
-                }
-                if (!TryFromString(args[0], Types.TimeOrderRecoverAhead)) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
-                    return false;
-                }
-                if (Types.TimeOrderRecoverAhead <= 0) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected positive value, but got: " << args[0]));
-                    return false;
-                }
-            }
-            else if (name == "TimeOrderRecoverRowLimit") {
-                if (args.size() != 1) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected one argument, but got " << args.size()));
-                    return false;
-                }
-                if (!TryFromString(args[0], Types.TimeOrderRecoverRowLimit)) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected integer, but got: " << args[0]));
-                    return false;
-                }
-                if (Types.TimeOrderRecoverRowLimit == 0) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected positive value, but got: " << args[0]));
-                    return false;
-                }
-            }
-            else if (name == "MatchRecognizeStream") {
-                if (args.size() != 1) {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected at most 1 argument, but got " << args.size()));
-                    return false;
-                }
-                const auto& arg = args[0];
-                if (arg == "disable") {
-                    Types.MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Disable;
-                } else if (arg == "auto") {
-                    Types.MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Auto;
-                } else if (arg == "force") {
-                    Types.MatchRecognizeStreaming = EMatchRecognizeStreamingMode::Force;
-                } else {
-                    ctx.AddError(TIssue(pos, TStringBuilder() << "Expected `disable|auto|force', but got: " << args[0]));
-                    return false;
+                if (Types.UseBlocks) {
+                    Types.OptLLVM = "OFF";
                 }
             }
             else {
@@ -1161,7 +1052,6 @@ namespace {
         const TYqlCoreConfig* CoreConfig;
         TString Username;
         const TAllowSettingPolicy Policy;
-        TOperationStatistics Statistics;
     };
 }
 

@@ -9,12 +9,9 @@
 #include "mkql_block_agg.h"
 #include "mkql_block_coalesce.h"
 #include "mkql_block_if.h"
-#include "mkql_block_just.h"
 #include "mkql_block_logical.h"
 #include "mkql_block_compress.h"
 #include "mkql_block_skiptake.h"
-#include "mkql_block_top.h"
-#include "mkql_block_tuple.h"
 #include "mkql_callable.h"
 #include "mkql_chain_map.h"
 #include "mkql_chain1_map.h"
@@ -62,10 +59,8 @@
 #include "mkql_map.h"
 #include "mkql_mapnext.h"
 #include "mkql_map_join.h"
-#include "mkql_match_recognize.h"
 #include "mkql_multimap.h"
 #include "mkql_next_value.h"
-#include "mkql_nop.h"
 #include "mkql_now.h"
 #include "mkql_null.h"
 #include "mkql_pickle.h"
@@ -78,7 +73,6 @@
 #include "mkql_replicate.h"
 #include "mkql_reverse.h"
 #include "mkql_round.h"
-#include "mkql_scalar_apply.h"
 #include "mkql_seq.h"
 #include "mkql_size.h"
 #include "mkql_skip.h"
@@ -89,7 +83,6 @@
 #include "mkql_squeeze_to_list.h"
 #include "mkql_switch.h"
 #include "mkql_take.h"
-#include "mkql_time_order_recover.h"
 #include "mkql_timezone.h"
 #include "mkql_tobytes.h"
 #include "mkql_todict.h"
@@ -109,7 +102,6 @@
 #include "mkql_wide_condense.h"
 #include "mkql_wide_filter.h"
 #include "mkql_wide_map.h"
-#include "mkql_wide_top_sort.h"
 #include "mkql_withcontext.h"
 #include "mkql_zip.h"
 
@@ -133,19 +125,22 @@ IComputationNode* WrapWideFlowArg(TCallable& callable, const TComputationNodeFac
     return new TWideFlowProxyCodegeneratorNode;
 }
 
-using TCallableComputationNodeBuilderMap = std::unordered_map<std::string_view, TCallableComputationNodeBuilder>;
+using TCallableComputationNodeBuilderPtr = IComputationNode* (*const)(TCallable& callable, const TComputationNodeFactoryContext& ctx);
+using TCallableComputationNodeBuilderMap = std::unordered_map<std::string_view, TCallableComputationNodeBuilderPtr>;
 
 namespace {
 
 struct TCallableComputationNodeBuilderFuncMapFiller {
+    const TCallableComputationNodeBuilderMap Map;
+
     TCallableComputationNodeBuilderFuncMapFiller()
+        : Map(InitList)
     {}
 
-    const TCallableComputationNodeBuilderMap Map = {
+    static constexpr std::initializer_list<TCallableComputationNodeBuilderMap::value_type> InitList = {
         {"Append", &WrapAppend},
         {"Prepend", &WrapPrepend},
         {"Extend", &WrapExtend},
-        {"OrderedExtend", &WrapOrderedExtend},
         {"Arg", &WrapArg},
         {"Null", &WrapNull},
         {"Fold", &WrapFold},
@@ -169,7 +164,7 @@ struct TCallableComputationNodeBuilderFuncMapFiller {
         {"SkipWhile", &WrapSkipWhile},
         {"TakeWhileInclusive", &WrapTakeWhileInclusive},
         {"SkipWhileInclusive", &WrapSkipWhileInclusive},
-        {"AddMember", WrapComputationBuilder(&AddMember)},
+        {"AddMember", &WrapAddMember},
         {"Member", &WrapMember},
         {"RemoveMember", &WrapRemoveMember},
         {"Exists", &WrapExists},
@@ -231,7 +226,6 @@ struct TCallableComputationNodeBuilderFuncMapFiller {
         {"ToIndexDict", &WrapToIndexDict},
         {"JoinDict", &WrapJoinDict},
         {"GraceJoin", &WrapGraceJoin},
-        {"GraceSelfJoin", &WrapGraceSelfJoin},
         {"MapJoinCore", &WrapMapJoinCore},
         {"CommonJoinCore", &WrapCommonJoinCore},
         {"CombineCore", &WrapCombineCore},
@@ -281,27 +275,19 @@ struct TCallableComputationNodeBuilderFuncMapFiller {
         {"WideFromBlocks", &WrapWideFromBlocks},
         {"WideSkipBlocks", &WrapWideSkipBlocks},
         {"WideTakeBlocks", &WrapWideTakeBlocks},
-        {"WideTopBlocks", &WrapWideTopBlocks},
-        {"WideTopSortBlocks", &WrapWideTopSortBlocks},
-        {"WideSortBlocks", &WrapWideSortBlocks},
         {"AsScalar", &WrapAsScalar},
-        {"ReplicateScalar", &WrapReplicateScalar},
         {"BlockCoalesce", &WrapBlockCoalesce},
         {"BlockIf", &WrapBlockIf},
         {"BlockAnd", &WrapBlockAnd},
         {"BlockOr", &WrapBlockOr},
         {"BlockXor", &WrapBlockXor},
         {"BlockNot", &WrapBlockNot},
-        {"BlockJust", &WrapBlockJust},
         {"BlockCompress", &WrapBlockCompress},
-        {"BlockAsTuple", &WrapBlockAsTuple},
-        {"BlockNth", &WrapBlockNth},
         {"BlockExpandChunked", &WrapBlockExpandChunked},
         {"BlockCombineAll", &WrapBlockCombineAll},
         {"BlockCombineHashed", &WrapBlockCombineHashed},
         {"BlockMergeFinalizeHashed", &WrapBlockMergeFinalizeHashed},
         {"BlockMergeManyFinalizeHashed", &WrapBlockMergeManyFinalizeHashed},
-        {"ScalarApply", &WrapScalarApply},
         {"MakeHeap", &WrapMakeHeap},
         {"PushHeap", &WrapPushHeap},
         {"PopHeap", &WrapPopHeap},
@@ -330,9 +316,6 @@ struct TCallableComputationNodeBuilderFuncMapFiller {
         {"WideLastCombiner", &WrapWideLastCombiner},
         {"WideCondense1", &WrapWideCondense1},
         {"WideChopper", &WrapWideChopper},
-        {"WideTop", &WrapWideTop},
-        {"WideTopSort", &WrapWideTopSort},
-        {"WideSort", &WrapWideSort},
         {"WideFlowArg", &WrapWideFlowArg},
         {"Source", &WrapSource},
         {"RangeCreate", &WrapRangeCreate},
@@ -343,9 +326,6 @@ struct TCallableComputationNodeBuilderFuncMapFiller {
         {"RoundUp", &WrapRound},
         {"RoundDown", &WrapRound},
         {"NextValue", &WrapNextValue},
-        {"Nop", &WrapNop},
-        {"MatchRecognizeCore", &WrapMatchRecognizeCore},
-        {"TimeOrderRecover", WrapComputationBuilder(TimeOrderRecover)}
     };
 };
 

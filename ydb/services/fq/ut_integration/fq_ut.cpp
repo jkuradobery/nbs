@@ -3,12 +3,12 @@
 
 #include <ydb/public/lib/fq/fq.h>
 #include <ydb/public/lib/fq/helpers.h>
-#include <ydb/core/fq/libs/db_schema/db_schema.h>
-#include <ydb/core/fq/libs/mock/yql_mock.h>
-#include <ydb/core/fq/libs/private_client/private_client.h>
+#include <ydb/core/yq/libs/db_schema/db_schema.h>
+#include <ydb/core/yq/libs/mock/yql_mock.h>
+#include <ydb/core/yq/libs/private_client/private_client.h>
 
-#include <ydb/core/fq/libs/control_plane_storage/message_builders.h>
-#include <ydb/core/fq/libs/actors/database_resolver.h>
+#include <ydb/core/yq/libs/control_plane_storage/message_builders.h>
+#include <ydb/core/yq/libs/actors/database_resolver.h>
 
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 
@@ -97,7 +97,7 @@ namespace {
             TString str = item.DebugString();
             TVector<TString> arr;
             StringSplitter(str).Split(' ').SkipEmpty().AddTo(&arr);
-            Y_ABORT_UNLESS(arr.size() == 2, "Incorrect numeric result");
+            Y_VERIFY(arr.size() == 2, "Incorrect numeric result");
             UNIT_ASSERT_VALUES_EQUAL(std::stoi(arr.back()), answer);
         }
     }
@@ -856,6 +856,13 @@ Y_UNIT_TEST_SUITE(Yq_1) {
 }
 
 Y_UNIT_TEST_SUITE(Yq_2) {
+    // use fork for data test due to ch initialization problem
+    Y_UNIT_TEST(Test_HostNameTrasformation) {
+        UNIT_ASSERT_VALUES_EQUAL(::NYq::TransformMdbHostToCorrectFormat("rc1c-p5waby2y5y1kb5ue.mdb.yandexcloud.net"), "rc1c-p5waby2y5y1kb5ue.db.yandex.net:8443");
+        UNIT_ASSERT_VALUES_EQUAL(::NYq::TransformMdbHostToCorrectFormat("xxx.xxx"), "xxx.db.yandex.net:8443");
+        UNIT_ASSERT_VALUES_EQUAL(::NYq::TransformMdbHostToCorrectFormat("host."), "host.db.yandex.net:8443");
+    }
+
     SIMPLE_UNIT_FORKED_TEST(ReadFromYdbOverYq) {
         TKikimrWithGrpcAndRootSchema server({}, {}, {}, true);
         ui16 grpc        = server.GetPort();
@@ -934,7 +941,7 @@ Y_UNIT_TEST_SUITE(PrivateApi) {
             req.mutable_query_id()->set_value("id");
             req.set_scope(scope.ToString());
             req.set_owner_id("some_owner");
-            req.set_status(FederatedQuery::QueryMeta::COMPLETED);
+            req.set_status(YandexQuery::QueryMeta::COMPLETED);
             auto result = client.PingTask(std::move(req)).ExtractValueSync();
             result.GetIssues().PrintTo(Cerr);
             UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);

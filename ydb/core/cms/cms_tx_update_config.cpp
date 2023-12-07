@@ -19,8 +19,10 @@ public:
 
     TTxType GetTxType() const override { return TXTYPE_UPDATE_CONFIG; }
 
-    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override {
-        LOG_DEBUG_S(ctx, NKikimrServices::CMS, "TTxUpdateConfig Execute");
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
+    {
+        LOG_DEBUG_S(ctx, NKikimrServices::CMS,
+                    "TTxUpdateConfig Execute");
 
         if (!google::protobuf::util::MessageDifferencer::Equals(Config, Self->State->ConfigProto)) {
             NIceDb::TNiceDb db(txc.DB);
@@ -33,7 +35,8 @@ public:
         return true;
     }
 
-    void Complete(const TActorContext &ctx) override {
+    void Complete(const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxUpdateConfig Complete");
 
         if (Modify) {
@@ -64,7 +67,8 @@ private:
     bool Modify;
 };
 
-ITransaction *TCms::CreateTxUpdateConfig(TEvConsole::TEvConfigNotificationRequest::TPtr &ev) {
+ITransaction *TCms::CreateTxUpdateConfig(TEvConsole::TEvConfigNotificationRequest::TPtr &ev)
+{
     auto &rec = ev->Get()->Record;
 
     auto response = MakeHolder<TEvConsole::TEvConfigNotificationResponse>();
@@ -75,8 +79,10 @@ ITransaction *TCms::CreateTxUpdateConfig(TEvConsole::TEvConfigNotificationReques
     );
 }
 
-ITransaction *TCms::CreateTxUpdateConfig(TEvCms::TEvSetConfigRequest::TPtr &ev) {
-    TAutoPtr<TEvCms::TEvSetConfigResponse> response = new TEvCms::TEvSetConfigResponse;
+ITransaction *TCms::CreateTxUpdateConfig(TEvCms::TEvSetConfigRequest::TPtr &ev)
+{
+    TAutoPtr<TEvCms::TEvSetConfigResponse> response
+        = new TEvCms::TEvSetConfigResponse;
     response->Record.MutableStatus()->SetCode(NKikimrCms::TStatus::OK);
     return new TTxUpdateConfig(this, ev->Get()->Record.GetConfig(),
         new IEventHandle(ev->Sender, ev->Recipient, response.Release(), 0, ev->Cookie)

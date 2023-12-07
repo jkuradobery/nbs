@@ -1,7 +1,7 @@
 #include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 #include <ydb/public/sdk/cpp/client/ydb_topic/impl/topic_impl.h>
 #include <ydb/public/sdk/cpp/client/ydb_topic/impl/executor.h>
-#include <ydb/public/sdk/cpp/client/impl/ydb_internal/scheme_helpers/helpers.h>
+#include <ydb/public/sdk/cpp/client/impl/ydb_internal/table_helpers/helpers.h>
 #include <ydb/public/sdk/cpp/client/ydb_persqueue_core/impl/common.h>
 
 #include <ydb/library/persqueue/obfuscate/obfuscate.h>
@@ -37,16 +37,6 @@ const TConsumerDescription& TDescribeConsumerResult::GetConsumerDescription() co
     return ConsumerDescription_;
 }
 
-TDescribePartitionResult::TDescribePartitionResult(TStatus&& status, Ydb::Topic::DescribePartitionResult&& result)
-    : TStatus(std::move(status))
-    , PartitionDescription_(std::move(result))
-{
-}
-
-const TPartitionDescription& TDescribePartitionResult::GetPartitionDescription() const {
-    return PartitionDescription_;
-}
-
 TTopicDescription::TTopicDescription(Ydb::Topic::DescribeTopicResult&& result)
     : Proto_(std::move(result))
     , PartitioningSettings_(Proto_.partitioning_settings())
@@ -55,10 +45,8 @@ TTopicDescription::TTopicDescription(Ydb::Topic::DescribeTopicResult&& result)
     , PartitionWriteSpeedBytesPerSecond_(Proto_.partition_write_speed_bytes_per_second())
     , PartitionWriteBurstBytes_(Proto_.partition_write_burst_bytes())
     , MeteringMode_(TProtoAccessor::FromProto(Proto_.metering_mode()))
-    , TopicStats_(Proto_.topic_stats())
 {
     Owner_ = Proto_.self().owner();
-    CreationTimestamp_ = NScheme::TVirtualTimestamp(Proto_.self().created_at());
     PermissionToSchemeEntry(Proto_.self().permissions(), &Permissions_);
     PermissionToSchemeEntry(Proto_.self().effective_permissions(), &EffectivePermissions_);
 
@@ -78,18 +66,13 @@ TTopicDescription::TTopicDescription(Ydb::Topic::DescribeTopicResult&& result)
 
 TConsumerDescription::TConsumerDescription(Ydb::Topic::DescribeConsumerResult&& result)
     : Proto_(std::move(result))
-    , Consumer_(Proto_.consumer())
+    , Consumer_(result.consumer())
 {
     for (const auto& part : Proto_.partitions()) {
         Partitions_.emplace_back(part);
     }
 }
 
-TPartitionDescription::TPartitionDescription(Ydb::Topic::DescribePartitionResult&& result)
-    : Proto_(std::move(result))
-    , Partition_(Proto_.partition())
-{
-}
 
 TConsumer::TConsumer(const Ydb::Topic::Consumer& consumer)
     : ConsumerName_(consumer.name())
@@ -140,14 +123,6 @@ const TVector<TPartitionInfo>& TConsumerDescription::GetPartitions() const {
     return Partitions_;
 }
 
-const TPartitionInfo& TPartitionDescription::GetPartition() const {
-    return Partition_;
-}
-
-const TConsumer& TConsumerDescription::GetConsumer() const {
-    return Consumer_;
-}
-
 const TVector<ECodec>& TTopicDescription::GetSupportedCodecs() const {
     return SupportedCodecs_;
 }
@@ -182,7 +157,7 @@ const TVector<TConsumer>& TTopicDescription::GetConsumers() const {
 
 void TTopicDescription::SerializeTo(Ydb::Topic::CreateTopicRequest& request) const {
     Y_UNUSED(request);
-    Y_ABORT("Not implemented");
+    Y_FAIL("Not implemented");
 }
 
 const Ydb::Topic::DescribeTopicResult& TTopicDescription::GetProto() const {
@@ -193,20 +168,8 @@ const Ydb::Topic::DescribeConsumerResult& TConsumerDescription::GetProto() const
     return Proto_;
 }
 
-const Ydb::Topic::DescribePartitionResult& TPartitionDescription::GetProto() const {
-    return Proto_;
-}
-
 const TString& TTopicDescription::GetOwner() const {
     return Owner_;
-}
-
-const NScheme::TVirtualTimestamp& TTopicDescription::GetCreationTimestamp() const {
-    return CreationTimestamp_;
-}
-
-const TTopicStats& TTopicDescription::GetTopicStats() const {
-    return TopicStats_;
 }
 
 const TVector<NScheme::TPermissions>& TTopicDescription::GetPermissions() const {
@@ -230,51 +193,9 @@ ui64 TPartitioningSettings::GetPartitionCountLimit() const {
     return PartitionCountLimit_;
 }
 
-TTopicStats::TTopicStats(const Ydb::Topic::DescribeTopicResult::TopicStats& topicStats)
-    : StoreSizeBytes_(topicStats.store_size_bytes())
-    , MinLastWriteTime_(TInstant::Seconds(topicStats.min_last_write_time().seconds()))
-    , MaxWriteTimeLag_(TDuration::Seconds(topicStats.max_write_time_lag().seconds()) + TDuration::MicroSeconds(topicStats.max_write_time_lag().nanos() / 1000))
-    , BytesWrittenPerMinute_(topicStats.bytes_written().per_minute())
-    , BytesWrittenPerHour_(topicStats.bytes_written().per_hour())
-    , BytesWrittenPerDay_(topicStats.bytes_written().per_day())
-{
-}
-
-ui64 TTopicStats::GetStoreSizeBytes() const {
-    return StoreSizeBytes_;
-}
-
-TInstant TTopicStats::GetMinLastWriteTime() const {
-    return MinLastWriteTime_;
-}
-
-TDuration TTopicStats::GetMaxWriteTimeLag() const {
-    return MaxWriteTimeLag_;
-}
-
-ui64 TTopicStats::GetBytesWrittenPerMinute() const {
-    return BytesWrittenPerMinute_;
-}
-
-ui64 TTopicStats::GetBytesWrittenPerHour() const {
-    return BytesWrittenPerHour_;
-}
-
-ui64 TTopicStats::GetBytesWrittenPerDay() const {
-    return BytesWrittenPerDay_;
-}
-
-
 TPartitionStats::TPartitionStats(const Ydb::Topic::PartitionStats& partitionStats)
     : StartOffset_(partitionStats.partition_offsets().start())
     , EndOffset_(partitionStats.partition_offsets().end())
-    , StoreSizeBytes_(partitionStats.store_size_bytes())
-    , LastWriteTime_(TInstant::Seconds(partitionStats.last_write_time().seconds()))
-    , MaxWriteTimeLag_(TDuration::Seconds(partitionStats.max_write_time_lag().seconds()) + TDuration::MicroSeconds(partitionStats.max_write_time_lag().nanos() / 1000))
-    , BytesWrittenPerMinute_(partitionStats.bytes_written().per_minute())
-    , BytesWrittenPerHour_(partitionStats.bytes_written().per_hour())
-    , BytesWrittenPerDay_(partitionStats.bytes_written().per_day())
-
 {}
 
 ui64 TPartitionStats::GetStartOffset() const {
@@ -285,67 +206,15 @@ ui64 TPartitionStats::GetEndOffset() const {
     return EndOffset_;
 }
 
-ui64 TPartitionStats::GetStoreSizeBytes() const {
-    return StoreSizeBytes_;
-}
-
-TInstant TPartitionStats::GetLastWriteTime() const {
-    return LastWriteTime_;
-}
-
-TDuration TPartitionStats::GetMaxWriteTimeLag() const {
-    return MaxWriteTimeLag_;
-}
-
-ui64 TPartitionStats::GetBytesWrittenPerMinute() const {
-    return BytesWrittenPerMinute_;
-}
-
-ui64 TPartitionStats::GetBytesWrittenPerHour() const {
-    return BytesWrittenPerHour_;
-}
-
-ui64 TPartitionStats::GetBytesWrittenPerDay() const {
-    return BytesWrittenPerDay_;
-}
-
-
 TPartitionConsumerStats::TPartitionConsumerStats(const Ydb::Topic::DescribeConsumerResult::PartitionConsumerStats& partitionStats)
     : CommittedOffset_(partitionStats.committed_offset())
-    , LastReadOffset_(partitionStats.last_read_offset())
-    , ReaderName_(partitionStats.reader_name())
-    , ReadSessionId_(partitionStats.read_session_id())
 {}
 
 ui64 TPartitionConsumerStats::GetCommittedOffset() const {
     return CommittedOffset_;
 }
 
-ui64 TPartitionConsumerStats::GetLastReadOffset() const {
-    return LastReadOffset_;
-}
 
-TString TPartitionConsumerStats::GetReaderName() const {
-    return ReaderName_;
-}
-
-TString TPartitionConsumerStats::GetReadSessionId() const {
-    return ReadSessionId_;
-}
-
-TPartitionLocation::TPartitionLocation(const Ydb::Topic::PartitionLocation& partitionLocation)
-    : NodeId_(partitionLocation.node_id())
-    , Generation_(partitionLocation.generation())
-{
-}
-
-i32 TPartitionLocation::GetNodeId() const {
-    return NodeId_;
-}
-
-i64 TPartitionLocation::GetGeneration() const {
-    return Generation_;
-}
 
 TPartitionInfo::TPartitionInfo(const Ydb::Topic::DescribeTopicResult::PartitionInfo& partitionInfo)
     : PartitionId_(partitionInfo.partition_id())
@@ -361,10 +230,6 @@ TPartitionInfo::TPartitionInfo(const Ydb::Topic::DescribeTopicResult::PartitionI
     }
     if (partitionInfo.has_partition_stats()) {
         PartitionStats_ = TPartitionStats{partitionInfo.partition_stats()};
-    }
-
-    if (partitionInfo.has_partition_location()) {
-        PartitionLocation_ = TPartitionLocation{partitionInfo.partition_location()};
     }
 }
 
@@ -384,9 +249,6 @@ TPartitionInfo::TPartitionInfo(const Ydb::Topic::DescribeConsumerResult::Partiti
         PartitionStats_ = TPartitionStats{partitionInfo.partition_stats()};
         PartitionConsumerStats_ = TPartitionConsumerStats{partitionInfo.partition_consumer_stats()};
     }
-    if (partitionInfo.has_partition_location()) {
-        PartitionLocation_ = TPartitionLocation{partitionInfo.partition_location()};
-    }
 }
 
 const TMaybe<TPartitionStats>& TPartitionInfo::GetPartitionStats() const {
@@ -395,10 +257,6 @@ const TMaybe<TPartitionStats>& TPartitionInfo::GetPartitionStats() const {
 
 const TMaybe<TPartitionConsumerStats>& TPartitionInfo::GetPartitionConsumerStats() const {
     return PartitionConsumerStats_;
-}
-
-const TMaybe<TPartitionLocation>& TPartitionInfo::GetPartitionLocation() const {
-    return PartitionLocation_;
 }
 
 bool TPartitionInfo::GetActive() const {
@@ -431,10 +289,6 @@ TAsyncDescribeConsumerResult TTopicClient::DescribeConsumer(const TString& path,
     return Impl_->DescribeConsumer(path, consumer, settings);
 }
 
-TAsyncDescribePartitionResult TTopicClient::DescribePartition(const TString& path, i64 partitionId, const TDescribePartitionSettings& settings) {
-    return Impl_->DescribePartition(path, partitionId, settings);
-}
-
 IRetryPolicy::TPtr IRetryPolicy::GetDefaultPolicy() {
     static IRetryPolicy::TPtr policy = GetExponentialBackoffPolicy();
     return policy;
@@ -465,18 +319,12 @@ std::shared_ptr<IReadSession> TTopicClient::CreateReadSession(const TReadSession
     return Impl_->CreateReadSession(settings);
 }
 
-std::shared_ptr<ISimpleBlockingWriteSession> TTopicClient::CreateSimpleBlockingWriteSession(
-    const TWriteSessionSettings& settings) {
+std::shared_ptr<ISimpleBlockingWriteSession> TTopicClient::CreateSimpleBlockingWriteSession(const TWriteSessionSettings& settings) {
     return Impl_->CreateSimpleWriteSession(settings);
 }
 
 std::shared_ptr<IWriteSession> TTopicClient::CreateWriteSession(const TWriteSessionSettings& settings) {
     return Impl_->CreateWriteSession(settings);
-}
-
-TAsyncStatus TTopicClient::CommitOffset(const TString& path, ui64 partitionId, const TString& consumerName, ui64 offset,
-    const TCommitOffsetSettings& settings) {
-    return Impl_->CommitOffset(path, partitionId, consumerName, offset, settings);
 }
 
 } // namespace NYdb::NTopic

@@ -5,7 +5,6 @@
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/protos/blobstorage.pb.h>
 #include <ydb/core/protos/blobstorage_vdisk_config.pb.h>
-#include <ydb/core/control/immediate_control_board_impl.h>
 
 namespace NKikimr {
 
@@ -40,8 +39,6 @@ namespace NKikimr {
             TDuration YardInitDelay = TDuration::Zero();
             const ui64 ScrubCookie = 0;
             const ui64 WhiteboardInstanceGuid = 0;
-            // handle only read requests: needed when VDisk can't write, e.g. no disk space, but still has the data
-            const bool ReadOnly = false;
 
             TBaseInfo(
                     const TVDiskIdShort &vDiskIdShort,
@@ -56,9 +53,7 @@ namespace NKikimr {
                     const bool donorMode = false,
                     std::vector<std::pair<TVDiskID, TActorId>> donorDiskIds = {},
                     ui64 scrubCookie = 0,
-                    ui64 whiteboardInstanceGuid = 0,
-                    const bool readOnly = false
-            )
+                    ui64 whiteboardInstanceGuid = 0)
                 : VDiskIdShort(vDiskIdShort)
                 , PDiskActorID(pDiskActorId)
                 , InitOwnerRound(initOwnerRound)
@@ -72,7 +67,6 @@ namespace NKikimr {
                 , DonorDiskIds(std::move(donorDiskIds))
                 , ScrubCookie(scrubCookie)
                 , WhiteboardInstanceGuid(whiteboardInstanceGuid)
-                , ReadOnly(readOnly)
             {}
 
             TBaseInfo(const TBaseInfo &) = default;
@@ -145,7 +139,6 @@ namespace NKikimr {
         bool RunSyncer;
         bool RunAnubis;
         bool RunDefrag;
-        bool RunScrubber;
 
         ///////////// SYNCLOG SETTINGS //////////////////////
         ui64 SyncLogMaxDiskAmount;

@@ -41,20 +41,8 @@ public:
     FEATURE_FLAG_SETTER(EnableDataShardGenericReadSets)
     FEATURE_FLAG_SETTER(EnableAlterDatabaseCreateHiveFirst)
     FEATURE_FLAG_SETTER(EnableDataShardVolatileTransactions)
-    FEATURE_FLAG_SETTER(EnableTopicServiceTx)
     FEATURE_FLAG_SETTER(EnableTopicDiskSubDomainQuota)
-    FEATURE_FLAG_SETTER(EnablePQConfigTransactionsAtSchemeShard)
-    FEATURE_FLAG_SETTER(EnableScriptExecutionOperations)
-    FEATURE_FLAG_SETTER(EnableForceImmediateEffectsExecution)
-    FEATURE_FLAG_SETTER(EnableTopicSplitMerge)
-    FEATURE_FLAG_SETTER(EnableTempTables)
     FEATURE_FLAG_SETTER(EnableChangefeedDynamoDBStreamsFormat)
-    FEATURE_FLAG_SETTER(EnableChangefeedDebeziumJsonFormat)
-    FEATURE_FLAG_SETTER(ForceColumnTablesCompositeMarks)
-    FEATURE_FLAG_SETTER(EnableUniqConstraint)
-    FEATURE_FLAG_SETTER(EnableTopicMessageMeta)
-    FEATURE_FLAG_SETTER(EnableUuidAsPrimaryKey)
-    FEATURE_FLAG_SETTER(EnableTablePgTypes)
 
     #undef FEATURE_FLAG_SETTER
 };

@@ -1,12 +1,10 @@
+#include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/core/tx/tx_proxy/upload_rows_common_impl.h>
-#include <ydb/core/ydb_convert/ydb_convert.h>
-
 #include <ydb/library/yql/public/udf/udf_types.h>
 #include <ydb/library/yql/minikql/dom/yson.h>
 #include <ydb/library/yql/minikql/dom/json.h>
@@ -26,6 +24,80 @@ using namespace NActors;
 using namespace Ydb;
 
 namespace {
+
+bool CheckValueData(NScheme::TTypeInfo type, const TCell& cell, TString& err) {
+    bool ok = true;
+    switch (type.GetTypeId()) {
+    case NScheme::NTypeIds::Bool:
+    case NScheme::NTypeIds::Int8:
+    case NScheme::NTypeIds::Uint8:
+    case NScheme::NTypeIds::Int16:
+    case NScheme::NTypeIds::Uint16:
+    case NScheme::NTypeIds::Int32:
+    case NScheme::NTypeIds::Uint32:
+    case NScheme::NTypeIds::Int64:
+    case NScheme::NTypeIds::Uint64:
+    case NScheme::NTypeIds::Float:
+    case NScheme::NTypeIds::Double:
+    case NScheme::NTypeIds::String:
+        break;
+
+    case NScheme::NTypeIds::Decimal:
+        ok = !NYql::NDecimal::IsError(cell.AsValue<NYql::NDecimal::TInt128>());
+        break;
+
+    case NScheme::NTypeIds::Date:
+        ok = cell.AsValue<ui16>() < NUdf::MAX_DATE;
+        break;
+
+    case NScheme::NTypeIds::Datetime:
+        ok = cell.AsValue<ui32>() < NUdf::MAX_DATETIME;
+        break;
+
+    case NScheme::NTypeIds::Timestamp:
+        ok = cell.AsValue<ui64>() < NUdf::MAX_TIMESTAMP;
+        break;
+
+    case NScheme::NTypeIds::Interval:
+        ok = (ui64)std::abs(cell.AsValue<i64>()) < NUdf::MAX_TIMESTAMP;
+        break;
+
+    case NScheme::NTypeIds::Utf8:
+        ok = NYql::IsUtf8(cell.AsBuf());
+        break;
+
+    case NScheme::NTypeIds::Yson:
+        ok = NYql::NDom::IsValidYson(cell.AsBuf());
+        break;
+
+    case NScheme::NTypeIds::Json:
+        ok = NYql::NDom::IsValidJson(cell.AsBuf());
+        break;
+
+    case NScheme::NTypeIds::JsonDocument:
+        // JsonDocument value was verified at parsing time
+        break;
+
+    case NScheme::NTypeIds::DyNumber:
+        // DyNumber value was verified at parsing time
+        break;
+
+    case NScheme::NTypeIds::Pg:
+        // no pg validation here
+        break;
+
+    default:
+        err = Sprintf("Unexpected type %d", type.GetTypeId());
+        return false;
+    }
+
+    if (!ok) {
+        err = Sprintf("Invalid %s value", NScheme::TypeName(type));
+    }
+
+    return ok;
+}
+
 
 // TODO: no mapping for DATE, DATETIME, TZ_*, YSON, JSON, UUID, JSON_DOCUMENT, DYNUMBER
 bool ConvertArrowToYdbPrimitive(const arrow::DataType& type, Ydb::Type& toType) {
@@ -123,26 +195,127 @@ public:
     {}
 
 private:
-    void OnBeforeStart(const TActorContext& ctx) override {
-        Request->SetFinishAction([selfId = ctx.SelfID, as = ctx.ExecutorThread.ActorSystem]() {
-            as->Send(selfId, new TEvents::TEvPoison);
-        });
+    static bool CellFromProtoVal(NScheme::TTypeInfo type, const Ydb::Value* vp,
+                                  TCell& c, TString& err, TMemoryPool& valueDataPool)
+    {
+        if (vp->Hasnull_flag_value()) {
+            c = TCell();
+            return true;
+        }
+
+        if (vp->Hasnested_value()) {
+            vp = &vp->Getnested_value();
+        }
+
+        const Ydb::Value& val = *vp;
+
+#define EXTRACT_VAL(cellType, protoType, cppType) \
+        case NScheme::NTypeIds::cellType : { \
+                cppType v = val.Get##protoType##_value(); \
+                c = TCell((const char*)&v, sizeof(v)); \
+                break; \
+            }
+
+        switch (type.GetTypeId()) {
+        EXTRACT_VAL(Bool, bool, ui8);
+        EXTRACT_VAL(Int8, int32, i8);
+        EXTRACT_VAL(Uint8, uint32, ui8);
+        EXTRACT_VAL(Int16, int32, i16);
+        EXTRACT_VAL(Uint16, uint32, ui16);
+        EXTRACT_VAL(Int32, int32, i32);
+        EXTRACT_VAL(Uint32, uint32, ui32);
+        EXTRACT_VAL(Int64, int64, i64);
+        EXTRACT_VAL(Uint64, uint64, ui64);
+        EXTRACT_VAL(Float, float, float);
+        EXTRACT_VAL(Double, double, double);
+        EXTRACT_VAL(Date, uint32, ui16);
+        EXTRACT_VAL(Datetime, uint32, ui32);
+        EXTRACT_VAL(Timestamp, uint64, ui64);
+        EXTRACT_VAL(Interval, int64, i64);
+        case NScheme::NTypeIds::Json :
+        case NScheme::NTypeIds::Utf8 : {
+                TString v = val.Gettext_value();
+                c = TCell(v.data(), v.size());
+                break;
+            }
+        case NScheme::NTypeIds::JsonDocument : {
+            const auto binaryJson = NBinaryJson::SerializeToBinaryJson(val.Gettext_value());
+            if (!binaryJson.Defined()) {
+                err = "Invalid JSON for JsonDocument provided";
+                return false;
+            }
+            const auto binaryJsonInPool = valueDataPool.AppendString(TStringBuf(binaryJson->Data(), binaryJson->Size()));
+            c = TCell(binaryJsonInPool.data(), binaryJsonInPool.size());
+            break;
+        }
+        case NScheme::NTypeIds::DyNumber : {
+            const auto dyNumber = NDyNumber::ParseDyNumberString(val.Gettext_value());
+            if (!dyNumber.Defined()) {
+                err = "Invalid DyNumber string representation";
+                return false;
+            }
+            const auto dyNumberInPool = valueDataPool.AppendString(TStringBuf(*dyNumber));
+            c = TCell(dyNumberInPool.data(), dyNumberInPool.size());
+            break;
+        }
+        case NScheme::NTypeIds::Yson :
+        case NScheme::NTypeIds::String : {
+                TString v = val.Getbytes_value();
+                c = TCell(v.data(), v.size());
+                break;
+            }
+        case NScheme::NTypeIds::Decimal : {
+            std::pair<ui64,ui64>& decimalVal = *valueDataPool.Allocate<std::pair<ui64,ui64> >();
+            decimalVal.first = val.low_128();
+            decimalVal.second = val.high_128();
+            c = TCell((const char*)&decimalVal, sizeof(decimalVal));
+            break;
+        }
+        case NScheme::NTypeIds::Pg : {
+            TString v = val.Getbytes_value();
+            c = TCell(v.data(), v.size());
+            break;
+        }
+        default:
+            err = Sprintf("Unexpected type %d", type.GetTypeId());
+            return false;
+        };
+
+        return CheckValueData(type, c, err);
     }
 
-    void OnBeforePoison(const TActorContext&) override {
-        // Client is gone, but we need to "reply" anyway?
-        Request->SendResult(Ydb::StatusIds::CANCELLED, {});
+    template <class TProto>
+    static bool FillCellsFromProto(TVector<TCell>& cells, const TVector<TFieldDescription>& descr, const TProto& proto,
+                                   TString& err, TMemoryPool& valueDataPool)
+    {
+        cells.clear();
+        cells.reserve(descr.size());
+
+        for (auto& fd : descr) {
+            if (proto.items_size() <= (int)fd.PositionInStruct) {
+                err = "Invalid request";
+                return false;
+            }
+            cells.push_back({});
+            if (!CellFromProtoVal(fd.Type, &proto.Getitems(fd.PositionInStruct), cells.back(), err, valueDataPool)) {
+                return false;
+            }
+
+            if (fd.NotNull && cells.back().IsNull()) {
+                err = TStringBuilder() << "Received NULL value for not null column: " << fd.ColName;
+                return false;
+            }
+        }
+
+        return true;
     }
 
+private:
     bool ReportCostInfoEnabled() const {
         return GetProtoRequest(Request.get())->operation_params().report_cost_info() == Ydb::FeatureFlag::ENABLED;
     }
 
-    void AuditContextStart() override {
-        NKikimr::NGRpcService::AuditContextAppend(Request.get(), *GetProtoRequest(Request.get()));
-    }
-
-    TString GetDatabase() override {
+    TString GetDatabase()override {
         return Request->GetDatabaseName().GetOrElse(DatabaseFromDomain(AppData()));
     }
 
@@ -262,9 +435,9 @@ private:
             cost += TUpsertCost::OneRowCost(sz);
 
             // Save serialized key and value
-            TSerializedCellVec serializedKey(keyCells);
+            TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(keyCells));
             TString serializedValue = TSerializedCellVec::Serialize(valueCells);
-            AllRows.emplace_back(std::move(serializedKey), std::move(serializedValue));
+            AllRows.emplace_back(serializedKey, serializedValue);
         }
 
         RuCost = TUpsertCost::CostToRu(cost);
@@ -290,17 +463,6 @@ public:
     {}
 
 private:
-    void OnBeforeStart(const TActorContext& ctx) override {
-        Request->SetFinishAction([selfId = ctx.SelfID, as = ctx.ExecutorThread.ActorSystem]() {
-            as->Send(selfId, new TEvents::TEvPoison);
-        });
-    }
-
-    void OnBeforePoison(const TActorContext&) override {
-        // Client is gone, but we need to "reply" anyway?
-        Request->SendResult(Ydb::StatusIds::CANCELLED, {});
-    }
-
     bool ReportCostInfoEnabled() const {
         return GetProtoRequest(Request.get())->operation_params().report_cost_info() == Ydb::FeatureFlag::ENABLED;
     }
@@ -313,11 +475,7 @@ private:
         if (req->has_csv_settings()) {
             return EUploadSource::CSV;
         }
-        Y_ABORT_UNLESS(false, "unexpected format");
-    }
-
-    void AuditContextStart() override {
-        NKikimr::NGRpcService::AuditContextAppend(Request.get(), *GetProtoRequest(Request.get()));
+        Y_VERIFY(false, "unexpected format");
     }
 
     TString GetDatabase() override {
@@ -424,7 +582,7 @@ private:
     }
 
     bool ExtractRows(TString& errorMessage) override {
-        Y_ABORT_UNLESS(Batch);
+        Y_VERIFY(Batch);
         Rows = BatchToRows(Batch, errorMessage);
         return errorMessage.empty();
     }
@@ -461,7 +619,7 @@ private:
                 auto& nullValue = cvsSettings.null_value();
                 bool withHeader = cvsSettings.header();
 
-                NFormats::TArrowCSV reader(SrcColumns, withHeader, NotNullColumns);
+                NFormats::TArrowCSV reader(SrcColumns, withHeader);
                 reader.SetSkipRows(skipRows);
 
                 if (!delimiter.empty()) {
@@ -509,15 +667,15 @@ private:
     }
 };
 
-void DoBulkUpsertRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
+void DoBulkUpsertRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
     bool diskQuotaExceeded = p->GetDiskQuotaExceeded();
 
     if (GetProtoRequest(p.get())->has_arrow_batch_settings()) {
-        f.RegisterActor(new TUploadColumnsRPCPublic(p.release(), diskQuotaExceeded));
+        TActivationContext::AsActorContext().Register(new TUploadColumnsRPCPublic(p.release(), diskQuotaExceeded));
     } else if (GetProtoRequest(p.get())->has_csv_settings()) {
-        f.RegisterActor(new TUploadColumnsRPCPublic(p.release(), diskQuotaExceeded));
+        TActivationContext::AsActorContext().Register(new TUploadColumnsRPCPublic(p.release(), diskQuotaExceeded));
     } else {
-        f.RegisterActor(new TUploadRowsRPCPublic(p.release(), diskQuotaExceeded));
+        TActivationContext::AsActorContext().Register(new TUploadRowsRPCPublic(p.release(), diskQuotaExceeded));
     }
 }
 

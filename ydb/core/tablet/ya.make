@@ -56,10 +56,10 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/helpers
-    ydb/library/actors/protos
-    ydb/library/actors/util
+    library/cpp/actors/core
+    library/cpp/actors/helpers
+    library/cpp/actors/protos
+    library/cpp/actors/util
     library/cpp/blockcodecs
     library/cpp/deprecated/enum_codegen
     library/cpp/yson
@@ -73,7 +73,6 @@ PEERDIR(
     ydb/core/tracing
     ydb/core/util
     ydb/library/persqueue/topic_parser
-    ydb/library/services
 )
 
 END()

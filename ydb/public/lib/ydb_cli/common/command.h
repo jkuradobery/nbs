@@ -6,7 +6,6 @@
 
 #include <library/cpp/getopt/last_getopt.h>
 #include <library/cpp/colorizer/colors.h>
-#include <library/cpp/logger/priority.h>
 #include <util/generic/strbuf.h>
 #include <util/generic/vector.h>
 #include <util/charset/utf8.h>
@@ -34,11 +33,6 @@ public:
         struct TCommandInfo {
             TString Name;
             NLastGetopt::TOpts* Options;
-        };
-
-        struct TConnectionParam {
-            TString Value;
-            TString Source;
         };
 
     public:
@@ -76,8 +70,6 @@ public:
             DEBUG = 3,
         };
 
-        static ELogPriority VerbosityLevelToELogPriority(EVerbosityLevel lvl);
-
         int ArgC;
         char** ArgV;
         int InitialArgC;
@@ -94,10 +86,7 @@ public:
         TString Address;
         TString Database;
         TString CaCerts;
-        TString CaCertsFile;
-        TMap<TString, TVector<TConnectionParam>> ConnectionParams;
         bool EnableSsl = false;
-        bool IsNetworkIntensive = false;
 
         EVerbosityLevel VerbosityLevel = EVerbosityLevel::NONE;
 
@@ -116,9 +105,8 @@ public:
         TString SaKeyFile;
         TString IamEndpoint;
         TString YScope;
-        TString ChosenAuthMethod;
 
-        TString ProfileFile;
+        TString YdbDir;
         bool UseOAuthToken = true;
         bool UseIamAuth = false;
         bool UseStaticCredentials = false;
@@ -277,16 +265,10 @@ public:
     virtual void Prepare(TConfig& config);
     virtual int ValidateAndRun(TConfig& config);
 
-    enum RenderEntryType {
-        BEGIN,
-        MIDDLE,
-        END
-    };
-
-    void RenderOneCommandDescription(
+    virtual void RenderCommandsDescription(
         TStringStream& stream,
         const NColorizer::TColors& colors = NColorizer::TColors(false),
-        RenderEntryType type = BEGIN
+        const std::basic_string<bool>& ends = std::basic_string<bool>()
     );
 
 protected:
@@ -308,19 +290,25 @@ private:
     void CheckForExecutableOptions(TConfig& config);
 
     constexpr static int DESCRIPTION_ALIGNMENT = 28;
+
+    static TString Ends2Prefix(const std::basic_string<bool>& ends);
 };
 
 class TClientCommandTree : public TClientCommand {
 public:
+    TMap<TString, std::unique_ptr<TClientCommand>> SubCommands;
+    TMap<TString, TString> Aliases;
+    TClientCommand* SelectedCommand;
+
     TClientCommandTree(const TString& name, const std::initializer_list<TString>& aliases = std::initializer_list<TString>(), const TString& description = TString());
     void AddCommand(std::unique_ptr<TClientCommand> command);
     virtual void Prepare(TConfig& config) override;
-    void RenderCommandsDescription(
+    virtual void RenderCommandsDescription(
         TStringStream& stream,
-        const NColorizer::TColors& colors = NColorizer::TColors(false)
-    );
+        const NColorizer::TColors& colors = NColorizer::TColors(false),
+        const std::basic_string<bool>& ends = std::basic_string<bool>()
+    ) override;
     virtual void SetFreeArgs(TConfig& config);
-    bool HasSelectedCommand() const { return SelectedCommand; }
 
 protected:
     virtual void Config(TConfig& config) override;
@@ -328,13 +316,8 @@ protected:
     virtual void Parse(TConfig& config) override;
     virtual int Run(TConfig& config) override;
 
-    TClientCommand* SelectedCommand;
-
 private:
     bool HasOptionsToShow();
-
-    TMap<TString, std::unique_ptr<TClientCommand>> SubCommands;
-    TMap<TString, TString> Aliases;
 };
 
 class TCommandWithPath {

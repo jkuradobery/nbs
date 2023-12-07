@@ -44,7 +44,7 @@ public:
 
     void Handle(TEvLocal::TEvEnumerateTabletsResult::TPtr &ev, const TActorContext &ctx) {
         const NKikimrLocal::TEvEnumerateTabletsResult &record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
         THolder<ResponseType> response(new ResponseType());
         if (record.GetStatus() != NKikimrProto::OK) {
             response->Record.SetStatus(MSTATUS_ERROR);

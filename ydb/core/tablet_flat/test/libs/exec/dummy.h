@@ -3,7 +3,7 @@
 #include "events.h"
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 #include <util/system/type_name.h>
 
 namespace NKikimr {
@@ -42,16 +42,16 @@ namespace NFake {
         }
 
     private:
-        void Inbox(TEventHandlePtr &eh)
+        void Inbox(TEventHandlePtr &eh, const ::NActors::TActorContext &ctx)
         {
             if (auto *ev = eh->CastAsLocal<NFake::TEvExecute>()) {
-                Y_ABORT_UNLESS(State == EState::Work, "Cannot handle TX now");
+                Y_VERIFY(State == EState::Work, "Cannot handle TX now");
 
                 for (auto& f : ev->Funcs) {
-                    Execute(f.Release(), this->ActorContext());
+                    Execute(f.Release(), ctx);
                 }
             } else if (auto *ev = eh->CastAsLocal<NFake::TEvCompact>()) {
-                Y_ABORT_UNLESS(State == EState::Work, "Cannot handle compaction now");
+                Y_VERIFY(State == EState::Work, "Cannot handle compaction now");
 
                 if (ev->MemOnly) {
                     Executor()->CompactMemTable(ev->Table);
@@ -62,7 +62,7 @@ namespace NFake {
             } else if (eh->CastAsLocal<NFake::TEvReturn>()) {
                 Send(Owner, new TEvents::TEvWakeup);
             } else if (auto *ev = eh->CastAsLocal<NFake::TEvCall>()) {
-                ev->Callback(Executor(), this->ActorContext());
+                ev->Callback(Executor(), ctx);
             } else if (eh->CastAsLocal<TEvents::TEvPoison>()) {
                 if (std::exchange(State, EState::Stop) != EState::Stop) {
                     /* This hack stops TExecutor before TOwner death. TOwner
@@ -70,40 +70,33 @@ namespace NFake {
                         TEvGone to leader actor on handling its own TEvPoison.
                      */
 
-                    auto ctx(this->ActorContext());
                     Executor()->DetachTablet(ctx), Detach(ctx);
                 }
             } else if (State == EState::Boot) {
-                TTabletExecutedFlat::StateInitImpl(eh, SelfId());
+                TTabletExecutedFlat::StateInitImpl(eh, ctx);
 
             } else if (eh->CastAsLocal<TEvTabletPipe::TEvServerConnected>()) {
 
             } else if (eh->CastAsLocal<TEvTabletPipe::TEvServerDisconnected>()){
 
-            } else if (!TTabletExecutedFlat::HandleDefaultEvents(eh, SelfId())) {
-                Y_Fail("Unexpected event " << eh->GetTypeName());
+            } else if (!TTabletExecutedFlat::HandleDefaultEvents(eh, ctx)) {
+                Y_Fail("Unexpected event " << TypeName(*eh->GetBase()));
             }
         }
 
-        void Enqueue(TEventHandlePtr &eh) override
+        void Enqueue(TEventHandlePtr &eh, const ::NActors::TActorContext&) override
         {
-            const auto *name = eh->GetTypeName().c_str();
+            const auto *name = TypeName(*eh->GetBase()).c_str();
 
-            Y_ABORT("Got unexpected event %s on tablet booting", name);
-        }
-
-        void DefaultSignalTabletActive(const TActorContext&) override
-        {
-            // must be empty
+            Y_FAIL("Got unexpected event %s on tablet booting", name);
         }
 
         void OnActivateExecutor(const TActorContext&) override
         {
             if (std::exchange(State, EState::Work) != EState::Work) {
-                SignalTabletActive(SelfId());
                 Send(Owner, new NFake::TEvReady(TabletID(), SelfId()));
             } else {
-                Y_ABORT("Received unexpected TExecutor activation");
+                Y_FAIL("Received unexpected TExecutor activation");
             }
         }
 
@@ -130,7 +123,7 @@ namespace NFake {
             if (auto* snapContext = dynamic_cast<TDummySnapshotContext*>(rawSnapContext.Get())) {
                 Send(SelfId(), snapContext->OnFinished());
             } else {
-                Y_ABORT("Unsupported snapshot context");
+                Y_FAIL("Unsupported snapshot context");
             }
         }
 

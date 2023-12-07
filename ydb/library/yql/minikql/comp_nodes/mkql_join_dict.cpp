@@ -41,7 +41,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetValue(const TCodegenContext& ctx, Value* pointer, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto joinFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TJoinDictWrapper::JoinDicts));
         const auto joinFuncArg = ConstantInt::get(Type::getInt64Ty(context), (ui64)this);
@@ -49,11 +49,11 @@ public:
         const auto one = GetNodeValue(Dict1, ctx, block);
         const auto two = GetNodeValue(Dict2, ctx, block);
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto joinFuncType = FunctionType::get(Type::getInt128Ty(context),
                 { joinFuncArg->getType(), ctx.Ctx->getType(), one->getType(), two->getType() }, false);
             const auto joinFuncPtr = CastInst::Create(Instruction::IntToPtr, joinFunc, PointerType::getUnqual(joinFuncType), "cast", block);
-            const auto join = CallInst::Create(joinFuncType, joinFuncPtr, { joinFuncArg, ctx.Ctx, one, two }, "join", block);
+            const auto join = CallInst::Create(joinFuncPtr, { joinFuncArg, ctx.Ctx, one, two }, "join", block);
             AddRefBoxed(join, ctx, block);
             new StoreInst(join, pointer, block);
         } else {
@@ -66,8 +66,8 @@ public:
                 { joinFuncArg->getType(), pointer->getType(), ctx.Ctx->getType(), onePtr->getType(), twoPtr->getType() }, false);
 
             const auto joinFuncPtr = CastInst::Create(Instruction::IntToPtr, joinFunc, PointerType::getUnqual(joinFuncType), "cast", block);
-            CallInst::Create(joinFuncType, joinFuncPtr, { joinFuncArg, pointer, ctx.Ctx, onePtr, twoPtr }, "", block);
-            const auto join = new LoadInst(Type::getInt128Ty(context), pointer, "join", block);
+            CallInst::Create(joinFuncPtr, { joinFuncArg, pointer, ctx.Ctx, onePtr, twoPtr }, "", block);
+            const auto join = new LoadInst(pointer, "join", block);
             AddRefBoxed(join, ctx, block);
         }
     }
@@ -83,7 +83,7 @@ private:
             return true;
         }
 
-        if constexpr (KeyTuple) {
+        if (KeyTuple) {
             for (ui32 index : OptIndicies) {
                 if (!key.GetElement(index)) {
                     return true;
@@ -146,7 +146,7 @@ private:
                 // traverse dict1, lookup dict2
                 const auto it = dict1.GetDictIterator();
                 for (NUdf::TUnboxedValue key1, payload1; it.NextPair(key1, payload1);) {
-                    Y_DEBUG_ABORT_UNLESS(!HasNullInKey(key1));
+                    Y_VERIFY_DEBUG(!HasNullInKey(key1));
                     if (const auto lookup2 = dict2.Lookup(key1)) {
                         WriteValuesImpl<EJoinKind::Inner>(payload1, lookup2, resList, ctx);
                     }
@@ -155,7 +155,7 @@ private:
                 // traverse dict2, lookup dict1
                 const auto it = dict2.GetDictIterator();
                 for (NUdf::TUnboxedValue key2, payload2; it.NextPair(key2, payload2);) {
-                    Y_DEBUG_ABORT_UNLESS(!HasNullInKey(key2));
+                    Y_VERIFY_DEBUG(!HasNullInKey(key2));
                     if (const auto lookup1 = dict1.Lookup(key2)) {
                         WriteValuesImpl<EJoinKind::Inner>(lookup1, payload2, resList, ctx);
                     }
@@ -264,7 +264,7 @@ private:
         case EJoinKind::LeftSemi: {
                 const auto it = dict1.GetDictIterator();
                 for (NUdf::TUnboxedValue key1, payload1; it.NextPair(key1, payload1);) {
-                    Y_DEBUG_ABORT_UNLESS(!HasNullInKey(key1));
+                    Y_VERIFY_DEBUG(!HasNullInKey(key1));
                     if (dict2.Contains(key1)) {
                         if (IsMulti1) {
                             TThresher<false>::DoForEachItem(payload1,
@@ -283,7 +283,7 @@ private:
         case EJoinKind::RightSemi: {
                 const auto it = dict2.GetDictIterator();
                 for (NUdf::TUnboxedValue key2, payload2; it.NextPair(key2, payload2);) {
-                    Y_DEBUG_ABORT_UNLESS(!HasNullInKey(key2));
+                    Y_VERIFY_DEBUG(!HasNullInKey(key2));
                     if (dict1.Contains(key2)) {
                         if (IsMulti2) {
                             TThresher<false>::DoForEachItem(payload2,
@@ -300,7 +300,7 @@ private:
             break;
 
         default:
-            Y_ABORT("Unknown kind");
+            Y_FAIL("Unknown kind");
         }
 
         return ctx.HolderFactory.CreateDirectListHolder(std::move(resList));

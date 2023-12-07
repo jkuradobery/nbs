@@ -58,7 +58,9 @@ void SerializeToTextFormatWithEnumId(const NProtoBuf::Message& m, IOutputStream&
 
 enum class EParseFromTextFormatOption : ui64 {
     // Unknown fields will be ignored by the parser
-    AllowUnknownField = 1
+    AllowUnknownField = 1,
+    // Error message will be writen to exception message instead of cerr
+    WriteErrorMessageToException = 2
 };
 
 Y_DECLARE_FLAGS(EParseFromTextFormatOptions, EParseFromTextFormatOption);

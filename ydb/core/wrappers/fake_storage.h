@@ -7,7 +7,7 @@
 #include <ydb/core/base/events.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/string/builder.h>
 #include <util/string/printf.h>
@@ -47,6 +47,7 @@ public:
 class TFakeExternalStorage {
 private:
     YDB_ACCESSOR_DEF(TString, SecretKey);
+
     mutable TMutex Mutex;
     mutable TMap<TString, TFakeBucketStorage> BucketStorages;
     TEvListObjectsResponse::TResult BuildListObjectsResult(const TEvListObjectsRequest::TRequest& request) const;
@@ -88,18 +89,17 @@ public:
         TGuard<TMutex> g(Mutex);
         return BucketStorages.size();
     }
-    void Execute(TEvListObjectsRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvGetObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvHeadObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvPutObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvDeleteObjectRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvDeleteObjectsRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvCreateMultipartUploadRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvUploadPartRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvCompleteMultipartUploadRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvAbortMultipartUploadRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvCheckObjectExistsRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
-    void Execute(TEvUploadPartCopyRequest::TPtr& ev, const TReplyAdapterContainer& adapter) const;
+    void Execute(TEvListObjectsRequest::TPtr& ev) const;
+    void Execute(TEvGetObjectRequest::TPtr& ev) const;
+    void Execute(TEvHeadObjectRequest::TPtr& ev) const;
+    void Execute(TEvPutObjectRequest::TPtr& ev) const;
+    void Execute(TEvDeleteObjectRequest::TPtr& ev) const;
+    void Execute(TEvDeleteObjectsRequest::TPtr& ev) const;
+    void Execute(TEvCreateMultipartUploadRequest::TPtr& ev) const;
+    void Execute(TEvUploadPartRequest::TPtr& ev) const;
+    void Execute(TEvCompleteMultipartUploadRequest::TPtr& ev) const;
+    void Execute(TEvAbortMultipartUploadRequest::TPtr& ev) const;
+    void Execute(TEvCheckObjectExistsRequest::TPtr& ev) const;
 };
 
 class TFakeExternalStorageOperator: public IExternalStorageOperator {
@@ -110,12 +110,8 @@ private:
     template <class TEvent>
     void ExecuteImpl(TEvent& ev) const {
         ev->Get()->MutableRequest().WithBucket(Bucket);
-        Y_ABORT_UNLESS(SecretKey == Singleton<TFakeExternalStorage>()->GetSecretKey());
-        Singleton<TFakeExternalStorage>()->Execute(ev, ReplyAdapter);
-    }
-
-    virtual TString DoDebugString() const override {
-        return "type:FAKE;";
+        Y_VERIFY(SecretKey == Singleton<TFakeExternalStorage>()->GetSecretKey());
+        Singleton<TFakeExternalStorage>()->Execute(ev);
     }
 
 public:
@@ -123,6 +119,7 @@ public:
         : Bucket(bucket)
         , SecretKey(secretKey)
     {
+
     }
     virtual void Execute(TEvCheckObjectExistsRequest::TPtr& ev) const override {
         ExecuteImpl(ev);
@@ -155,9 +152,6 @@ public:
         ExecuteImpl(ev);
     }
     virtual void Execute(TEvAbortMultipartUploadRequest::TPtr& ev) const override {
-        ExecuteImpl(ev);
-    }
-    virtual void Execute(TEvUploadPartCopyRequest::TPtr& ev) const override {
         ExecuteImpl(ev);
     }
 };

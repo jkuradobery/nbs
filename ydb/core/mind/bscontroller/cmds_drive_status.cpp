@@ -85,7 +85,7 @@ namespace NKikimr::NBsController {
                 item->SetPath(pdiskInfo.Path);
                 item->SetStatus(pdiskInfo.Status);
                 item->SetPDiskId(pdiskId.PDiskId);
-                item->SetSerial(pdiskInfo.ExpectedSerial);
+                //item->SetSerial(pdiskInfo.ExpectedSerial);
                 item->SetStatusChangeTimestamp(pdiskInfo.StatusTimestamp.GetValue());
             }
             return true;
@@ -96,44 +96,60 @@ namespace NKikimr::NBsController {
             TStatus& /*status*/) {
 
         const auto& serial = cmd.GetSerial();
-        auto driveInfo = DrivesSerials.Find(serial);
-        if (!driveInfo) {
-            throw TExError() << "Couldn't get drive info for disk with serial number" << TErrorParams::DiskSerialNumber(serial);
-        }
+        auto boxId = cmd.GetBoxId();
 
-        switch (driveInfo->LifeStage) {
-        case NKikimrBlobStorage::TDriveLifeStage::FREE:
-        case NKikimrBlobStorage::TDriveLifeStage::REMOVED_BY_DSTOOL:
-            break;
-        default:
+        auto driveInfo = DrivesSerials.Find(serial);
+        if (driveInfo && driveInfo->LifeStage != NKikimrBlobStorage::TDriveLifeStage::REMOVED) {
             throw TExAlready() << "Device with such serial already exists in BSC database in lifeStage " << driveInfo->LifeStage;
         }
 
-        if (!driveInfo->NodeId) {
-            throw TExError() << "Couldn't get node id for disk with serial number" << TErrorParams::DiskSerialNumber(serial);
+        auto it = NodeIdByDiskSerialNumber.find(serial);
+        if (it == NodeIdByDiskSerialNumber.end()) {
+            throw TExError() << "Couldn't find node id for disk with serial number" << TErrorParams::DiskSerialNumber(serial);
+        }
+        auto nodeId = it->second;
+
+        const auto& nodes = Nodes.Get();
+        auto nodeIt = nodes.find(nodeId);
+        if (nodeIt == nodes.end()) {
+            throw TExError() << "Couldn't find node by node id" << TErrorParams::NodeId(nodeId) << " for disk with serial number" << TErrorParams::DiskSerialNumber(serial);
         }
 
-        if (!driveInfo->Path) {
-            throw TExError() << "Couldn't get path for disk with serial number" << TErrorParams::DiskSerialNumber(serial);
+        const auto& nodeInfo = nodeIt->second;
+        auto driveIt = nodeInfo.KnownDrives.find(serial);
+        if (driveIt == nodeInfo.KnownDrives.end()) {
+            throw TExError() << "Couldn't find disk on node" << TErrorParams::NodeId(nodeId) << " by serial number" << TErrorParams::DiskSerialNumber(serial);
         }
 
-        auto driveInfoMutable = DrivesSerials.FindForUpdate(serial);
-        driveInfoMutable->BoxId = cmd.GetBoxId();
+        // delete REMOVED entry, if any, but keep its GUID
+        auto guid = driveInfo ? std::make_optional(driveInfo->Guid) : std::nullopt;
+        if (driveInfo) {
+            DrivesSerials.DeleteExistingEntry(serial);
+        }
+
+        auto driveInfoMutable = DrivesSerials.ConstructInplaceNewEntry(serial, boxId);
+        if (guid) {
+            driveInfoMutable->Guid = *guid;
+        }
         driveInfoMutable->Kind = cmd.GetKind();
         if (cmd.GetPDiskType() != NKikimrBlobStorage::UNKNOWN_TYPE) {
             driveInfoMutable->PDiskType = cmd.GetPDiskType();
+        } else {
+            driveInfoMutable->PDiskType = PDiskTypeToPDiskType(driveIt->second.DeviceType);
         }
         TString config;
         if (!cmd.GetPDiskConfig().SerializeToString(&config)) {
             throw TExError() << "Couldn't serialize PDiskConfig for disk with serial number" << TErrorParams::DiskSerialNumber(serial);
         }
         driveInfoMutable->PDiskConfig = config;
-        driveInfoMutable->LifeStage = NKikimrBlobStorage::TDriveLifeStage::ADDED_BY_DSTOOL;
+        driveInfoMutable->LifeStage = NKikimrBlobStorage::TDriveLifeStage::ADDED;
+        driveInfoMutable->NodeId = nodeId;
+        driveInfoMutable->Path = driveIt->second.Path;
 
-        Fit.Boxes.insert(cmd.GetBoxId());
+        Fit.Boxes.insert(boxId);
 
         STLOG(PRI_INFO, BS_CONTROLLER_AUDIT, BSCA00, "AddDriveSerial", (UniqueId, UniqueId), (Serial, serial),
-            (BoxId, cmd.GetBoxId()));
+            (BoxId, boxId));
     }
 
     void TBlobStorageController::TConfigState::ExecuteStep(const NKikimrBlobStorage::TRemoveDriveSerial& cmd,
@@ -146,16 +162,15 @@ namespace NKikimr::NBsController {
             throw TExError() << "Couldn't find disk with serial number" << TErrorParams::DiskSerialNumber(serial);
         }
 
-        if (driveInfo->LifeStage == NKikimrBlobStorage::TDriveLifeStage::FREE) {
-            throw TExError() << "Disk with serial number" << TErrorParams::DiskSerialNumber(serial) << " hasn't been added to BSC yet ";
-        }
-
-        if (driveInfo->LifeStage == NKikimrBlobStorage::TDriveLifeStage::REMOVED_BY_DSTOOL) {
+        if (driveInfo->LifeStage == NKikimrBlobStorage::TDriveLifeStage::REMOVED) {
             throw TExError() << "Disk with serial number" << TErrorParams::DiskSerialNumber(serial) << " has already been removed";
         }
 
         auto driveInfoMutable = DrivesSerials.FindForUpdate(serial);
-        driveInfoMutable->LifeStage = NKikimrBlobStorage::TDriveLifeStage::REMOVED_BY_DSTOOL;
+        driveInfoMutable->NodeId.Clear();
+        driveInfoMutable->PDiskId.Clear();
+        driveInfoMutable->LifeStage = NKikimrBlobStorage::TDriveLifeStage::REMOVED;
+        driveInfoMutable->Path.Clear();
 
         Fit.Boxes.insert(driveInfo->BoxId);
 
@@ -169,11 +184,15 @@ namespace NKikimr::NBsController {
 
         if (auto driveInfo = DrivesSerials.Find(serial)) {
             switch (driveInfo->LifeStage) {
-            case NKikimrBlobStorage::TDriveLifeStage::REMOVED_BY_DSTOOL:
-                DrivesSerials.DeleteExistingEntry(serial);
-                break;
-            default:
-                throw TExError() << "Drive not in REMOVED_BY_DSTOOL lifestage and cannot be forgotten. Remove it first";
+                case NKikimrBlobStorage::TDriveLifeStage::NOT_SEEN:
+                    [[fallthrough]];
+                case NKikimrBlobStorage::TDriveLifeStage::REMOVED:
+                    DrivesSerials.DeleteExistingEntry(serial);
+                    break;
+                default: {
+                    throw TExError() << "Drive not in {NOT_SEEN, REMOVED} lifestage and cannot be forgotten. Remove it first";
+                    break;
+                }
             }
         } else {
             throw TExAlready() << "Drive is unknown for BS_CONTROLLER and cannot be forgotten";

@@ -30,7 +30,6 @@ struct TNodeInfo {
 
 protected:
     EVolatileState VolatileState;
-    static const ui64 MAX_TABLET_COUNT_DEFAULT_VALUE;
 
 public:
     THive& Hive;
@@ -43,7 +42,7 @@ public:
     TDrainSettings DrainSettings;
     std::unordered_map<TTabletInfo::EVolatileState, std::unordered_set<TTabletInfo*>> Tablets;
     std::unordered_map<TTabletTypes::EType, std::unordered_set<TTabletInfo*>> TabletsRunningByType;
-    std::unordered_map<TFullObjectId, std::unordered_set<TTabletInfo*>> TabletsOfObject;
+    std::unordered_map<TObjectId, std::unordered_set<TTabletInfo*>> TabletsOfObject;
     TResourceRawValues ResourceValues; // accumulated resources from tablet metrics
     TResourceRawValues ResourceTotalValues; // actual used resources from the node (should be greater or equal one above)
     NMetrics::TAverageValue<TResourceRawValues, 20> AveragedResourceTotalValues;
@@ -74,6 +73,28 @@ public:
     }
 
     void ChangeVolatileState(EVolatileState state);
+
+    static bool IsResourceDrainingState(TTabletInfo::EVolatileState state) {
+        switch (state) {
+        case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_STARTING:
+        case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING:
+        case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_UNKNOWN:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static bool IsAliveState(TTabletInfo::EVolatileState state) {
+        switch (state) {
+        case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_STARTING:
+        case TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     bool OnTabletChangeVolatileState(TTabletInfo* tablet, TTabletInfo::EVolatileState newState);
     void UpdateResourceValues(const TTabletInfo* tablet, const NKikimrTabletBase::TMetrics& before, const NKikimrTabletBase::TMetrics& after);
 
@@ -90,13 +111,6 @@ public:
             totalSize += t.second.size();
         }
         return totalSize;
-    }
-
-    ui32 GetTabletsRunning() const {
-        auto it = Tablets.find(TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING);
-        if (it != Tablets.end())
-            return it->second.size();
-        return 0;
     }
 
     ui32 GetTabletNeighboursCount(const TTabletInfo& tablet) const {
@@ -120,7 +134,6 @@ public:
         return VolatileState == EVolatileState::Connecting || VolatileState == EVolatileState::Connected;
     }
 
-    bool MatchesFilter(const TNodeFilter& filter, TTabletDebugState* debugState = nullptr) const;
     bool IsAllowedToRunTablet(TTabletDebugState* debugState = nullptr) const;
     bool IsAllowedToRunTablet(const TTabletInfo& tablet, TTabletDebugState* debugState = nullptr) const;
     bool IsAbleToRunTablet(const TTabletInfo& tablet, TTabletDebugState* debugState = nullptr) const;
@@ -174,7 +187,7 @@ public:
             for (const auto& t : TabletsToRestart) {
                 t->BecomeStopped();
             }
-            Y_ABORT_UNLESS(GetTabletsTotal() == 0, "%s", DumpTablets().data());
+            Y_VERIFY(GetTabletsTotal() == 0, "%s", DumpTablets().data());
             Local = TActorId();
             ChangeVolatileState(EVolatileState::Disconnected);
             for (TTabletInfo* tablet : TabletsToRestart) {
@@ -212,9 +225,7 @@ public:
     }
 
     double GetNodeUsageForTablet(const TTabletInfo& tablet) const;
-    double GetNodeUsage(EResourceToBalance resource = EResourceToBalance::Dominant) const;
-    double GetNodeUsage(const TResourceNormalizedValues& normValues,
-                        EResourceToBalance resource = EResourceToBalance::Dominant) const;
+    double GetNodeUsage() const;
 
     ui64 GetTabletsRunningByType(TTabletTypes::EType tabletType) const;
 

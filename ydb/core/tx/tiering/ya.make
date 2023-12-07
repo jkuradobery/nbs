@@ -14,14 +14,17 @@ IF (OS_WINDOWS)
     CFLAGS(
         -DKIKIMR_DISABLE_S3_OPS
     )
+ELSE()
+    SRCS(
+        s3_actor.cpp
+    )
 ENDIF()
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/json/writer
     ydb/core/blobstorage
     ydb/core/protos
-    ydb/core/tx/schemeshard
     ydb/core/tx/tiering/rule
     ydb/core/tx/tiering/tier
     ydb/core/tablet_flat/protos

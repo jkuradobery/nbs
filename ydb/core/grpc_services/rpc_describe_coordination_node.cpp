@@ -2,7 +2,7 @@
 #include <ydb/core/grpc_services/base/base.h>
 
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -32,10 +32,10 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -96,8 +96,8 @@ private:
     }
 };
 
-void DoDescribeCoordinationNode(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribeCoordinationNode(p.release()));
+void DoDescribeCoordinationNode(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDescribeCoordinationNode(p.release()));
 }
 
 }

@@ -57,7 +57,7 @@ public:
     }
 
     //STFUNC(StateWork)
-    void StateWork(TAutoPtr<NActors::IEventHandle> &ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle> &ev, const NActors::TActorContext &ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TMiniKQLCompileServiceEvents::TEvCompileStatus, Handle);
             HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, Handle);
@@ -197,7 +197,7 @@ void TMessageBusServerRequest::Handle(TMiniKQLCompileServiceEvents::TEvCompileSt
     const bool need2CompileProgram = (bool)TextProgramForCompilation;
     const bool need2CompileParams = mkqlTx->HasParams() && mkqlTx->GetParams().HasText();
     const TString& pgm = ev->Get()->Program;
-    Y_ABORT_UNLESS((need2CompileProgram && TextProgramForCompilation == pgm) // TODO: do not check texts, trust cookies
+    Y_VERIFY((need2CompileProgram && TextProgramForCompilation == pgm) // TODO: do not check texts, trust cookies
         || (need2CompileParams && mkqlTx->GetParams().GetText() == pgm));
 
     if (need2CompileProgram && TextProgramForCompilation == pgm) {
@@ -237,7 +237,7 @@ bool TMessageBusServerRequest::AllRequestsCompleted(const TActorContext& ctx) {
     if (transaction.HasMiniKQLTransaction())
         return AllRequestsCompletedMKQL(ctx);
     else
-        Y_ABORT("Unexpected transaction type");
+        Y_FAIL("Unexpected transaction type");
 }
 
 bool TMessageBusServerRequest::AllRequestsCompletedMKQL(const TActorContext& ctx) {
@@ -272,7 +272,7 @@ bool TMessageBusServerRequest::AllRequestsCompletedMKQL(const TActorContext& ctx
             return true;
         }
         default:
-            Y_ABORT("Unknown mkqlTxMode.");
+            Y_FAIL("Unknown mkqlTxMode.");
     }
 }
 

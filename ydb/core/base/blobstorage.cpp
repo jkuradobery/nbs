@@ -13,7 +13,7 @@ NKikimrBlobStorage::EPDiskType PDiskTypeToPDiskType(const NPDisk::EDeviceType ty
         case NPDisk::DEVICE_TYPE_UNKNOWN:
             return NKikimrBlobStorage::EPDiskType::UNKNOWN_TYPE;
         default:
-            Y_ABORT("Device type is unknown; type# %" PRIu64, (ui64)type);
+            Y_FAIL("Device type is unknown; type# %" PRIu64, (ui64)type);
     }
 }
 
@@ -28,7 +28,7 @@ NPDisk::EDeviceType PDiskTypeToPDiskType(const NKikimrBlobStorage::EPDiskType ty
         case NKikimrBlobStorage::EPDiskType::UNKNOWN_TYPE:
             return NPDisk::DEVICE_TYPE_UNKNOWN;
         default:
-            Y_ABORT("Device type is unknown; type# %" PRIu64, (ui64)type);
+            Y_FAIL("Device type is unknown; type# %" PRIu64, (ui64)type);
     }
 }
 
@@ -61,7 +61,6 @@ std::unique_ptr<TEvBlobStorage::TEvGetResult> TEvBlobStorage::TEvGet::MakeErrorR
         to.Id = from.Id;
         to.Shift = from.Shift;
         to.RequestedSize = from.Size;
-        to.LooksLikePhantom = PhantomCheck ? std::make_optional(false) : std::nullopt;
     }
     res->ErrorReason = errorReason;
     return res;

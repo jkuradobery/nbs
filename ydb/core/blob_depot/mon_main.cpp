@@ -80,7 +80,7 @@ namespace NKikimr::NBlobDepot {
                     break;
             }
             if (!render) {
-                Y_ABORT();
+                Y_FAIL();
             }
 
             HTML(Stream) {
@@ -368,7 +368,7 @@ namespace NKikimr::NBlobDepot {
                 Stream.Str()), 0, Request->Cookie));
         }
     };
-
+    
     bool TBlobDepot::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev, const TActorContext&) {
         if (!Executor() || !Executor()->GetStats().IsActive) {
             return false;

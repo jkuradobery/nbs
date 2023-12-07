@@ -11,7 +11,7 @@
 #include <ydb/public/api/grpc/ydb_cms_v1.grpc.pb.h>
 #include <ydb/public/api/grpc/ydb_operation_v1.grpc.pb.h>
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 
 #include <google/protobuf/any.h>
 
@@ -439,7 +439,7 @@ Y_UNIT_TEST_SUITE(TGRpcCmsTest) {
                 UNIT_ASSERT_VALUES_EQUAL(zone.labels().at("any_data_center"), "true");
                 UNIT_ASSERT_VALUES_EQUAL(zone.labels().at("collocation"), "disabled");
             } else {
-                Y_ABORT("unexpected zone");
+                Y_FAIL("unexpected zone");
             }
             zones.erase(zone.name());
         }

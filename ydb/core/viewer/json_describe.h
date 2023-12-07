@@ -1,9 +1,9 @@
 #pragma once
 #include <ydb/core/tx/scheme_board/cache.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mon.h>
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include "viewer.h"
@@ -164,16 +164,6 @@ public:
                 return NKikimrSchemeOp::EPathTypeReplication;
             case TNavigate::KindBlobDepot:
                 return NKikimrSchemeOp::EPathTypeBlobDepot;
-            case TNavigate::KindExternalTable:
-                return NKikimrSchemeOp::EPathTypeExternalTable;
-            case TNavigate::KindExternalDataSource:
-                return NKikimrSchemeOp::EPathTypeExternalDataSource;
-            case TNavigate::KindBlockStoreVolume:
-                return NKikimrSchemeOp::EPathTypeBlockStoreVolume;
-            case TNavigate::KindFileStore:
-                return NKikimrSchemeOp::EPathTypeFileStore;
-            case TNavigate::KindView:
-                return NKikimrSchemeOp::EPathTypeView;
             default:
                 return NKikimrSchemeOp::EPathTypeDir;
         }
@@ -238,7 +228,7 @@ public:
             DescribeResult = GetSchemeShardDescribeSchemeInfo();
         } else if (CacheResult != nullptr) {
             NSchemeCache::TSchemeCacheNavigate *navigate = CacheResult->Request.Get();
-            Y_ABORT_UNLESS(navigate->ResultSet.size() == 1);
+            Y_VERIFY(navigate->ResultSet.size() == 1);
             if (navigate->ErrorCount == 0) {
                 DescribeResult = GetCacheDescribeSchemeInfo();
             }

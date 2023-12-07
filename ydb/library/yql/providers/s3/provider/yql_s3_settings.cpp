@@ -14,14 +14,6 @@ TS3Configuration::TS3Configuration()
     REGISTER_SETTING(*this, BlockSizeMemoryLimit);
     REGISTER_SETTING(*this, SerializeMemoryLimit);
     REGISTER_SETTING(*this, InFlightMemoryLimit);
-    REGISTER_SETTING(*this, JsonListSizeLimit).Upper(100'000);
-    REGISTER_SETTING(*this, ArrowParallelRowGroupCount).Lower(1);
-    REGISTER_SETTING(*this, ArrowRowGroupReordering);
-    REGISTER_SETTING(*this, ParallelDownloadCount);
-    REGISTER_SETTING(*this, UseBlocksSource);
-    REGISTER_SETTING(*this, AtomicUploadCommit);
-    REGISTER_SETTING(*this, UseConcurrentDirectoryLister);
-    REGISTER_SETTING(*this, MaxDiscoveryFilesPerDirectory).Lower(1);
 }
 
 TS3Settings::TConstPtr TS3Configuration::Snapshot() const {
@@ -40,37 +32,10 @@ void TS3Configuration::Init(const TS3GatewayConfig& config, TIntrusivePtr<TTypeA
         }
     }
     FileSizeLimit = config.HasFileSizeLimit() ? config.GetFileSizeLimit() : 2_GB;
-    BlockFileSizeLimit = config.HasBlockFileSizeLimit() ? config.GetBlockFileSizeLimit() : 50_GB;
     MaxFilesPerQuery = config.HasMaxFilesPerQuery() ? config.GetMaxFilesPerQuery() : 7000;
-    MaxDiscoveryFilesPerQuery = config.HasMaxDiscoveryFilesPerQuery()
-                                    ? config.GetMaxDiscoveryFilesPerQuery()
-                                    : 9000;
-    MaxDirectoriesAndFilesPerQuery = config.HasMaxDirectoriesAndFilesPerQuery()
-                                         ? config.GetMaxDirectoriesAndFilesPerQuery()
-                                         : 9000;
-    MinDesiredDirectoriesOfFilesPerQuery =
-        config.HasMinDesiredDirectoriesOfFilesPerQuery()
-            ? config.GetMinDesiredDirectoriesOfFilesPerQuery()
-            : 100;
-    MaxReadSizePerQuery =
-        config.HasMaxReadSizePerQuery() ? config.GetMaxReadSizePerQuery() : 4_GB;
-    MaxInflightListsPerQuery =
-        config.HasMaxInflightListsPerQuery() ? config.GetMaxInflightListsPerQuery() : 1;
-    ListingCallbackThreadCount = config.HasListingCallbackThreadCount()
-                                     ? config.GetListingCallbackThreadCount()
-                                     : 1;
-    ListingCallbackPerThreadQueueSize = config.HasListingCallbackPerThreadQueueSize()
-                                            ? config.GetListingCallbackPerThreadQueueSize()
-                                            : 100;
-    RegexpCacheSize = config.HasRegexpCacheSize() ? config.GetRegexpCacheSize() : 100;
-    AllowConcurrentListings =
-        config.HasAllowConcurrentListings() ? config.GetAllowConcurrentListings() : false;
-    GeneratorPathsLimit =
-        config.HasGeneratorPathsLimit() ? config.GetGeneratorPathsLimit() : 50'000;
-    MaxListingResultSizePerPhysicalPartition =
-        config.HasMaxListingResultSizePerPartition()
-            ? config.GetMaxListingResultSizePerPartition()
-            : 1'000;
+    MaxDiscoveryFilesPerQuery = config.HasMaxDiscoveryFilesPerQuery() ? config.GetMaxDiscoveryFilesPerQuery() : 9000;
+    MaxReadSizePerQuery = config.HasMaxReadSizePerQuery() ? config.GetMaxReadSizePerQuery() : 4_GB;
+    MaxInflightListsPerQuery = config.HasMaxInflightListsPerQuery() ? config.GetMaxInflightListsPerQuery() : 1;
 
     TVector<TString> clusters(Reserve(config.ClusterMappingSize()));
     for (auto& cluster: config.GetClusterMapping()) {

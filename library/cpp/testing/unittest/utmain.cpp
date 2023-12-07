@@ -1,4 +1,3 @@
-#include "junit.h"
 #include "plugin.h"
 #include "registar.h"
 #include "utmain.h"
@@ -26,28 +25,25 @@
 #include <util/string/util.h>
 
 #include <util/system/defaults.h>
-#include <util/system/env.h>
 #include <util/system/execpath.h>
 #include <util/system/valgrind.h>
 #include <util/system/shellcommand.h>
 
-#include <filesystem>
-
 #if defined(_win_)
-    #include <fcntl.h>
-    #include <io.h>
-    #include <windows.h>
-    #include <crtdbg.h>
+#include <fcntl.h>
+#include <io.h>
+#include <windows.h>
+#include <crtdbg.h>
 #endif
 
 #if defined(_unix_)
-    #include <unistd.h>
+#include <unistd.h>
 #endif
 
 #ifdef WITH_VALGRIND
-    #define NOTE_IN_VALGRIND(test) VALGRIND_PRINTF("%s::%s", test->unit->name.data(), test->name)
+#define NOTE_IN_VALGRIND(test) VALGRIND_PRINTF("%s::%s", test->unit->name.data(), test->name)
 #else
-    #define NOTE_IN_VALGRIND(test)
+#define NOTE_IN_VALGRIND(test)
 #endif
 
 const size_t MAX_COMMENT_MESSAGE_LENGTH = 1024 * 1024; // 1 MB
@@ -55,67 +51,6 @@ const size_t MAX_COMMENT_MESSAGE_LENGTH = 1024 * 1024; // 1 MB
 using namespace NUnitTest;
 
 class TNullTraceWriterProcessor: public ITestSuiteProcessor {
-};
-
-class TMultiTraceProcessor: public ITestSuiteProcessor {
-public:
-    TMultiTraceProcessor(std::vector<std::shared_ptr<ITestSuiteProcessor>>&& processors)
-        : Processors(std::move(processors))
-    {
-    }
-
-    void SetForkTestsParams(bool forkTests, bool isForked) override {
-        ITestSuiteProcessor::SetForkTestsParams(forkTests, isForked);
-        for (const auto& proc : Processors) {
-            proc->SetForkTestsParams(forkTests, isForked);
-        }
-    }
-
-private:
-    void OnStart() override {
-        for (const auto& proc : Processors) {
-            proc->Start();
-        }
-    }
-
-    void OnEnd() override {
-        for (const auto& proc : Processors) {
-            proc->End();
-        }
-    }
-
-    void OnUnitStart(const TUnit* unit) override {
-        for (const auto& proc : Processors) {
-            proc->UnitStart(*unit);
-        }
-    }
-
-    void OnUnitStop(const TUnit* unit) override {
-        for (const auto& proc : Processors) {
-            proc->UnitStop(*unit);
-        }
-    }
-
-    void OnError(const TError* error) override {
-        for (const auto& proc : Processors) {
-            proc->Error(*error);
-        }
-    }
-
-    void OnFinish(const TFinish* finish) override {
-        for (const auto& proc : Processors) {
-            proc->Finish(*finish);
-        }
-    }
-
-    void OnBeforeTest(const TTest* test) override {
-        for (const auto& proc : Processors) {
-            proc->BeforeTest(*test);
-        }
-    }
-
-private:
-    std::vector<std::shared_ptr<ITestSuiteProcessor>> Processors;
 };
 
 class TTraceWriterProcessor: public ITestSuiteProcessor {
@@ -195,11 +130,13 @@ private:
     void OnUnitStart(const TUnit* unit) override {
         NJson::TJsonValue event;
         event.InsertValue("class", unit->name);
+        Trace("test-started", event);
     }
 
     void OnUnitStop(const TUnit* unit) override {
         NJson::TJsonValue event;
         event.InsertValue("class", unit->name);
+        Trace("test-finished", event);
     }
 
     void OnError(const TError* descr) override {
@@ -241,6 +178,8 @@ public:
         , Start(0)
         , End(Max<size_t>())
         , AppName(appName)
+        , ForkTests(false)
+        , IsForked(false)
         , Loop(false)
         , ForkExitedCorrectly(false)
         , TraceProcessor(new TNullTraceWriterProcessor())
@@ -271,20 +210,6 @@ public:
             EnabledSuites_.insert(name);
             EnabledTests_.insert(name);
             EnabledTests_.insert(TString() + name + "::*");
-        }
-    }
-
-    inline void FilterFromFile(TString filename) {
-        TString filterLine;
-
-        TFileInput filtersStream(filename);
-
-        while (filtersStream.ReadLine(filterLine)) {
-            if (filterLine.StartsWith("-")) {
-                Disable(filterLine.c_str() + 1);
-            } else if(filterLine.StartsWith("+")) {
-                Enable(filterLine.c_str() + 1);
-            }
         }
     }
 
@@ -337,11 +262,21 @@ public:
         End = val;
     }
 
-    inline void SetForkTestsParams(bool forkTests, bool isForked) override {
-        ITestSuiteProcessor::SetForkTestsParams(forkTests, isForked);
-        TraceProcessor->SetForkTestsParams(forkTests, isForked);
+    inline void SetForkTests(bool val) {
+        ForkTests = val;
+    }
 
-        SetIsTTY(GetIsForked() || CalcIsTTY(stderr));
+    inline bool GetForkTests() const override {
+        return ForkTests;
+    }
+
+    inline void SetIsForked(bool val) {
+        IsForked = val;
+        SetIsTTY(IsForked || CalcIsTTY(stderr));
+    }
+
+    inline bool GetIsForked() const override {
+        return IsForked;
     }
 
     inline void SetLoop(bool loop) {
@@ -352,14 +287,14 @@ public:
         return Loop;
     }
 
-    inline void SetTraceProcessor(std::shared_ptr<ITestSuiteProcessor> traceProcessor) {
-        TraceProcessor = std::move(traceProcessor);
+    inline void SetTraceProcessor(TAutoPtr<ITestSuiteProcessor> traceProcessor) {
+        TraceProcessor = traceProcessor;
     }
 
 private:
     void OnUnitStart(const TUnit* unit) override {
         TraceProcessor->UnitStart(*unit);
-        if (GetIsForked()) {
+        if (IsForked) {
             return;
         }
         if (PrintBeforeSuite_ || PrintBeforeTest_) {
@@ -369,7 +304,7 @@ private:
 
     void OnUnitStop(const TUnit* unit) override {
         TraceProcessor->UnitStop(*unit);
-        if (GetIsForked()) {
+        if (IsForked) {
             return;
         }
         if (!PrintAfterSuite_) {
@@ -387,15 +322,18 @@ private:
     }
 
     void OnBeforeTest(const TTest* test) override {
-        if (!GetIsForked() && PrintBeforeTest_) {
+        TraceProcessor->BeforeTest(*test);
+        if (IsForked) {
+            return;
+        }
+        if (PrintBeforeTest_) {
             fprintf(stderr, "[%sexec%s] %s::%s...\n", LightBlueColor().data(), OldColor().data(), test->unit->name.data(), test->name);
         }
-        TraceProcessor->BeforeTest(*test);
     }
 
     void OnError(const TError* descr) override {
         TraceProcessor->Error(*descr);
-        if (!GetIsForked() && ForkExitedCorrectly) {
+        if (!IsForked && ForkExitedCorrectly) {
             return;
         }
         if (!PrintAfterTest_) {
@@ -417,14 +355,14 @@ private:
         fprintf(stderr, "%s", err.data());
         NOTE_IN_VALGRIND(descr->test);
         PrintTimes(test_duration);
-        if (GetIsForked()) {
+        if (IsForked) {
             fprintf(stderr, "%s", ForkCorrectExitMsg);
         }
     }
 
     void OnFinish(const TFinish* descr) override {
         TraceProcessor->Finish(*descr);
-        if (!GetIsForked() && ForkExitedCorrectly) {
+        if (!IsForked && ForkExitedCorrectly) {
             return;
         }
         if (!PrintAfterTest_) {
@@ -437,7 +375,7 @@ private:
                     descr->test->name);
             NOTE_IN_VALGRIND(descr->test);
             PrintTimes(SaveTestDuration());
-            if (GetIsForked()) {
+            if (IsForked) {
                 fprintf(stderr, "%s", ForkCorrectExitMsg);
             }
         }
@@ -460,7 +398,7 @@ private:
 
     void OnEnd() override {
         TraceProcessor->End();
-        if (GetIsForked()) {
+        if (IsForked) {
             return;
         }
 
@@ -521,7 +459,7 @@ private:
     }
 
     void Run(std::function<void()> f, const TString& suite, const char* name, const bool forceFork) override {
-        if (!(GetForkTests() || forceFork) || GetIsForked()) {
+        if (!(ForkTests || forceFork) || GetIsForked()) {
             return f();
         }
 
@@ -529,14 +467,8 @@ private:
         args.push_back(Sprintf("+%s::%s", suite.data(), name));
 
         // stdin is ignored - unittest should not need them...
-        TShellCommandOptions options;
-        options
-            .SetUseShell(false)
-            .SetCloseAllFdsOnExec(true)
-            .SetAsync(false)
-            .SetLatency(1);
-
-        TShellCommand cmd(AppName, args, options);
+        TShellCommand cmd(AppName, args,
+                          TShellCommandOptions().SetUseShell(false).SetCloseAllFdsOnExec(true).SetAsync(false).SetLatency(1));
         cmd.Run();
 
         const TString& err = cmd.GetError();
@@ -566,7 +498,7 @@ private:
                 ythrow yexception() << "Forked test finished with unknown status";
             }
             case TShellCommand::SHELL_RUNNING: {
-                Y_ABORT_UNLESS(false, "This can't happen, we used sync mode, it's a bug!");
+                Y_VERIFY(false, "This can't happen, we used sync mode, it's a bug!");
             }
             case TShellCommand::SHELL_INTERNAL_ERROR: {
                 ythrow yexception() << "Forked test failed with internal error: " << cmd.GetInternalError();
@@ -591,10 +523,12 @@ private:
     size_t Start;
     size_t End;
     TString AppName;
+    bool ForkTests;
+    bool IsForked;
     bool Loop;
     static const char* const ForkCorrectExitMsg;
     bool ForkExitedCorrectly;
-    std::shared_ptr<ITestSuiteProcessor> TraceProcessor;
+    TAutoPtr<ITestSuiteProcessor> TraceProcessor;
 };
 
 const char* const TColoredProcessor::ForkCorrectExitMsg = "--END--";
@@ -682,8 +616,7 @@ static int DoUsage(const char* progname) {
          << "  --print-times         print wall clock duration of each test\n"
          << "  --fork-tests          run each test in a separate process\n"
          << "  --trace-path          path to the trace file to be generated\n"
-         << "  --trace-path-append   path to the trace file to be appended\n"
-         << "  --filter-file         path to the test filters ([+|-]test) file (" << Y_UNITTEST_TEST_FILTER_FILE_OPTION << ")\n";
+         << "  --trace-path-append   path to the trace file to be appended\n";
     return 0;
 }
 
@@ -706,12 +639,11 @@ int NUnitTest::RunMain(int argc, char** argv) {
         memset(&sa, 0, sizeof(sa));
         sa.sa_handler = GracefulShutdownHandler;
         sa.sa_flags = SA_SIGINFO | SA_RESTART;
-        Y_ABORT_UNLESS(!sigaction(SIGUSR2, &sa, nullptr));
+        Y_VERIFY(!sigaction(SIGUSR2, &sa, nullptr));
     }
 #endif
     NTesting::THook::CallBeforeInit();
     InitNetworkSubSystem();
-    Singleton<::NPrivate::TTestEnv>();
 
     try {
         GetExecPath();
@@ -722,14 +654,10 @@ int NUnitTest::RunMain(int argc, char** argv) {
     try {
 #endif
         NTesting::THook::CallBeforeRun();
-        Y_DEFER {
-            NTesting::THook::CallAfterRun();
-        };
+        Y_DEFER { NTesting::THook::CallAfterRun(); };
 
         NPlugin::OnStartMain(argc, argv);
-        Y_DEFER {
-            NPlugin::OnStopMain(argc, argv);
-        };
+        Y_DEFER { NPlugin::OnStopMain(argc, argv); };
 
         TColoredProcessor processor(GetExecPath());
         IOutputStream* listStream = &Cout;
@@ -741,37 +669,6 @@ int NUnitTest::RunMain(int argc, char** argv) {
             LIST_VERBOSE
         };
         EListType listTests = DONT_LIST;
-
-        bool hasJUnitProcessor = false;
-        bool forkTests = false;
-        bool isForked = false;
-        std::vector<std::shared_ptr<ITestSuiteProcessor>> traceProcessors;
-
-
-        // load filters from environment variable
-        TString filterFn = GetEnv(Y_UNITTEST_TEST_FILTER_FILE_OPTION);
-        if (!filterFn.empty()) {
-            processor.FilterFromFile(filterFn);
-        }
-
-        auto processJunitOption = [&](const TStringBuf& v) {
-            if (!hasJUnitProcessor) {
-                hasJUnitProcessor = true;
-                bool xmlFormat = false;
-                constexpr TStringBuf xmlPrefix = "xml:";
-                constexpr TStringBuf jsonPrefix = "json:";
-                if ((xmlFormat = v.StartsWith(xmlPrefix)) || v.StartsWith(jsonPrefix)) {
-                    TStringBuf fileName = v;
-                    const TStringBuf prefix = xmlFormat ? xmlPrefix : jsonPrefix;
-                    fileName = fileName.SubString(prefix.size(), TStringBuf::npos);
-                    const TJUnitProcessor::EOutputFormat format = xmlFormat ? TJUnitProcessor::EOutputFormat::Xml : TJUnitProcessor::EOutputFormat::Json;
-                    NUnitTest::ShouldColorizeDiff = false;
-                    traceProcessors.push_back(std::make_shared<TJUnitProcessor>(TString(fileName),
-                                                                                std::filesystem::path(argv[0]).stem().string(),
-                                                                                format));
-                }
-            }
-        };
 
         for (size_t i = 1; i < (size_t)argc; ++i) {
             const char* name = argv[i];
@@ -804,21 +701,21 @@ int NUnitTest::RunMain(int argc, char** argv) {
                     ++i;
                     processor.SetEnd(FromString<size_t>(argv[i]));
                 } else if (strcmp(name, "--fork-tests") == 0) {
-                    forkTests = true;
+                    processor.SetForkTests(true);
                 } else if (strcmp(name, "--is-forked-internal") == 0) {
-                    isForked = true;
+                    processor.SetIsForked(true);
                 } else if (strcmp(name, "--loop") == 0) {
                     processor.SetLoop(true);
                 } else if (strcmp(name, "--trace-path") == 0) {
                     ++i;
                     processor.BeQuiet();
                     NUnitTest::ShouldColorizeDiff = false;
-                    traceProcessors.push_back(std::make_shared<TTraceWriterProcessor>(argv[i], CreateAlways));
+                    processor.SetTraceProcessor(new TTraceWriterProcessor(argv[i], CreateAlways));
                 } else if (strcmp(name, "--trace-path-append") == 0) {
                     ++i;
                     processor.BeQuiet();
                     NUnitTest::ShouldColorizeDiff = false;
-                    traceProcessors.push_back(std::make_shared<TTraceWriterProcessor>(argv[i], OpenAlways | ForAppend));
+                    processor.SetTraceProcessor(new TTraceWriterProcessor(argv[i], OpenAlways | ForAppend));
                 } else if (strcmp(name, "--list-path") == 0) {
                     ++i;
                     listFile = MakeHolder<TFixedBufferFileOutput>(argv[i]);
@@ -828,14 +725,6 @@ int NUnitTest::RunMain(int argc, char** argv) {
                     TString param(argv[i]);
                     size_t assign = param.find('=');
                     Singleton<::NPrivate::TTestEnv>()->AddTestParam(param.substr(0, assign), param.substr(assign + 1));
-                } else if (strcmp(name, "--output") == 0) {
-                    ++i;
-                    Y_ENSURE((int)i < argc);
-                    processJunitOption(argv[i]);
-                } else if (strcmp(name, "--filter-file") == 0) {
-                    ++i;
-                    TString filename(argv[i]);
-                    processor.FilterFromFile(filename);
                 } else if (TString(name).StartsWith("--")) {
                     return DoUsage(argv[0]), 1;
                 } else if (*name == '-') {
@@ -850,20 +739,6 @@ int NUnitTest::RunMain(int argc, char** argv) {
         if (listTests != DONT_LIST) {
             return DoList(listTests == LIST_VERBOSE, *listStream);
         }
-
-        if (!hasJUnitProcessor) {
-            if (TString oo = GetEnv(Y_UNITTEST_OUTPUT_CMDLINE_OPTION)) {
-                processJunitOption(oo);
-            }
-        }
-
-        if (traceProcessors.size() > 1) {
-            processor.SetTraceProcessor(std::make_shared<TMultiTraceProcessor>(std::move(traceProcessors)));
-        } else if (traceProcessors.size() == 1) {
-            processor.SetTraceProcessor(std::move(traceProcessors[0]));
-        }
-
-        processor.SetForkTestsParams(forkTests, isForked);
 
         TTestFactory::Instance().SetProcessor(&processor);
 

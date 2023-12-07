@@ -11,25 +11,18 @@ namespace NDataShard {
 
 using namespace NMiniKQL;
 
-ui64 TDataShardChangeGroupProvider::GetChangeGroup() {
-    if (!Group) {
-        NIceDb::TNiceDb db(Db);
-        Group = Self.AllocateChangeRecordGroup(db);
-    }
-
-    return *Group;
-}
-
 class TChangeCollectorProxy
     : public IDataShardChangeCollector
     , public IBaseChangeCollectorSink
 {
 public:
-    TChangeCollectorProxy(TDataShard* self, NTable::TDatabase& db, IDataShardChangeGroupProvider& groupProvider)
+    TChangeCollectorProxy(TDataShard* self, NTable::TDatabase& db, bool isImmediateTx)
         : Self(self)
         , Db(db)
-        , GroupProvider(groupProvider)
     {
+        if (!isImmediateTx) {
+            Group = 0;
+        }
     }
 
     void AddUnderlying(THolder<IBaseChangeCollector> collector) {
@@ -96,7 +89,11 @@ public:
     void CommitLockChanges(ui64 lockId, const TRowVersion& writeVersion) override {
         NIceDb::TNiceDb db(Db);
 
-        Self->CommitLockChangeRecords(db, lockId, GroupProvider.GetChangeGroup(), writeVersion, Collected);
+        if (!Group) {
+            Group = Self->AllocateChangeRecordGroup(db);
+        }
+
+        Self->CommitLockChangeRecords(db, lockId, *Group, writeVersion, Collected);
     }
 
     TVersionState GetVersionState() override {
@@ -116,14 +113,16 @@ public:
 
         Y_VERIFY_S(Self->IsUserTable(tableId), "Unknown table: " << tableId);
         auto userTable = Self->GetUserTables().at(tableId.PathId.LocalPathId);
-        Y_ABORT_UNLESS(userTable->GetTableSchemaVersion());
+        Y_VERIFY(userTable->GetTableSchemaVersion());
 
         TChangeRecordBuilder builder(kind);
         if (!WriteTxId) {
-            ui64 group = GroupProvider.GetChangeGroup();
+            if (!Group) {
+                Group = Self->AllocateChangeRecordGroup(db);
+            }
             builder
                 .WithOrder(Self->AllocateChangeRecordOrder(db))
-                .WithGroup(group)
+                .WithGroup(*Group)
                 .WithStep(WriteVersion.Step)
                 .WithTxId(WriteVersion.TxId);
         } else {
@@ -160,8 +159,8 @@ public:
 private:
     TDataShard* Self;
     NTable::TDatabase& Db;
-    IDataShardChangeGroupProvider& GroupProvider;
 
+    TMaybe<ui64> Group;
     TVector<THolder<IBaseChangeCollector>> Underlying;
     TVector<TChange> Collected;
 
@@ -170,13 +169,7 @@ private:
 
 }; // TChangeCollectorProxy
 
-IDataShardChangeCollector* CreateChangeCollector(
-        TDataShard& dataShard,
-        IDataShardUserDb& userDb,
-        IDataShardChangeGroupProvider& groupProvider,
-        NTable::TDatabase& db,
-        const TUserTable& table)
-{
+IDataShardChangeCollector* CreateChangeCollector(TDataShard& dataShard, IDataShardUserDb& userDb, NTable::TDatabase& db, const TUserTable& table, bool isImmediateTx) {
     const bool hasAsyncIndexes = table.HasAsyncIndexes();
     const bool hasCdcStreams = table.HasCdcStreams();
 
@@ -184,7 +177,7 @@ IDataShardChangeCollector* CreateChangeCollector(
         return nullptr;
     }
 
-    auto proxy = MakeHolder<TChangeCollectorProxy>(&dataShard, db, groupProvider);
+    auto proxy = MakeHolder<TChangeCollectorProxy>(&dataShard, db, isImmediateTx);
 
     if (hasAsyncIndexes) {
         proxy->AddUnderlying(MakeHolder<TAsyncIndexChangeCollector>(&dataShard, userDb, *proxy));
@@ -197,16 +190,10 @@ IDataShardChangeCollector* CreateChangeCollector(
     return proxy.Release();
 }
 
-IDataShardChangeCollector* CreateChangeCollector(
-        TDataShard& dataShard,
-        IDataShardUserDb& userDb,
-        IDataShardChangeGroupProvider& groupProvider,
-        NTable::TDatabase& db,
-        ui64 tableId)
-{
-    Y_ABORT_UNLESS(dataShard.GetUserTables().contains(tableId));
+IDataShardChangeCollector* CreateChangeCollector(TDataShard& dataShard, IDataShardUserDb& userDb, NTable::TDatabase& db, ui64 tableId, bool isImmediateTx) {
+    Y_VERIFY(dataShard.GetUserTables().contains(tableId));
     const TUserTable& tableInfo = *dataShard.GetUserTables().at(tableId);
-    return CreateChangeCollector(dataShard, userDb, groupProvider, db, tableInfo);
+    return CreateChangeCollector(dataShard, userDb, db, tableInfo, isImmediateTx);
 }
 
 } // NDataShard

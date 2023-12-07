@@ -2,7 +2,7 @@
 #include <ydb/core/grpc_services/base/base.h>
 
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -57,8 +57,8 @@ private:
     }
 };
 
-void DoDropCoordinationNode(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDropCoordinationNodeRPC(p.release()));
+void DoDropCoordinationNode(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDropCoordinationNodeRPC(p.release()));
 }
 
 } // namespace NKikimr

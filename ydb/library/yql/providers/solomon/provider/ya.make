@@ -16,9 +16,8 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/protos
+    library/cpp/actors/protos
     ydb/library/yql/dq/expr_nodes
-    ydb/library/yql/dq/integration
     ydb/library/yql/providers/common/config
     ydb/library/yql/providers/common/proto
     ydb/library/yql/providers/common/provider

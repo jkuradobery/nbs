@@ -2,8 +2,6 @@ LIBRARY()
 
 SRCS(
     audit_log.cpp
-    audit_dml_operations.cpp
-    db_metadata_cache.h
     grpc_endpoint_publish_actor.cpp
     grpc_helper.cpp
     grpc_mon.cpp
@@ -25,7 +23,9 @@ SRCS(
     rpc_copy_tables.cpp
     rpc_export.cpp
     rpc_create_coordination_node.cpp
+    rpc_create_session.cpp
     rpc_create_table.cpp
+    rpc_delete_session.cpp
     rpc_describe_coordination_node.cpp
     rpc_describe_path.cpp
     rpc_describe_table.cpp
@@ -55,8 +55,6 @@ SRCS(
     rpc_load_rows.cpp
     rpc_log_store.cpp
     rpc_long_tx.cpp
-    rpc_node_registration.cpp
-    rpc_maintenance.cpp
     rpc_make_directory.cpp
     rpc_modify_permissions.cpp
     rpc_monitoring.cpp
@@ -64,7 +62,6 @@ SRCS(
     rpc_rate_limiter_api.cpp
     rpc_read_columns.cpp
     rpc_read_table.cpp
-    rpc_read_rows.cpp
     rpc_remove_directory.cpp
     rpc_rename_tables.cpp
     rpc_rollback_transaction.cpp
@@ -72,15 +69,10 @@ SRCS(
     rpc_stream_execute_scan_query.cpp
     rpc_stream_execute_yql_script.cpp
     rpc_whoami.cpp
+    rpc_yq.cpp
     table_settings.cpp
 
-    rpc_common/rpc_common_kqp_session.cpp
-
     query/rpc_execute_query.cpp
-    query/rpc_execute_script.cpp
-    query/rpc_fetch_script_results.cpp
-    query/rpc_attach_session.cpp
-    query/rpc_kqp_tx.cpp
     query/service_query.h
 )
 
@@ -89,49 +81,36 @@ PEERDIR(
     library/cpp/cgiparam
     library/cpp/digest/old_crc
     ydb/core/actorlib_impl
-    ydb/core/audit
     ydb/core/base
     ydb/core/control
-    ydb/core/discovery
     ydb/core/engine
     ydb/core/formats
-    ydb/core/fq/libs/actors
-    ydb/core/fq/libs/control_plane_proxy
-    ydb/core/fq/libs/control_plane_proxy/events
-    ydb/core/grpc_services/base
     ydb/core/grpc_services/counters
     ydb/core/grpc_services/local_rpc
     ydb/core/grpc_services/cancelation
-    ydb/core/grpc_services/auth_processor
     ydb/core/health_check
     ydb/core/io_formats
     ydb/core/kesus/tablet
-    ydb/core/kqp/common
     ydb/core/protos
     ydb/core/scheme
     ydb/core/sys_view
     ydb/core/tx
     ydb/core/tx/datashard
-    ydb/core/tx/sharding
     ydb/core/tx/long_tx_service/public
-    ydb/core/tx/data_events
     ydb/core/ydb_convert
-    ydb/core/security
+    ydb/core/yq/libs/actors
+    ydb/core/yq/libs/control_plane_proxy
+    ydb/core/yq/libs/control_plane_proxy/events
     ydb/library/aclib
     ydb/library/binary_json
     ydb/library/dynumber
     ydb/library/mkql_proto
     ydb/library/persqueue/topic_parser
-    ydb/library/yql/parser/pg_wrapper/interface
     ydb/library/yql/public/types
-    ydb/library/yql/public/issue
-    ydb/library/services
     ydb/public/api/grpc/draft
     ydb/public/api/protos
-    ydb/public/lib/fq
     ydb/public/lib/operation_id
     ydb/public/sdk/cpp/client/resources
-    ydb/services/ext_index/common
 )
 
 YQL_LAST_ABI_VERSION()
@@ -142,6 +121,7 @@ RECURSE(
     base
     counters
     local_rpc
+    ut
 )
 
 RECURSE_FOR_TESTS(

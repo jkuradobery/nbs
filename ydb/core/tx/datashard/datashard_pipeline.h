@@ -107,7 +107,7 @@ public:
 
     // tx propose
 
-    bool SaveForPropose(TValidatedDataTx::TPtr tx);
+    void SaveForPropose(TValidatedDataTx::TPtr tx);
     void SetProposed(ui64 txId, const TActorId& actorId);
 
     void ForgetUnproposedTx(ui64 txId);
@@ -127,17 +127,10 @@ public:
     void CompleteSchemaTx(NIceDb::TNiceDb& db, ui64 txId);
     void MarkOpAsUsingSnapshot(TOperation::TPtr op);
 
-    bool HasPredictedPlan() const { return !PredictedPlan.empty(); }
-    ui64 NextPredictedPlanStep() const { return PredictedPlan.begin()->Step; }
-
     bool PlanTxs(ui64 step, TVector<ui64> &txIds, TTransactionContext &txc, const TActorContext &ctx);
-    bool PlanPredictedTxs(ui64 step, TTransactionContext &txc, const TActorContext &ctx);
-    void PlanTxImpl(ui64 step, ui64 txId, TTransactionContext &txc, const TActorContext &ctx);
-    void AddPredictedPlan(ui64 step, ui64 txId, const TActorContext &ctx);
     void PreserveSchema(NIceDb::TNiceDb& db, ui64 step);
     TDuration CleanupTimeout() const;
-    ECleanupStatus Cleanup(NIceDb::TNiceDb& db, const TActorContext& ctx,
-        std::vector<std::unique_ptr<IEventHandle>>& replies);
+    ECleanupStatus Cleanup(NIceDb::TNiceDb& db, const TActorContext& ctx);
 
     // times
 
@@ -187,7 +180,7 @@ public:
     }
 
     void SetSchemaOp(TSchemaOperation * op) {
-        Y_ABORT_UNLESS(!SchemaTx || SchemaTx->TxId == op->TxId);
+        Y_VERIFY(!SchemaTx || SchemaTx->TxId == op->TxId);
         SchemaTx = op;
     }
 
@@ -198,12 +191,8 @@ public:
     void PersistTxFlags(TOperation::TPtr op, TTransactionContext &txc);
     void UpdateSchemeTxBody(ui64 txId, const TStringBuf &txBody, TTransactionContext &txc);
     void ProposeSchemeTx(const TSchemaOperation &op, TTransactionContext &txc);
-    bool CancelPropose(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 txId,
-        std::vector<std::unique_ptr<IEventHandle>>& replies);
-    ECleanupStatus CleanupOutdated(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 outdatedStep,
-        std::vector<std::unique_ptr<IEventHandle>>& replies);
-    bool CleanupVolatile(ui64 txId, const TActorContext& ctx,
-        std::vector<std::unique_ptr<IEventHandle>>& replies);
+    bool CancelPropose(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 txId);
+    ECleanupStatus CleanupOutdated(NIceDb::TNiceDb& db, const TActorContext& ctx, ui64 outdatedStep);
     ui64 PlannedTxInFly() const;
     const TSet<TStepOrder> &GetPlan() const;
     bool HasProposeDelayers() const;
@@ -276,8 +265,6 @@ public:
     {
         return tx->RestoreTxData(Self, txc, ctx);
     }
-
-    void RegisterDistributedWrites(const TOperation::TPtr& op, NTable::TDatabase& db);
 
     // Execution units
     TExecutionUnit &GetExecutionUnit(EExecutionUnitKind kind)
@@ -394,13 +381,6 @@ public:
      */
     bool AddLockDependencies(const TOperation::TPtr& op, TLocksUpdate& guardLocks);
 
-    /**
-     * Provides a global txId for the waiting operation
-     *
-     * The operation must have a WaitingForGlobalTxId flag.
-     */
-    void ProvideGlobalTxId(const TOperation::TPtr& op, ui64 globalTxId);
-
 private:
     struct TStoredExecutionProfile {
         TBasicOpInfo OpInfo;
@@ -500,7 +480,6 @@ private:
     // Slow operation profiles.
     TList<TStoredExecutionProfile> SlowOpProfiles;
     TMap<ui64, ui32> ActiveStreamingTxs;
-    TSet<TStepOrder> PredictedPlan;
 
     typedef TList<TOperation::TPtr> TWaitingSchemeOpsOrder;
     typedef THashMap<TOperation::TPtr, TWaitingSchemeOpsOrder::iterator> TWaitingSchemeOps;

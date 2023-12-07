@@ -63,10 +63,10 @@ namespace NKikimr {
 
     void TBlobRecoveryActor::SendPendingQueries() {
         for (auto& [vdiskId, query] : std::exchange(Queries, {})) {
-            Y_ABORT_UNLESS(query.VGet);
+            Y_VERIFY(query.VGet);
             query.Pending.push_back(std::move(query.VGet));
             auto queueIt = Queues.find(vdiskId);
-            Y_ABORT_UNLESS(queueIt != Queues.end());
+            Y_VERIFY(queueIt != Queues.end());
             for (auto& vget : query.Pending) {
                 STLOG(PRI_DEBUG, BS_VDISK_SCRUB, VDS34, VDISKP(LogPrefix, "sending TEvVGet"), (SelfId, SelfId()),
                     (Msg, vget->ToString()));
@@ -88,10 +88,10 @@ namespace NKikimr {
                 TPerBlobInfo& info = it->second;
                 if (auto context = info.Context.lock()) { // context acquired, request is still intact
                     auto& item = *info.Item; // only here we can access item, after obtaining context pointer
-                    TRope data = ev->Get()->GetBlobData(res);
+                    TString data = res.GetBuffer();
                     bool update = false;
                     if (res.GetStatus() == NKikimrProto::OK && data) {
-                        item.SetPartData(id, std::move(data));
+                        item.SetPartData(id, data);
                         update = true;
                     }
                     const bool term = !--info.BlobReplyCounter;
@@ -121,24 +121,16 @@ namespace NKikimr {
         if (item.GetAvailableParts().IsSupersetOf(item.Needed)) {
             return NKikimrProto::OK;
         }
-        const ui32 numParts = PopCount(item.PartsMask);
+        const ui32 numParts = PopCount(item.PartSet.PartsMask);
         if (numParts >= Info->Type.MinimalRestorablePartCount()) {
-            Y_DEBUG_ABORT_UNLESS(item.Parts.size() == Info->Type.TotalPartCount());
-
-            ui32 restoreMask = 0;
-            for (ui8 i = item.Needed.FirstPosition(); i != item.Needed.GetSize(); i = item.Needed.NextPosition(i)) {
-                restoreMask |= 1 << i;
-            }
-            restoreMask &= ~item.PartsMask;
-
-            ErasureRestore((TErasureType::ECrcMode)item.BlobId.CrcMode(), Info->Type, item.BlobId.BlobSize(), nullptr,
-                item.Parts, restoreMask);
-            item.PartsMask |= restoreMask;
-
+            TRope buffer;
+            Info->Type.RestoreData((TErasureType::ECrcMode)item.BlobId.CrcMode(), item.PartSet, buffer, true,
+                false, true);
+            item.PartSet.PartsMask = (1u << item.PartSet.Parts.size()) - 1;
             // clear metadata parts in mirror erasures
-            for (ui32 i = 0; i < item.Parts.size(); ++i) {
+            for (ui32 i = 0; i < item.PartSet.Parts.size(); ++i) {
                 if (!Info->Type.PartSize(TLogoBlobID(item.BlobId, i + 1))) {
-                    item.Parts[i] = TRope();
+                    item.PartSet.Parts[i].ReferenceTo(TString());
                 }
             }
             return NKikimrProto::OK;

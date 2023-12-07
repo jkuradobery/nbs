@@ -8,7 +8,7 @@ SRCS(
 GENERATE_ENUM_SERIALIZATION(net_classifier.h)
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/monlib/dynamic_counters
     ydb/core/base
     ydb/core/cms/console

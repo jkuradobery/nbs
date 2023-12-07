@@ -4,7 +4,7 @@
 #include "runtime.h"
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/hive.h>
-#include <ydb/core/quoter/public/quoter.h>
+#include <ydb/core/base/quoter.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/base/tablet_pipe.h>
@@ -28,7 +28,6 @@
 #include <ydb/core/tx/scheme_board/cache.h>
 #include <ydb/core/tx/columnshard/blob_cache.h>
 #include <ydb/core/sys_view/service/sysview_service.h>
-#include <ydb/core/statistics/stat_service.h>
 
 #include <util/system/env.h>
 
@@ -130,15 +129,14 @@ namespace NPDisk {
 
     void SetupSharedPageCache(TTestActorRuntime& runtime, ui32 nodeIndex, NFake::TCaches caches)
     {
-        auto pageCollectionCacheConfig = MakeHolder<TSharedPageCacheConfig>();
+        auto pageCollectionCacheConfig = MakeIntrusive<TSharedPageCacheConfig>();
         pageCollectionCacheConfig->CacheConfig = new TCacheCacheConfig(caches.Shared, nullptr, nullptr, nullptr);
         pageCollectionCacheConfig->TotalAsyncQueueInFlyLimit = caches.AsyncQueue;
         pageCollectionCacheConfig->TotalScanQueueInFlyLimit = caches.ScanQueue;
-        pageCollectionCacheConfig->Counters = MakeIntrusive<TSharedPageCacheCounters>(runtime.GetDynamicCounters(nodeIndex));
 
         runtime.AddLocalService(MakeSharedPageCacheId(0),
             TActorSetupCmd(
-                CreateSharedPageCache(std::move(pageCollectionCacheConfig), runtime.GetMemObserver(nodeIndex)),
+                CreateSharedPageCache(pageCollectionCacheConfig.Get()),
                 TMailboxType::ReadAsFilled,
                 0),
             nodeIndex);
@@ -170,8 +168,8 @@ namespace NPDisk {
 
     static TIntrusivePtr<TStateStorageInfo> GenerateStateStorageInfo(const TVector<TActorId> &replicas, ui32 NToSelect, ui32 nrings, ui32 ringSize)
     {   
-        Y_ABORT_UNLESS(replicas.size() >= nrings * ringSize);
-        Y_ABORT_UNLESS(NToSelect <= nrings);
+        Y_VERIFY(replicas.size() >= nrings * ringSize);
+        Y_VERIFY(NToSelect <= nrings);
 
         auto info = MakeIntrusive<TStateStorageInfo>();
         info->StateStorageGroup = 0;
@@ -312,13 +310,6 @@ namespace NPDisk {
                 nodeIndex);
     }
 
-    void SetupStatService(TTestActorRuntime& runtime, ui32 nodeIndex)
-    {
-        runtime.AddLocalService(NStat::MakeStatServiceID(runtime.GetNodeId(nodeIndex)),
-                TActorSetupCmd(NStat::CreateStatService().Release(), TMailboxType::HTSwap, 0),
-                nodeIndex);
-    }
-
     void SetupBasicServices(TTestActorRuntime& runtime, TAppPrepare& app, bool mock,
                             NFake::INode* factory, NFake::TStorage storage, NFake::TCaches caches, bool forceFollowers)
     {
@@ -328,7 +319,7 @@ namespace NPDisk {
 
         {
             NKikimrBlobStorage::TNodeWardenServiceSet bsConfig;
-            Y_ABORT_UNLESS(google::protobuf::TextFormat::ParseFromString(disk.MakeTextConf(*app.Domains), &bsConfig));
+            Y_VERIFY(google::protobuf::TextFormat::ParseFromString(disk.MakeTextConf(*app.Domains), &bsConfig));
             app.SetBSConf(std::move(bsConfig));
         }
 
@@ -352,7 +343,6 @@ namespace NPDisk {
             SetupBlobCache(runtime, nodeIndex);
             SetupSysViewService(runtime, nodeIndex);
             SetupQuoterService(runtime, nodeIndex);
-            SetupStatService(runtime, nodeIndex);
 
             if (factory)
                 factory->Birth(nodeIndex);
@@ -365,13 +355,13 @@ namespace NPDisk {
             auto blobStorageActorId = runtime.GetLocalServiceId(
                 MakeBlobStorageNodeWardenID(runtime.GetNodeId(nodeIndex)),
                 nodeIndex);
-            Y_ABORT_UNLESS(blobStorageActorId, "Missing node warden on node %" PRIu32, nodeIndex);
+            Y_VERIFY(blobStorageActorId, "Missing node warden on node %" PRIu32, nodeIndex);
             runtime.EnableScheduleForActor(blobStorageActorId);
 
             // SysView Service uses Scheduler to send counters
             auto sysViewServiceId = runtime.GetLocalServiceId(
                 NSysView::MakeSysViewServiceID(runtime.GetNodeId(nodeIndex)), nodeIndex);
-            Y_ABORT_UNLESS(sysViewServiceId, "Missing SysView Service on node %" PRIu32, nodeIndex);
+            Y_VERIFY(sysViewServiceId, "Missing SysView Service on node %" PRIu32, nodeIndex);
             runtime.EnableScheduleForActor(sysViewServiceId);
         }
 

@@ -1,11 +1,10 @@
 #include "controller.h"
 #include "controller_impl.h"
 
-#include <ydb/core/discovery/discovery.h>
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 
-namespace NKikimr::NReplication {
-
+namespace NKikimr {
+namespace NReplication {
 namespace NController {
 
 TController::TController(const TActorId& tablet, TTabletStorageInfo* info)
@@ -17,13 +16,11 @@ TController::TController(const TActorId& tablet, TTabletStorageInfo* info)
 
 void TController::OnDetach(const TActorContext& ctx) {
     CLOG_T(ctx, "OnDetach");
-    Cleanup(ctx);
     Die(ctx);
 }
 
 void TController::OnTabletDead(TEvTablet::TEvTabletDead::TPtr&, const TActorContext& ctx) {
     CLOG_T(ctx, "OnTabletDead");
-    Cleanup(ctx);
     Die(ctx);
 }
 
@@ -37,39 +34,27 @@ void TController::DefaultSignalTabletActive(const TActorContext&) {
 }
 
 STFUNC(TController::StateInit) {
-    StateInitImpl(ev, SelfId());
+    switch (ev->GetTypeRewrite()) {
+        HFunc(TEvents::TEvPoison, Handle);
+    default:
+        return StateInitImpl(ev, ctx);
+    }
+}
+
+STFUNC(TController::StateZombie) {
+    StateInitImpl(ev, ctx);
 }
 
 STFUNC(TController::StateWork) {
     switch (ev->GetTypeRewrite()) {
         HFunc(TEvController::TEvCreateReplication, Handle);
         HFunc(TEvController::TEvDropReplication, Handle);
-        HFunc(TEvPrivate::TEvDropReplication, Handle);
-        HFunc(TEvPrivate::TEvDiscoveryTargetsResult, Handle);
+        HFunc(TEvPrivate::TEvDiscoveryResult, Handle);
         HFunc(TEvPrivate::TEvAssignStreamName, Handle);
         HFunc(TEvPrivate::TEvCreateStreamResult, Handle);
-        HFunc(TEvPrivate::TEvDropStreamResult, Handle);
         HFunc(TEvPrivate::TEvCreateDstResult, Handle);
-        HFunc(TEvPrivate::TEvDropDstResult, Handle);
-        HFunc(TEvPrivate::TEvResolveTenantResult, Handle);
-        HFunc(TEvPrivate::TEvUpdateTenantNodes, Handle);
-        HFunc(TEvDiscovery::TEvDiscoveryData, Handle);
-        HFunc(TEvDiscovery::TEvError, Handle);
-    default:
-        HandleDefaultEvents(ev, SelfId());
+        HFunc(TEvents::TEvPoison, Handle);
     }
-}
-
-void TController::Cleanup(const TActorContext& ctx) {
-    for (auto& [_, replication] : Replications) {
-        replication->Shutdown(ctx);
-    }
-
-    if (auto actorId = std::exchange(DiscoveryCache, {})) {
-        Send(actorId, new TEvents::TEvPoison());
-    }
-
-    NodesManager.Shutdown(ctx);
 }
 
 void TController::SwitchToWork(const TActorContext& ctx) {
@@ -77,10 +62,6 @@ void TController::SwitchToWork(const TActorContext& ctx) {
 
     SignalTabletActive(ctx);
     Become(&TThis::StateWork);
-
-    if (!DiscoveryCache) {
-        DiscoveryCache = ctx.Register(CreateDiscoveryCache());
-    }
 
     for (auto& [_, replication] : Replications) {
         replication->Progress(ctx);
@@ -103,14 +84,9 @@ void TController::Handle(TEvController::TEvDropReplication::TPtr& ev, const TAct
     RunTxDropReplication(ev, ctx);
 }
 
-void TController::Handle(TEvPrivate::TEvDropReplication::TPtr& ev, const TActorContext& ctx) {
+void TController::Handle(TEvPrivate::TEvDiscoveryResult::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-    RunTxDropReplication(ev, ctx);
-}
-
-void TController::Handle(TEvPrivate::TEvDiscoveryTargetsResult::TPtr& ev, const TActorContext& ctx) {
-    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-    RunTxDiscoveryTargetsResult(ev, ctx);
+    RunTxDiscoveryResult(ev, ctx);
 }
 
 void TController::Handle(TEvPrivate::TEvAssignStreamName::TPtr& ev, const TActorContext& ctx) {
@@ -123,76 +99,20 @@ void TController::Handle(TEvPrivate::TEvCreateStreamResult::TPtr& ev, const TAct
     RunTxCreateStreamResult(ev, ctx);
 }
 
-void TController::Handle(TEvPrivate::TEvDropStreamResult::TPtr& ev, const TActorContext& ctx) {
-    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-    RunTxDropStreamResult(ev, ctx);
-}
-
 void TController::Handle(TEvPrivate::TEvCreateDstResult::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
     RunTxCreateDstResult(ev, ctx);
 }
 
-void TController::Handle(TEvPrivate::TEvDropDstResult::TPtr& ev, const TActorContext& ctx) {
-    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-    RunTxDropDstResult(ev, ctx);
-}
-
-void TController::Handle(TEvPrivate::TEvResolveTenantResult::TPtr& ev, const TActorContext& ctx) {
+void TController::Handle(TEvents::TEvPoison::TPtr& ev, const TActorContext& ctx) {
     CLOG_T(ctx, "Handle " << ev->Get()->ToString());
 
-    const auto rid = ev->Get()->ReplicationId;
-    const auto& tenant = ev->Get()->Tenant;
-
-    auto replication = Find(rid);
-    if (!replication) {
-        CLOG_W(ctx, "Unknown replication"
-            << ": rid# " << rid);
-        return;
+    for (auto& [_, replication] : Replications) {
+        replication->Shutdown(ctx);
     }
 
-    if (ev->Get()->IsSuccess()) {
-        CLOG_N(ctx, "Tenant resolved"
-            << ": rid# " << rid
-            << ", tenant# " << tenant);
-
-        if (!NodesManager.HasTenant(tenant)) {
-            CLOG_I(ctx, "Discover tenant nodes"
-                << ": tenant# " << tenant);
-            NodesManager.DiscoverNodes(tenant, DiscoveryCache, ctx);
-        }
-    } else {
-        CLOG_E(ctx, "Resolve tenant error"
-            << ": rid# " << rid);
-        Y_ABORT_UNLESS(!tenant);
-    }
-
-    replication->SetTenant(tenant);
-    replication->Progress(ctx);
-}
-
-void TController::Handle(TEvPrivate::TEvUpdateTenantNodes::TPtr& ev, const TActorContext& ctx) {
-    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-
-    const auto& tenant = ev->Get()->Tenant;
-    if (NodesManager.HasTenant(tenant)) {
-        CLOG_I(ctx, "Discover tenant nodes"
-            << ": tenant# " << tenant);
-        NodesManager.DiscoverNodes(tenant, DiscoveryCache, ctx);
-    }
-}
-
-void TController::Handle(TEvDiscovery::TEvDiscoveryData::TPtr& ev, const TActorContext& ctx) {
-    Y_ABORT_UNLESS(ev->Get()->CachedMessageData);
-
-    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-
-    NodesManager.ProcessResponse(ev, ctx);
-}
-
-void TController::Handle(TEvDiscovery::TEvError::TPtr& ev, const TActorContext& ctx) {
-    CLOG_T(ctx, "Handle " << ev->Get()->ToString());
-    NodesManager.ProcessResponse(ev, ctx);
+    Send(Tablet(), new TEvents::TEvPoison());
+    Become(&TThis::StateZombie);
 }
 
 TReplication::TPtr TController::Find(ui64 id) {
@@ -213,20 +133,11 @@ TReplication::TPtr TController::Find(const TPathId& pathId) {
     return it->second;
 }
 
-void TController::Remove(ui64 id) {
-    auto it = Replications.find(id);
-    if (it == Replications.end()) {
-        return;
-    }
-
-    ReplicationsByPathId.erase(it->second->GetPathId());
-    Replications.erase(it);
-}
-
 } // NController
 
 IActor* CreateController(const TActorId& tablet, TTabletStorageInfo* info) {
     return new NController::TController(tablet, info);
 }
 
-}
+} // NReplication
+} // NKikimr

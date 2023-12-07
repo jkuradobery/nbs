@@ -3,16 +3,16 @@
 #include "dynamic_nameserver.h"
 #include "node_broker.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/interconnect/events_local.h>
-#include <ydb/library/actors/interconnect/interconnect_impl.h>
-#include <ydb/library/actors/interconnect/interconnect_address.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/interconnect/events_local.h>
+#include <library/cpp/actors/interconnect/interconnect_impl.h>
+#include <library/cpp/actors/interconnect/interconnect_address.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/cms/console/console.h>
 
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <ydb/core/protos/services.pb.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/bitmap.h>
 
@@ -181,7 +181,7 @@ public:
         : StaticConfig(setup)
         , ResolvePoolId(resolvePoolId)
     {
-        Y_ABORT_UNLESS(StaticConfig->IsEntriesUnique());
+        Y_VERIFY(StaticConfig->IsEntriesUnique());
 
         for (size_t i = 0; i < DynamicConfigs.size(); ++i)
             DynamicConfigs[i] = new TDynamicConfig;

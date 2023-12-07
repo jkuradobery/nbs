@@ -3,7 +3,7 @@
 #include "kqp_tasks_graph.h"
 #include "kqp_executer.h"
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NYql {
 
@@ -26,7 +26,7 @@ struct TQueryExecutionStats;
 struct TKqpExecuterTxResult;
 
 NActors::IActor* CreateResultStreamChannelProxy(ui64 txId, ui64 channelId, NKikimr::NMiniKQL::TType* itemType,
-    const TVector<ui32>* columnOrder, ui32 queryResultIndex, NActors::TActorId target, std::shared_ptr<TQueryExecutionStats> stats,
+    const TVector<ui32>* columnOrder, NActors::TActorId target, std::shared_ptr<TQueryExecutionStats> stats,
     NActors::TActorId executer);
 
 NActors::IActor* CreateResultDataChannelProxy(ui64 txId, ui64 channelId, std::shared_ptr<TQueryExecutionStats> stats,

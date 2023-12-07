@@ -6,7 +6,7 @@ IF (NOT WITH_VALGRIND)
     )
 ENDIF()
 
-IF (SANITIZER_TYPE == "thread")
+IF (SANITIZER_TYPE)
     TIMEOUT(3600)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -16,7 +16,7 @@ ELSE()
 ENDIF()
 
 PEERDIR(
-    ydb/library/actors/interconnect/mock
+    library/cpp/actors/interconnect/mock
     library/cpp/testing/unittest
     ydb/core/blobstorage/crypto
     ydb/core/blobstorage/dsproxy

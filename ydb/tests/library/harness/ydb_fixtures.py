@@ -7,10 +7,10 @@ import pytest
 
 from ydb import Driver, DriverConfig, SessionPool
 
-from contrib.ydb.tests.library.common.types import Erasure
-from contrib.ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
-from contrib.ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
-from contrib.ydb.tests.library.harness.util import LogLevels
+from ydb.tests.library.common.types import Erasure
+from ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
+from ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
+from ydb.tests.library.harness.util import LogLevels
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,8 @@ def ydb_endpoint(ydb_cluster):
 
 @pytest.fixture(scope='function')
 def ydb_client(ydb_endpoint, request):
-    def _make_driver(database_path, **kwargs):
-        driver_config = DriverConfig(ydb_endpoint, database_path, **kwargs)
+    def _make_driver(database_path):
+        driver_config = DriverConfig(ydb_endpoint, database_path)
         driver = Driver(driver_config)
 
         def stop_driver():
@@ -144,8 +144,8 @@ def ydb_client(ydb_endpoint, request):
 
 @pytest.fixture(scope='function')
 def ydb_client_session(ydb_client, request):
-    def _make_pool(database_path, **kwargs):
-        driver = ydb_client(database_path, **kwargs)
+    def _make_pool(database_path):
+        driver = ydb_client(database_path)
         pool = SessionPool(driver)
 
         def stop_pool():

@@ -1,7 +1,8 @@
 #pragma once
 
-#include <ydb/core/scheme/scheme_pathid.h>
-#include <ydb/core/util/ui64id.h>
+#include "schemeshard_ui64id.h"
+
+#include <ydb/core/base/pathid.h>
 
 #include <util/generic/utility.h>
 #include <util/stream/output.h>
@@ -11,10 +12,12 @@ namespace NSchemeShard {
 
 constexpr TPathId InvalidPathId = TPathId();
 
-STRONG_UI64_TYPE_DEF_DV(TTabletId, Max<ui64>(), Max<ui64>());
+class TTabletIdTag {};
+using TTabletId = TUi64Id<TTabletIdTag, Max<ui64>()>;
 constexpr TTabletId InvalidTabletId = TTabletId();
 
-STRONG_UI64_TYPE_DEF_DV(TLocalShardIdx, Max<ui64>(), Max<ui64>());
+class TLocalShardIdxTag {};
+using TLocalShardIdx = TUi64Id<TLocalShardIdxTag, Max<ui64>()>;
 constexpr TLocalShardIdx InvalidLocalShardIdx = TLocalShardIdx();
 
 class TShardIdx: public std::pair<TOwnerId, TLocalShardIdx> {
@@ -40,10 +43,12 @@ public:
 };
 constexpr TShardIdx InvalidShardIdx = TShardIdx(InvalidOwnerId, InvalidLocalShardIdx);
 
-STRONG_UI64_TYPE_DEF_DV(TStepId, 0, 0);
+class TStepIdTag {};
+using TStepId = TUi64Id<TStepIdTag, 0>;
 constexpr TStepId InvalidStepId = TStepId();
 
-STRONG_UI64_TYPE_DEF_DV(TTxId, 0, 0);
+class TTxIdTag {};
+using TTxId = TUi64Id<TTxIdTag, 0>;
 constexpr TTxId InvalidTxId = TTxId();
 
 using TSubTxId = ui32;
@@ -104,7 +109,8 @@ constexpr TOperationId InvalidOperationId = TOperationId(InvalidTxId, InvalidSub
 NKikimrSchemeOp::TShardIdx AsProto(const TShardIdx& shardIdx);
 TShardIdx FromProto(const NKikimrSchemeOp::TShardIdx& shardIdx);
 
-STRONG_UI64_TYPE_DEF_DV(TIndexBuildId, Max<ui64>(), Max<ui64>());
+class TIndexBuildIdTag {};
+using TIndexBuildId = TUi64Id<TIndexBuildIdTag, Max<ui64>()>;
 constexpr TIndexBuildId InvalidIndexBuildId = TIndexBuildId();
 
 enum class EIndexColumnKind : ui8 {

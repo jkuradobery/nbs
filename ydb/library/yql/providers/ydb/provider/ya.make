@@ -22,15 +22,19 @@ PEERDIR(
     library/cpp/random_provider
     library/cpp/time_provider
     library/cpp/yson/node
-    ydb/core/fq/libs/common
+    ydb/core/yq/libs/common
     ydb/library/yql/ast
-    ydb/library/yql/minikql/comp_nodes/llvm
+    ydb/library/yql/minikql
+    ydb/library/yql/minikql/comp_nodes
+    ydb/library/yql/minikql/computation
     ydb/library/yql/providers/common/structured_token
     ydb/library/yql/providers/common/token_accessor/client
+    ydb/public/lib/experimental
+    ydb/public/sdk/cpp/client/ydb_driver
+    ydb/public/sdk/cpp/client/ydb_table
     ydb/library/yql/core
     ydb/library/yql/core/type_ann
     ydb/library/yql/dq/expr_nodes
-    ydb/library/yql/dq/integration
     ydb/library/yql/providers/common/config
     ydb/library/yql/providers/common/db_id_async_resolver
     ydb/library/yql/providers/common/dq
@@ -41,12 +45,10 @@ PEERDIR(
     ydb/library/yql/providers/common/transform
     ydb/library/yql/providers/dq/common
     ydb/library/yql/providers/dq/expr_nodes
+    ydb/library/yql/providers/dq/interface
     ydb/library/yql/providers/result/expr_nodes
     ydb/library/yql/providers/ydb/expr_nodes
     ydb/library/yql/providers/ydb/proto
-    ydb/public/lib/experimental
-    ydb/public/sdk/cpp/client/ydb_driver
-    ydb/public/sdk/cpp/client/ydb_table
 )
 
 YQL_LAST_ABI_VERSION()

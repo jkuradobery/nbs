@@ -7,13 +7,11 @@ SRCS(
 
 PEERDIR(
     contrib/libs/curl
-    ydb/library/actors/prof
+    library/cpp/actors/prof
     library/cpp/monlib/dynamic_counters
     library/cpp/retry
     ydb/library/yql/providers/common/proto
     ydb/library/yql/public/issue
-    ydb/library/yql/utils/log
-    ydb/library/yql/utils
 )
 
 YQL_LAST_ABI_VERSION()
@@ -22,8 +20,4 @@ END()
 
 RECURSE(
     mock
-)
-
-RECURSE_FOR_TESTS(
-    ut
 )

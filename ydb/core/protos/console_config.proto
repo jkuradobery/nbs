@@ -1,4 +1,4 @@
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/core/protos/config.proto";
 import "ydb/core/protos/console_base.proto";
 import "ydb/public/api/protos/ydb_status_codes.proto";
@@ -88,7 +88,6 @@ message TConfigItem {
         MemoryLogConfigItem = 19;
         GRpcConfigItem = 20;
         DynamicNameserviceConfigItem = 22;
-
         DynamicNodeConfigItem = 24;
         CmsConfigItem = 25;
         FeatureFlagsItem = 26;
@@ -100,7 +99,6 @@ message TConfigItem {
         ConfigsDispatcherConfigItem = 33;
         TableProfilesConfigItem = 34;
         KeyConfigItem = 35;
-        PDiskKeyConfigItem = 51;
         NodeBrokerConfigItem = 36;
         TableServiceConfigItem = 37;
         SharedCacheConfigItem = 38;
@@ -113,28 +111,14 @@ message TConfigItem {
         MeteringConfigItem = 45;
         HiveConfigItem = 46;
         DataShardConfigItem = 49;
-        FederatedQueryConfigItem = 58;
+        FederatedQueryConfigItem = 50;
+        PDiskKeyConfigItem = 51;
         CompactionConfigItem = 52;
         HttpProxyConfigItem = 53;
         SchemeShardConfigItem = 54;
-        TracingConfigItem = 55;
-        FailureInjectionConfigItem = 56;
-        PublicHttpConfigItem = 57;
-        MetadataProviderConfigItem = 59;
-        BackgroundTasksConfigItem = 60;
-        AuditConfigItem = 61;
-        ClientCertificateAuthorizationItem = 62;
-        ExternalIndexConfigItem = 63;
-        YamlConfigEnabledItem = 64;
-        ScanConveyorConfigItem = 65;
-        ColumnShardConfigItem = 66;
-        LocalPgWireConfigItem = 69;
+        ClientCertificateAuthorizationConfigItem = 55;
+        YamlConfigEnabledItem = 63;
         AwsCompatibilityConfigItem = 70;
-        KafkaProxyConfigItem = 71;
-        CompConveyorConfigItem = 72;
-        QueryServiceConfigItem = 73;
-        InsertConveyorConfigItem = 74;
-        AllowEditYamlInUiItem = 75;
 
         NamedConfigsItem = 100;
         ClusterYamlConfigItem = 101;
@@ -254,7 +238,6 @@ message TSetYamlConfigRequest {
 }
 
 message TSetYamlConfigResponse {
-    repeated Ydb.Issue.IssueMessage Issues = 1;
 }
 
 message TReplaceYamlConfigRequest {
@@ -263,7 +246,6 @@ message TReplaceYamlConfigRequest {
 }
 
 message TReplaceYamlConfigResponse {
-    repeated Ydb.Issue.IssueMessage Issues = 1;
 }
 
 message TDropConfigRequest {
@@ -290,14 +272,6 @@ message TGetAllConfigsRequest {
 message TGetAllConfigsResponse {
     reserved 1;
     optional Ydb.DynamicConfig.GetConfigResult Response = 2;
-}
-
-message TIsYamlReadOnlyRequest {
-    optional bytes UserToken = 1;
-}
-
-message TIsYamlReadOnlyResponse {
-    optional bool ReadOnly = 1;
 }
 
 message TGetNodeLabelsRequest {

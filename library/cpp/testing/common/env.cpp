@@ -107,13 +107,6 @@ const TString& GetTestParam(TStringBuf name, const TString& def) {
     return def;
 }
 
-const TString& GetGlobalResource(TStringBuf name) {
-    auto& resources = NPrivate::GetTestEnv().GlobalResources;
-    auto it = resources.find(name.data());
-    Y_ABORT_UNLESS(it != resources.end());
-    return it->second;
-}
-
 void AddEntryToCoreSearchFile(const TString& filename, TStringBuf cmd, int pid, const TFsPath& binaryPath = TFsPath(), const TFsPath& cwd = TFsPath()) {
     auto lock = TFileLock(filename);
     TGuard<TFileLock> guard(lock);
@@ -170,12 +163,10 @@ namespace NPrivate {
         TestOutputRamDrivePath = "";
         GdbPath = "";
         CoreSearchFile = "";
-        EnvFile = "";
         TestParameters.clear();
-        GlobalResources.clear();
 
         const TString contextFilename = GetEnv("YA_TEST_CONTEXT_FILE");
-        if (contextFilename && TFsPath(contextFilename).Exists()) {
+        if (contextFilename) {
             NJson::TJsonValue context;
             NJson::ReadJsonTree(TFileInput(contextFilename).ReadAll(), &context);
 
@@ -228,32 +219,9 @@ namespace NPrivate {
                 }
             }
 
-            value = context.GetValueByPath("resources.global");
-            if (value) {
-                for (const auto& entry : value->GetMap()) {
-                    GlobalResources[entry.first] = entry.second.GetStringSafe("");
-                }
-            }
-
             value = context.GetValueByPath("internal.core_search_file");
             if (value) {
                 CoreSearchFile = value->GetStringSafe("");
-            }
-
-            value = context.GetValueByPath("internal.env_file");
-            if (value) {
-                EnvFile = value->GetStringSafe("");
-                if (TFsPath(EnvFile).Exists()) {
-                    TFileInput file(EnvFile);
-                    NJson::TJsonValue envVar;
-                    TString ljson;
-                    while (file.ReadLine(ljson) > 0) {
-                        NJson::ReadJsonTree(ljson, &envVar);
-                        for (const auto& entry : envVar.GetMap()) {
-                            SetEnv(entry.first, entry.second.GetStringSafe(""));
-                        }
-                    }
-                }
             }
         }
 

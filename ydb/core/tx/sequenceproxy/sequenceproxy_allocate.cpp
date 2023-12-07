@@ -1,15 +1,15 @@
 #include "sequenceproxy_impl.h"
 
-#include <ydb/library/ydb_issue/issue_helpers.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tx/sequenceshard/public/events.h>
 #include <ydb/library/yql/public/issue/yql_issue_manager.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 #include <util/string/builder.h>
 
 #define TXLOG_LOG(priority, stream) \
-    LOG_LOG_S(*TlsActivationContext, priority, NKikimrServices::SEQUENCEPROXY, LogPrefix << stream)
+    LOG_LOG_S(*TlsActivationContext, priority, NKikimrServices::LONG_TX_SERVICE, LogPrefix << stream)
 #define TXLOG_DEBUG(stream) TXLOG_LOG(NActors::NLog::PRI_DEBUG, stream)
 #define TXLOG_NOTICE(stream) TXLOG_LOG(NActors::NLog::PRI_NOTICE, stream)
 #define TXLOG_ERROR(stream) TXLOG_LOG(NActors::NLog::PRI_ERROR, stream)
@@ -57,6 +57,7 @@ namespace NSequenceProxy {
 
     private:
         STFUNC(StateAlloc) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvSequenceShard::TEvAllocateSequenceResult, Handle);
                 hFunc(TEvPipeCache::TEvDeliveryProblem, Handle);

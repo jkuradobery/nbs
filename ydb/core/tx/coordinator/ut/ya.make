@@ -13,14 +13,12 @@ ENDIF()
 PEERDIR(
     ydb/core/testlib/default
     ydb/core/tx
-    ydb/public/api/grpc
 )
 
 YQL_LAST_ABI_VERSION()
 
 SRCS(
     coordinator_ut.cpp
-    coordinator_volatile_ut.cpp
 )
 
 END()

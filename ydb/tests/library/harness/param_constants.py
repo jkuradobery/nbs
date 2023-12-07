@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
-import contrib.ydb.tests.library.common.yatest_common as yatest_common
+import ydb.tests.library.common.yatest_common as yatest_common
 
 
 config_name = yatest_common.get_param("kikimr.ci.cluster_name", None)

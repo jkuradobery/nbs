@@ -48,26 +48,7 @@ namespace NTest {
 
         ui64 GetPageSize(NPage::TPageId id, NPage::TGroupId groupId) const override
         {
-            return Store->GetPageSize(groupId.Index, id);
-        }
-
-        NPage::EPage GetPageType(NPage::TPageId id, NPage::TGroupId groupId) const override
-        {
-            return Store->GetPageType(groupId.Index, id);
-        }
-
-        ui8 GetPageChannel(NPage::TPageId id, NPage::TGroupId groupId) const override
-        {
-            Y_UNUSED(id);
-            Y_UNUSED(groupId);
-            return 0;
-        }
-
-        ui8 GetPageChannel(ELargeObj lob, ui64 ref) const override
-        {
-            Y_UNUSED(lob);
-            Y_UNUSED(ref);
-            return 0;
+            return Store->GetPage(groupId.Index, id)->size();
         }
 
         TIntrusiveConstPtr<NTable::TPart> CloneWithEpoch(NTable::TEpoch epoch) const override
@@ -109,7 +90,7 @@ namespace NTest {
     private:
         const TSharedData* Get(const TPart *part, ui32 room, ui32 ref) const
         {
-            Y_ABORT_UNLESS(ref != Max<ui32>(), "Got invalid page reference");
+            Y_VERIFY(ref != Max<ui32>(), "Got invalid page reference");
 
             return CheckedCast<const TPartStore*>(part)->Store->GetPage(room, ref);
         }
@@ -123,7 +104,7 @@ namespace NTest {
 
         const TIntrusiveConstPtr<TPartStore>& Lone() const noexcept
         {
-            Y_ABORT_UNLESS(Parts.size() == 1, "Need egg with one part inside");
+            Y_VERIFY(Parts.size() == 1, "Need egg with one part inside");
 
             return Parts[0];
         }
@@ -144,50 +125,5 @@ namespace NTest {
     };
 
     TString DumpPart(const TPartStore&, ui32 depth = 10) noexcept;
-
-    namespace IndexTools {
-        inline size_t CountMainPages(const TPartStore& part) {
-            size_t result = 0;
-
-            TTestEnv env;
-            TPartIndexIt index(&part, &env, { });
-            for (size_t i = 0; ; i++) {
-                auto ready = i == 0 ? index.Seek(0) : index.Next();
-                if (ready != EReady::Data) {
-                    Y_ABORT_UNLESS(ready != EReady::Page, "Unexpected page fault");
-                    break;
-                }
-                result++;
-            }
-
-            return result;
-        }
-
-        inline TRowId GetEndRowId(const TPartStore& part) {
-            TTestEnv env;
-            TPartIndexIt index(&part, &env, { });
-            return index.GetEndRowId();
-        }
-
-        inline const TPartIndexIt::TRecord * GetLastRecord(const TPartStore& part) {
-            TTestEnv env;
-            TPartIndexIt index(&part, &env, { });
-            Y_ABORT_UNLESS(index.SeekLast() == EReady::Data);
-            return index.GetLastRecord();
-        }
-
-        inline const TPartIndexIt::TRecord * GetRecord(const TPartStore& part, TPageId pageId) {
-            TTestEnv env;
-            TPartIndexIt index(&part, &env, { });
-
-            Y_ABORT_UNLESS(index.Seek(0) == EReady::Data);
-            for (TPageId p = 0; p < pageId; p++) {
-                Y_ABORT_UNLESS(index.Next() == EReady::Data);
-            }
-
-            Y_ABORT_UNLESS(index.GetPageId() == pageId);
-            return index.GetRecord();
-        }
-    }
 
 }}}

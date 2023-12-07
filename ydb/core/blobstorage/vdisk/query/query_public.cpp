@@ -58,7 +58,7 @@ namespace NKikimr {
     {
         TLogoBlobsSnapshot::TIndexForwardIterator it(hullCtx, snapshot);
         for (const auto& item : extremeQueries) {
-            Y_ABORT_UNLESS(item.HasId());
+            Y_VERIFY(item.HasId());
             const TLogoBlobID& id = LogoBlobIDFromLogoBlobID(item.GetId());
             const TLogoBlobID& full = id.FullID();
 
@@ -103,7 +103,7 @@ namespace NKikimr {
             return CreateLevelIndexExtremeQueryActor(queryCtx, parentId,
                     std::move(fullSnap.LogoBlobsSnap), std::move(fullSnap.BarriersSnap), ev, std::move(result), replSchedulerId);
         } else {
-            Y_ABORT("Impossible case");
+            Y_FAIL("Impossible case");
         }
     }
 

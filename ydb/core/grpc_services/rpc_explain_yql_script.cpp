@@ -1,6 +1,6 @@
 #include "service_yql_scripting.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 #include <ydb/public/api/protos/ydb_scripting.pb.h>
 
@@ -28,10 +28,10 @@ public:
         Proceed(ctx);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -110,8 +110,8 @@ public:
     }
 };
 
-void DoExplainYqlScript(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TExplainYqlScriptRPC(p.release()));
+void DoExplainYqlScript(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TExplainYqlScriptRPC(p.release()));
 }
 
 } // namespace NGRpcService

@@ -5,7 +5,7 @@
 
 namespace NYql::NDq {
 
-void RegisterS3WriteActorFactory(TDqAsyncIoFactory& factory, ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory, IHTTPGateway::TPtr gateway, const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy) {
+void RegisterS3WriteActorFactory(TDqAsyncIoFactory& factory, ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory, IHTTPGateway::TPtr gateway, const IRetryPolicy<long>::TPtr& retryPolicy) {
     factory.RegisterSink<NS3::TSink>("S3Sink",
         [credentialsFactory, gateway, retryPolicy](NS3::TSink&& settings, IDqAsyncIoFactory::TSinkArguments&& args) {
 
@@ -21,9 +21,7 @@ void RegisterS3WriteActorFactory(TDqAsyncIoFactory& factory, ISecuredServiceAcco
                 prefixBuilder << restartCount << "_";
             }
 
-            return CreateS3WriteActor(args.TypeEnv, *args.HolderFactory.GetFunctionRegistry(), args.RandomProvider,
-                gateway, std::move(settings), args.OutputIndex, args.StatsLevel, args.TxId, prefixBuilder,
-                args.SecureParams, args.Callback, credentialsFactory, retryPolicy);
+            return CreateS3WriteActor(args.TypeEnv, *args.HolderFactory.GetFunctionRegistry(), args.RandomProvider, gateway, std::move(settings), args.OutputIndex, args.TxId, prefixBuilder, args.SecureParams, args.Callback, credentialsFactory, retryPolicy);
         });
 }
 

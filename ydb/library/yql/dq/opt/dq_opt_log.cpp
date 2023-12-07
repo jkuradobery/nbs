@@ -2,14 +2,12 @@
 
 #include "dq_opt.h"
 
-#include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 #include <ydb/library/yql/core/yql_aggregate_expander.h>
 #include <ydb/library/yql/core/yql_expr_optimize.h>
 #include <ydb/library/yql/core/yql_opt_window.h>
-#include <ydb/library/yql/core/yql_opt_match_recognize.h>
 #include <ydb/library/yql/core/yql_opt_utils.h>
 #include <ydb/library/yql/core/yql_type_annotation.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
+
 
 using namespace NYql::NNodes;
 
@@ -218,6 +216,24 @@ NNodes::TExprBase DqMergeQueriesWithSinks(NNodes::TExprBase dqQueryNode, TExprCo
     return dqQueryNode;
 }
 
+NNodes::TMaybeNode<NNodes::TExprBase> DqUnorderedInStage(NNodes::TExprBase node,
+    const std::function<bool(const TExprNode*)>& stopTraverse, TExprContext& ctx, TTypeAnnotationContext* typeCtx)
+{
+    auto stage = node.Cast<TDqStageBase>();
+
+    TExprNode::TPtr newProgram;
+    auto status = LocalUnorderedOptimize(stage.Program().Ptr(), newProgram, stopTraverse, ctx, typeCtx);
+    if (status.Level == IGraphTransformer::TStatus::Error) {
+        return {};
+    }
+
+    if (stage.Program().Ptr() != newProgram) {
+        return NNodes::TExprBase(ctx.ChangeChild(node.Ref(), TDqStageBase::idx_Program, std::move(newProgram)));
+    }
+
+    return node;
+}
+
 NNodes::TExprBase DqFlatMapOverExtend(NNodes::TExprBase node, TExprContext& ctx)
 {
     auto maybeFlatMap = node.Maybe<TCoFlatMapBase>();
@@ -269,109 +285,6 @@ NNodes::TExprBase DqSqlInDropCompact(NNodes::TExprBase node, TExprContext& ctx) 
             RemoveSetting(maybeSqlIn.Cast().Options().Ref(), "isCompact", ctx)));
     }
     return node;
-}
-
-NNodes::TExprBase DqReplicateFieldSubset(NNodes::TExprBase node, TExprContext& ctx, const TParentsMap& parentsMap) {
-    auto maybeReplicate = node.Maybe<TDqReplicate>();
-    if (!maybeReplicate) {
-        return node;
-    }
-    auto replicate = maybeReplicate.Cast();
-
-    auto structType = GetSeqItemType(*replicate.Input().Ref().GetTypeAnn()).Cast<TStructExprType>();
-
-    TSet<TStringBuf> usedFields;
-    for (auto expr: replicate.FreeArgs()) {
-        auto lambda = expr.Cast<TCoLambda>();
-        auto it = parentsMap.find(lambda.Args().Arg(0).Raw());
-        // Argument is unused
-        if (it == parentsMap.cend()) {
-            continue;
-        }
-
-        for (auto parent: it->second) {
-            if (auto maybeFlatMap = TMaybeNode<TCoFlatMapBase>(parent)) {
-                auto flatMap = maybeFlatMap.Cast();
-                TSet<TStringBuf> lambdaSubset;
-                if (!HaveFieldsSubset(flatMap.Lambda().Body().Ptr(), flatMap.Lambda().Args().Arg(0).Ref(), lambdaSubset, parentsMap)) {
-                    return node;
-                }
-                usedFields.insert(lambdaSubset.cbegin(), lambdaSubset.cend());
-            }
-            else if (auto maybeExtractMembers = TMaybeNode<TCoExtractMembers>(parent)) {
-                auto extractMembers = maybeExtractMembers.Cast();
-                for (auto member: extractMembers.Members()) {
-                    usedFields.insert(member.Value());
-                }
-            }
-            else if (!TCoDependsOn::Match(parent)) {
-                return node;
-            }
-
-            if (usedFields.size() == structType->GetSize()) {
-                return node;
-            }
-        }
-
-        if (usedFields.size() == structType->GetSize()) {
-            return node;
-        }
-    }
-
-    if (usedFields.size() < structType->GetSize()) {
-        return TExprBase(ctx.Builder(replicate.Pos())
-            .Callable(TDqReplicate::CallableName())
-                .Callable(0, TCoExtractMembers::CallableName())
-                    .Add(0, replicate.Input().Ptr())
-                    .List(1)
-                        .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                            ui32 i = 0;
-                            for (auto column : usedFields) {
-                                parent.Atom(i++, column);
-                            }
-                            return parent;
-                        })
-                    .Seal()
-                .Seal()
-                .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                    ui32 i = 1;
-                    for (auto expr: replicate.FreeArgs()) {
-                        parent.Add(i++, ctx.DeepCopyLambda(expr.Ref()));
-                    }
-                    return parent;
-                })
-            .Seal()
-            .Build());
-    }
-
-    return node;
-}
-
-IGraphTransformer::TStatus DqWrapRead(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx, TTypeAnnotationContext& typesCtx, const TDqSettings& config) {
-    TOptimizeExprSettings settings{&typesCtx};
-    auto status = OptimizeExpr(input, output, [&](const TExprNode::TPtr& node, TExprContext& ctx) {
-        if (auto maybeRead = TMaybeNode<TCoRight>(node).Input()) {
-            if (maybeRead.Raw()->ChildrenSize() > 1 && TCoDataSource::Match(maybeRead.Raw()->Child(1))) {
-                auto dataSourceName = maybeRead.Raw()->Child(1)->Child(0)->Content();
-                auto dataSource = typesCtx.DataSourceMap.FindPtr(dataSourceName);
-                YQL_ENSURE(dataSource);
-                if (auto dqIntegration = (*dataSource)->GetDqIntegration()) {
-                    auto newRead = dqIntegration->WrapRead(config, maybeRead.Cast().Ptr(), ctx);
-                    if (newRead.Get() != maybeRead.Raw()) {
-                        return newRead;
-                    }
-                }
-            }
-        }
-
-        return node;
-    }, ctx, settings);
-    return status;
-}
-
-TExprBase DqExpandMatchRecognize(TExprBase node, TExprContext& ctx, TTypeAnnotationContext& typeAnnCtx) {
-    YQL_ENSURE(node.Maybe<TCoMatchRecognize>(), "Expected MatchRecognize");
-    return TExprBase(ExpandMatchRecognize(node.Ptr(), ctx, typeAnnCtx));
 }
 
 }

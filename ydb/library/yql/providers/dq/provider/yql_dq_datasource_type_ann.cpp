@@ -15,22 +15,16 @@ namespace {
 
 class TDqsDataSourceTypeAnnotationTransformer : public TVisitorTransformerBase {
 public:
-    TDqsDataSourceTypeAnnotationTransformer(bool annotateConfigure)
+    TDqsDataSourceTypeAnnotationTransformer()
         : TVisitorTransformerBase(true)
-        , AnnotateConfigure(annotateConfigure)
     {
         AddHandler({TDqSourceWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleSourceWrap<false, false>));
         AddHandler({TDqSourceWideWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleSourceWrap<true, false>));
         AddHandler({TDqSourceWideBlockWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleSourceWrap<true, true>));
         AddHandler({TDqReadWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleReadWrap));
-        AddHandler({TDqReadWideWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleWideReadWrap<false>));
-        AddHandler({TDqReadBlockWideWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleWideReadWrap<true>));
+        AddHandler({TDqReadWideWrap::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleWideReadWrap));
+        AddHandler({TCoConfigure::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleConfig));
         AddHandler({TDqSource::CallableName()}, Hndl(&NDq::AnnotateDqSource));
-        AddHandler({TDqPhyLength::CallableName()}, Hndl(&NDq::AnnotateDqPhyLength));
-
-        if (AnnotateConfigure) {
-            AddHandler({TCoConfigure::CallableName()}, Hndl(&TDqsDataSourceTypeAnnotationTransformer::HandleConfig));
-        }
     }
 
 private:
@@ -114,7 +108,6 @@ private:
         return TStatus::Ok;
     }
 
-    template<bool IsBlock>
     TStatus HandleWideReadWrap(const TExprNode::TPtr& input, TExprContext& ctx) {
         if (!EnsureMinMaxArgsCount(*input, 1, 3, ctx)) {
             return TStatus::Error;
@@ -147,15 +140,8 @@ private:
         const auto structType = readerType->Cast<TListExprType>()->GetItemType()->Cast<TStructExprType>();
         TTypeAnnotationNode::TListType types;
         const auto& items = structType->GetItems();
-        types.reserve(items.size() + IsBlock);
+        types.reserve(items.size());
         std::transform(items.cbegin(), items.cend(), std::back_inserter(types), std::bind(&TItemExprType::GetItemType, std::placeholders::_1));
-        if constexpr (IsBlock) {
-            for (auto& type : types) {
-                type = ctx.MakeType<TBlockExprType>(type);
-            }
-
-            types.push_back(ctx.MakeType<TScalarExprType>(ctx.MakeType<TDataExprType>(EDataSlot::Uint64)));
-        }
 
         input->SetTypeAnn(ctx.MakeType<TFlowExprType>(ctx.MakeType<TMultiExprType>(types)));
         return TStatus::Ok;
@@ -178,15 +164,12 @@ private:
 
         return TStatus::Ok;
     }
-
-private:
-    const bool AnnotateConfigure;
 };
 
 } // unnamed
 
-THolder<TVisitorTransformerBase> CreateDqsDataSourceTypeAnnotationTransformer(bool annotateConfigure) {
-    return THolder(new TDqsDataSourceTypeAnnotationTransformer(annotateConfigure));
+THolder<TVisitorTransformerBase> CreateDqsDataSourceTypeAnnotationTransformer() {
+    return THolder(new TDqsDataSourceTypeAnnotationTransformer());
 }
 
 } // NYql

@@ -1,7 +1,7 @@
 #include "service_scheme.h"
 
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/public/api/protos/ydb_scheme.pb.h>
@@ -59,8 +59,8 @@ private:
     }
 };
 
-void DoMakeDirectoryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TMakeDirectoryRPC(p.release()));
+void DoMakeDirectoryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TMakeDirectoryRPC(p.release()));
 }
 
 } // namespace NGRpcService

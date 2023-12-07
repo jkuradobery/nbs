@@ -11,7 +11,7 @@ struct TOperation: TSimpleRefCount<TOperation> {
     using TPtr = TIntrusivePtr<TOperation>;
 
     const TTxId TxId;
-    TVector<ISubOperation::TPtr> Parts;
+    TVector<ISubOperationBase::TPtr> Parts;
 
     THashSet<TActorId> Subscribers;
     THashSet<TTxId> DependentOperations;
@@ -79,10 +79,10 @@ struct TOperation: TSimpleRefCount<TOperation> {
     static TConsumeQuotaResult ConsumeQuota(const TTxTransaction& tx, TOperationContext& context);
     static TSplitTransactionsResult SplitIntoTransactions(const TTxTransaction& tx, const TOperationContext& context);
 
-    ISubOperation::TPtr RestorePart(TTxState::ETxType opType, TTxState::ETxState opState) const;
-    ISubOperation::TPtr ConstructPart(NKikimrSchemeOp::EOperationType opType, const TTxTransaction& tx) const;
-    TVector<ISubOperation::TPtr> ConstructParts(const TTxTransaction& tx, TOperationContext& context) const;
-    void AddPart(ISubOperation::TPtr part);
+    ISubOperationBase::TPtr RestorePart(TTxState::ETxType opType, TTxState::ETxState opState) const;
+    ISubOperationBase::TPtr ConstructPart(NKikimrSchemeOp::EOperationType opType, const TTxTransaction& tx) const;
+    TVector<ISubOperationBase::TPtr> ConstructParts(const TTxTransaction& tx, TOperationContext& context) const;
+    void AddPart(ISubOperationBase::TPtr part);
 
     bool AddPublishingPath(TPathId pathId, ui64 version);
     bool IsPublished() const;
@@ -117,16 +117,16 @@ struct TOperation: TSimpleRefCount<TOperation> {
 
     void RegisterBarrier(TSubTxId partId, const TString& name) {
         Barriers[name].insert(partId);
-        Y_ABORT_UNLESS(Barriers.size() == 1);
+        Y_VERIFY(Barriers.size() == 1);
     }
 
     bool HasBarrier() const {
-        Y_ABORT_UNLESS(Barriers.size() <= 1);
+        Y_VERIFY(Barriers.size() <= 1);
         return Barriers.size() == 1;
     }
 
     bool IsDoneBarrier() const {
-        Y_ABORT_UNLESS(Barriers.size() <= 1);
+        Y_VERIFY(Barriers.size() <= 1);
 
         for (const auto& [_, subTxIds] : Barriers) {
             for (const auto blocked : subTxIds) {
@@ -139,8 +139,8 @@ struct TOperation: TSimpleRefCount<TOperation> {
     }
 
     void DropBarrier(const TString& name) {
-        Y_ABORT_UNLESS(IsDoneBarrier());
-        Y_ABORT_UNLESS(Barriers.begin()->first == name);
+        Y_VERIFY(IsDoneBarrier());
+        Y_VERIFY(Barriers.begin()->first == name);
         Barriers.erase(name);
     }
 
@@ -149,7 +149,7 @@ struct TOperation: TSimpleRefCount<TOperation> {
     }
 };
 
-inline TOperationId NextPartId(const TOperationId& opId, const TVector<ISubOperation::TPtr>& parts) {
+inline TOperationId NextPartId(const TOperationId& opId, const TVector<ISubOperationBase::TPtr>& parts) {
     return TOperationId(opId.GetTxId(), opId.GetSubTxId() + parts.size());
 }
 

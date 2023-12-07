@@ -8,8 +8,6 @@
 #include <util/string/printf.h>
 #include <util/string/cast.h>
 
-#include <util/generic/cast.h>
-
 #include <algorithm>
 #include <stdexcept>
 
@@ -17,8 +15,8 @@ namespace NYT {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#define ENUM__CLASS(enumType, underlyingType, seq) \
-    enum class enumType : underlyingType \
+#define ENUM__CLASS(name, underlyingType, seq) \
+    enum class name : underlyingType \
     { \
         PP_FOR_EACH(ENUM__DOMAIN_ITEM, seq) \
     };
@@ -41,34 +39,11 @@ namespace NYT {
 namespace NDetail {
 
 template <typename TValues>
-constexpr bool CheckValuesMonotonic(const TValues& values)
+static constexpr bool AreValuesDistinct(const TValues& values)
 {
-    return std::adjacent_find(values.begin(), values.end(), std::greater_equal<>()) == values.end();
-}
-
-template <typename TValues>
-constexpr bool CheckValuesUnique(const TValues& values)
-{
-    for (size_t i = 0; i < std::size(values); ++i) {
-        for (size_t j = i + 1; j < std::size(values); ++j) {
+    for (int i = 0; i < static_cast<int>(values.size()); ++i) {
+        for (int j = i + 1; j < static_cast<int>(values.size()); ++j) {
             if (values[i] == values[j]) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-template <typename TNames>
-constexpr bool CheckDomainNames(const TNames& names)
-{
-    for (size_t i = 0; i < std::size(names); ++i) {
-        if (std::size(names[i]) == 0) {
-            return false;
-        }
-        for (size_t j = 1; j < std::size(names[i]); ++j) {
-            // If name does not start with a capital letter, all the others must be in lowercase.
-            if (('A' <= names[i][j] && names[i][j] <= 'Z') && ('A' > names[i][0] || names[i][0] > 'Z')) {
                 return false;
             }
         }
@@ -80,66 +55,68 @@ constexpr bool CheckDomainNames(const TNames& names)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#define ENUM__BEGIN_TRAITS(enumType, underlyingType, isBit, isStringSerializable, seq) \
-    struct TEnumTraitsImpl_##enumType \
+#define ENUM__BEGIN_TRAITS(name, underlyingType, isBit, isStringSerializable, seq) \
+    struct TEnumTraitsImpl_##name \
     { \
-        using T = enumType; \
-        \
+        using TType = name; \
+        using TUnderlying = underlyingType; \
         [[maybe_unused]] static constexpr bool IsBitEnum = isBit; \
         [[maybe_unused]] static constexpr bool IsStringSerializableEnum = isStringSerializable; \
-        static constexpr int DomainSize = PP_COUNT(seq); \
-        \
-        static constexpr int GetDomainSize() \
-        { \
-            return DomainSize; \
-        } \
+        [[maybe_unused]] static constexpr int DomainSize = PP_COUNT(seq); \
         \
         static constexpr std::array<TStringBuf, DomainSize> Names{{ \
             PP_FOR_EACH(ENUM__GET_DOMAIN_NAMES_ITEM, seq) \
         }}; \
-        static_assert(::NYT::NDetail::CheckDomainNames(Names), \
-            "Enumeration " #enumType " contains names in wrong format"); \
-        static constexpr std::array<T, DomainSize> Values{{ \
+        static constexpr std::array<TType, DomainSize> Values{{ \
             PP_FOR_EACH(ENUM__GET_DOMAIN_VALUES_ITEM, seq) \
         }}; \
         \
-        [[maybe_unused]] static constexpr bool IsMonotonic = \
-            ::NYT::NDetail::CheckValuesMonotonic(Values); \
-        \
         static TStringBuf GetTypeName() \
         { \
-            static constexpr TStringBuf Result = PP_STRINGIZE(enumType); \
-            return Result; \
+            static constexpr TStringBuf typeName = PP_STRINGIZE(name); \
+            return typeName; \
         } \
         \
-        static const std::optional<TStringBuf> FindLiteralByValue(T value) \
+        static const TStringBuf* FindLiteralByValue(TType value) \
         { \
-            for (int i = 0; i < GetDomainSize(); ++i) { \
+            for (int i = 0; i < DomainSize; ++i) { \
                 if (Values[i] == value) { \
-                    return Names[i]; \
+                    return &Names[i]; \
                 } \
             } \
-            return std::nullopt; \
+            return nullptr; \
         } \
         \
-        static std::optional<T> FindValueByLiteral(TStringBuf literal) \
+        static bool FindValueByLiteral(TStringBuf literal, TType* result) \
         { \
-            for (int i = 0; i < GetDomainSize(); ++i) { \
+            for (int i = 0; i < DomainSize; ++i) { \
                 if (Names[i] == literal) { \
-                    return Values[i]; \
+                    *result = Values[i]; \
+                    return true; \
                 } \
             } \
-            return std::nullopt; \
+            return false; \
         } \
         \
-        static constexpr const std::array<TStringBuf, DomainSize>& GetDomainNames() \
+        static const std::array<TStringBuf, DomainSize>& GetDomainNames() \
         { \
             return Names; \
         } \
         \
-        static constexpr const std::array<T, DomainSize>& GetDomainValues() \
+        static const std::array<TType, DomainSize>& GetDomainValues() \
         { \
             return Values; \
+        } \
+        \
+        static TType FromString(TStringBuf str) \
+        { \
+            TType value; \
+            if (!FindValueByLiteral(str, &value)) { \
+                throw ::NYT::TSimpleException(Sprintf("Error parsing %s value %s", \
+                    PP_STRINGIZE(name), \
+                    TString(str).Quote().c_str()).c_str()); \
+            } \
+            return value; \
         }
 
 #define ENUM__GET_DOMAIN_VALUES_ITEM(item) \
@@ -153,7 +130,7 @@ constexpr bool CheckDomainNames(const TNames& names)
     ENUM__GET_DOMAIN_VALUES_ITEM_ATOMIC(PP_ELEMENT(seq, 0))
 
 #define ENUM__GET_DOMAIN_VALUES_ITEM_ATOMIC(item) \
-    T::item,
+    TType::item,
 
 #define ENUM__GET_DOMAIN_NAMES_ITEM(item) \
     PP_IF( \
@@ -163,141 +140,124 @@ constexpr bool CheckDomainNames(const TNames& names)
     )(item)
 
 #define ENUM__GET_DOMAIN_NAMES_ITEM_SEQ(seq) \
-    PP_IF( \
-       ENUM__ITEM_SEQ_HAS_DOMAIN_NAME(seq), \
-       ENUM__GET_DOMAIN_NAMES_ITEM_SEQ_CUSTOM, \
-       ENUM__GET_DOMAIN_NAMES_ITEM_SEQ_AUTO \
-    )(seq)
-
-#define ENUM__ITEM_SEQ_HAS_DOMAIN_NAME(seq) \
-    PP_CONCAT(ENUM__ITEM_SEQ_HAS_DOMAIN_NAME_, PP_COUNT(seq))
-
-#define ENUM__ITEM_SEQ_HAS_DOMAIN_NAME_2 PP_FALSE
-#define ENUM__ITEM_SEQ_HAS_DOMAIN_NAME_3 PP_TRUE
-
-#define ENUM__GET_DOMAIN_NAMES_ITEM_SEQ_CUSTOM(seq) \
-    TStringBuf(PP_ELEMENT(seq, 2)),
-
-#define ENUM__GET_DOMAIN_NAMES_ITEM_SEQ_AUTO(seq) \
     ENUM__GET_DOMAIN_NAMES_ITEM_ATOMIC(PP_ELEMENT(seq, 0))
 
 #define ENUM__GET_DOMAIN_NAMES_ITEM_ATOMIC(item) \
     TStringBuf(PP_STRINGIZE(item)),
 
-#define ENUM__VALIDATE_UNIQUE(enumType) \
-    static_assert(IsMonotonic || ::NYT::NDetail::CheckValuesUnique(Values), \
-        "Enumeration " #enumType " contains duplicate values");
+#define ENUM__DECOMPOSE \
+    static std::vector<TType> Decompose(TType value) \
+    { \
+        std::vector<TType> result; \
+        for (int i = 0; i < DomainSize; ++i) { \
+            if (static_cast<TUnderlying>(value) & static_cast<TUnderlying>(Values[i])) { \
+                result.push_back(Values[i]); \
+            } \
+        } \
+        return result; \
+    }
 
-#define ENUM__END_TRAITS(enumType) \
+#define ENUM__MINMAX \
+    static constexpr TType GetMinValue() \
+    { \
+        static_assert(!Values.empty()); \
+        return *std::min_element(std::begin(Values), std::end(Values)); \
+    } \
+    \
+    static constexpr TType GetMaxValue() \
+    { \
+        static_assert(!Values.empty()); \
+        return *std::max_element(std::begin(Values), std::end(Values)); \
+    }
+
+#define ENUM__VALIDATE_UNIQUE(name) \
+    static_assert(::NYT::NDetail::AreValuesDistinct(Values), \
+        "Enumeration " #name " contains duplicate values");
+
+#define ENUM__END_TRAITS(name) \
     }; \
     \
-    [[maybe_unused]] inline TEnumTraitsImpl_##enumType GetEnumTraitsImpl(enumType) \
+    [[maybe_unused]] inline TEnumTraitsImpl_##name GetEnumTraitsImpl(name) \
     { \
-        return {}; \
+        return TEnumTraitsImpl_##name(); \
     } \
     \
     using ::ToString; \
-    [[maybe_unused]] inline TString ToString(enumType value) \
+    [[maybe_unused]] inline TString ToString(name value) \
     { \
-        return ::NYT::TEnumTraits<enumType>::ToString(value); \
+        return ::NYT::TEnumTraits<name>::ToString(value); \
     }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
-constexpr int TEnumTraitsWithKnownDomain<T, true>::GetDomainSize()
+std::vector<T> TEnumTraits<T, true>::Decompose(T value)
 {
-    return TEnumTraitsImpl<T>::GetDomainSize();
+    return TImpl::Decompose(value);
 }
 
 template <class T>
-constexpr auto TEnumTraitsWithKnownDomain<T, true>::GetDomainNames() -> const std::array<TStringBuf, GetDomainSize()>&
+T TEnumTraits<T, true>::FromString(TStringBuf str)
 {
-    return TEnumTraitsImpl<T>::GetDomainNames();
+    return TImpl::FromString(str);
 }
 
 template <class T>
-constexpr auto TEnumTraitsWithKnownDomain<T, true>::GetDomainValues() -> const std::array<T, GetDomainSize()>&
+TString TEnumTraits<T, true>::ToString(TType value)
 {
-    return TEnumTraitsImpl<T>::GetDomainValues();
-}
-
-template <class T>
-constexpr T TEnumTraitsWithKnownDomain<T, true>::GetMinValue()
-    requires (!TEnumTraitsImpl<T>::IsBitEnum)
-{
-    const auto& values = GetDomainValues();
-    static_assert(!values.empty()); \
-    return *std::min_element(std::begin(values), std::end(values));
-}
-
-template <class T>
-constexpr T TEnumTraitsWithKnownDomain<T, true>::GetMaxValue()
-    requires (!TEnumTraitsImpl<T>::IsBitEnum)
-{
-    const auto& values = GetDomainValues();
-    static_assert(!values.empty()); \
-    return *std::max_element(std::begin(values), std::end(values));
-}
-
-template <class T>
-std::vector<T> TEnumTraitsWithKnownDomain<T, true>::Decompose(T value)
-    requires (TEnumTraitsImpl<T>::IsBitEnum)
-{
-    std::vector<T> result;
-    for (auto domainValue : GetDomainValues()) {
-        if (Any(value & domainValue)) {
-            result.push_back(domainValue);
-        }
+    TString result;
+    const auto* literal = FindLiteralByValue(value);
+    if (literal) {
+        result = *literal;
+    } else {
+        result = GetTypeName();
+        result += "(";
+        result += ::ToString(static_cast<TUnderlying>(value));
+        result += ")";
     }
     return result;
 }
 
-////////////////////////////////////////////////////////////////////////////////
+template <class T>
+auto TEnumTraits<T, true>::GetDomainValues() -> const std::array<T, DomainSize>&
+{
+    return TImpl::GetDomainValues();
+}
+
+template <class T>
+auto TEnumTraits<T, true>::GetDomainNames() -> const std::array<TStringBuf, DomainSize>&
+{
+    return TImpl::GetDomainNames();
+}
+
+template <class T>
+constexpr T TEnumTraits<T, true>::GetMaxValue()
+{
+    return TImpl::GetMaxValue();
+}
+
+template <class T>
+constexpr T TEnumTraits<T, true>::GetMinValue()
+{
+    return TImpl::GetMinValue();
+}
+
+template <class T>
+bool TEnumTraits<T, true>::FindValueByLiteral(TStringBuf literal, TType* result)
+{
+    return TImpl::FindValueByLiteral(literal, result);
+}
+
+template <class T>
+const TStringBuf* TEnumTraits<T, true>::FindLiteralByValue(TType value)
+{
+    return TImpl::FindLiteralByValue(value);
+}
 
 template <class T>
 TStringBuf TEnumTraits<T, true>::GetTypeName()
 {
-    return TEnumTraitsImpl<T>::GetTypeName();
-}
-
-template <class T>
-std::optional<T> TEnumTraits<T, true>::FindValueByLiteral(TStringBuf literal)
-{
-    return TEnumTraitsImpl<T>::FindValueByLiteral(literal);
-}
-
-template <class T>
-std::optional<TStringBuf> TEnumTraits<T, true>::FindLiteralByValue(T value)
-{
-    return TEnumTraitsImpl<T>::FindLiteralByValue(value);
-}
-
-template <class T>
-TString TEnumTraits<T, true>::ToString(T value)
-{
-    using ::ToString;
-    if (auto optionalLiteral = TEnumTraits<T>::FindLiteralByValue(value)) {
-        return ToString(*optionalLiteral);
-    }
-    TString result;
-    result = TEnumTraits<T>::GetTypeName();
-    result += "(";
-    result += ToString(ToUnderlying(value));
-    result += ")";
-    return result;
-}
-
-template <class T>
-T TEnumTraits<T, true>::FromString(TStringBuf literal)
-{
-    auto optionalValue = FindValueByLiteral(literal);
-    if (!optionalValue) {
-        throw ::NYT::TSimpleException(Sprintf("Error parsing %s value %s",
-            GetTypeName().data(),
-            TString(literal).Quote().c_str()).c_str());
-    }
-    return *optionalValue;
+    return TImpl::GetTypeName();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -322,7 +282,7 @@ template <class E, class T, E Min, E Max>
 T& TEnumIndexedVector<E, T, Min, Max>::operator[] (E index)
 {
     Y_ASSERT(index >= Min && index <= Max);
-    return Items_[ToUnderlying(index) - ToUnderlying(Min)];
+    return Items_[static_cast<TUnderlying>(index) - static_cast<TUnderlying>(Min)];
 }
 
 template <class E, class T, E Min, E Max>
@@ -366,55 +326,58 @@ bool TEnumIndexedVector<E, T, Min, Max>::IsDomainValue(E value)
 #define ENUM__BINARY_BITWISE_OPERATOR(T, assignOp, op) \
     [[maybe_unused]] inline constexpr T operator op (T lhs, T rhs) \
     { \
-        return T(ToUnderlying(lhs) op ToUnderlying(rhs)); \
+        using TUnderlying = typename TEnumTraits<T>::TUnderlying; \
+        return T(static_cast<TUnderlying>(lhs) op static_cast<TUnderlying>(rhs)); \
     } \
     \
     [[maybe_unused]] inline T& operator assignOp (T& lhs, T rhs) \
     { \
-        lhs = T(ToUnderlying(lhs) op ToUnderlying(rhs)); \
+        using TUnderlying = typename TEnumTraits<T>::TUnderlying; \
+        lhs = T(static_cast<TUnderlying>(lhs) op static_cast<TUnderlying>(rhs)); \
         return lhs; \
     }
 
 #define ENUM__UNARY_BITWISE_OPERATOR(T, op) \
     [[maybe_unused]] inline constexpr T operator op (T value) \
     { \
-        return T(op ToUnderlying(value)); \
+        using TUnderlying = typename TEnumTraits<T>::TUnderlying; \
+        return T(op static_cast<TUnderlying>(value)); \
     }
 
 #define ENUM__BIT_SHIFT_OPERATOR(T, assignOp, op) \
     [[maybe_unused]] inline constexpr T operator op (T lhs, size_t rhs) \
     { \
-        return T(ToUnderlying(lhs) op rhs); \
+        using TUnderlying = typename TEnumTraits<T>::TUnderlying; \
+        return T(static_cast<TUnderlying>(lhs) op rhs); \
     } \
     \
     [[maybe_unused]] inline T& operator assignOp (T& lhs, size_t rhs) \
     { \
-        lhs = T(ToUnderlying(lhs) op rhs); \
+        using TUnderlying = typename TEnumTraits<T>::TUnderlying; \
+        lhs = T(static_cast<TUnderlying>(lhs) op rhs); \
         return lhs; \
     }
 
-#define ENUM__BITWISE_OPS(enumType) \
-    ENUM__BINARY_BITWISE_OPERATOR(enumType, &=, &)  \
-    ENUM__BINARY_BITWISE_OPERATOR(enumType, |=, | ) \
-    ENUM__BINARY_BITWISE_OPERATOR(enumType, ^=, ^)  \
-    ENUM__UNARY_BITWISE_OPERATOR(enumType, ~)       \
-    ENUM__BIT_SHIFT_OPERATOR(enumType, <<=, << )    \
-    ENUM__BIT_SHIFT_OPERATOR(enumType, >>=, >> )
+#define ENUM__BITWISE_OPS(name) \
+    ENUM__BINARY_BITWISE_OPERATOR(name, &=, &)  \
+    ENUM__BINARY_BITWISE_OPERATOR(name, |=, | ) \
+    ENUM__BINARY_BITWISE_OPERATOR(name, ^=, ^)  \
+    ENUM__UNARY_BITWISE_OPERATOR(name, ~)       \
+    ENUM__BIT_SHIFT_OPERATOR(name, <<=, << )    \
+    ENUM__BIT_SHIFT_OPERATOR(name, >>=, >> )
 
 ////////////////////////////////////////////////////////////////////////////////
 
-template <typename E>
-    requires TEnumTraits<E>::IsBitEnum
-constexpr bool Any(E value) noexcept
+template <typename E, typename>
+bool Any(E value)
 {
-    return ToUnderlying(value) != 0;
+    return static_cast<typename TEnumTraits<E>::TUnderlying>(value) != 0;
 }
 
-template <typename E>
-    requires TEnumTraits<E>::IsBitEnum
-constexpr bool None(E value) noexcept
+template <class E, typename>
+bool None(E value)
 {
-    return ToUnderlying(value) == 0;
+    return static_cast<typename TEnumTraits<E>::TUnderlying>(value) == 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

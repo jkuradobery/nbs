@@ -12,6 +12,46 @@ using namespace NSchemeShard;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+class TDeleteParts: public TSubOperationState {
+private:
+    const TOperationId OperationId;
+
+    TString DebugHint() const override {
+        return TStringBuilder()
+            << "TDropFileStore::TDeleteParts"
+            << ", operationId: " << OperationId;
+    }
+
+public:
+    TDeleteParts(TOperationId id)
+        : OperationId(id)
+    {
+        IgnoreMessages(DebugHint(), {});
+    }
+
+    bool ProgressState(TOperationContext& context) override {
+        TTabletId ssId = context.SS->SelfTabletId();
+
+        LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+            DebugHint() << " ProgressState"
+            << ", at schemeshard: " << ssId);
+
+        auto* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState->TxType == TTxState::TxDropFileStore);
+
+        // Initiate asynchronous deletion of all shards
+        for (const auto& shard: txState->Shards) {
+            context.OnComplete.DeleteShard(shard.Idx);
+        }
+
+        NIceDb::TNiceDb db(context.GetDB());
+        context.SS->ChangeTxState(db, OperationId, TTxState::Propose);
+        return true;
+    }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TPropose: public TSubOperationState {
 private:
     const TOperationId OperationId;
@@ -46,14 +86,14 @@ public:
             return false;
         }
 
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropFileStore);
+        Y_VERIFY(txState->TxType == TTxState::TxDropFileStore);
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
         auto parentDir = context.SS->PathsById.at(path->ParentPathId);
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -103,8 +143,8 @@ public:
             << ", at schemeshard: " << ssId);
 
         auto* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropFileStore);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropFileStore);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -122,11 +162,32 @@ public:
         TOperationContext& context) override;
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropFileStore");
+        Y_FAIL("no AbortPropose for TDropFileStore");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
-        AbortUnsafeDropOperation(OperationId, forceDropTxId, context);
+        LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+            "TDropFileStore AbortUnsafe"
+            << ", opId: " << OperationId
+            << ", forceDropId: " << forceDropTxId
+            << ", at schemeshard: " << context.SS->TabletID());
+
+        auto* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState);
+
+        TPathId pathId = txState->TargetPathId;
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
+
+        TPathElement::TPtr path = context.SS->PathsById.at(pathId);
+        Y_VERIFY(path);
+
+        if (path->Dropped()) {
+            for (const auto& shard: txState->Shards) {
+                context.OnComplete.DeleteShard(shard.Idx);
+            }
+        }
+
+        context.OnComplete.DoneOperation(OperationId);
     }
 
 private:
@@ -265,12 +326,12 @@ THolder<TProposeResponse> TDropFileStore::Propose(
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateDropFileStore(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateDropFileStore(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TDropFileStore>(id, tx);
 }
 
-ISubOperation::TPtr CreateDropFileStore(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateDropFileStore(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropFileStore>(id, state);
 }
 

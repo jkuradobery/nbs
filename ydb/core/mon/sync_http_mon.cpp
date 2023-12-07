@@ -1,11 +1,12 @@
 #include "sync_http_mon.h"
 
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/core/probes.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/core/probes.h>
 #include <library/cpp/lwtrace/mon/mon_lwtrace.h>
 #include <library/cpp/mime/types/mime.h>
+#include <library/cpp/monlib/service/pages/version_mon_page.h>
 #include <library/cpp/monlib/service/pages/mon_page.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <library/cpp/monlib/dynamic_counters/page.h>
@@ -15,7 +16,6 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/monitoring_provider.h>
 #include <ydb/core/base/ticket_parser.h>
-#include <ydb/core/driver_lib/version/version_mon_page.h>
 
 #include "mon_impl.h"
 
@@ -36,16 +36,9 @@ namespace NActors {
 
     void TSyncHttpMon::Start(TActorSystem*) {
         TBase::Register(new TIndexRedirectMonPage(IndexMonPage));
-        TBase::Register(new NMonitoring::TYdbVersionMonPage);
-        TBase::Register(new NMonitoring::TBootstrapCssMonPage);
+        TBase::Register(new NMonitoring::TVersionMonPage);
         TBase::Register(new NMonitoring::TTablesorterCssMonPage);
-        TBase::Register(new NMonitoring::TBootstrapJsMonPage);
-        TBase::Register(new NMonitoring::TJQueryJsMonPage);
         TBase::Register(new NMonitoring::TTablesorterJsMonPage);
-        TBase::Register(new NMonitoring::TBootstrapFontsEotMonPage);
-        TBase::Register(new NMonitoring::TBootstrapFontsSvgMonPage);
-        TBase::Register(new NMonitoring::TBootstrapFontsTtfMonPage);
-        TBase::Register(new NMonitoring::TBootstrapFontsWoffMonPage);
 
         NLwTraceMonPage::RegisterPages(IndexMonPage.Get());
         NLwTraceMonPage::ProbeRegistry().AddProbesList(LWTRACE_GET_PROBES(ACTORLIB_PROVIDER));
@@ -114,9 +107,5 @@ namespace NActors {
 
     IMonPage* TSyncHttpMon::FindPage(const TString& relPath) {
         return TBase::FindPage(relPath);
-    }
-
-    void TSyncHttpMon::RegisterHandler(const TString& path, const TActorId& handler) {
-        ALOG_ERROR(NActorsServices::HTTP, "Cannot register actor handler " << handler << " in sync mon for " << path);
     }
 } // NActors

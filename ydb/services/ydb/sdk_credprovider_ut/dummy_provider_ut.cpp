@@ -53,7 +53,7 @@ class TExampleDummyProviderFactory : public ICredentialsProviderFactory {
         {
             auto strong = facility.lock();
             // must be able to promote in ctor
-            Y_ABORT_UNLESS(strong);
+            Y_VERIFY(strong);
             strong->AddPeriodicTask(CreatePingPongTask(facility), TDuration::Seconds(1));
         }
 
@@ -79,7 +79,7 @@ public:
 
     // Just for compatibility with old interface
     std::shared_ptr<ICredentialsProvider> CreateProvider() const override {
-        Y_ABORT();
+        Y_FAIL();
         return {};
     }
 

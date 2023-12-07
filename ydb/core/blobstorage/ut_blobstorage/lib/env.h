@@ -4,8 +4,6 @@
 
 #include "node_warden_mock.h"
 
-#include <ydb/core/driver_lib/version/version.h>
-
 #include <library/cpp/testing/unittest/registar.h>
 
 struct TEnvironmentSetup {
@@ -19,7 +17,6 @@ struct TEnvironmentSetup {
     const ui32 NumGroups = 1;
     TIntrusivePtr<NFake::TProxyDS> Group0 = MakeIntrusive<NFake::TProxyDS>();
     std::map<std::pair<ui32, ui32>, TIntrusivePtr<TPDiskMockState>> PDiskMockStates;
-    TVector<TActorId> PDiskActors;
     std::set<TActorId> CommencedReplication;
     std::unordered_map<ui32, TString> Cache;
 
@@ -36,7 +33,6 @@ struct TEnvironmentSetup {
         const ui32 NumDataCenters = 0;
         const std::function<TNodeLocation(ui32)> LocationGenerator;
         const bool SetupHive = false;
-        const bool SuppressCompatibilityCheck = false;
     };
 
     const TSettings Settings;
@@ -59,7 +55,6 @@ struct TEnvironmentSetup {
             const TActorId& actorId = ctx.Register(CreatePDiskMockActor(state), TMailboxType::HTSwap, poolId);
             const TActorId& serviceId = MakeBlobStoragePDiskID(nodeId, pdiskId);
             ctx.ExecutorThread.ActorSystem->RegisterLocalService(serviceId, actorId);
-            Env.PDiskActors.push_back(actorId);
         }
     };
 
@@ -102,10 +97,6 @@ struct TEnvironmentSetup {
         Cerr << "RandomSeed# " << seed << Endl;
     }
 
-    TInstant Now() {
-        return TAppData::TimeProvider->Now();
-    }
-
     TString GenerateRandomString(ui32 len) {
         TString res = TString::Uninitialized(len);
         char *p = res.Detach();
@@ -134,8 +125,6 @@ struct TEnvironmentSetup {
         Runtime->Start();
         auto *appData = Runtime->GetAppData();
 
-        appData->FeatureFlags.SetSuppressCompatibilityCheck(Settings.SuppressCompatibilityCheck);
-
         auto domain = TDomainsInfo::TDomain::ConstructEmptyDomain(DomainName, DomainId);
         appData->DomainsInfo->AddDomain(domain.Get());
         if (Settings.SetupHive) {
@@ -148,8 +137,8 @@ struct TEnvironmentSetup {
             Runtime->SetupTabletRuntime(GetNumDataCenters(), Settings.ControllerNodeId);
         }
         SetupStaticStorage();
-        SetupStorage();
         SetupTablet();
+        SetupStorage();
     }
 
     void StopNode(ui32 nodeId) {
@@ -269,14 +258,6 @@ struct TEnvironmentSetup {
         for (const auto& comp : debug) {
             Runtime->SetLogPriority(comp, NLog::PRI_DEBUG);
         }
-
-        // toggle the flag to enable logging of actor names and events
-        bool printActorNamesAndEvents = false;
-        if (printActorNamesAndEvents) {
-            Runtime->SetOwnLogPriority(NActors::NLog::EPrio::Info);
-        }
-
-        // Runtime->SetLogPriority(NKikimrServices::BS_REQUEST_COST, NLog::PRI_TRACE);
     }
 
     void SetupStaticStorage() {
@@ -298,7 +279,7 @@ struct TEnvironmentSetup {
                 warden.reset(new TNodeWardenMockActor(Settings.NodeWardenMockSetup));
             } else {
                 auto config = MakeIntrusive<TNodeWardenConfig>(new TMockPDiskServiceFactory(*this));
-                config->BlobStorageConfig.MutableServiceSet()->AddAvailabilityDomains(DomainId);
+                config->ServiceSet.AddAvailabilityDomains(DomainId);
                 config->VDiskReplPausedAtStart = Settings.VDiskReplPausedAtStart;
                 if (Settings.ConfigPreprocessor) {
                     Settings.ConfigPreprocessor(nodeId, *config);
@@ -476,17 +457,17 @@ struct TEnvironmentSetup {
                 ui32 numVDisksPerFailDomain = 0;
                 for (const auto& l : group.GetVSlotId()) {
                     const auto it = vslotToDiskMap.find(MakeBlobStorageVDiskID(l.GetNodeId(), l.GetPDiskId(), l.GetVSlotId()));
-                    Y_ABORT_UNLESS(it != vslotToDiskMap.end());
+                    Y_VERIFY(it != vslotToDiskMap.end());
                     const TVDiskID& vdiskId = it->second;
-                    Y_ABORT_UNLESS(vdiskId.GroupID == groupId);
-                    Y_ABORT_UNLESS(vdiskId.GroupGeneration == group.GetGroupGeneration());
+                    Y_VERIFY(vdiskId.GroupID == groupId);
+                    Y_VERIFY(vdiskId.GroupGeneration == group.GetGroupGeneration());
                     const bool inserted = vdisks.emplace(it->second, it->first).second;
-                    Y_ABORT_UNLESS(inserted);
+                    Y_VERIFY(inserted);
                     numFailRealms = Max<ui32>(numFailRealms, vdiskId.FailRealm + 1);
                     numFailDomainsPerFailRealm = Max<ui32>(numFailDomainsPerFailRealm, vdiskId.FailDomain + 1);
                     numVDisksPerFailDomain = Max<ui32>(numVDisksPerFailDomain, vdiskId.VDisk + 1);
                 }
-                Y_ABORT_UNLESS(numFailRealms * numFailDomainsPerFailRealm * numVDisksPerFailDomain == vdisks.size());
+                Y_VERIFY(numFailRealms * numFailDomainsPerFailRealm * numVDisksPerFailDomain == vdisks.size());
                 TBlobStorageGroupInfo::TTopology topology(TBlobStorageGroupType(
                     TBlobStorageGroupType::ErasureSpeciesByName(group.GetErasureSpecies())),
                     numFailRealms, numFailDomainsPerFailRealm, numVDisksPerFailDomain);
@@ -546,7 +527,7 @@ struct TEnvironmentSetup {
             if (res->GetTypeRewrite() == TEvents::TSystem::Undelivered) {
                 Sim(TDuration::Seconds(5));
             } else {
-                Y_ABORT_UNLESS(res->GetTypeRewrite() == TEvBlobStorage::EvCompactVDiskResult);
+                Y_VERIFY(res->GetTypeRewrite() == TEvBlobStorage::EvCompactVDiskResult);
                 Runtime->DestroyActor(edge);
                 return;
             }
@@ -587,7 +568,7 @@ struct TEnvironmentSetup {
                 const auto& res = record.GetResult(0);
                 UNIT_ASSERT_VALUES_EQUAL_C(res.GetStatus(), status, Dump(vdiskActorId, vdiskId));
                 if (status == NKikimrProto::OK) {
-                    UNIT_ASSERT_VALUES_EQUAL(r->Get()->GetBlobData(res).ConvertToString(), part.substr(1, part.size() - 2));
+                    UNIT_ASSERT_VALUES_EQUAL(res.GetBuffer(), part.substr(1, part.size() - 2));
                 }
             }
 
@@ -600,7 +581,7 @@ struct TEnvironmentSetup {
                 UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrProto::OK);
                 UNIT_ASSERT_VALUES_EQUAL(record.ResultSize(), 1);
                 const auto& res = record.GetResult(0);
-                UNIT_ASSERT(!r->Get()->HasBlob(res));
+                UNIT_ASSERT(!res.HasBuffer());
                 UNIT_ASSERT_VALUES_EQUAL(LogoBlobIDFromLogoBlobID(res.GetBlobID()), blobId.FullID());
                 UNIT_ASSERT_VALUES_EQUAL(res.GetStatus(), status);
             }
@@ -687,23 +668,6 @@ struct TEnvironmentSetup {
         UNIT_ASSERT(response.GetSuccess());
     }
 
-    void FillVSlotId(ui32 nodeId, ui32 pdiskId, ui32 vslotId, NKikimrBlobStorage::TVSlotId* vslot) {
-        vslot->SetNodeId(nodeId);
-        vslot->SetPDiskId(pdiskId);
-        vslot->SetVSlotId(vslotId);
-    }
-
-    void SetVDiskReadOnly(ui32 nodeId, ui32 pdiskId, ui32 vslotId, const TVDiskID& vdiskId, bool value) {
-        NKikimrBlobStorage::TConfigRequest request;
-        auto *roCmd = request.AddCommand()->MutableSetVDiskReadOnly();
-        FillVSlotId(nodeId, pdiskId, vslotId, roCmd->MutableVSlotId());
-        VDiskIDFromVDiskID(vdiskId, roCmd->MutableVDiskId());
-        roCmd->SetValue(value);
-        Cerr << "Invoking SetVDiskReadOnly for vdisk " << vdiskId.ToString() << Endl;
-        auto response = Invoke(request);
-        UNIT_ASSERT_C(response.GetSuccess(), response.GetErrorDescription());
-    }
-
     void UpdateDriveStatus(ui32 nodeId, ui32 pdiskId, NKikimrBlobStorage::EDriveStatus status,
             NKikimrBlobStorage::EDecommitStatus decommitStatus) {
         NKikimrBlobStorage::TConfigRequest request;
@@ -771,9 +735,9 @@ struct TEnvironmentSetup {
                     break;
                 }
             } else if (auto *msg = res->CastAsLocal<TEvents::TEvUndelivered>()) {
-                Y_ABORT_UNLESS(msg->SourceType == TEvBlobStorage::EvVStatus);
+                Y_VERIFY(msg->SourceType == TEvBlobStorage::EvVStatus);
             } else {
-                Y_ABORT();
+                Y_FAIL();
             }
 
             // sleep for a while

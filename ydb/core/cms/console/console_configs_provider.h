@@ -9,7 +9,7 @@
 #include <ydb/core/cms/console/util/config_index.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NConsole {
 
@@ -194,8 +194,8 @@ private:
             CFunc(TEvents::TSystem::PoisonPill, HandlePoison);
 
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                   ev->GetTypeRewrite(), ev->ToString().data());
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                   ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
             break;
         }
     }

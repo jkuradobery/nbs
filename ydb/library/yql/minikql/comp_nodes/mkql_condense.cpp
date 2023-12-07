@@ -78,7 +78,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -92,9 +92,8 @@ public:
         const auto stop = BasicBlock::Create(context, "stop", ctx.Func);
         const auto exit = BasicBlock::Create(context, "exit", ctx.Func);
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
-        const auto result = PHINode::Create(valueType, Switch ? 4U : 3U, "result", exit);
+        const auto state = new LoadInst(statePtr, "state", block);
+        const auto result = PHINode::Create(state->getType(), Switch ? 4U : 3U, "result", exit);
         result->addIncoming(state, block);
 
         const auto select = SwitchInst::Create(state, work, 3U, block);
@@ -113,7 +112,7 @@ public:
             const auto cleanup = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&CleanupCurrentContext));
             const auto cleanupType = FunctionType::get(Type::getVoidTy(context), {}, false);
             const auto cleanupPtr = CastInst::Create(Instruction::IntToPtr, cleanup, PointerType::getUnqual(cleanupType), "cleanup_ctx", block);
-            CallInst::Create(cleanupType, cleanupPtr, {}, "", block);
+            CallInst::Create(cleanupPtr, {}, "", block);
         }
 
         new StoreInst(GetEmpty(context), statePtr, block);
@@ -326,20 +325,20 @@ private:
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         FetchFunc = GenerateFetch(codegen);
-        codegen.ExportSymbol(FetchFunc);
+        codegen->ExportSymbol(FetchFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (FetchFunc) {
-            Fetch = reinterpret_cast<TFetchPtr>(codegen.GetPointerToFunction(FetchFunc));
+            Fetch = reinterpret_cast<TFetchPtr>(codegen->GetPointerToFunction(FetchFunc));
         }
     }
 
-    Function* GenerateFetch(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateFetch(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto codegenItemArg = dynamic_cast<ICodegeneratorExternalNode*>(State.Item);
         const auto codegenStateArg = dynamic_cast<ICodegeneratorExternalNode*>(State.State);
@@ -352,7 +351,7 @@ private:
             return f;
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto stateType = Type::getInt8Ty(context);
@@ -371,10 +370,10 @@ private:
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
         auto block = main;
 
-        const auto container = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-            new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
+        const auto container = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            new LoadInst(containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
-        const auto state = new LoadInst(stateType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -401,7 +400,7 @@ private:
             const auto cleanup = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&CleanupCurrentContext));
             const auto cleanupType = FunctionType::get(Type::getVoidTy(context), {}, false);
             const auto cleanupPtr = CastInst::Create(Instruction::IntToPtr, cleanup, PointerType::getUnqual(cleanupType), "cleanup_ctx", block);
-            CallInst::Create(cleanupType, cleanupPtr, {}, "", block);
+            CallInst::Create(cleanupPtr, {}, "", block);
         }
 
         new StoreInst(ConstantInt::get(state->getType(), static_cast<ui8>(ESqueezeState::Work)), statePtr, block);

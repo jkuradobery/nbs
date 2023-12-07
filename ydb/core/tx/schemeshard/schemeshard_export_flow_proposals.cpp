@@ -88,7 +88,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
     const TExportInfo::TPtr exportInfo,
     ui32 itemIdx
 ) {
-    Y_ABORT_UNLESS(itemIdx < exportInfo->Items.size());
+    Y_VERIFY(itemIdx < exportInfo->Items.size());
 
     auto propose = MakeHolder<TEvSchemeShard::TEvModifySchemeTransaction>(ui64(txId), ss->TabletID());
 
@@ -109,14 +109,11 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
         task.MutableTable()->CopyFrom(GetTableDescription(ss, sourcePath.Base()->PathId));
     }
 
-    task.SetSnapshotStep(exportInfo->SnapshotStep);
-    task.SetSnapshotTxId(exportInfo->SnapshotTxId);
-
     switch (exportInfo->Kind) {
     case TExportInfo::EKind::YT:
         {
             Ydb::Export::ExportToYtSettings exportSettings;
-            Y_ABORT_UNLESS(exportSettings.ParseFromString(exportInfo->Settings));
+            Y_VERIFY(exportSettings.ParseFromString(exportInfo->Settings));
 
             task.SetNumberOfRetries(exportSettings.number_of_retries());
             auto& backupSettings = *task.MutableYTSettings();
@@ -131,7 +128,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
     case TExportInfo::EKind::S3:
         {
             Ydb::Export::ExportToS3Settings exportSettings;
-            Y_ABORT_UNLESS(exportSettings.ParseFromString(exportInfo->Settings));
+            Y_VERIFY(exportSettings.ParseFromString(exportInfo->Settings));
 
             task.SetNumberOfRetries(exportSettings.number_of_retries());
             auto& backupSettings = *task.MutableS3Settings();
@@ -150,7 +147,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
                 backupSettings.SetScheme(NKikimrSchemeOp::TS3Settings::HTTPS);
                 break;
             default:
-                Y_ABORT("Unknown scheme");
+                Y_FAIL("Unknown scheme");
             }
 
             if (const auto region = exportSettings.region()) {
@@ -158,7 +155,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> BackupPropose(
             }
 
             if (const auto compression = exportSettings.compression()) {
-                Y_ABORT_UNLESS(FillCompression(*task.MutableCompression(), compression));
+                Y_VERIFY(FillCompression(*task.MutableCompression(), compression));
             }
         }
         break;

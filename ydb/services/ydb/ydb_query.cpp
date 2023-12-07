@@ -7,9 +7,9 @@
 
 namespace NKikimr::NGRpcService {
 
-void TGRpcYdbQueryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
-    using namespace Ydb::Query;
-    using namespace NQuery;
+void TGRpcYdbQueryService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
+    using Ydb::Query::ExecuteQueryRequest;
+    using Ydb::Query::ExecuteQueryResponsePart;
 
     auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
 
@@ -17,8 +17,8 @@ void TGRpcYdbQueryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
 #error ADD_REQUEST macro already defined
 #endif
 #define ADD_REQUEST(NAME, IN, OUT, ACTION) \
-    MakeIntrusive<TGRpcRequest<IN, OUT, TGRpcYdbQueryService>>(this, &Service_, CQ_, \
-        [this](NYdbGrpc::IRequestContextBase* ctx) { \
+    MakeIntrusive<TGRpcRequest<Ydb::Query::IN, Ydb::Query::OUT, TGRpcYdbQueryService>>(this, &Service_, CQ_, \
+        [this](NGrpc::IRequestContextBase *ctx) { \
             NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer()); \
             ACTION; \
         }, &Ydb::Query::V1::QueryService::AsyncService::Request ## NAME, \
@@ -27,57 +27,8 @@ void TGRpcYdbQueryService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
     ADD_REQUEST(ExecuteQuery, ExecuteQueryRequest, ExecuteQueryResponsePart, {
         ActorSystem_->Send(GRpcRequestProxyId_,
             new TGrpcRequestNoOperationCall<ExecuteQueryRequest, ExecuteQueryResponsePart>
-                (ctx, &DoExecuteQuery, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr, TAuditMode::Auditable}));
+                (ctx, &DoExecuteQueryRequest, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
     })
-
-    ADD_REQUEST(ExecuteScript, ExecuteScriptRequest, Ydb::Operations::Operation, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<ExecuteScriptRequest, Ydb::Operations::Operation>
-                (ctx, &DoExecuteScript, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr, TAuditMode::Auditable}));
-    })
-
-    ADD_REQUEST(FetchScriptResults, FetchScriptResultsRequest, FetchScriptResultsResponse, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<FetchScriptResultsRequest, FetchScriptResultsResponse>
-                (ctx, &DoFetchScriptResults, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
-    ADD_REQUEST(CreateSession, CreateSessionRequest, CreateSessionResponse, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<CreateSessionRequest, CreateSessionResponse>
-                (ctx, &DoCreateSession, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
-    ADD_REQUEST(DeleteSession, DeleteSessionRequest, DeleteSessionResponse, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<DeleteSessionRequest, DeleteSessionResponse>
-                (ctx, &DoDeleteSession, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
-    ADD_REQUEST(AttachSession, AttachSessionRequest, SessionState, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<AttachSessionRequest, SessionState>
-                (ctx, &DoAttachSession, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
-    ADD_REQUEST(BeginTransaction, BeginTransactionRequest, BeginTransactionResponse, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<BeginTransactionRequest, BeginTransactionResponse>
-                (ctx, &DoBeginTransaction, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
-    ADD_REQUEST(CommitTransaction, CommitTransactionRequest, CommitTransactionResponse, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<CommitTransactionRequest, CommitTransactionResponse>
-                (ctx, &DoCommitTransaction, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
-    ADD_REQUEST(RollbackTransaction, RollbackTransactionRequest, RollbackTransactionResponse, {
-        ActorSystem_->Send(GRpcRequestProxyId_,
-            new TGrpcRequestNoOperationCall<RollbackTransactionRequest, RollbackTransactionResponse>
-                (ctx, &DoRollbackTransaction, TRequestAuxSettings{RLSWITCH(TRateLimiterMode::Rps), nullptr}));
-    })
-
 #undef ADD_REQUEST
 }
 

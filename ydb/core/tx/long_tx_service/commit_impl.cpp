@@ -5,7 +5,7 @@
 #include <ydb/core/tx/columnshard/columnshard.h>
 #include <ydb/core/actorlib_impl/long_timer.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #define TXLOG_LOG(priority, stream) \
     LOG_LOG_S(*TlsActivationContext, priority, NKikimrServices::LONG_TX_SERVICE, LogPrefix << stream)
@@ -20,14 +20,9 @@ namespace NLongTxService {
         static constexpr ui32 MaxPlanRetriesPerShard = 1000;    // ~5 min
         static constexpr ui32 RetryDelayMs = 300;
 
-        std::vector<ui64> WriteIds;
+        ui64 WriteId = 0;
         TString TxBody;
         ui32 NumRetries = 0;
-        ui32 WritePartId = 0;
-
-        TString GetWriteIdsStr() const {
-            return JoinSeq(", ", WriteIds);
-        }
     };
 
     class TLongTxServiceActor::TCommitActor : public TActorBootstrapped<TCommitActor> {
@@ -35,7 +30,7 @@ namespace NLongTxService {
         struct TParams {
             TLongTxId TxId;
             TString DatabaseName;
-            THashMap<ui64, TTransaction::TShardWriteIds> ColumnShardWrites;
+            THashMap<ui64, ui64> ColumnShardWrites;
         };
 
     public:
@@ -69,6 +64,7 @@ namespace NLongTxService {
         }
 
         STFUNC(StateAllocateTxId) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvTxUserProxy::TEvAllocateTxIdResult, Handle);
             }
@@ -87,16 +83,13 @@ namespace NLongTxService {
         void PrepareTransaction() {
             for (const auto& pr : Params.ColumnShardWrites) {
                 const ui64 tabletId = pr.first;
+                const ui64 writeId = pr.second;
                 NKikimrTxColumnShard::TCommitTxBody tx;
-                std::vector<ui64> writeIds;
-                for (auto&& wId : pr.second) {
-                    tx.AddWriteIds(wId);
-                    writeIds.emplace_back(wId);
-                }
+                tx.AddWriteIds(writeId);
                 TString txBody;
-                Y_ABORT_UNLESS(tx.SerializeToString(&txBody));
+                Y_VERIFY(tx.SerializeToString(&txBody));
 
-                WaitingShards.emplace(tabletId, TRetryData{ writeIds, txBody, 0 });
+                WaitingShards.emplace(tabletId, TRetryData{writeId, txBody, 0});
                 SendPrepareTransaction(tabletId);
             }
             Become(&TThis::StatePrepare);
@@ -122,7 +115,7 @@ namespace NLongTxService {
                 return true;
             }
 
-            TXLOG_DEBUG("Sending TEvProposeTransaction to ColumnShard# " << tabletId << " WriteId# " << data.GetWriteIdsStr());
+            TXLOG_DEBUG("Sending TEvProposeTransaction to ColumnShard# " << tabletId << " WriteId# " << data.WriteId);
 
             SendToTablet(tabletId, MakeHolder<TEvColumnShard::TEvProposeTransaction>(
                     NKikimrTxColumnShard::TX_KIND_COMMIT,
@@ -133,6 +126,7 @@ namespace NLongTxService {
         }
 
         STFUNC(StatePrepare) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvColumnShard::TEvProposeTransactionResult, HandlePrepare);
                 hFunc(TEvPipeCache::TEvDeliveryProblem, HandlePrepare);
@@ -211,7 +205,7 @@ namespace NLongTxService {
         void HandlePrepare(TEvPipeCache::TEvDeliveryProblem::TPtr& ev) {
             const auto* msg = ev->Get();
             const ui64 tabletId = msg->TabletId;
-            Y_ABORT_UNLESS(tabletId != SelectedCoordinator);
+            Y_VERIFY(tabletId != SelectedCoordinator);
 
             TXLOG_DEBUG("Delivery problem"
                 << " TabletId# " << tabletId
@@ -244,8 +238,8 @@ namespace NLongTxService {
 
     private:
         void PlanTransaction() {
-            Y_ABORT_UNLESS(SelectedCoordinator);
-            Y_ABORT_UNLESS(WaitingShards.empty());
+            Y_VERIFY(SelectedCoordinator);
+            Y_VERIFY(WaitingShards.empty());
             ToRetry.clear();
 
             auto req = MakeHolder<TEvTxProxy::TEvProposeTransaction>(
@@ -267,6 +261,7 @@ namespace NLongTxService {
         }
 
         STFUNC(StatePlan) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 hFunc(TEvTxProxy::TEvProposeTransactionStatus, HandlePlan);
                 hFunc(TEvColumnShard::TEvProposeTransactionResult, HandlePlan);
@@ -401,7 +396,7 @@ namespace NLongTxService {
         }
 
         bool SendCheckPlannedTransaction(ui64 tabletId, bool delayed = false) {
-            Y_ABORT_UNLESS(PlanStep);
+            Y_VERIFY(PlanStep);
 
             if (delayed) {
                 auto it = WaitingShards.find(tabletId);

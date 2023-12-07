@@ -70,7 +70,7 @@ public:
                 }
             }
 
-            Y_ABORT();
+            Y_FAIL();
         };
 
         return MessageBusCall<TRequest, TResponse>(config, request, callback);

@@ -34,7 +34,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
 
@@ -47,7 +47,7 @@ public:
         const auto zero = ConstantInt::get(valType, 0ULL);
         const auto result = PHINode::Create(valType, IsLeftOptional || IsRightOptional ? 3 : 2, "result", done);
 
-        if constexpr (IsLeftOptional || IsRightOptional) {
+        if (IsLeftOptional || IsRightOptional) {
             const auto test = IsLeftOptional && IsRightOptional ?
                 BinaryOperator::CreateAnd(left, right, "test", block):
                 IsLeftOptional ? left : right;
@@ -133,7 +133,7 @@ public:
 
         const auto r = NYql::NDecimal::TInt128(right.Get<TRight>());
 
-        if constexpr (std::is_signed<TRight>::value) {
+        if (std::is_signed<TRight>::value) {
             if (r >= +Bound || r <= -Bound)
                 return left.Release();
         } else {
@@ -146,7 +146,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto divider = NDecimal::GenConstant(Divider, context);
@@ -160,7 +160,7 @@ public:
         const auto zero = ConstantInt::get(valType, 0ULL);
         const auto result = PHINode::Create(valType, IsLeftOptional || IsRightOptional ? 3 : 2, "result", done);
 
-        if constexpr (IsLeftOptional || IsRightOptional) {
+        if (IsLeftOptional || IsRightOptional) {
             const auto test = IsLeftOptional && IsRightOptional ?
                 BinaryOperator::CreateAnd(left, right, "test", block):
                 IsLeftOptional ? left : right;
@@ -253,7 +253,7 @@ IComputationNode* WrapDecimalMod(TCallable& callable, const TComputationNodeFact
     auto left = LocateNode(ctx.NodeLocator, callable, 0);
     auto right = LocateNode(ctx.NodeLocator, callable, 1);
 
-    switch (rightType->GetSchemeType()) {
+    switch(rightType->GetSchemeType()) {
         case NUdf::TDataType<NUdf::TDecimal>::Id:
             MKQL_ENSURE(static_cast<TDataDecimalType*>(rightType)->IsSameType(*leftType), "Operands type mismatch");
 
@@ -278,7 +278,7 @@ IComputationNode* WrapDecimalMod(TCallable& callable, const TComputationNodeFact
         INTEGRAL_VALUE_TYPES(MAKE_PRIMITIVE_TYPE_MOD)
 #undef MAKE_PRIMITIVE_TYPE_MOD
         default:
-            Y_ABORT("Unupported type.");
+            Y_FAIL("Unupported type.");
     }
 }
 

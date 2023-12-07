@@ -1,6 +1,5 @@
 #include "csv.h"
-#include <ydb/core/formats/arrow/arrow_helpers.h>
-#include <ydb/core/formats/arrow/serializer/stream.h>
+#include <ydb/core/formats/arrow_helpers.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/record_batch.h>
 #include <contrib/libs/apache/arrow/cpp/src/arrow/util/value_parsing.h>
 
@@ -40,11 +39,10 @@ public:
 
 }
 
-TArrowCSV::TArrowCSV(const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns, bool header, const std::set<std::string>& notNullColumns)
+TArrowCSV::TArrowCSV(const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns, bool header)
     : ReadOptions(arrow::csv::ReadOptions::Defaults())
     , ParseOptions(arrow::csv::ParseOptions::Defaults())
     , ConvertOptions(arrow::csv::ConvertOptions::Defaults())
-    , NotNullColumns(notNullColumns)
 {
     ConvertOptions.check_utf8 = false;
     ConvertOptions.timestamp_parsers.clear();
@@ -85,7 +83,7 @@ TArrowCSV::TArrowCSV(const TVector<std::pair<TString, NScheme::TTypeInfo>>& colu
 
 std::shared_ptr<arrow::RecordBatch> TArrowCSV::ConvertColumnTypes(std::shared_ptr<arrow::RecordBatch> parsedBatch) const {
     if (!parsedBatch) {
-        return nullptr;
+        return parsedBatch;
     }
 
     const auto& schema = parsedBatch->schema();
@@ -96,14 +94,13 @@ std::shared_ptr<arrow::RecordBatch> TArrowCSV::ConvertColumnTypes(std::shared_pt
 
     for (const auto& f : schema->fields()) {
         auto fArr = parsedBatch->GetColumnByName(f->name());
-        Y_ABORT_UNLESS(fArr);
+        Y_VERIFY(fArr);
         std::shared_ptr<arrow::DataType> originalType;
         if (columnsFilter.contains(f->name()) || columnsFilter.empty()) {
             auto it = OriginalColumnTypes.find(f->name());
-            Y_ABORT_UNLESS(it != OriginalColumnTypes.end());
+            Y_VERIFY(it != OriginalColumnTypes.end());
             originalType = it->second;
-            bool nullable = !NotNullColumns.contains(f->name());
-            Y_ABORT_UNLESS(sBuilderFixed.AddField(std::make_shared<arrow::Field>(f->name(), originalType, nullable)).ok());
+            Y_VERIFY(sBuilderFixed.AddField(std::make_shared<arrow::Field>(f->name(), originalType)).ok());
         } else {
             continue;
         }
@@ -115,10 +112,10 @@ std::shared_ptr<arrow::RecordBatch> TArrowCSV::ConvertColumnTypes(std::shared_pt
                 std::shared_ptr<arrow::TimestampArray> i64Arr = std::make_shared<arrow::TimestampArray>(fArr->data());
                 if (originalType->id() == arrow::UInt16Type::type_id) {
                     arrow::UInt16Builder aBuilder;
-                    Y_ABORT_UNLESS(aBuilder.Reserve(parsedBatch->num_rows()).ok());
+                    Y_VERIFY(aBuilder.Reserve(parsedBatch->num_rows()).ok());
                     for (long i = 0; i < parsedBatch->num_rows(); ++i) {
                         if (i64Arr->IsNull(i)) {
-                            Y_ABORT_UNLESS(aBuilder.AppendNull().ok());
+                            Y_VERIFY(aBuilder.AppendNull().ok());
                         } else {
                             aBuilder.UnsafeAppend(i64Arr->Value(i) / 86400ull);
                         }
@@ -126,28 +123,28 @@ std::shared_ptr<arrow::RecordBatch> TArrowCSV::ConvertColumnTypes(std::shared_pt
                     arrResult = aBuilder.Finish();
                 } else if (originalType->id() == arrow::UInt32Type::type_id) {
                     arrow::UInt32Builder aBuilder;
-                    Y_ABORT_UNLESS(aBuilder.Reserve(parsedBatch->num_rows()).ok());
+                    Y_VERIFY(aBuilder.Reserve(parsedBatch->num_rows()).ok());
                     for (long i = 0; i < parsedBatch->num_rows(); ++i) {
                         if (i64Arr->IsNull(i)) {
-                            Y_ABORT_UNLESS(aBuilder.AppendNull().ok());
+                            Y_VERIFY(aBuilder.AppendNull().ok());
                         } else {
                             aBuilder.UnsafeAppend(i64Arr->Value(i));
                         }
                     }
                     arrResult = aBuilder.Finish();
                 } else {
-                    Y_ABORT_UNLESS(false);
+                    Y_VERIFY(false);
                 }
             }
-            Y_ABORT_UNLESS(arrResult.ok());
+            Y_VERIFY(arrResult.ok());
             resultColumns.emplace_back(*arrResult);
         } else {
-            Y_ABORT_UNLESS(false);
+            Y_VERIFY(false);
         }
     }
 
     auto resultSchemaFixed = sBuilderFixed.Finish();
-    Y_ABORT_UNLESS(resultSchemaFixed.ok());
+    Y_VERIFY(resultSchemaFixed.ok());
     return arrow::RecordBatch::Make(*resultSchemaFixed, parsedBatch->num_rows(), resultColumns);
 }
 
@@ -158,7 +155,7 @@ std::shared_ptr<arrow::RecordBatch> TArrowCSV::ReadNext(const TString& csv, TStr
             return {};
         }
 
-        auto buffer = std::make_shared<NArrow::NSerialization::TBufferOverString>(csv);
+        auto buffer = std::make_shared<NArrow::TBufferOverString>(csv);
         auto input = std::make_shared<arrow::io::BufferReader>(buffer);
         auto res = arrow::csv::StreamingReader::Make(arrow::io::default_io_context(), input,
                                                      ReadOptions, ParseOptions, ConvertOptions);

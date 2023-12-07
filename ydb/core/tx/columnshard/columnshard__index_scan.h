@@ -2,8 +2,7 @@
 
 #include "columnshard__scan.h"
 #include "columnshard_common.h"
-#include "engines/reader/read_metadata.h"
-#include "engines/reader/read_context.h"
+#include <ydb/core/tx/columnshard/engines/indexed_read_data.h>
 
 namespace NKikimr::NColumnShard {
 
@@ -22,95 +21,150 @@ public:
     const NTable::TScheme::TTableSchema& GetSchema() const override {
         return IndexInfo;
     }
-
-    NSsa::TColumnInfo GetDefaultColumn() const override {
-        return NSsa::TColumnInfo::Original((ui32)NOlap::TIndexInfo::ESpecialColumn::PLAN_STEP, NOlap::TIndexInfo::SPEC_COL_PLAN_STEP);
-    }
 };
+
 
 using NOlap::TUnifiedBlobId;
 using NOlap::TBlobRange;
 
-class TReadyResults {
-private:
-    const NColumnShard::TConcreteScanCounters Counters;
-    std::deque<NOlap::TPartialReadResult> Data;
-    i64 RecordsCount = 0;
-public:
-    TString DebugString() const {
-        TStringBuilder sb;
-        sb
-            << "count:" << Data.size() << ";"
-            << "records_count:" << RecordsCount << ";"
-            ;
-        if (Data.size()) {
-            sb << "schema=" << Data.front().GetResultBatch().schema()->ToString() << ";";
-        }
-        return sb;
-    }
-    TReadyResults(const NColumnShard::TConcreteScanCounters& counters)
-        : Counters(counters)
-    {
-
-    }
-    NOlap::TPartialReadResult& emplace_back(NOlap::TPartialReadResult&& v) {
-        RecordsCount += v.GetResultBatch().num_rows();
-        Data.emplace_back(std::move(v));
-        return Data.back();
-    }
-    std::optional<NOlap::TPartialReadResult> pop_front() {
-        if (Data.empty()) {
-            return {};
-        }
-        auto result = std::move(Data.front());
-        RecordsCount -= result.GetResultBatch().num_rows();
-        Data.pop_front();
-        return result;
-    }
-    bool empty() const {
-        return Data.empty();
-    }
-    size_t size() const {
-        return Data.size();
-    }
-};
-
-class TColumnShardScanIterator: public TScanIteratorBase {
-private:
-    std::shared_ptr<NOlap::TReadContext> Context;
-    const NOlap::TReadMetadata::TConstPtr ReadMetadata;
-    TReadyResults ReadyResults;
-    std::shared_ptr<NOlap::IDataReader> IndexedData;
+class TColumnShardScanIterator : public TScanIteratorBase {
+    NOlap::TReadMetadata::TConstPtr ReadMetadata;
+    NOlap::TIndexedReadData IndexedData;
+    THashMap<TBlobRange, ui64> IndexedBlobs; // blobId -> granule
+    THashSet<TBlobRange> WaitIndexed;
+    THashMap<ui64, THashSet<TBlobRange>> GranuleBlobs; // granule -> blobs
+    std::unordered_map<NOlap::TCommittedBlob, ui32, THash<NOlap::TCommittedBlob>> WaitCommitted;
+    TVector<TBlobRange> BlobsToRead;
+    ui64 NextBlobIdxToRead = 0;
+    TDeque<NOlap::TPartialReadResult> ReadyResults;
+    bool IsReadFinished = false;
     ui64 ItemsRead = 0;
     const i64 MaxRowsInBatch = 5000;
-public:
-    TColumnShardScanIterator(const std::shared_ptr<NOlap::TReadContext>& context, const NOlap::TReadMetadata::TConstPtr& readMetadata);
-    ~TColumnShardScanIterator();
 
-    virtual std::optional<ui32> GetAvailableResultsCount() const override {
+public:
+    TColumnShardScanIterator(NOlap::TReadMetadata::TConstPtr readMetadata)
+        : ReadMetadata(readMetadata)
+        , IndexedData(ReadMetadata)
+    {
+        ui32 batchNo = 0;
+        for (size_t i = 0; i < ReadMetadata->CommittedBlobs.size(); ++i, ++batchNo) {
+            const auto& cmtBlob = ReadMetadata->CommittedBlobs[i];
+            WaitCommitted.emplace(cmtBlob, batchNo);
+        }
+        IndexedBlobs = IndexedData.InitRead(batchNo, true);
+        for (auto& [blobId, granule] : IndexedBlobs) {
+            WaitIndexed.insert(blobId);
+            GranuleBlobs[granule].insert(blobId);
+        }
+
+        // Add cached batches without read
+        for (auto& [blobId, batch] : ReadMetadata->CommittedBatches) {
+            auto cmt = WaitCommitted.extract(NOlap::TCommittedBlob{blobId, 0, 0});
+            Y_VERIFY(!cmt.empty());
+
+            const NOlap::TCommittedBlob& cmtBlob = cmt.key();
+            ui32 batchNo = cmt.mapped();
+            IndexedData.AddNotIndexed(batchNo, batch, cmtBlob.PlanStep, cmtBlob.TxId);
+        }
+
+        // Read all committed blobs
+        for (const auto& cmtBlob : ReadMetadata->CommittedBlobs) {
+            auto& blobId = cmtBlob.BlobId;
+            BlobsToRead.push_back(TBlobRange(blobId, 0, blobId.BlobSize()));
+        }
+
+        Y_VERIFY(ReadMetadata->IsSorted());
+
+        // Read all indexed blobs (in correct order)
+        auto granulesOrder = ReadMetadata->SelectInfo->GranulesOrder(ReadMetadata->IsDescSorted());
+        for (ui64 granule : granulesOrder) {
+            auto& blobs = GranuleBlobs[granule];
+            BlobsToRead.insert(BlobsToRead.end(), blobs.begin(), blobs.end());
+        }
+
+        IsReadFinished = ReadMetadata->Empty();
+    }
+
+    void AddData(const TBlobRange& blobRange, TString data) override {
+        const auto& blobId = blobRange.BlobId;
+        if (IndexedBlobs.count(blobRange)) {
+            if (!WaitIndexed.count(blobRange)) {
+                return; // ignore duplicate parts
+            }
+            WaitIndexed.erase(blobRange);
+            IndexedData.AddIndexed(blobRange, data);
+        } else {
+            auto cmt = WaitCommitted.extract(NOlap::TCommittedBlob{blobId, 0, 0});
+            if (cmt.empty()) {
+                return; // ignore duplicates
+            }
+            const NOlap::TCommittedBlob& cmtBlob = cmt.key();
+            ui32 batchNo = cmt.mapped();
+            IndexedData.AddNotIndexed(batchNo, data, cmtBlob.PlanStep, cmtBlob.TxId);
+        }
+    }
+
+    bool Finished() const  override {
+        return IsReadFinished && ReadyResults.empty();
+    }
+
+    NOlap::TPartialReadResult GetBatch() override {
+        FillReadyResults();
+
+        if (ReadyResults.empty()) {
+            return {};
+        }
+
+        auto result(std::move(ReadyResults.front()));
+        ReadyResults.pop_front();
+
+        return result;
+    }
+
+    TBlobRange GetNextBlobToRead() override {
+        if (IsReadFinished || NextBlobIdxToRead == BlobsToRead.size()) {
+            return TBlobRange();
+        }
+        const auto& blob = BlobsToRead[NextBlobIdxToRead];
+        ++NextBlobIdxToRead;
+        return blob;
+    }
+
+    size_t ReadyResultsCount() const override {
         return ReadyResults.size();
     }
 
-    virtual TString DebugString(const bool verbose) const override {
-        return TStringBuilder()
-            << "ready_results:(" << ReadyResults.DebugString() << ");"
-            << "indexed_data:(" << IndexedData->DebugString(verbose) << ")"
-            ;
-    }
-
-    virtual void Apply(IDataTasksProcessor::ITask::TPtr task) override;
-
-    bool Finished() const  override {
-        return IndexedData->IsFinished() && ReadyResults.empty();
-    }
-
-    std::optional<NOlap::TPartialReadResult> GetBatch() override;
-    virtual void PrepareResults() override;
-
-    virtual bool ReadNextInterval() override;
-
 private:
-    void FillReadyResults();
+    void FillReadyResults() {
+        auto ready = IndexedData.GetReadyResults(MaxRowsInBatch);
+        i64 limitLeft = ReadMetadata->Limit == 0 ? INT64_MAX : ReadMetadata->Limit - ItemsRead;
+        for (size_t i = 0; i < ready.size() && limitLeft; ++i) {
+            if (ready[i].ResultBatch->num_rows() == 0 && !ready[i].LastReadKey) {
+                Y_VERIFY(i+1 == ready.size(), "Only last batch can be empty!");
+                break;
+            }
+
+            ReadyResults.emplace_back(std::move(ready[i]));
+            auto& batch = ReadyResults.back();
+            if (batch.ResultBatch->num_rows() > limitLeft) {
+                // Trim the last batch if total row count execceds the requested limit
+                batch.ResultBatch = batch.ResultBatch->Slice(0, limitLeft);
+                ready.clear();
+            }
+            limitLeft -= batch.ResultBatch->num_rows();
+            ItemsRead += batch.ResultBatch->num_rows();
+        }
+
+        if (limitLeft == 0) {
+            WaitCommitted.clear();
+            WaitIndexed.clear();
+            IsReadFinished = true;
+        }
+
+        if (WaitCommitted.empty() && WaitIndexed.empty() && NextBlobIdxToRead == BlobsToRead.size()) {
+            IsReadFinished = true;
+        }
+    }
 };
 
 }

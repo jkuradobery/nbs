@@ -17,12 +17,6 @@
 // allocator info
 #include <library/cpp/malloc/api/malloc.h>
 
-// compatibility info
-#include <ydb/core/driver_lib/version/version.h>
-
-// backtrace formatting
-#include <ydb/core/base/backtrace.h>
-
 #ifndef _win_
 #include <sys/mman.h>
 #endif
@@ -59,23 +53,12 @@ int MainRun(const TKikimrRunConfig& runConfig, std::shared_ptr<TModuleFactories>
         exit(0);
     }
 
-    void PrintCompatibilityInfoAndExit() {
-        TString compatibilityInfo(CompatibilityInfo.PrintHumanReadable());
-        Cout << compatibilityInfo;
-        if (!compatibilityInfo.EndsWith("\n")) {
-            Cout << Endl;
-        }
-        exit(0);
-    }
-
     int Main(int argc, char **argv, std::shared_ptr<TModuleFactories> factories) {
 #ifndef _win_
         mlockall(MCL_CURRENT);
 #endif
         using namespace NLastGetopt;
         using TDriverModeParser = TCliCommands<EDriverMode>;
-
-        EnableYDBBacktraceFormat();
 
         NKikimrConfig::TAppConfig appConfig;
         TCommandConfig cmdConf;
@@ -102,8 +85,6 @@ int MainRun(const TKikimrRunConfig& runConfig, std::shared_ptr<TModuleFactories>
         opts.AddLongOption('o', "progress", "Show progress of long requests").NoArgument();
         opts.AddLongOption(0,  "allocator-info", "Print the name of allocator linked to the binary and exit")
                 .NoArgument().Handler(&PrintAllocatorInfoAndExit);
-        opts.AddLongOption(0, "compatibility-info", "Print compatibility info of this binary and exit")
-                .NoArgument().Handler(&PrintCompatibilityInfoAndExit);
         opts.SetFreeArgsMin(1);
         opts.SetFreeArgTitle(0, "<command>", TDriverModeParser::CommandsCsv());
         opts.SetCmdLineDescr(NDriverClient::NewClientCommandsDescription(std::filesystem::path(argv[0]).stem().string(), factories));
@@ -170,7 +151,7 @@ int MainRun(const TKikimrRunConfig& runConfig, std::shared_ptr<TModuleFactories>
         case EDM_ACTORSYS_PERFTEST:
             return NDriverClient::ActorsysPerfTest(cmdConf, argc, argv);
         default:
-            Y_ABORT("Not Happens");
+            Y_FAIL("Not Happens");
         }
     }
 } // NKikimr

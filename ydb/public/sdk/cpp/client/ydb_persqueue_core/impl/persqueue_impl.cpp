@@ -26,7 +26,7 @@ std::shared_ptr<IWriteSession> TPersQueueClient::TImpl::CreateWriteSession(
         const TWriteSessionSettings& settings
 ) {
     TMaybe<TWriteSessionSettings> maybeSettings;
-    if (!settings.CompressionExecutor_ || !settings.EventHandlers_.HandlersExecutor_) {
+    if (!settings.CompressionExecutor_ || !settings.EventHandlers_.HandlersExecutor_ || !settings.ClusterDiscoveryMode_) {
         maybeSettings = settings;
         with_lock (Lock) {
             if (!settings.CompressionExecutor_) {
@@ -34,6 +34,9 @@ std::shared_ptr<IWriteSession> TPersQueueClient::TImpl::CreateWriteSession(
             }
             if (!settings.EventHandlers_.HandlersExecutor_) {
                 maybeSettings->EventHandlers_.HandlersExecutor(Settings.DefaultHandlersExecutor_);
+            }
+            if (!settings.ClusterDiscoveryMode_) {
+                maybeSettings->ClusterDiscoveryMode(Settings.ClusterDiscoveryMode_);
             }
         }
     }
@@ -63,7 +66,7 @@ std::shared_ptr<ISimpleBlockingWriteSession> TPersQueueClient::TImpl::CreateSimp
 
 std::shared_ptr<TPersQueueClient::TImpl> TPersQueueClient::TImpl::GetClientForEndpoint(const TString& clusterEndoint) {
     with_lock (Lock) {
-        Y_ABORT_UNLESS(!CustomEndpoint);
+        Y_VERIFY(!CustomEndpoint);
         std::shared_ptr<TImpl>& client = Subclients[clusterEndoint];
         if (!client) {
             client = std::make_shared<TImpl>(clusterEndoint, Connections_, Settings);

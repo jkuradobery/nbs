@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <util/generic/string.h>
 #include <util/generic/hash.h>
@@ -119,14 +119,14 @@ public:
     }
 
     void RestorePrimaryPath() {
-        Y_ABORT_UNLESS(!OriginalPath.empty());
+        Y_VERIFY(!OriginalPath.empty());
         PrimaryPath = OriginalPath;
         OriginalPath.clear();
     }
 
     // Only for control plane
     const TString& GetFullModernName() const {
-        Y_ABORT_UNLESS(!FullModernName.empty());
+        Y_VERIFY(!FullModernName.empty());
         return FullModernName;
     }
 
@@ -264,7 +264,6 @@ public:
 
     bool IsFirstClass() const;
 
-    operator bool() const { return Valid && !ClientsideName; };
 
 private:
     void BuildInternals(const NKikimrPQ::TPQTabletConfig& config);
@@ -323,11 +322,7 @@ public:
             if (!IsLocalDc.Defined()) {
                 localDc = LocalDc;
             } else if (IsLocalDc.GetRef()) {
-                if (!dc.empty()) {
-                    localDc = dc;
-                } else {
-                    localDc = ".local";
-                }
+                localDc = dc;
             } else {
                 localDc = dc + ".non-local"; // Just always mismatch with any DC;
             }
@@ -337,7 +332,7 @@ public:
                             topic, localDc, localDc, database, NormalizedPrefix//, RootDatabases
                     );
                 } else if (dc.empty()) {
-                    TDiscoveryConverterPtr converter{new TDiscoveryConverter()};
+                    TDiscoveryConverterPtr converter;
                     converter->Valid = false;
                     converter->Reason = TStringBuilder() << "DC should be explicitly specified for topic " << topic << Endl;
                     return converter;

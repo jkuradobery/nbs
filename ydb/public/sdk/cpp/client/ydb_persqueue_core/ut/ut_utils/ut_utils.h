@@ -16,14 +16,9 @@ class TPersQueueYdbSdkTestSetup : public ::NPersQueue::SDKTestSetup {
 
     TAdaptiveLock Lock;
 public:
-    TPersQueueYdbSdkTestSetup(const TString& testCaseName, bool start = true,
-                              const TVector<NKikimrServices::EServiceKikimr>& logServices = ::NPersQueue::TTestServer::LOGGED_SERVICES,
-                              NActors::NLog::EPriority logPriority = NActors::NLog::PRI_DEBUG,
-                              ui32 nodeCount = NKikimr::NPersQueueTests::PQ_DEFAULT_NODE_COUNT,
-                              size_t topicPartitionsCount = 1)
-        : SDKTestSetup(testCaseName, start, logServices, logPriority, nodeCount, topicPartitionsCount)
-    {
-    }
+    TPersQueueYdbSdkTestSetup(const TString& testCaseName, bool start = true)
+        : SDKTestSetup(testCaseName, start)
+    {}
 
     ~TPersQueueYdbSdkTestSetup() {
         if (PersQueueClient) {
@@ -59,7 +54,7 @@ public:
     NYdb::NPersQueue::TReadSessionSettings GetReadSessionSettings() {
         NYdb::NPersQueue::TReadSessionSettings settings;
         settings
-                .ConsumerName(GetTestConsumer())
+                .ConsumerName(GetTestClient())
                 .AppendTopics(GetTestTopic());
         return settings;
     }
@@ -68,8 +63,7 @@ public:
         TWriteSessionSettings settings;
         settings
                 .Path(GetTestTopic())
-                .MessageGroupId(GetTestMessageGroupId())
-                .ClusterDiscoveryMode(EClusterDiscoveryMode::On);
+                .MessageGroupId(GetTestMessageGroupId());
         return settings;
     }
 };
@@ -155,14 +149,14 @@ public:
 
                 if (continueToken && !MessageBuffer.IsEmpty()) {
                     ::NPersQueue::TAcknowledgableMessage acknowledgeableMessage;
-                    Y_ABORT_UNLESS(MessageBuffer.Dequeue(acknowledgeableMessage));
+                    Y_VERIFY(MessageBuffer.Dequeue(acknowledgeableMessage));
                     if (AutoSeqNo) {
                         ackPromiseQueue.emplace_back(acknowledgeableMessage.AckPromise);
                     } else {
                         ackPromiseBySequenceNumber.emplace(acknowledgeableMessage.SequenceNumber,
                                                            acknowledgeableMessage.AckPromise);
                     }
-                    Y_ABORT_UNLESS(continueToken);
+                    Y_VERIFY(continueToken);
 
                     TMaybe<ui64> seqNo = Nothing();
                     if (!AutoSeqNo) {
@@ -225,25 +219,15 @@ struct TYdbPqNoRetryState : NYdb::NPersQueue::IRetryPolicy::IRetryState {
 struct TYdbPqTestRetryPolicy : IRetryPolicy {
     TYdbPqTestRetryPolicy(const TDuration& delay = TDuration::MilliSeconds(2000))
         : Delay(delay)
-    {
-        Cerr << "====TYdbPqTestRetryPolicy()\n";
-    }
+    {}
 
     IRetryState::TPtr CreateRetryState() const override {
-        Cerr << "====CreateRetryState\n";
         if (AtomicSwap(&OnFatalBreakDown, 0)) {
             return std::make_unique<TYdbPqNoRetryState>();
         }
-        if (AtomicGet(Initialized_))
-        {
-            Cerr << "====CreateRetryState Initialized\n";
+        if (AtomicGet(Initialized_)) {
             auto res = AtomicSwap(&OnBreakDown, 0);
             UNIT_ASSERT(res);
-            for (size_t i = 0; i < 100; i++) {
-                if (AtomicGet(CurrentRetries) == 0)
-                    break;
-                Sleep(TDuration::MilliSeconds(100));
-            }
             UNIT_ASSERT(AtomicGet(CurrentRetries) == 0);
         }
         auto retryCb = [this]() mutable {this->RetryDone();};
@@ -270,13 +254,6 @@ struct TYdbPqTestRetryPolicy : IRetryPolicy {
         }
     }
     void ExpectBreakDown() {
-        // Either TYdbPqTestRetryPolicy() or Initialize() should be called beforehand in order to set OnBreakDown=0
-        Cerr << "====ExpectBreakDown\n";
-        for (size_t i = 0; i < 100; i++) {
-            if (AtomicGet(OnBreakDown) == 0)
-                break;
-            Sleep(TDuration::MilliSeconds(100));
-        }
         UNIT_ASSERT(AtomicGet(OnBreakDown) == 0);
         AtomicSet(CurrentRetries, 0);
         AtomicSet(OnBreakDown, 1);
@@ -312,7 +289,7 @@ struct TYdbPqTestRetryPolicy : IRetryPolicy {
         repairFuture.Wait();
     }
 
-    void Initialize() {
+    void Initialized() {
         AtomicSet(Initialized_, 1);
         AtomicSet(CurrentRetries, 0);
     }
@@ -359,7 +336,7 @@ public:
                         (iter->second)();
                     } catch (...) {
                         Cerr << "Failed on compression call: " << CurrentExceptionMessage() << Endl;
-                        Y_ABORT();
+                        Y_FAIL();
                     }
                     Cerr << "Compression of " << id << " Done\n";
                     Tasks.erase(iter);

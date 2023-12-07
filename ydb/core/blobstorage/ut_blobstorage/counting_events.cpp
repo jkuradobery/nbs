@@ -39,7 +39,7 @@ Y_UNIT_TEST_SUITE(CountingEvents) {
         UNIT_ASSERT(getResult);
         UNIT_ASSERT_VALUES_EQUAL(getResult->ResponseSz, 1);
         UNIT_ASSERT_VALUES_EQUAL(getResult->Responses[0].Status, status);
-        UNIT_ASSERT_VALUES_EQUAL(getResult->Responses[0].Buffer.ConvertToString(), data);
+        UNIT_ASSERT_VALUES_EQUAL(getResult->Responses[0].Buffer, data);
     };
 
     void SendCollect(const TTestInfo &test, const TLogoBlobID &blobId,
@@ -180,7 +180,6 @@ Y_UNIT_TEST_SUITE(CountingEvents) {
     }
 
     Y_UNIT_TEST(Get_Mirror3of4) {
-        return; // Flaky after adding random into strategy; TODO(kruall): FIX IT
         CountingEventsTest("get", 36, TBlobStorageGroupType::ErasureMirror3of4);
     }
 

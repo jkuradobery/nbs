@@ -29,14 +29,6 @@ public:
         , Output(output)
     {
         Input->SetGetter(std::bind(&TChopperFlowWrapper::Getter, this, std::bind(&TChopperFlowWrapper::RefState, this, std::placeholders::_1), std::placeholders::_1));
-
-#ifndef MKQL_DISABLE_CODEGEN
-        const auto codegenInput = dynamic_cast<ICodegeneratorExternalNode*>(Input);
-        MKQL_ENSURE(codegenInput, "Input arg must be codegenerator node.");
-        codegenInput->SetValueGetterBuilder([this](const TCodegenContext& ctx) {
-            return GenerateHandler(ctx.Codegen);
-        });
-#endif
     }
 
     NUdf::TUnboxedValuePod DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx) const {
@@ -49,12 +41,11 @@ public:
                 KeyArg->SetValue(ctx, Key->GetValue(ctx));
             }
         } else if (EState::Skip == EState(state.Get<ui64>())) {
-            do {
-                if (auto next = Flow->GetValue(ctx); next.IsSpecial())
-                    return next.Release();
-                else
-                    ItemArg->SetValue(ctx, std::move(next));
-            } while (!Chop->GetValue(ctx).Get<bool>());
+            do if (auto next = Flow->GetValue(ctx); next.IsSpecial())
+                return next.Release();
+            else
+                ItemArg->SetValue(ctx, std::move(next));
+            while (!Chop->GetValue(ctx).Get<bool>());
 
             KeyArg->SetValue(ctx, Key->GetValue(ctx));
             state = NUdf::TUnboxedValuePod(ui64(EState::Next));
@@ -67,15 +58,13 @@ public:
                 switch (EState(state.Get<ui64>())) {
                     case EState::Work:
                     case EState::Next:
-                        do {
-                            if (auto next = Flow->GetValue(ctx); next.IsSpecial()) {
-                                if (next.IsYield()) {
-                                    state = NUdf::TUnboxedValuePod(ui64(EState::Skip));
-                                }
-                                return next.Release();
-                            } else {
-                                ItemArg->SetValue(ctx, std::move(next));
+                        do if (auto next = Flow->GetValue(ctx); next.IsSpecial()) {
+                            if (next.IsYield()) {
+                                state = NUdf::TUnboxedValuePod(ui64(EState::Skip));
                             }
+                            return next.Release();
+                        } else {
+                            ItemArg->SetValue(ctx, std::move(next));
                         } while (!Chop->GetValue(ctx).Get<bool>());
                     case EState::Chop:
                         KeyArg->SetValue(ctx, Key->GetValue(ctx));
@@ -107,9 +96,9 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
 private:
-    Function* GenerateHandler(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateHandler(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         TStringStream out;
         out << this->DebugString() << "::Handler_(" << static_cast<const void*>(this) << ").";
@@ -140,8 +129,8 @@ private:
         const auto load = BasicBlock::Create(context, "load", ctx.Func);
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
 
-        const auto statePtr = GetElementPtrInst::CreateInBounds(valueType, ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), static_cast<const IComputationNode*>(this)->GetIndex())}, "state_ptr", block);
-        const auto entry = new LoadInst(valueType, statePtr, "entry", block);
+        const auto statePtr = GetElementPtrInst::CreateInBounds(ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), static_cast<const IComputationNode*>(this)->GetIndex())}, "state_ptr", block);
+        const auto entry = new LoadInst(statePtr, "entry", block);
         const auto next = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, entry, GetConstant(ui64(EState::Next), context), "next", block);
 
         BranchInst::Create(load, work, next, block);
@@ -193,17 +182,18 @@ public:
         MKQL_ENSURE(codegenKeyArg, "Key arg must be codegenerator node.");
         MKQL_ENSURE(codegenInput, "Input arg must be codegenerator node.");
 
-        auto& context = ctx.Codegen.GetContext();
+        codegenInput->SetValueGetter(GenerateHandler(ctx.Codegen));
+
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto loop = BasicBlock::Create(context, "loop", ctx.Func);
         const auto exit = BasicBlock::Create(context, "exit", ctx.Func);
         const auto pass = BasicBlock::Create(context, "pass", ctx.Func);
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto result = PHINode::Create(valueType, 5U, "result", exit);
+        const auto result = PHINode::Create(Type::getInt128Ty(context), 5U, "result", exit);
 
-        const auto first = new LoadInst(valueType, statePtr, "first", block);
+        const auto first = new LoadInst(statePtr, "first", block);
         const auto enter = SwitchInst::Create(first, loop, 2U, block);
         enter->addCase(GetInvalid(context), init);
         enter->addCase(GetConstant(ui64(EState::Skip), context), pass);
@@ -237,7 +227,7 @@ public:
             block = loop;
 
             const auto item = GetNodeValue(Output, ctx, block);
-            const auto state = new LoadInst(valueType, statePtr, "state", block);
+            const auto state = new LoadInst(statePtr, "state", block);
 
             result->addIncoming(item, block);
             BranchInst::Create(part, exit, IsFinish(item, block), block);
@@ -330,9 +320,11 @@ private:
     public:
         using TBase = TComputationValue<TSubStream>;
 
-        TSubStream(TMemoryUsageInfo* memInfo, const TStatePtr& state, const NUdf::TUnboxedValue& stream, IComputationExternalNode* itemArg, IComputationNode* chop, TComputationContext& ctx)
+        TSubStream(TMemoryUsageInfo* memInfo, const TStatePtr& state, const NUdf::TUnboxedValue& stream, IComputationExternalNode* itemArg, IComputationNode* key, IComputationExternalNode* keyArg, IComputationNode* chop, TComputationContext& ctx)
             : TBase(memInfo), State(state), Stream(stream)
             , ItemArg(itemArg)
+            , Key(key)
+            , KeyArg(keyArg)
             , Chop(chop)
             , Ctx(ctx)
         {}
@@ -369,6 +361,8 @@ private:
         const NUdf::TUnboxedValue Stream;
 
         IComputationExternalNode *const ItemArg;
+        IComputationNode *const Key;
+        IComputationExternalNode *const KeyArg;
         IComputationNode *const Chop;
 
         TComputationContext& Ctx;
@@ -377,7 +371,7 @@ private:
     class TMainStream : public TComputationValue<TMainStream> {
     public:
         TMainStream(TMemoryUsageInfo* memInfo, TStatePtr&& state, NUdf::TUnboxedValue&& stream, const IComputationExternalNode *itemArg, const IComputationNode *key, const IComputationExternalNode *keyArg, const IComputationNode *chop, const IComputationExternalNode *input, const IComputationNode *output, TComputationContext& ctx)
-            : TComputationValue(memInfo), State(std::move(state)), ItemArg(itemArg), Key(key), Chop(chop), KeyArg(keyArg), Input(input), Output(output), InputStream(std::move(stream)), Ctx(ctx)
+            : TComputationValue(memInfo), State(std::move(state)), ItemArg(itemArg), Key(key), KeyArg(keyArg), Chop(chop), Input(input), Output(output), InputStream(std::move(stream)), Ctx(ctx)
         {}
     private:
         NUdf::EFetchStatus Fetch(NUdf::TUnboxedValue& result) override {
@@ -503,7 +497,7 @@ public:
             Input->SetValue(ctx, ctx.HolderFactory.Create<TCodegenInput>(InputPtr, stream, &ctx, sharedState));
         else
 #endif
-            Input->SetValue(ctx, ctx.HolderFactory.Create<TSubStream>(sharedState, stream, ItemArg, Chop, ctx));
+            Input->SetValue(ctx, ctx.HolderFactory.Create<TSubStream>(sharedState, stream, ItemArg, Key, KeyArg, Chop, ctx));
 
 #ifndef MKQL_DISABLE_CODEGEN
         if (ctx.ExecuteLLVM && OutputPtr)
@@ -525,23 +519,23 @@ private:
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         InputFunc = GenerateInput(codegen);
         OutputFunc = GenerateOutput(codegen);
-        codegen.ExportSymbol(InputFunc);
-        codegen.ExportSymbol(OutputFunc);
+        codegen->ExportSymbol(InputFunc);
+        codegen->ExportSymbol(OutputFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (InputFunc)
-            InputPtr = reinterpret_cast<TInputPtr>(codegen.GetPointerToFunction(InputFunc));
+            InputPtr = reinterpret_cast<TInputPtr>(codegen->GetPointerToFunction(InputFunc));
         if (OutputFunc)
-            OutputPtr = reinterpret_cast<TOutputPtr>(codegen.GetPointerToFunction(OutputFunc));
+            OutputPtr = reinterpret_cast<TOutputPtr>(codegen->GetPointerToFunction(OutputFunc));
     }
 
-    Function* GenerateInput(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateInput(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto& name = MakeName("Input");
         if (const auto f = module.getFunction(name.c_str()))
@@ -554,7 +548,7 @@ private:
         MKQL_ENSURE(codegenKeyArg, "Key arg must be codegenerator node.");
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto stateType = Type::getInt8Ty(context);
@@ -576,10 +570,10 @@ private:
 
         auto block = main;
 
-        const auto container = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-            new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
+        const auto container = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            new LoadInst(containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
-        const auto first = new LoadInst(stateType, stateArg, "first", block);
+        const auto first = new LoadInst(stateArg, "first", block);
         const auto reload = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, first, ConstantInt::get(stateType, ui8(EState::Next)), "reload", block);
 
         BranchInst::Create(load, work, reload, block);
@@ -631,9 +625,9 @@ private:
         return ctx.Func;
     }
 
-    Function* GenerateOutput(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateOutput(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto& name = MakeName("Output");
         if (const auto f = module.getFunction(name.c_str()))
@@ -648,7 +642,7 @@ private:
         MKQL_ENSURE(codegenInput, "Input arg must be codegenerator node.");
 
         const auto valueType = Type::getInt128Ty(context);
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt32Ty(context);
         const auto stateType = Type::getInt8Ty(context);
@@ -676,14 +670,14 @@ private:
 
         auto block = main;
 
-        const auto input = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-            new LoadInst(valueType, inputArg, "load_input", false, block) : static_cast<Value*>(inputArg);
+        const auto input = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            new LoadInst(inputArg, "load_input", false, block) : static_cast<Value*>(inputArg);
 
         BranchInst::Create(loop, block);
 
         block = loop;
 
-        const auto stream = new LoadInst(valueType, streamArg, "stream", block);
+        const auto stream = new LoadInst(streamArg, "stream", block);
         BranchInst::Create(next, work, IsEmpty(stream, block), block);
 
         {
@@ -711,7 +705,7 @@ private:
 
         block = next;
 
-        const auto state = new LoadInst(stateType, stateArg, "state", block);
+        const auto state = new LoadInst(stateArg, "state", block);
         const auto choise = SwitchInst::Create(state, skip, 2U, block);
         choise->addCase(ConstantInt::get(stateType, ui8(EState::Init)), init);
         choise->addCase(ConstantInt::get(stateType, ui8(EState::Chop)), pass);

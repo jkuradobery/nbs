@@ -2,6 +2,7 @@
 
 #include "yql_setting.h"
 
+#include <ydb/library/yql/providers/common/activation/yql_activation.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
 
 #include <library/cpp/string_utils/parse_size/parse_size.h>
@@ -313,10 +314,6 @@ public:
         ValidClusters.insert(validClusters.begin(), validClusters.end());
     }
 
-    void AddValidCluster(const TString& cluster) {
-        ValidClusters.insert(cluster);
-    }
-
     template <typename TType, bool RUNTIME>
     TSettingHandlerImpl<TType, RUNTIME>& AddSetting(const TString& name, TConfSetting<TType, RUNTIME>& setting) {
         TIntrusivePtr<TSettingHandlerImpl<TType, RUNTIME>> handler = new TSettingHandlerImpl<TType, RUNTIME>(name, setting);
@@ -328,10 +325,10 @@ public:
 
     bool Dispatch(const TString& cluster, const TString& name, const TMaybe<TString>& value, EStage stage);
 
-    template <class TContainer, typename TFilter>
-    void Dispatch(const TString& cluster, const TContainer& clusterValues, const TFilter& filter) {
+    template <class TContainer>
+    void Dispatch(const TString& cluster, const TContainer& clusterValues, const TString& userName) {
         for (auto& v: clusterValues) {
-            if (filter(v)) {
+            if (!v.HasActivation() || NConfig::Allow(v.GetActivation(), userName)) {
                 Dispatch(cluster, v.GetName(), v.GetValue(), EStage::CONFIG);
             }
         }
@@ -344,9 +341,9 @@ public:
         }
     }
 
-    template <class TContainer, typename TFilter>
-    void Dispatch(const TContainer& globalValues, const TFilter& filter) {
-        Dispatch(ALL_CLUSTERS, globalValues, filter);
+    template <class TContainer>
+    void Dispatch(const TContainer& globalValues, const TString& userName) {
+        Dispatch(ALL_CLUSTERS, globalValues, userName);
     }
 
     template <class TContainer>

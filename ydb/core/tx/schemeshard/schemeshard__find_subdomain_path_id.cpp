@@ -49,7 +49,7 @@ public:
     }
 
     void Complete(const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(Result);
+        Y_VERIFY(Result);
         ctx.Send(Ev->Sender, Result.Release(), 0, Ev->Cookie);
     }
 
@@ -103,6 +103,7 @@ public:
 
 private:
     STFUNC(StateSleep) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             sFunc(TEvents::TEvPoison, PassAway);
             sFunc(TEvents::TEvWakeup, WakeUp);
@@ -119,6 +120,7 @@ private:
 
 private:
     STFUNC(StateWork) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             sFunc(TEvents::TEvPoison, PassAway);
             hFunc(TEvTabletPipe::TEvClientConnected, Handle);

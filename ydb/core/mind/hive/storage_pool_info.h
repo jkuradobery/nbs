@@ -41,7 +41,6 @@ struct TStoragePoolInfo {
         return GetOvercommit();
     }
 
-
     TString Name;
     THashMap<TStorageGroupId, TStorageGroupInfo> Groups;
     TInstant LastUpdate;
@@ -59,11 +58,7 @@ struct TStoragePoolInfo {
     TStorageGroupInfo& GetStorageGroup(TStorageGroupId groupId);
     void UpdateStorageGroup(TStorageGroupId groupId, const TEvControllerSelectGroupsResult::TGroupParameters& groupParameters);
     void DeleteStorageGroup(TStorageGroupId groupId);
-    // Guarantees to first call filter on all groups, then call calculateUsage on ones that passed the filter
-    const TEvControllerSelectGroupsResult::TGroupParameters* FindFreeAllocationUnit(std::function<bool(const TStorageGroupInfo&)> filter,
-                                                                                    std::function<double(const TStorageGroupInfo*)> calculateUsage = [](const TStorageGroupInfo* group) {
-                                                                                        return group->GetUsage();
-                                                                                    });
+    const TEvControllerSelectGroupsResult::TGroupParameters* FindFreeAllocationUnit(std::function<bool(const TStorageGroupInfo&)> filter);
     bool IsBalanceByIOPS() const;
     bool IsBalanceByThroughput() const;
     bool IsBalanceBySize() const;
@@ -74,7 +69,7 @@ struct TStoragePoolInfo {
     bool AddTabletToWait(TTabletId tabletId);
     TVector<TTabletId> PullWaitingTablets();
     template <NKikimrConfig::THiveConfig::EHiveStorageSelectStrategy Strategy>
-    size_t SelectGroup(const TVector<double>& groupCandidateUsages);
+    const TEvControllerSelectGroupsResult::TGroupParameters* SelectGroup(const TVector<const TStorageGroupInfo*>& groupCandidates);
 
 private:
     size_t RoundRobinPos = 0;

@@ -62,7 +62,7 @@ public:
             return NUdf::TUnboxedValuePod(v);
         }
 
-        if constexpr (IsStrict) {
+        if (IsStrict) {
             Throw(data, Precision, Scale);
         } else {
             return NUdf::TUnboxedValuePod();
@@ -71,18 +71,22 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto psType = Type::getInt8Ty(context);
         const auto valTypePtr = PointerType::getUnqual(valType);
 
         const auto name = "DecimalFromString";
-        ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DecimalFromString));
-        const auto fnType = NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget() ?
-            FunctionType::get(valType, { valType, psType, psType }, false):
-            FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, psType, psType }, false);
-        const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType);
+        ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DecimalFromString));
+        llvm::Value* func;
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+            const auto fnType = FunctionType::get(valType, { valType, psType, psType }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        } else {
+            const auto fnType = FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, psType, psType }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        }
 
         const auto zero = ConstantInt::get(valType, 0ULL);
         const auto precision = ConstantInt::get(psType, Precision);
@@ -96,7 +100,7 @@ public:
         const auto last = ways > 0U ? BasicBlock::Create(context, "last", ctx.Func) : nullptr;
         const auto phi = last ? PHINode::Create(valType, ways + 1U, "result", last) : nullptr;
 
-        if constexpr (IsOptional) {
+        if (IsOptional) {
             phi->addIncoming(zero, block);
             const auto check = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, value, zero, "check", block);
 
@@ -106,13 +110,13 @@ public:
         }
 
         Value* decimal;
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             decimal = CallInst::Create(func, { value, precision, scale }, "from_string", block);
         } else {
             const auto retPtr = new AllocaInst(valType, 0U, "ret_ptr", block);
             new StoreInst(value, retPtr, block);
             CallInst::Create(func, { retPtr, retPtr, precision, scale }, "", block);
-            decimal = new LoadInst(valType, retPtr, "res", block);
+            decimal = new LoadInst(retPtr, "res", block);
         }
 
         if (Data->IsTemporaryValue())
@@ -123,11 +127,10 @@ public:
 
         {
             block = fail;
-            if constexpr (IsStrict) {
+            if (IsStrict) {
                 const auto doFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TDecimalFromStringWrapper::Throw));
-                const auto doFuncType = FunctionType::get(Type::getVoidTy(context), {valType, psType, psType}, false);
-                const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(doFuncType), "thrower", block);
-                CallInst::Create(doFuncType, doFuncPtr, { value, precision, scale }, "", block);
+                const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(FunctionType::get(Type::getVoidTy(context), {valType, psType, psType}, false)), "thrower", block);
+                CallInst::Create(doFuncPtr, { value, precision, scale }, "", block);
                 new UnreachableInst(context, block);
             } else {
                 phi->addIncoming(zero, block);
@@ -137,7 +140,7 @@ public:
 
         block = good;
 
-        if constexpr (IsOptional || !IsStrict) {
+        if (IsOptional || !IsStrict) {
             phi->addIncoming(SetterForInt128(decimal, block), block);
             BranchInst::Create(last, block);
 
@@ -182,7 +185,7 @@ public:
             return out;
         }
 
-        if constexpr (IsStrict) {
+        if (IsStrict) {
             Throw(data, SchemeType);
         } else {
             return NUdf::TUnboxedValuePod();
@@ -191,18 +194,22 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto slotType = Type::getInt32Ty(context);
         const auto valTypePtr = PointerType::getUnqual(valType);
 
         const auto name = "DataFromString";
-        ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DataFromString));
-        const auto fnType = NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget() ?
-            FunctionType::get(valType, { valType, slotType }, false):
-            FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, slotType }, false);
-        const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType);
+        ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DataFromString));
+        llvm::Value* func;
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+            const auto fnType = FunctionType::get(valType, { valType, slotType }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        } else {
+            const auto fnType = FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, slotType }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        }
 
         const auto zero = ConstantInt::get(valType, 0ULL);
         const auto slot = ConstantInt::get(slotType, static_cast<ui32>(SchemeType));
@@ -212,7 +219,7 @@ public:
         const auto last = IsOptional || fail ? BasicBlock::Create(context, "last", ctx.Func) : nullptr;
         const auto phi = IsOptional ? PHINode::Create(valType, 2U, "result", last) : nullptr;
 
-        if constexpr (IsOptional) {
+        if (IsOptional) {
             phi->addIncoming(zero, block);
             const auto check = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, value, zero, "check", block);
 
@@ -222,37 +229,36 @@ public:
         }
 
         Value* data;
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             data = CallInst::Create(func, { value, slot }, "from_string", block);
         } else {
             const auto retPtr = new AllocaInst(valType, 0U, "ret_ptr", block);
             new StoreInst(value, retPtr, block);
             CallInst::Create(func, { retPtr, retPtr, slot }, "", block);
-            data = new LoadInst(valType, retPtr, "res", block);
+            data = new LoadInst(retPtr, "res", block);
         }
 
         if (Data->IsTemporaryValue())
             ValueCleanup(Data->GetRepresentation(), value, ctx, block);
 
-        if constexpr (IsOptional) {
+        if (IsOptional) {
             phi->addIncoming(data, block);
         }
 
-        if constexpr (IsStrict) {
+        if (IsStrict) {
             const auto test = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, data, zero, "test", block);
             BranchInst::Create(fail, last, test, block);
 
             block = fail;
             const auto doFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TFromStringWrapper::Throw));
-            const auto doFuncType = FunctionType::get(Type::getVoidTy(context), {valType, slotType}, false);
-            const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(doFuncType), "thrower", block);
-            CallInst::Create(doFuncType, doFuncPtr, { value, slot }, "", block);
+            const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(FunctionType::get(Type::getVoidTy(context), {valType, slotType}, false)), "thrower", block);
+            CallInst::Create(doFuncPtr, { value, slot }, "", block);
             new UnreachableInst(context, block);
-        } else if constexpr (IsOptional) {
+        } else if (IsOptional) {
             BranchInst::Create(last, block);
         }
 
-        if constexpr (IsOptional || IsStrict) {
+        if (IsOptional || IsStrict) {
             block = last;
         }
 
@@ -265,6 +271,7 @@ private:
     }
 
     [[noreturn]] static void Throw(const NUdf::TUnboxedValuePod data, NUdf::EDataSlot slot) {
+        const auto& ref = data.AsStringRef();
         ThrowConvertError(data.AsStringRef(), NUdf::GetDataTypeInfo(slot).Name);
     }
 

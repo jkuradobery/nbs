@@ -3,7 +3,7 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 #include "service_table.h"
 
@@ -34,10 +34,11 @@ public:
         Become(&TKeepAliveRPC::StateWork);
     }
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
+            HFunc(NKqp::TEvKqp::TEvProcessResponse, Handle);
             HFunc(NKqp::TEvKqp::TEvPingSessionResponse, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -47,10 +48,11 @@ private:
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvPingSessionRequest>();
 
-        if (CheckSession(req->session_id(), Request_.get())) {
+        NYql::TIssues issues;
+        if (CheckSession(req->session_id(), issues)) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         if (traceId) {
@@ -59,6 +61,16 @@ private:
 
         ev->Record.MutableRequest()->SetTimeoutMs(GetOperationTimeout().MilliSeconds());
         ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
+    }
+
+    void Handle(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext& ctx) {
+        const auto& record = ev->Get()->Record;
+        if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
+            Ydb::Table::KeepAliveResult result;
+            ReplyWithResult(Ydb::StatusIds::SUCCESS, result, ctx);
+        } else {
+            return OnProcessError(record, ctx);
+        }
     }
 
     void Handle(NKqp::TEvKqp::TEvPingSessionResponse::TPtr& ev, const TActorContext& ctx) {
@@ -81,8 +93,8 @@ private:
     }
 };
 
-void DoKeepAliveRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TKeepAliveRPC(p.release()));
+void DoKeepAliveRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TKeepAliveRPC(p.release()));
 }
 
 } // namespace NGRpcService

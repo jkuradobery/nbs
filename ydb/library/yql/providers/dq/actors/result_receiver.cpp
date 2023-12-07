@@ -12,11 +12,11 @@
 
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/event_pb.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/event_pb.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 #include <library/cpp/threading/future/future.h>
 #include <library/cpp/protobuf/util/pb_io.h>
 
@@ -51,7 +51,7 @@ public:
             HFunc(TEvReadyState, OnReadyState);
             hFunc(TEvMessageProcessed, OnMessageProcessed);
             default:
-                TBase::HandlerBase(ev);
+                TBase::HandlerBase(ev, ctx);
         }
     }
 
@@ -59,7 +59,7 @@ public:
         switch (const ui32 etype = ev->GetTypeRewrite()) {
             hFunc(TEvMessageProcessed, OnMessageProcessed);
             default:
-                TBase::ShutdownHandlerBase(ev);
+                TBase::ShutdownHandlerBase(ev, ctx);
         }
     }
 
@@ -72,12 +72,7 @@ private:
         if (!FinishCalled) {
             const auto messageId = GetMessageId(ev);
             const auto hasData = ev->Get()->Record.GetChannelData().HasData();
-            NDq::TDqSerializedBatch batch;
-            batch.Proto = std::move(*ev->Get()->Record.MutableChannelData()->MutableData());
-            if (batch.Proto.HasPayloadId()) {
-                batch.Payload = ev->Get()->GetPayload(batch.Proto.GetPayloadId());
-            }
-            OnReceiveData(std::move(batch), messageId, !hasData);
+            OnReceiveData(std::move(*ev->Get()->Record.MutableChannelData()->MutableData()), messageId, !hasData);
             const auto [it, inserted] = PendingMessages.insert({messageId, std::move(ev)});
             Y_ENSURE(inserted);
         }
@@ -97,7 +92,7 @@ private:
 
     void SendAck(const TString& messageId) {
         const auto messageIt = PendingMessages.find(messageId);
-        Y_ABORT_UNLESS(messageIt != PendingMessages.end());
+        Y_VERIFY(messageIt != PendingMessages.end());
         const auto& message = messageIt->second;
 
         auto req = MakeHolder<NDq::TEvDqCompute::TEvChannelDataAck>();
@@ -129,13 +124,13 @@ private:
 } /* namespace */
 
 THolder<NActors::IActor> MakeResultReceiver(
-    const TVector<TString>& columns,
-    const NActors::TActorId& executerId,
-    const TString& traceId,
-    const TDqConfiguration::TPtr& settings,
-    const THashMap<TString, TString>& secureParams,
+    const TVector<TString>& columns, 
+    const NActors::TActorId& executerId, 
+    const TString& traceId, 
+    const TDqConfiguration::TPtr& settings, 
+    const THashMap<TString, TString>& secureParams, 
     const TString& resultType,
-    const NActors::TActorId& graphExecutionEventsId,
+    const NActors::TActorId& graphExecutionEventsId, 
     bool discard) {
     return MakeHolder<TResultReceiver>(columns, executerId, traceId, settings, secureParams, resultType, graphExecutionEventsId, discard);
 }

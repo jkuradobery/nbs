@@ -2,94 +2,15 @@
 #include <ydb/core/tablet/resource_broker.h>
 #include <ydb/core/tablet_flat/flat_stat_table.h>
 #include <ydb/core/tablet_flat/flat_dbase_sz_env.h>
-#include "ydb/core/tablet_flat/shared_sausagecache.h"
-#include <ydb/core/protos/datashard_config.pb.h>
 
 namespace NKikimr {
 namespace NDataShard {
 
 using namespace NResourceBroker;
-using namespace NTable;
-
-class TStatsEnv : public IPages {
-    struct TPartPages {
-        TIntrusiveConstPtr<NPageCollection::IPageCollection> PageCollection;
-        THashMap<TPageId, TSharedData> Pages;
-        THashSet<TPageId> NeedPages;
-    };
-
-public:
-    TResult Locate(const TMemTable*, ui64, ui32) noexcept override
-    {
-        Y_ABORT("IPages::Locate(TMemTable*, ...) shouldn't be used here");
-    }
-
-    TResult Locate(const TPart*, ui64, ELargeObj) noexcept override
-    {
-        Y_ABORT("IPages::Locate(TPart*, ...) shouldn't be used here");
-    }
-
-    const TSharedData* TryGetPage(const TPart* part, TPageId pageId, TGroupId groupId) override
-    {
-        Y_ABORT_UNLESS(groupId.IsMain(), "Unsupported column group");
-
-        auto *partStore = CheckedCast<const TPartStore*>(part);
-        auto *info = partStore->PageCollections.at(groupId.Index).Get();
-        Y_ABORT_UNLESS(EPage(info->PageCollection->Page(pageId).Type) == EPage::Index);
-
-        if (auto *partPages = Parts.FindPtr(part)) {
-            if (auto *page = partPages->Pages.FindPtr(pageId)) {
-                return page;
-            } else if (partPages->NeedPages.insert(pageId).second) {
-                Pending++;
-            }
-        } else {
-            Parts.emplace(part, TPartPages{
-                .PageCollection = info->PageCollection, 
-                .NeedPages = {pageId}});
-            Pending++;
-        }
-
-        return nullptr;
-    }
-
-    ui64 GetPending() {
-        return Pending;
-    }
-
-    TVector<TAutoPtr<NPageCollection::TFetch>> GetFetches()
-    {
-        TVector<TAutoPtr<NPageCollection::TFetch>> result;
-        for (auto &part : Parts) {
-            auto &needPages = part.second.NeedPages;
-            if (needPages) {
-                TVector<TPageId> pages(needPages.begin(), needPages.end());
-                std::sort(pages.begin(), pages.end());
-                result.push_back(new NPageCollection::TFetch{ (ui64)part.first, part.second.PageCollection, std::move(pages) });
-            }
-        }
-
-        return result;
-    }
-
-    void Save(ui64 cookie, TPageId pageId, TSharedData data) noexcept
-    {
-        if (auto* partPages = Parts.FindPtr((TPart*)cookie)) {
-            if (partPages->NeedPages.erase(pageId)) {
-                partPages->Pages.emplace(pageId, std::move(data));
-                Pending--;
-            }
-        }
-    }
-
-private:
-    ui64 Pending = 0;
-    THashMap<const TPart*, TPartPages> Parts;
-};
 
 class TAsyncTableStatsBuilder : public TActorBootstrapped<TAsyncTableStatsBuilder> {
 public:
-    TAsyncTableStatsBuilder(TActorId replyTo, ui64 tabletId, ui64 tableId, ui64 indexSize, const TAutoPtr<TSubset> subset,
+    TAsyncTableStatsBuilder(TActorId replyTo, ui64 tabletId, ui64 tableId, ui64 indexSize, const TAutoPtr<NTable::TSubset> subset,
                             ui64 memRowCount, ui64 memDataSize,
                             ui64 rowCountResolution, ui64 dataSizeResolution, ui64 searchHeight, TInstant statsUpdateTime)
         : ReplyTo(replyTo)
@@ -110,18 +31,17 @@ public:
     }
 
     void Bootstrap(const TActorContext& ctx) {
-        SubmitWaitResourcesTask(ctx);
+        SubmitTask(ctx);
         Become(&TThis::StateWaitResource);
     }
 
 private:
     void Die(const TActorContext& ctx) override {
         ctx.Send(MakeResourceBrokerID(), new TEvResourceBroker::TEvNotifyActorDied);
-        ctx.Send(MakeSharedPageCacheId(), new NSharedCache::TEvUnregister);
         TActorBootstrapped::Die(ctx);
     }
 
-    void SubmitWaitResourcesTask(const TActorContext& ctx) {
+    void SubmitTask(const TActorContext& ctx) {
         ctx.Send(MakeResourceBrokerID(),
             new TEvResourceBroker::TEvSubmitTask(
                 /* task id */ 1,
@@ -144,22 +64,14 @@ private:
         }
     }
 
-    STFUNC(StateWaitPages) {
-        switch (ev->GetTypeRewrite()) {
-            SFunc(TEvents::TEvPoison, Die);
-            HFunc(TEvResourceBroker::TEvResourceAllocated, Handle);
-            HFunc(NSharedCache::TEvResult, Handle);
-        }
-    }
-
     void Handle(TEvResourceBroker::TEvResourceAllocated::TPtr& ev, const TActorContext& ctx) {
         auto* msg = ev->Get();
-        Y_ABORT_UNLESS(!msg->Cookie.Get(), "Unexpected cookie in TEvResourceAllocated");
-        Y_ABORT_UNLESS(msg->TaskId == 1, "Unexpected task id in TEvResourceAllocated");
-        TryBuildStats(ctx);
+        Y_VERIFY(!msg->Cookie.Get(), "Unexpected cookie in TEvResourceAllocated");
+        Y_VERIFY(msg->TaskId == 1, "Unexpected task id in TEvResourceAllocated");
+        Start(ctx);
     }
 
-    void TryBuildStats(const TActorContext& ctx) {
+    void Start(const TActorContext& ctx) {
         THolder<TDataShard::TEvPrivate::TEvAsyncTableStats> ev = MakeHolder<TDataShard::TEvPrivate::TEvAsyncTableStats>();
         ev->TableId = TableId;
         ev->IndexSize = IndexSize;
@@ -169,69 +81,26 @@ private:
         ev->MemDataSize = MemDataSize;
         ev->SearchHeight = SearchHeight;
 
-        GetPartOwners(*Subset, ev->PartOwners);
+        NTable::GetPartOwners(*Subset, ev->PartOwners);
 
+        NTable::TSizeEnv szEnv;
         Subset->ColdParts.clear(); // stats won't include cold parts, if any
+        NTable::BuildStats(*Subset, ev->Stats, RowCountResolution, DataSizeResolution, &szEnv);
 
-        if (BuildStats(*Subset, ev->Stats, RowCountResolution, DataSizeResolution, &Env)) {
-            Y_DEBUG_ABORT_UNLESS(IndexSize == ev->Stats.IndexSize.Size);
+        ctx.Send(ReplyTo, ev.Release());
 
-            ctx.Send(ReplyTo, ev.Release());
-
-            FinishTask(ctx);
-
-            return Die(ctx);
-        }
-
-        // page fault has happened, request needed pages
-        // graceful continuation is not supported, BuildStats will be restarted
-        LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Stats build at datashard " << TabletId << ", for tableId " << TableId << 
-            " needs to load " << Env.GetPending() << " pages");
-        
-        auto fetches = Env.GetFetches();
-        Y_ABORT_UNLESS(fetches);
-        for (auto &fetch : fetches) {
-            ctx.Send(MakeSharedPageCacheId(), new NSharedCache::TEvRequest(NSharedCache::EPriority::Bkgr, std::move(fetch), SelfId()));
-        }
-        
-        // release resources while waiting pages
         FinishTask(ctx);
-        Become(&TThis::StateWaitPages);
-    }
 
-    void Handle(NSharedCache::TEvResult::TPtr& ev, const TActorContext& ctx) noexcept
-    {
-        auto& msg = *ev->Get();
-
-        if (msg.Status != NKikimrProto::OK) {
-            LOG_ERROR_S(ctx, NKikimrServices::TX_DATASHARD, "Stats build failed at datashard " << TabletId << ", for tableId " << TableId
-                << " requested pages but got " << msg.Status);
-            return Die(ctx);
-        }
-        
-        for (auto& loaded : msg.Loaded) {
-            Env.Save(msg.Cookie, loaded.PageId, TPinnedPageRef(loaded.Page).GetData());
-        }
-
-        if (Env.GetPending()) {
-            LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Stats build at datashard " << TabletId << ", for tableId " << TableId << 
-                " needs to load " << Env.GetPending() << " more pages");
-        } else {
-            LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Stats build at datashard " << TabletId << ", for tableId " << TableId << 
-                " got all needed pages, continue");
-            SubmitWaitResourcesTask(ctx);
-            Become(&TThis::StateWaitResource);
-        }
+        return Die(ctx);
     }
 
 private:
-    TStatsEnv Env;
     TActorId ReplyTo;
     ui64 TabletId;
     ui64 TableId;
     ui64 IndexSize;
     TInstant StatsUpdateTime;
-    TAutoPtr<TSubset> Subset;
+    TAutoPtr<NTable::TSubset> Subset;
     ui64 MemRowCount;
     ui64 MemDataSize;
     ui64 RowCountResolution;
@@ -293,8 +162,8 @@ public:
         if (!ready)
             return true;
 
-        const TStats& stats = tableInfo.Stats.DataStats;
-        Result->Record.MutableTableStats()->SetDataSize(stats.DataSize.Size + memSize);
+        const NTable::TStats& stats = tableInfo.Stats.DataStats;
+        Result->Record.MutableTableStats()->SetDataSize(stats.DataSize + memSize);
         Result->Record.MutableTableStats()->SetRowCount(stats.RowCount + memRowCount);
         FillHistogram(stats.DataSizeHistogram, *Result->Record.MutableTableStats()->MutableDataSizeHistogram());
         FillHistogram(stats.RowCountHistogram, *Result->Record.MutableTableStats()->MutableRowCountHistogram());
@@ -325,7 +194,7 @@ public:
     }
 
 private:
-    static void FillHistogram(const THistogram& h, NKikimrTableStats::THistogram& pb) {
+    static void FillHistogram(const NTable::THistogram& h, NKikimrTableStats::THistogram& pb) {
         for (auto& b : h) {
             auto bucket = pb.AddBuckets();
             bucket->SetKey(b.EndKey);
@@ -333,7 +202,7 @@ private:
         }
     }
 
-    static void FillKeyAccessSample(const TKeyAccessSample& s, NKikimrTableStats::THistogram& pb) {
+    static void FillKeyAccessSample(const NTable::TKeyAccessSample& s, NKikimrTableStats::THistogram& pb) {
         for (const auto& k : s.GetSample()) {
             auto bucket = pb.AddBuckets();
             bucket->SetKey(k.first);
@@ -360,7 +229,7 @@ void TDataShard::Handle(TEvPrivate::TEvAsyncTableStats::TPtr& ev, const TActorCo
     Actors.erase(ev->Sender);
 
     ui64 tableId = ev->Get()->TableId;
-    LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Stats rebuilt at datashard " << TabletID() << ", for tableId " << tableId);
+    LOG_DEBUG(ctx, NKikimrServices::TX_DATASHARD, "Stats rebuilt at datashard %" PRIu64, TabletID());
 
     i64 dataSize = 0;
     if (TableInfos.contains(tableId)) {
@@ -377,17 +246,13 @@ void TDataShard::Handle(TEvPrivate::TEvAsyncTableStats::TPtr& ev, const TActorCo
         tableInfo.Stats.MemRowCount = ev->Get()->MemRowCount;
         tableInfo.Stats.MemDataSize = ev->Get()->MemDataSize;
 
-        dataSize += tableInfo.Stats.DataStats.DataSize.Size;
+        dataSize += tableInfo.Stats.DataStats.DataSize;
 
         tableInfo.Stats.SearchHeight = ev->Get()->SearchHeight;
 
         tableInfo.StatsUpdateInProgress = false;
 
         SendPeriodicTableStats(ctx);
-
-    } else {
-        LOG_DEBUG_S(ctx, NKikimrServices::TX_DATASHARD, "Drop stats at datashard " << TabletID()
-                    << ", built for tableId " << tableId << ", but table is gone (moved ot dropped)");
     }
 
     if (dataSize > HighDataSizeReportThreshlodBytes) {
@@ -486,7 +351,7 @@ public:
             const ui64 MaxBuckets = 500;
 
             if (ti.second->Stats.DataSizeResolution &&
-                ti.second->Stats.DataStats.DataSize.Size / ti.second->Stats.DataSizeResolution <= MaxBuckets)
+                ti.second->Stats.DataStats.DataSize / ti.second->Stats.DataSizeResolution <= MaxBuckets)
             {
                 dataSizeResolution = ti.second->Stats.DataSizeResolution;
             }
@@ -505,7 +370,7 @@ public:
                 indexSize += txc.DB.GetTableIndexSize(shadowTableId);
             }
 
-            TAutoPtr<TSubset> subsetForStats = txc.DB.Subset(localTableId, TEpoch::Max(), { }, { });
+            TAutoPtr<NTable::TSubset> subsetForStats = txc.DB.Subset(localTableId, NTable::TEpoch::Max(), NTable::TRawVals(), NTable::TRawVals());
             // Remove memtables from the subset as we only want to look at indexes for parts
             subsetForStats->Frozen.clear();
 
@@ -514,7 +379,7 @@ public:
                 // It's only safe to do as long as stats collector performs
                 // index lookups only, and doesn't care about the actual lsm
                 // part order.
-                auto shadowSubset = txc.DB.Subset(shadowTableId, TEpoch::Max(), { }, { });
+                auto shadowSubset = txc.DB.Subset(shadowTableId, NTable::TEpoch::Max(), { }, { });
                 subsetForStats->Flatten.insert(
                     subsetForStats->Flatten.end(),
                     shadowSubset->Flatten.begin(),
@@ -544,8 +409,8 @@ public:
         Self->SysTablesPartOnwers.clear();
         for (ui32 sysTableId : Self->SysTablesToTransferAtSplit) {
             THashSet<ui64> sysPartOwners;
-            auto subset = txc.DB.Subset(sysTableId, TEpoch::Max(), { }, { });
-            GetPartOwners(*subset, sysPartOwners);
+            auto subset = txc.DB.Subset(sysTableId, NTable::TEpoch::Max(), { }, { });
+            NTable::GetPartOwners(*subset, sysPartOwners);
             Self->SysTablesPartOnwers.insert(sysPartOwners.begin(), sysPartOwners.end());
         }
         return true;

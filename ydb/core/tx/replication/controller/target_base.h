@@ -2,7 +2,9 @@
 
 #include "replication.h"
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 class TTargetBase: public TReplication::ITarget {
 protected:
@@ -37,7 +39,6 @@ public:
 protected:
     ui64 GetReplicationId() const;
     ui64 GetTargetId() const;
-    ETargetKind GetTargetKind() const;
 
 private:
     const ETargetKind Kind;
@@ -57,4 +58,6 @@ private:
 
 }; // TTargetBase
 
-}
+} // NController
+} // NReplication
+} // NKikimr

@@ -1,9 +1,11 @@
 IF (CLANG AND NOT WITH_VALGRIND)
-YQL_UDF_CONTRIB(clickhouse_client_udf)
+    YQL_UDF(clickhouse_client_udf)
 
-    YQL_LAST_ABI_VERSION()
-
-    NO_COMPILER_WARNINGS()
+    YQL_ABI_VERSION(
+        2
+        27
+        0
+    )
 
     SRCS(
         clickhouse_client_udf.cpp
@@ -401,7 +403,6 @@ YQL_UDF_CONTRIB(clickhouse_client_udf)
         contrib/libs/apache/arrow
         contrib/libs/apache/orc
         contrib/libs/apache/avro
-        library/cpp/sanitizer/include
         ydb/library/yql/minikql/dom
         ydb/library/yql/utils
     )
@@ -442,7 +443,3 @@ ELSE()
     LIBRARY()
     END()
 ENDIF()
-
-RECURSE_FOR_TESTS(
-    test
-)

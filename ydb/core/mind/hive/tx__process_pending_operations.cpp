@@ -21,7 +21,7 @@ public:
             TlsActivationContext->Send(new IEventHandle(Self->SelfId(), pendingCreateTablet.Sender, evCreateTablet.Release(), 0, pendingCreateTablet.Cookie));
         }
         for (auto& handle : Self->PendingOperations) {
-            TlsActivationContext->Send(handle.Release());
+            TlsActivationContext->Send(handle);
         }
         Self->PendingOperations.clear();
         return true;

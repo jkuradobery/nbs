@@ -1,5 +1,4 @@
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
-#include "change_sender_common_ops.h"
+#include "datashard_ut_common.h"
 
 #include <library/cpp/digest/md5/md5.h>
 #include <library/cpp/json/json_reader.h>
@@ -15,7 +14,6 @@
 #include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 
 #include <util/generic/size_literals.h>
-#include <util/string/join.h>
 #include <util/string/printf.h>
 #include <util/string/strip.h>
 
@@ -49,7 +47,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
         InitRoot(server, sender);
 
         bool activated = false;
-        runtime.SetObserverFunc([&activated](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&activated](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvChangeExchange::EvActivateSender) {
                 activated = true;
             }
@@ -112,7 +110,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
     }
 
     void SenderShouldShakeHands(const TString& path, ui32 times, const TShardedTableOptions& opts,
-            TMaybe<TShardedTableOptions::TIndex> addIndex, const TString& query)
+            TMaybe<TShardedTableOptions::TIndex> addIndex = Nothing())
     {
         const auto pathParts = SplitPath(path);
         UNIT_ASSERT(pathParts.size() > 1);
@@ -137,7 +135,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
         InitRoot(server, sender);
 
         ui32 counter = 0;
-        runtime.SetObserverFunc([&counter](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&counter](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvChangeExchange::EvHandshake) {
                 ++counter;
             }
@@ -147,11 +145,8 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
 
         CreateShardedTable(server, sender, workingDir, tableName, opts);
         if (addIndex) {
-            WaitTxNotification(server, sender, AsyncAlterAddIndex(server, domainName, path, *addIndex));
+            AsyncAlterAddIndex(server, domainName, path, *addIndex);
         }
-
-        // trigger initialization
-        ExecSQL(server, sender, query);
 
         if (counter != times) {
             TDispatchOptions opts;
@@ -163,8 +158,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
     }
 
     Y_UNIT_TEST(SenderShouldShakeHandsOnce) {
-        SenderShouldShakeHands("/Root/Table", 1, TableWithIndex(SimpleAsyncIndex()), {},
-            "UPSERT INTO `/Root/Table` (pkey, ikey) VALUES (1, 10);");
+        SenderShouldShakeHands("/Root/Table", 1, TableWithIndex(SimpleAsyncIndex()));
     }
 
     Y_UNIT_TEST(SenderShouldShakeHandsTwice) {
@@ -177,14 +171,12 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
             .Indexes({
                 {"by_i1key", {"i1key"}, {}, NKikimrSchemeOp::EIndexTypeGlobalAsync},
                 {"by_i2key", {"i2key"}, {}, NKikimrSchemeOp::EIndexTypeGlobalAsync},
-            }), {},
-            "UPSERT INTO `/Root/Table` (pkey, i1key, i2key) VALUES (1, 10, 100);"
+            })
         );
     }
 
     Y_UNIT_TEST(SenderShouldShakeHandsAfterAddingIndex) {
-        SenderShouldShakeHands("/Root/Table", 1, TableWoIndexes(), SimpleAsyncIndex(),
-            "UPSERT INTO `/Root/Table` (pkey, ikey) VALUES (1, 10);");
+        SenderShouldShakeHands("/Root/Table", 1, TableWoIndexes(), SimpleAsyncIndex());
     }
 
     void ShouldDeliverChanges(const TString& path, const TShardedTableOptions& opts,
@@ -216,7 +208,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
         THashSet<ui64> requested;
         THashSet<ui64> removed;
 
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 for (const auto& record : ev->Get<TEvChangeExchange::TEvEnqueueRecords>()->Records) {
@@ -297,7 +289,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
         THashSet<ui64> enqueued;
         THashSet<ui64> removed;
 
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvActivateSender:
                 if (preventActivation) {
@@ -369,7 +361,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
 
         TVector<THolder<IEventHandle>> delayed;
         bool inited = false;
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 delayed.emplace_back(ev.Release());
@@ -414,7 +406,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
 
         THashSet<ui64> enqueued;
         THashSet<ui64> removed;
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 for (const auto& record : ev->Get<TEvChangeExchange::TEvEnqueueRecords>()->Records) {
@@ -479,7 +471,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
         THashMap<ui64, ui32> splitAcks;
         ui32 allowedRejects = Max<ui32>();
 
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 if (preventEnqueueing) {
@@ -634,7 +626,7 @@ Y_UNIT_TEST_SUITE(AsyncIndexChangeExchange) {
         bool preventEnqueueing = true;
         TVector<THolder<IEventHandle>> enqueued;
 
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 if (preventEnqueueing) {
@@ -693,6 +685,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         NKikimrPQ::TPQConfig pqConfig;
         pqConfig.SetEnabled(true);
         pqConfig.SetEnableProtoSourceIdInfo(true);
+        pqConfig.SetRoundRobinPartitionMapping(true);
         pqConfig.SetTopicsAreFirstClassCitizen(true);
         pqConfig.SetMaxReadCookies(10);
         pqConfig.AddClientServiceType()->SetName("data-streams");
@@ -724,10 +717,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
                 .SetUseRealThreads(useRealThreads)
                 .SetDomainName(root)
                 .SetGrpcPort(PortManager.GetPort(2135))
-                .SetEnableChangefeedDynamoDBStreamsFormat(true)
-                .SetEnableChangefeedDebeziumJsonFormat(true)
-                .SetEnableTopicMessageMeta(true)
-                .SetEnableChangefeedInitialScan(true);
+                .SetEnableChangefeedDynamoDBStreamsFormat(true);
 
             Server = new TServer(settings);
             if (useRealThreads) {
@@ -830,29 +820,8 @@ Y_UNIT_TEST_SUITE(Cdc) {
         };
     }
 
-    TCdcStream OldImage(NKikimrSchemeOp::ECdcStreamFormat format, const TString& name = "Stream") {
-        return TCdcStream{
-            .Name = name,
-            .Mode = NKikimrSchemeOp::ECdcStreamModeOldImage,
-            .Format = format,
-        };
-    }
-
-    TCdcStream NewImage(NKikimrSchemeOp::ECdcStreamFormat format, const TString& name = "Stream") {
-        return TCdcStream{
-            .Name = name,
-            .Mode = NKikimrSchemeOp::ECdcStreamModeNewImage,
-            .Format = format,
-        };
-    }
-
     TCdcStream WithVirtualTimestamps(TCdcStream streamDesc) {
         streamDesc.VirtualTimestamps = true;
-        return streamDesc;
-    }
-
-    TCdcStream WithResolvedTimestamps(TDuration interval, TCdcStream streamDesc) {
-        streamDesc.ResolvedTimestamps = interval;
         return streamDesc;
     }
 
@@ -877,23 +846,11 @@ Y_UNIT_TEST_SUITE(Cdc) {
         return MD5::Calc(root.at("key").GetStringRobust());
     }
 
-    static bool AreJsonsEqual(const TString& actual, const TString& expected, bool assertOnParseError = true) {
-        bool parseResult;
+    static bool AreJsonsEqual(const TString& actual, const TString& expected) {
         NJson::TJsonValue actualJson;
-        parseResult = NJson::ReadJsonTree(actual, &actualJson);
-        if (assertOnParseError) {
-            UNIT_ASSERT(parseResult);
-        } else if (!parseResult) {
-            return false;
-        }
-
+        UNIT_ASSERT(NJson::ReadJsonTree(actual, &actualJson));
         NJson::TJsonValue expectedJson;
-        parseResult = NJson::ReadJsonTree(expected, &expectedJson);
-        if (assertOnParseError) {
-            UNIT_ASSERT(parseResult);
-        } else if (!parseResult) {
-            return false;
-        }
+        UNIT_ASSERT(NJson::ReadJsonTree(expected, &expectedJson));
 
         class TScanner: public NJson::IScanCallback {
             NJson::TJsonValue& Actual;
@@ -905,26 +862,16 @@ Y_UNIT_TEST_SUITE(Cdc) {
             {}
 
             bool Do(const TString& path, NJson::TJsonValue*, NJson::TJsonValue& expectedValue) override {
-                // Skip if not "***"
                 if (expectedValue.GetStringRobust() != "***") {
                     return true;
                 }
 
-                // Discrepancy in path format here.
-                // GetValueByPath expects ".array.[0]" while Scanner provides with ".array[0]".
-                // Don't use "***" inside a non-root array.
-                UNIT_ASSERT_C(!path.Contains("["), TStringBuilder()
-                    << "Please don't use \"***\" inside an array. Seems like " << path << " has array on the way");
-
                 NJson::TJsonValue actualValue;
-                // If "***", find a corresponding actual value
                 if (!Actual.GetValueByPath(path, actualValue)) {
-                    // Couldn't find an actual value for "***"
                     Success = false;
                     return false;
                 }
 
-                // Replace "***" with actual value
                 expectedValue = actualValue;
                 return true;
             }
@@ -937,67 +884,8 @@ Y_UNIT_TEST_SUITE(Cdc) {
         TScanner scanner(actualJson);
         expectedJson.Scan(scanner);
 
-        if (!scanner.IsSuccess()) {
-            return false; // actualJson is missing a path to ***
-        }
-
+        UNIT_ASSERT(scanner.IsSuccess());
         return actualJson == expectedJson;
-    }
-
-    static void AssertJsonsEqual(const TString& actual, const TString& expected) {
-        UNIT_ASSERT_C(AreJsonsEqual(actual, expected), TStringBuilder()
-            << "Jsons are different: " << actual << " != " << expected);
-    }
-
-    static bool CheckJsonsEqual(const TString& actual, const TString& expected) {
-        return AreJsonsEqual(actual, expected, false);
-    }
-
-    Y_UNIT_TEST(AreJsonsEqualReturnsTrueOnEqual) {
-        UNIT_ASSERT(AreJsonsEqual("{}", "{}"));
-        UNIT_ASSERT(AreJsonsEqual("[]", "[]"));
-        UNIT_ASSERT(AreJsonsEqual("1", "1"));
-        UNIT_ASSERT(AreJsonsEqual("null", "null"));
-        UNIT_ASSERT(AreJsonsEqual(R"({"a":"b","c":"d","e":[1,2,"3"]})", R"({"a":"b","c":"d","e":[1,2,"3"]})"));
-        UNIT_ASSERT(AreJsonsEqual(R"({"update":{},"key":[1]})", R"({"update":{},"key":[1]})"));
-        UNIT_ASSERT(AreJsonsEqual(R"({"update":{},"key":[1,2]})", R"({"update":{},"key":[1,2]})"));
-        // Root wildcard
-        UNIT_ASSERT(AreJsonsEqual("{}", R"("***")"));
-        UNIT_ASSERT(AreJsonsEqual("1", R"("***")"));
-        UNIT_ASSERT(AreJsonsEqual(R"({"a": "b"})", R"("***")"));
-        UNIT_ASSERT(AreJsonsEqual("[1,2,3]", R"("***")"));
-        // Deep wildcard
-        UNIT_ASSERT(AreJsonsEqual(R"({"a":"b","c":"d","e":[1,2,"3"]})", R"({"a":"b","c":"***","e":"***"})"));
-        UNIT_ASSERT(AreJsonsEqual(R"({"update":{},"key":[1]})", R"({"update":{},"key":"***"})"));
-        UNIT_ASSERT(AreJsonsEqual(R"({"update":{},"ts":[1,2]})", R"({"update":{},"ts":"***"})"));
-    };
-
-    Y_UNIT_TEST(AreJsonsEqualReturnsFalseOnDifferent) {
-        // Simple cases
-        UNIT_ASSERT(!AreJsonsEqual("{}", "[]"));
-        UNIT_ASSERT(!AreJsonsEqual("[]", "{}"));
-        UNIT_ASSERT(!AreJsonsEqual("1", "2"));
-        UNIT_ASSERT(!AreJsonsEqual("null", "[]"));
-        UNIT_ASSERT(!AreJsonsEqual("null", "{}"));
-        UNIT_ASSERT(!AreJsonsEqual("[]", "null"));
-        UNIT_ASSERT(!AreJsonsEqual("{}", "null"));
-        UNIT_ASSERT(!AreJsonsEqual(R"({"a":"b","c":"d","e":[1,2,"3"]})", R"({"a":"b","c":"d","e":[9,2,"3"]})"));
-        UNIT_ASSERT(!AreJsonsEqual(R"({"update":{},"key":[1]})", R"({"update":[],"key":[1]})"));
-        UNIT_ASSERT(!AreJsonsEqual(R"({"update":{},"ts":[1,2]})", R"({"update":{},"key":[9,2]})"));
-        // Wildcart in actual value shouldn't be treated as a wildcard
-        UNIT_ASSERT(!AreJsonsEqual(R"("***")", "{}"));
-        UNIT_ASSERT(!AreJsonsEqual(R"({"a":"***"})", R"({"a":"b"})"));
-        // Deep wildcard
-        UNIT_ASSERT(!AreJsonsEqual(R"({"a":"z","c":"d","e":[1,2,"3"]})", R"({"a":"b","c":"***","e":"***"})"));
-        UNIT_ASSERT(!AreJsonsEqual(R"({"update":{"a":"b"},"key":[1]})", R"({"update":{},"key":"***"})"));
-        UNIT_ASSERT(!AreJsonsEqual(R"({"update":{},"key":{},"ts":[1,2]})", R"({"update":{},"ts":"***"})"));
-    };
-
-    Y_UNIT_TEST(AreJsonsEqualFailsOnWildcardInArray) {
-        // Wildcard in a not-root array is not supported because of a bug in code
-        UNIT_ASSERT_TEST_FAILS(AreJsonsEqual(R"({"a":[1,{"a":"b"}]})", R"({"a":[1,{"a":"***"}]})"));
-        UNIT_ASSERT_TEST_FAILS(AreJsonsEqual(R"({"a":[1]})", R"({"a":["***"]})"));
-        UNIT_ASSERT_TEST_FAILS(AreJsonsEqual(R"([1])", R"(["***"])"));
     }
 
     struct PqRunner {
@@ -1036,7 +924,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
                     pStream = data->GetPartitionStream();
                     for (const auto& item : data->GetMessages()) {
                         const auto& record = records.at(reads++);
-                        AssertJsonsEqual(item.GetData(), record);
+                        UNIT_ASSERT(AreJsonsEqual(item.GetData(), record));
                         if (checkKey) {
                             UNIT_ASSERT_VALUES_EQUAL(item.GetPartitionKey(), CalcPartitionKey(record));
                         }
@@ -1140,7 +1028,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
                 for (ui32 i = 0; i < records.size(); ++i) {
                     const auto& actual = res.GetResult().records().at(i);
                     const auto& expected = records.at(i);
-                    AssertJsonsEqual(actual.data(), expected);
+                    UNIT_ASSERT(AreJsonsEqual(actual.data(), expected));
                     if (checkKey) {
                         UNIT_ASSERT_VALUES_EQUAL(actual.partition_key(), CalcPartitionKey(expected));
                     }
@@ -1170,27 +1058,30 @@ Y_UNIT_TEST_SUITE(Cdc) {
     };
 
     struct TopicRunner {
-    private:
-        using TMessageMeta = TVector<std::pair<TString, TString>>;
+        static void Read(const TShardedTableOptions& tableDesc, const TCdcStream& streamDesc,
+                const TVector<TString>& queries, const TVector<TString>& records, bool checkKey = true)
+        {
+            TTestTopicEnv env(tableDesc, streamDesc);
 
-        static TString DumpMessageMeta(TMessageMeta messageMeta) {
-            std::stable_sort(messageMeta.begin(), messageMeta.end());
-            return JoinSeq(", ", messageMeta);
-        }
-
-        static void AssertMessageMetaContains(const TMessageMeta& actual, const TMessageMeta& expected) {
-            for (const auto& e : expected) {
-                auto it = std::find_if(actual.begin(), actual.end(), [&e](const auto& a) {
-                    return a.first == e.first && CheckJsonsEqual(a.second, e.second);
-                });
-                UNIT_ASSERT_C(it != actual.end(), TStringBuilder() << "Message meta '" << e << "' was expected"
-                    << ": actual# " << DumpMessageMeta(actual)
-                    << ", expected# " << DumpMessageMeta(expected));
+            for (const auto& query : queries) {
+                ExecSQL(env.GetServer(), env.GetEdgeActor(), query);
             }
-        }
 
-    public:
-        static void WaitForContent(NYdb::NTopic::IReadSession* reader, const TVector<std::pair<TString, TMessageMeta>>& records) {
+            auto& client = env.GetClient();
+
+            // add consumer
+            {
+                auto res = client.AlterTopic("/Root/Table/Stream", NYdb::NTopic::TAlterTopicSettings().BeginAddConsumer("user")
+                                                                                                .EndAddConsumer()).ExtractValueSync();
+                UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
+            }
+
+            // get records
+            auto reader = client.CreateReadSession(NYdb::NTopic::TReadSessionSettings()
+                .AppendTopics(TString("/Root/Table/Stream"))
+                .ConsumerName("user")
+            );
+
             ui32 reads = 0;
             while (reads < records.size()) {
                 auto ev = reader->GetEvent(true);
@@ -1200,9 +1091,9 @@ Y_UNIT_TEST_SUITE(Cdc) {
                 if (auto* data = std::get_if<NYdb::NTopic::TReadSessionEvent::TDataReceivedEvent>(&*ev)) {
                     pStream = data->GetPartitionSession();
                     for (const auto& item : data->GetMessages()) {
-                        const auto& [body, meta] = records.at(reads++);
-                        AssertJsonsEqual(item.GetData(), body);
-                        AssertMessageMetaContains(item.GetMessageMeta()->Fields, meta);
+                        const auto& record = records.at(reads++);
+                        UNIT_ASSERT(AreJsonsEqual(item.GetData(), record));
+                        Y_UNUSED(checkKey);
                     }
                 } else if (auto* create = std::get_if<NYdb::NTopic::TReadSessionEvent::TStartPartitionSessionEvent>(&*ev)) {
                     pStream = create->GetPartitionSession();
@@ -1218,54 +1109,12 @@ Y_UNIT_TEST_SUITE(Cdc) {
                     UNIT_ASSERT_VALUES_EQUAL(pStream->GetTopicPath(), "/Root/Table/Stream");
                 }
             }
-        }
-
-        static void Read(const TShardedTableOptions& tableDesc, const TCdcStream& streamDesc,
-                const TVector<TString>& queries, const TVector<std::pair<TString, TMessageMeta>>& records)
-        {
-            TTestTopicEnv env(tableDesc, streamDesc);
-
-            for (const auto& query : queries) {
-                ExecSQL(env.GetServer(), env.GetEdgeActor(), query);
-            }
-
-            auto& client = env.GetClient();
-
-            // add consumer
-            {
-                auto res = client.AlterTopic("/Root/Table/Stream", NYdb::NTopic::TAlterTopicSettings()
-                    .BeginAddConsumer("user").EndAddConsumer()).ExtractValueSync();
-                UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
-            }
-
-            // create reader
-            auto reader = client.CreateReadSession(NYdb::NTopic::TReadSessionSettings()
-                .AppendTopics(TString("/Root/Table/Stream"))
-                .ConsumerName("user")
-            );
-
-            // get records
-            WaitForContent(reader.get(), records);
-
             // remove consumer
             {
                 auto res = client.AlterTopic("/Root/Table/Stream", NYdb::NTopic::TAlterTopicSettings()
                     .AppendDropConsumers("user")).ExtractValueSync();
                 UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
             }
-        }
-
-        static void Read(const TShardedTableOptions& tableDesc, const TCdcStream& streamDesc,
-                const TVector<TString>& queries, const TVector<TString>& records, bool checkKey = true)
-        {
-            Y_UNUSED(checkKey);
-
-            TVector<std::pair<TString, TMessageMeta>> recordsWithMetadata(Reserve(records.size()));
-            for (const auto& record : records) {
-                recordsWithMetadata.emplace_back(record, TMessageMeta());
-            }
-
-            Read(tableDesc, streamDesc, queries, recordsWithMetadata);
         }
 
         static void Write(const TShardedTableOptions& tableDesc, const TCdcStream& streamDesc) {
@@ -1290,36 +1139,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
             UNIT_ASSERT_VALUES_EQUAL(res.GetStatus(), NYdb::EStatus::SCHEME_ERROR);
         }
     };
-
-    static TString DebeziumBody(const char* op, const char* before, const char* after, bool snapshot = false) {
-        NJsonWriter::TBuf body;
-        auto root = body.BeginObject();
-        auto payload = root.WriteKey("payload").BeginObject();
-
-        payload
-            .WriteKey("op").WriteString(op)
-            .WriteKey("source")
-                .BeginObject()
-                    .WriteKey("connector").WriteString("ydb")
-                    .WriteKey("version").WriteString("1.0.0")
-                    .WriteKey("step").WriteString("***")
-                    .WriteKey("txId").WriteString("***")
-                    .WriteKey("ts_ms").WriteString("***")
-                    .WriteKey("snapshot").WriteBool(snapshot)
-                .EndObject();
-
-        if (before) {
-            payload.WriteKey("before").UnsafeWriteValue(before);
-        }
-
-        if (after) {
-            payload.WriteKey("after").UnsafeWriteValue(after);
-        }
-
-        payload.EndObject();
-        root.EndObject();
-        return body.Str();
-    }
 
     #define Y_UNIT_TEST_TRIPLET(N, VAR1, VAR2, VAR3)                                                                   \
         template<typename TRunner> void N(NUnitTest::TTestContext&);                                                   \
@@ -1347,22 +1166,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
             R"({"update":{},"key":[2]})",
             R"({"update":{},"key":[3]})",
             R"({"erase":{},"key":[1]})",
-        });
-    }
-
-    Y_UNIT_TEST(KeysOnlyLogDebezium) {
-        TopicRunner::Read(SimpleTable(), KeysOnly(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson), {R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )", R"(
-            DELETE FROM `/Root/Table` WHERE key = 1;
-        )"}, { 
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("d", nullptr, nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
         });
     }
 
@@ -1403,78 +1206,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
             R"({"update":{},"newImage":{"value":200},"key":[2],"oldImage":{"value":20}})",
             R"({"update":{},"newImage":{"value":300},"key":[3],"oldImage":{"value":30}})",
             R"({"erase":{},"key":[1],"oldImage":{"value":100}})",
-        });
-    }
-
-    Y_UNIT_TEST(NewAndOldImagesLogDebezium) {
-        TopicRunner::Read(SimpleTable(), NewAndOldImages(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson), {R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )", R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 100),
-            (2, 200),
-            (3, 300);
-        )", R"(
-            DELETE FROM `/Root/Table` WHERE key = 1;
-        )"}, { 
-            {DebeziumBody("c", nullptr, R"({"key":1,"value":10})"), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("c", nullptr, R"({"key":2,"value":20})"), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("c", nullptr, R"({"key":3,"value":30})"), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("u", R"({"key":1,"value":10})", R"({"key":1,"value":100})"), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", R"({"key":2,"value":20})", R"({"key":2,"value":200})"), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", R"({"key":3,"value":30})", R"({"key":3,"value":300})"), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("d", R"({"key":1,"value":100})", nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
-        });
-    }
-
-    Y_UNIT_TEST(OldImageLogDebezium) {
-        TopicRunner::Read(SimpleTable(), OldImage(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson), {R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )", R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 100),
-            (2, 200),
-            (3, 300);
-        )", R"(
-            DELETE FROM `/Root/Table` WHERE key = 1;
-        )"}, { 
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("u", R"({"key":1,"value":10})", nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", R"({"key":2,"value":20})", nullptr), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", R"({"key":3,"value":30})", nullptr), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("d", R"({"key":1,"value":100})", nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
-        });
-    }
-
-    Y_UNIT_TEST(NewImageLogDebezium) { 
-        TopicRunner::Read(SimpleTable(), NewImage(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson), {R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )", R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 100),
-            (2, 200),
-            (3, 300);
-        )", R"(
-            DELETE FROM `/Root/Table` WHERE key = 1;
-        )"}, { 
-            {DebeziumBody("u", nullptr, R"({"key":1,"value":10})"), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", nullptr, R"({"key":2,"value":20})"), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", nullptr, R"({"key":3,"value":30})"), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("u", nullptr, R"({"key":1,"value":100})"), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", nullptr, R"({"key":2,"value":200})"), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", nullptr, R"({"key":3,"value":300})"), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("d", nullptr, nullptr), {{"__key", R"({"payload":{"key":1}})"}}},
         });
     }
 
@@ -1658,22 +1389,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
             ("%s", 1);
         )", key.c_str())}, {
             Sprintf(R"({"update":{},"key":["%s"]})", key.c_str()),
-        });
-    }
-
-    Y_UNIT_TEST(HugeKeyDebezium) {
-        const auto key = TString(512_KB, 'A');
-        const auto table = TShardedTableOptions()
-            .Columns({
-                {"key", "Utf8", true, false},
-                {"value", "Uint32", false, false},
-            });
-
-        TopicRunner::Read(table, KeysOnly(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson), {Sprintf(R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            ("%s", 1);
-        )", key.c_str())}, { 
-            {DebeziumBody("u", nullptr, nullptr), {{"__key", Sprintf(R"({"payload":{"key":"%s"}})", key.c_str())}}},
         });
     }
 
@@ -1866,7 +1581,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
             const auto records = GetRecords(*server->GetRuntime(), sender, path, 0);
             if (records.size() == expected.size()) {
                 for (ui32 i = 0; i < expected.size(); ++i) {
-                    AssertJsonsEqual(records.at(i).second, expected.at(i));
+                    UNIT_ASSERT_VALUES_EQUAL(expected.at(i), records.at(i).second);
                 }
 
                 break;
@@ -1884,7 +1599,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         bool preventEnqueueing = true;
         TVector<THolder<IEventHandle>> enqueued;
 
-        env.GetServer()->GetRuntime()->SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.GetServer()->GetRuntime()->SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 if (preventEnqueueing) {
@@ -2046,7 +1761,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         UNIT_ASSERT_VALUES_EQUAL(tabletIds.size(), 1);
 
         ui32 readSets = 0;
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvTxProcessing::EvReadSet:
                 ++readSets;
@@ -2076,7 +1791,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         bool splitStarted = false;
         bool splitAcked = false;
 
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvPersQueue::EvRequest:
                 if (auto* msg = ev->Get<TEvPersQueue::TEvRequest>()) {
@@ -2141,7 +1856,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         TVector<THolder<IEventHandle>> enqueued;
         THashMap<ui64, ui32> splitAcks;
 
-        env.GetServer()->GetRuntime()->SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.GetServer()->GetRuntime()->SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 if (preventEnqueueing) {
@@ -2238,7 +1953,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         TVector<THolder<IEventHandle>> activations;
         THashMap<ui64, ui32> splitAcks;
 
-        env.GetServer()->GetRuntime()->SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.GetServer()->GetRuntime()->SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvEnqueueRecords:
                 if (preventEnqueueing || (preventEnqueueingOnSpecificSender && *preventEnqueueingOnSpecificSender == ev->Recipient)) {
@@ -2364,7 +2079,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         bool added = false;
         TVector<THolder<IEventHandle>> delayed;
 
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             switch (ev->GetTypeRewrite()) {
             case TEvChangeExchange::EvAddSender:
                 added = true;
@@ -2431,7 +2146,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         auto& runtime = *env.GetServer()->GetRuntime();
 
         TVector<THolder<IEventHandle>> enqueued;
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvChangeExchange::EvEnqueueRecords) {
                 enqueued.emplace_back(ev.Release());
                 return TTestActorRuntime::EEventAction::DROP;
@@ -2473,7 +2188,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         InitRoot(server, edgeActor);
 
         THashSet<ui64> enqueued;
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvChangeExchange::EvEnqueueRecords) {
                 for (const auto& record : ev->Get<TEvChangeExchange::TEvEnqueueRecords>()->Records) {
                     enqueued.insert(record.Order);
@@ -2505,7 +2220,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         }
 
         THashSet<ui64> removed;
-        runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvChangeExchange::EvRemoveRecords) {
                 for (const auto& record : ev->Get<TEvChangeExchange::TEvRemoveRecords>()->Records) {
                     removed.insert(record);
@@ -2575,60 +2290,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
         });
     }
 
-    Y_UNIT_TEST(InitialScanDebezium) {
-        TTestTopicEnv env(SimpleTable(), KeysOnly(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson, "UnusedStream"));
-        auto& client = env.GetClient();
-
-        // Populate data
-        ExecSQL(env.GetServer(), env.GetEdgeActor(), R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )");
-
-        // add a stream with initial scan
-        WaitTxNotification(env.GetServer(), env.GetEdgeActor(), AsyncAlterAddStream(env.GetServer(), "/Root", "Table",
-            WithInitialScan(NewAndOldImages(NKikimrSchemeOp::ECdcStreamFormatDebeziumJson))));
-
-        // add consumer
-        {
-            auto res = client.AlterTopic("/Root/Table/Stream", NYdb::NTopic::TAlterTopicSettings()
-                .BeginAddConsumer("user").EndAddConsumer()).ExtractValueSync();
-            UNIT_ASSERT_C(res.IsSuccess(), res.GetIssues().ToString());
-        }
-
-        // create reader
-        auto reader = client.CreateReadSession(NYdb::NTopic::TReadSessionSettings()
-            .AppendTopics(TString("/Root/Table/Stream"))
-            .ConsumerName("user")
-        );
-
-        // Wait for initial scan records
-        TopicRunner::WaitForContent(reader.get(), {
-            {DebeziumBody("r", nullptr, R"({"key":1,"value":10})", true), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("r", nullptr, R"({"key":2,"value":20})", true), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("r", nullptr, R"({"key":3,"value":30})", true), {{"__key", R"({"payload":{"key":3}})"}}},
-        });
-
-        // Perform update after initial scan
-        ExecSQL(env.GetServer(), env.GetEdgeActor(), R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 100),
-            (2, 200),
-            (3, 300),
-            (4, 400);
-        )");
-
-        // Wait for update records
-        TopicRunner::WaitForContent(reader.get(), {
-            {DebeziumBody("u", R"({"key":1,"value":10})", R"({"key":1,"value":100})"), {{"__key", R"({"payload":{"key":1}})"}}},
-            {DebeziumBody("u", R"({"key":2,"value":20})", R"({"key":2,"value":200})"), {{"__key", R"({"payload":{"key":2}})"}}},
-            {DebeziumBody("u", R"({"key":3,"value":30})", R"({"key":3,"value":300})"), {{"__key", R"({"payload":{"key":3}})"}}},
-            {DebeziumBody("c", nullptr, R"({"key":4,"value":400})"), {{"__key", R"({"payload":{"key":4}})"}}},
-        });
-    }
-
     Y_UNIT_TEST(InitialScanUpdatedRows) {
         TPortManager portManager;
         TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
@@ -2652,7 +2313,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         )");
 
         TVector<THolder<IEventHandle>> delayed;
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvDataShard::EvCdcStreamScanRequest) {
                 delayed.emplace_back(ev.Release());
                 return TTestActorRuntime::EEventAction::DROP;
@@ -2731,7 +2392,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         TVector<THolder<IEventHandle>> delayed;
         ui32 progressCount = 0;
 
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             static constexpr ui32 EvCdcStreamScanProgress = EventSpaceBegin(TKikimrEvents::ES_PRIVATE) + 24;
 
             switch (ev->GetTypeRewrite()) {
@@ -2800,7 +2461,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         )");
 
         THolder<IEventHandle> delayed;
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == NSchemeShard::TEvSchemeShard::EvModifySchemeTransaction) {
                 auto* msg = ev->Get<NSchemeShard::TEvSchemeShard::TEvModifySchemeTransaction>();
                 const auto& tx = msg->Record.GetTransaction(0);
@@ -2868,7 +2529,7 @@ Y_UNIT_TEST_SUITE(Cdc) {
         ui32 progressCount = 0;
         TVector<THolder<IEventHandle>> delayed;
 
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        auto prevObserver = runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             static constexpr ui32 EvCdcStreamScanProgress = EventSpaceBegin(TKikimrEvents::ES_PRIVATE) + 24;
             if (ev->GetTypeRewrite() == EvCdcStreamScanProgress) {
                 ++progressCount;
@@ -2903,88 +2564,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
         }
 
         waitProgress(2);
-    }
-
-    Y_UNIT_TEST(EnqueueRequestProcessSend) {
-        TPortManager portManager;
-        TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
-            .SetUseRealThreads(false)
-            .SetDomainName("Root")
-        );
-
-        auto& runtime = *server->GetRuntime();
-        const auto edgeActor = runtime.AllocateEdgeActor();
-
-        SetupLogging(runtime);
-        InitRoot(server, edgeActor);
-        CreateShardedTable(server, edgeActor, "/Root", "Table", TShardedTableOptions()
-            .Columns({
-                {"key", "Uint32", true, false},
-                {"value", "Utf8", false, false},
-            })
-        );
-
-        bool ready = false;
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
-            if (ev->GetTypeRewrite() == TEvChangeExchangePrivate::EvReady) {
-                ready = true;
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        });
-
-        WaitTxNotification(server, edgeActor, AsyncAlterAddStream(server, "/Root", "Table",
-            Updates(NKikimrSchemeOp::ECdcStreamFormatJson)));
-
-        if (!ready) {
-            TDispatchOptions opts;
-            opts.FinalEvents.emplace_back([&ready](IEventHandle&) {
-                return ready;
-            });
-            server->GetRuntime()->DispatchEvents(opts);
-        }
-
-        runtime.SetObserverFunc(prevObserver);
-
-        THolder<IEventHandle> delayed;
-        prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
-            if (ev->GetTypeRewrite() == TEvChangeExchangePrivate::EvReady) {
-                delayed.Reset(ev.Release());
-                return TTestActorRuntime::EEventAction::DROP;
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        });
-
-        const auto value = TString(200_KB, 'A');
-        // make sender busy
-        ExecSQL(server, edgeActor, Sprintf(R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, "%s");
-        )", value.c_str()));
-
-        if (!delayed) {
-            TDispatchOptions opts;
-            opts.FinalEvents.emplace_back([&delayed](IEventHandle&) {
-                return bool(delayed);
-            });
-            server->GetRuntime()->DispatchEvents(opts);
-        }
-
-        ExecSQL(server, edgeActor, Sprintf(R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (2, "%s"),
-            (3, "%s");
-        )", value.c_str(), value.c_str()));
-
-        runtime.SetObserverFunc(prevObserver);
-        runtime.Send(delayed.Release(), 0, true);
-
-        WaitForContent(server, edgeActor, "/Root/Table/Stream", {
-            Sprintf(R"({"update":{"value":"%s"},"key":[1]})", value.c_str()),
-            Sprintf(R"({"update":{"value":"%s"},"key":[2]})", value.c_str()),
-            Sprintf(R"({"update":{"value":"%s"},"key":[3]})", value.c_str()),
-        });
     }
 
     Y_UNIT_TEST(AwsRegion) {
@@ -3033,172 +2612,6 @@ Y_UNIT_TEST_SUITE(Cdc) {
         checkAwsRegion("/Root/Table/Stream2", "customRegion");
     }
 
-    Y_UNIT_TEST(ResolvedTimestamps) {
-        TPortManager portManager;
-        TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
-            .SetUseRealThreads(false)
-            .SetDomainName("Root")
-        );
-
-        auto& runtime = *server->GetRuntime();
-        const auto edgeActor = runtime.AllocateEdgeActor();
-
-        SetupLogging(runtime);
-        InitRoot(server, edgeActor);
-        CreateShardedTable(server, edgeActor, "/Root", "Table", SimpleTable());
-
-        WaitTxNotification(server, edgeActor, AsyncAlterAddStream(server, "/Root", "Table",
-            WithResolvedTimestamps(TDuration::Seconds(3), Updates(NKikimrSchemeOp::ECdcStreamFormatJson))));
-
-        WaitForContent(server, edgeActor, "/Root/Table/Stream", {
-            R"({"resolved":"***"})",
-        });
-
-        ExecSQL(server, edgeActor, R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )");
-
-        WaitForContent(server, edgeActor, "/Root/Table/Stream", {
-            R"({"resolved":"***"})",
-            R"({"update":{"value":10},"key":[1]})",
-            R"({"update":{"value":20},"key":[2]})",
-            R"({"update":{"value":30},"key":[3]})",
-            R"({"resolved":"***"})",
-        });
-
-        // split table
-        const auto tabletIds = GetTableShards(server, edgeActor, "/Root/Table");
-        UNIT_ASSERT_VALUES_EQUAL(tabletIds.size(), 1);
-
-        SetSplitMergePartCountLimit(&runtime, -1);
-        WaitTxNotification(server, edgeActor, AsyncSplitTable(server, edgeActor, "/Root/Table", tabletIds.at(0), 2));
-
-        WaitForContent(server, edgeActor, "/Root/Table/Stream", {
-            R"({"resolved":"***"})",
-            R"({"update":{"value":10},"key":[1]})",
-            R"({"update":{"value":20},"key":[2]})",
-            R"({"update":{"value":30},"key":[3]})",
-            R"({"resolved":"***"})",
-            R"({"resolved":"***"})",
-        });
-
-        // disable stream
-        WaitTxNotification(server, edgeActor, AsyncAlterDisableStream(server, "/Root", "Table", "Stream"));
-        SimulateSleep(server, TDuration::Seconds(5));
-
-        WaitForContent(server, edgeActor, "/Root/Table/Stream", {
-            R"({"resolved":"***"})",
-            R"({"update":{"value":10},"key":[1]})",
-            R"({"update":{"value":20},"key":[2]})",
-            R"({"update":{"value":30},"key":[3]})",
-            R"({"resolved":"***"})",
-            R"({"resolved":"***"})",
-        });
-    }
-
-    Y_UNIT_TEST(InitialScanAndResolvedTimestamps) {
-        TPortManager portManager;
-        TServer::TPtr server = new TServer(TServerSettings(portManager.GetPort(2134), {}, DefaultPQConfig())
-            .SetUseRealThreads(false)
-            .SetDomainName("Root")
-            .SetEnableChangefeedInitialScan(true)
-        );
-
-        auto& runtime = *server->GetRuntime();
-        const auto edgeActor = runtime.AllocateEdgeActor();
-
-        SetupLogging(runtime);
-        InitRoot(server, edgeActor);
-        CreateShardedTable(server, edgeActor, "/Root", "Table", SimpleTable());
-
-        ExecSQL(server, edgeActor, R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )");
-
-        THolder<IEventHandle> delayed;
-        auto prevObserver = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
-            if (ev->GetTypeRewrite() == TEvDataShard::EvCdcStreamScanRequest) {
-                delayed.Reset(ev.Release());
-                return TTestActorRuntime::EEventAction::DROP;
-            }
-
-            return TTestActorRuntime::EEventAction::PROCESS;
-        });
-
-        WaitTxNotification(server, edgeActor, AsyncAlterAddStream(server, "/Root", "Table",
-            WithResolvedTimestamps(TDuration::Seconds(3),
-                WithInitialScan(Updates(NKikimrSchemeOp::ECdcStreamFormatJson))
-            )
-        ));
-
-        if (!delayed) {
-            TDispatchOptions opts;
-            opts.FinalEvents.emplace_back([&delayed](IEventHandle&) {
-                return bool(delayed);
-            });
-            runtime.DispatchEvents(opts);
-        }
-
-        SimulateSleep(server, TDuration::Seconds(5));
-        runtime.SetObserverFunc(prevObserver);
-        runtime.Send(delayed.Release(), 0, true);
-
-        WaitForContent(server, edgeActor, "/Root/Table/Stream", {
-            R"({"update":{"value":10},"key":[1]})",
-            R"({"update":{"value":20},"key":[2]})",
-            R"({"update":{"value":30},"key":[3]})",
-            R"({"resolved":"***"})",
-        });
-    }
-
-    Y_UNIT_TEST(SequentialSplitMerge) {
-        TTestPqEnv env(SimpleTable(), Updates(NKikimrSchemeOp::ECdcStreamFormatJson), false);
-        SetSplitMergePartCountLimit(env.GetServer()->GetRuntime(), -1);
-
-        // split
-        auto tabletIds = GetTableShards(env.GetServer(), env.GetEdgeActor(), "/Root/Table");
-        UNIT_ASSERT_VALUES_EQUAL(tabletIds.size(), 1);
-
-        WaitTxNotification(env.GetServer(), env.GetEdgeActor(), 
-            AsyncSplitTable(env.GetServer(), env.GetEdgeActor(), "/Root/Table", tabletIds.at(0), 4));
-
-        // merge
-        tabletIds = GetTableShards(env.GetServer(), env.GetEdgeActor(), "/Root/Table");
-        UNIT_ASSERT_VALUES_EQUAL(tabletIds.size(), 2);
-
-        WaitTxNotification(env.GetServer(), env.GetEdgeActor(),
-            AsyncMergeTable(env.GetServer(), env.GetEdgeActor(), "/Root/Table", tabletIds));
-
-        ExecSQL(env.GetServer(), env.GetEdgeActor(), R"(
-            UPSERT INTO `/Root/Table` (key, value) VALUES
-            (1, 10),
-            (2, 20),
-            (3, 30);
-        )");
-
-        WaitForContent(env.GetServer(), env.GetEdgeActor(), "/Root/Table/Stream", {
-            R"({"update":{"value":10},"key":[1]})",
-            R"({"update":{"value":20},"key":[2]})",
-            R"({"update":{"value":30},"key":[3]})",
-        });
-    }
-
 } // Cdc
 
 } // NKikimr
-
-template <>
-void Out<std::pair<TString, TString>>(IOutputStream& output, const std::pair<TString, TString>& x) {
-    output << x.first << ":" << x.second;
-}
- 
-void AppendToString(TString& dst, const std::pair<TString, TString>& x) {
-    TStringOutput output(dst);
-    output << x;
-}

@@ -3,7 +3,7 @@
 
 #include "rpc_calls.h"
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
 
 #include <ydb/core/cms/console/configs_dispatcher.h>
@@ -38,18 +38,18 @@ public:
     }
 
 private:
-    void StateGetConfig(TAutoPtr<IEventHandle>& ev) {
+    void StateGetConfig(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvConfigsDispatcher::TEvGetConfigResponse, Handle);
             HFunc(TEvents::TEvUndelivered, Handle);
             HFunc(TEvents::TEvWakeup, HandleWakeup);
-            default: TBase::StateFuncBase(ev);
+            default: TBase::StateFuncBase(ev, ctx);
         }
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -207,8 +207,8 @@ private:
     TTableProfiles Profiles;
 };
 
-void DoDescribeTableOptionsRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribeTableOptionsRPC(p.release()));
+void DoDescribeTableOptionsRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TDescribeTableOptionsRPC(p.release()));
 }
 
 } // namespace NGRpcService

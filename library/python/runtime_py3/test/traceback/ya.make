@@ -1,7 +1,5 @@
 PY3_PROGRAM()
 
-STYLE_PYTHON()
-
 PEERDIR(
     contrib/python/ipython
 )

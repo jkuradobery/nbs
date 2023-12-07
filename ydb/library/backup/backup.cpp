@@ -7,7 +7,7 @@
 #include <ydb/public/api/protos/ydb_table.pb.h>
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
-#include <ydb/public/lib/ydb_cli/common/recursive_remove.h>
+#include <ydb/public/lib/ydb_cli/dump/util/util.h>
 
 #include <library/cpp/containers/stack_vector/stack_vec.h>
 #include <library/cpp/string_utils/quote/quote.h>
@@ -135,7 +135,7 @@ void PrintPrimitive(IOutputStream& out, const TValueParser& parser) {
         CASE_PRINT_PRIMITIVE_STRING_TYPE(out, Json);
         CASE_PRINT_PRIMITIVE_STRING_TYPE(out, JsonDocument);
         default:
-            Y_ABORT("Unsupported type");
+            Y_FAIL("Unsupported type");
     }
 }
 #undef CASE_PRINT_PRIMITIVE_STRING_TYPE
@@ -230,33 +230,19 @@ TMaybe<TValue> ProcessResultSet(TStringStream& ss,
     return lastReadPK;
 }
 
-static void Flush(TFile& tmpFile, TStringStream& ss, TMaybe<TValue>& lastWrittenPK, const TMaybe<TValue>& lastReadPK) {
-    tmpFile.Write(ss.Data(), ss.Size());
-    ss.Clear();
-
-    if (lastReadPK) {
-        lastWrittenPK = *lastReadPK;
-    }
-}
-
-static void CloseAndRename(TFile& tmpFile, const TFsPath& fileName) {
-    tmpFile.Close();
-
-    LOG_DEBUG("New file with data is created, fileName# " << fileName);
-    TFsPath(tmpFile.GetName()).RenameTo(fileName);
-}
-
 TMaybe<TValue> TryReadTable(TDriver driver, const NTable::TTableDescription& desc, const TString& fullTablePath,
-        const TFsPath& folderPath, TMaybe<TValue> lastWrittenPK, ui32 *fileCounter, bool ordered)
-{
+        const TFsPath& folderPath, TMaybe<TValue> lastWrittenPK, ui32 *fileCounter) {
+    NTable::TTableClient client(driver);
+
+
+
     TMaybe<NTable::TTablePartIterator> iter;
-    auto readTableJob = [fullTablePath, &lastWrittenPK, &iter, &ordered](NTable::TSession session) -> TStatus {
+    auto readTableJob = [fullTablePath, &lastWrittenPK, &iter]
+            (NTable::TSession session) -> TStatus {
+
         NTable::TReadTableSettings settings;
         if (lastWrittenPK) {
             settings.From(NTable::TKeyBound::Exclusive(*lastWrittenPK));
-        }
-        if (ordered) {
-            settings.Ordered();
         }
         auto result = session.ReadTable(fullTablePath, settings).ExtractValueSync();
         if (result.IsSuccess()) {
@@ -265,10 +251,10 @@ TMaybe<TValue> TryReadTable(TDriver driver, const NTable::TTableDescription& des
         VerifyStatus(result, TStringBuilder() << "ReadTable result was not successfull,"
                 " path: " << fullTablePath.Quote());
         return result;
+
     };
 
-    NTable::TTableClient client(driver);
-    TStatus status = client.RetryOperationSync(readTableJob, NTable::TRetryOperationSettings().MaxRetries(1));
+    TStatus status = client.RetryOperationSync(readTableJob, NYdb::NTable::TRetryOperationSettings().MaxRetries(1));
     VerifyStatus(status);
 
     {
@@ -282,7 +268,8 @@ TMaybe<TValue> TryReadTable(TDriver driver, const NTable::TTableDescription& des
                     " error msg: " << resultSetStreamPart.GetIssues().ToString());
         TResultSet resultSetCurrent = resultSetStreamPart.ExtractPart();
 
-        auto tmpFile = TFile(folderPath.Child(INCOMPLETE_DATA_FILE_NAME), CreateAlways | WrOnly);
+        TFsPath tmpFileName = folderPath.Child(INCOMPLETE_DATA_FILE_NAME);
+        TFile tmpFile = TFile(tmpFileName, CreateAlways | WrOnly);
         TStringStream ss;
         ss.Reserve(IO_BUFFER_SIZE);
 
@@ -305,9 +292,13 @@ TMaybe<TValue> TryReadTable(TDriver driver, const NTable::TTableDescription& des
                         break;
                     } else {
                         if (ss.Data()) {
-                            Flush(tmpFile, ss, lastWrittenPK, lastReadPK);
+                            tmpFile.Write(ss.Data(), ss.Size());
+                            lastWrittenPK = *lastReadPK;
+                            ss.Clear();
                         }
-                        CloseAndRename(tmpFile, folderPath.Child(CreateDataFileName((*fileCounter)++)));
+                        tmpFile.Close();
+                        LOG_DEBUG("New file with data is created, fileName# " << CreateDataFileName(*fileCounter));
+                        tmpFileName.RenameTo(folderPath.Child(CreateDataFileName((*fileCounter)++)));
                         return lastWrittenPK;
                     }
                 }
@@ -316,22 +307,31 @@ TMaybe<TValue> TryReadTable(TDriver driver, const NTable::TTableDescription& des
                 break;
             }
             if (ss.Size() > IO_BUFFER_SIZE) {
-                Flush(tmpFile, ss, lastWrittenPK, lastReadPK);
+                tmpFile.Write(ss.Data(), ss.Size());
+                lastWrittenPK = *lastReadPK;
+                ss.Clear();
             }
             if (tmpFile.GetLength() > FILE_SPLIT_THRESHOLD) {
-                CloseAndRename(tmpFile, folderPath.Child(CreateDataFileName((*fileCounter)++)));
-                tmpFile = TFile(folderPath.Child(INCOMPLETE_DATA_FILE_NAME), CreateAlways | WrOnly);
+                tmpFile.Close();
+                LOG_DEBUG("New file with data is created, fileName# " << CreateDataFileName(*fileCounter));
+                tmpFileName.RenameTo(folderPath.Child(CreateDataFileName((*fileCounter)++)));
+                tmpFileName = folderPath.Child(INCOMPLETE_DATA_FILE_NAME);
+                tmpFile = TFile(tmpFileName, CreateAlways | WrOnly);
             }
         }
-        Flush(tmpFile, ss, lastWrittenPK, lastReadPK);
-        CloseAndRename(tmpFile, folderPath.Child(CreateDataFileName((*fileCounter)++)));
+        tmpFile.Write(ss.Data(), ss.Size());
+        lastWrittenPK = *lastReadPK;
+        ss.Clear();
+        tmpFile.Close();
+        LOG_DEBUG("New file with data is created, fileName# " << CreateDataFileName(*fileCounter));
+        tmpFileName.RenameTo(folderPath.Child(CreateDataFileName((*fileCounter)++)));
     }
 
     return {};
 }
 
 void ReadTable(TDriver driver, const NTable::TTableDescription& desc, const TString& fullTablePath,
-        const TFsPath& folderPath, bool ordered) {
+        const TFsPath& folderPath) {
     LOG_DEBUG("Going to ReadTable, fullPath: " << fullTablePath);
 
     auto timer = GetVerbosity()
@@ -343,7 +343,7 @@ void ReadTable(TDriver driver, const NTable::TTableDescription& desc, const TStr
     i64 retries = READ_TABLE_RETRIES;
     ui32 fileCounter = 0;
     do {
-        lastWrittenPK = TryReadTable(driver, desc, fullTablePath, folderPath, lastWrittenPK, &fileCounter, ordered);
+        lastWrittenPK = TryReadTable(driver, desc, fullTablePath, folderPath, lastWrittenPK, &fileCounter);
         if (lastWrittenPK && retries) {
             LOG_DEBUG("ReadTable was not successfull, going to retry from lastWrittenPK# "
                 << FormatValueYson(*lastWrittenPK).Quote());
@@ -469,7 +469,7 @@ void DropTable(TDriver driver, const TString& path) {
 }
 
 void BackupTable(TDriver driver, const TString& dbPrefix, const TString& backupPrefix, const TString& path,
-        const TFsPath& folderPath, bool schemaOnly, bool preservePoolKinds, bool ordered) {
+        const TFsPath& folderPath, bool schemaOnly, bool preservePoolKinds) {
     Y_ENSURE(!path.empty());
     Y_ENSURE(path.back() != '/', path.Quote() << " path contains / in the end");
 
@@ -487,7 +487,7 @@ void BackupTable(TDriver driver, const TString& dbPrefix, const TString& backupP
 
     if (!schemaOnly) {
         const TString pathToTemporal = JoinDatabasePath(backupPrefix, path);
-        ReadTable(driver, desc, pathToTemporal, folderPath, ordered);
+        ReadTable(driver, desc, pathToTemporal, folderPath);
     }
 }
 
@@ -508,7 +508,7 @@ void RemoveClusterDirectory(const TDriver& driver, const TString& path) {
 void RemoveClusterDirectoryRecursive(const TDriver& driver, const TString& path) {
     NScheme::TSchemeClient schemeClient(driver);
     NTable::TTableClient tableClient(driver);
-    TStatus status = NConsoleClient::RemoveDirectoryRecursive(schemeClient, tableClient, path, {}, true, false);
+    TStatus status = NYdb::NDump::RemoveDirectoryRecursive(tableClient, schemeClient, path);
     VerifyStatus(status, TStringBuilder() << "RemoveDirectoryRecursive, path: " << path.Quote());
     LOG_DEBUG("Directory is removed recursively, path: " << path.Quote());
 }
@@ -525,7 +525,7 @@ static bool IsExcluded(const TString& path, const TVector<TRegExMatch>& exclusio
 
 void BackupFolderImpl(TDriver driver, const TString& dbPrefix, const TString& backupPrefix, TString path,
         const TFsPath folderPath, const TVector<TRegExMatch>& exclusionPatterns,
-        bool schemaOnly, bool useConsistentCopyTable, bool avoidCopy, bool preservePoolKinds, bool ordered) {
+        bool schemaOnly, bool useConsistentCopyTable, bool avoidCopy, bool preservePoolKinds) {
     LOG_DEBUG("Going to backup folder/table, dbPrefix: " << dbPrefix << " path: " << path);
     TFile(folderPath.Child(INCOMPLETE_FILE_NAME), CreateAlways);
 
@@ -548,7 +548,7 @@ void BackupFolderImpl(TDriver driver, const TString& dbPrefix, const TString& ba
             if (schemaOnly) {
                 if (dbIt.IsTable()) {
                     BackupTable(driver, dbIt.GetTraverseRoot(), backupPrefix, dbIt.GetRelPath(),
-                            childFolderPath, schemaOnly, preservePoolKinds, ordered);
+                            childFolderPath, schemaOnly, preservePoolKinds);
                     childFolderPath.Child(INCOMPLETE_FILE_NAME).DeleteIfExists();
                 }
             } else if (!avoidCopy) {
@@ -622,7 +622,7 @@ void BackupFolderImpl(TDriver driver, const TString& dbPrefix, const TString& ba
                     copiedTablesStatuses.erase(dbIt.GetFullPath());
                 }
                 BackupTable(driver, dbIt.GetTraverseRoot(), avoidCopy ? dbIt.GetTraverseRoot() : backupPrefix, dbIt.GetRelPath(),
-                        childFolderPath, schemaOnly, preservePoolKinds, ordered);
+                        childFolderPath, schemaOnly, preservePoolKinds);
                 if (!avoidCopy) {
                     DropTable(driver, tmpTablePath);
                 }
@@ -666,7 +666,7 @@ void CheckedCreateBackupFolder(const TFsPath& folderPath) {
 // folderPath - relative path to folder in local filesystem where backup will be stored
 void BackupFolder(TDriver driver, const TString& database, const TString& relDbPath, TFsPath folderPath,
         const TVector<TRegExMatch>& exclusionPatterns,
-        bool schemaOnly, bool useConsistentCopyTable, bool avoidCopy, bool savePartialResult, bool preservePoolKinds, bool ordered) {
+        bool schemaOnly, bool useConsistentCopyTable, bool avoidCopy, bool savePartialResult, bool preservePoolKinds) {
     TString temporalBackupPostfix = CreateTemporalBackupName();
     if (!folderPath) {
         folderPath = temporalBackupPostfix;
@@ -685,7 +685,7 @@ void BackupFolder(TDriver driver, const TString& database, const TString& relDbP
         TString dbPrefix = JoinDatabasePath(database, relDbPath);
         TString path;
         BackupFolderImpl(driver, dbPrefix, tmpDbFolder, path, folderPath, exclusionPatterns,
-            schemaOnly, useConsistentCopyTable, avoidCopy, preservePoolKinds, ordered);
+            schemaOnly, useConsistentCopyTable, avoidCopy, preservePoolKinds);
     } catch (...) {
         if (!schemaOnly && !avoidCopy) {
             RemoveClusterDirectoryRecursive(driver, tmpDbFolder);

@@ -3,7 +3,7 @@
 
 from enum import IntEnum, unique
 
-from contrib.ydb.core.protos.flat_scheme_op_pb2 import EPathType
+from ydb.core.protos.flat_scheme_op_pb2 import EPathType
 
 
 @unique

@@ -73,7 +73,7 @@ public:
         , Decommission(ev->Decommission)
         , ReaderTabletData(ev->ReaderTabletData)
     {
-        Y_ABORT_UNLESS(QuerySize > 0);
+        Y_VERIFY(QuerySize > 0);
     }
 
     std::unique_ptr<IEventBase> RestartQuery(ui32 counter) {
@@ -168,12 +168,12 @@ public:
             TDeque<std::unique_ptr<TEvBlobStorage::TEvVGet>> &outVGets, TDeque<std::unique_ptr<TVPutEvent>> &outVPuts,
             TAutoPtr<TEvBlobStorage::TEvGetResult> &outGetResult) {
         const NKikimrBlobStorage::TEvVGetResult &record = ev.Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
         const NKikimrProto::EReplyStatus status = record.GetStatus();
-        Y_ABORT_UNLESS(status != NKikimrProto::RACE && status != NKikimrProto::BLOCKED && status != NKikimrProto::DEADLINE);
+        Y_VERIFY(status != NKikimrProto::RACE && status != NKikimrProto::BLOCKED && status != NKikimrProto::DEADLINE);
         R_LOG_DEBUG_SX(logCtx, "BPG57", "handle result# " << ev.ToString());
 
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
         TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
         TVDiskIdShort shortId(vdisk);
         ui32 orderNumber = Info->GetOrderNumber(shortId);
@@ -188,14 +188,14 @@ public:
 
         BlockedGeneration = Max(BlockedGeneration, record.GetBlockedGeneration());
 
-        Y_ABORT_UNLESS(record.ResultSize() > 0, "ev# %s vdisk# %s", ev.ToString().data(), vdisk.ToString().data());
+        Y_VERIFY(record.ResultSize() > 0, "ev# %s vdisk# %s", ev.ToString().data(), vdisk.ToString().data());
         for (ui32 i = 0, e = (ui32)record.ResultSize(); i != e; ++i) {
             const NKikimrBlobStorage::TQueryResult &result = record.GetResult(i);
-            Y_ABORT_UNLESS(result.HasStatus());
+            Y_VERIFY(result.HasStatus());
             const NKikimrProto::EReplyStatus replyStatus = result.GetStatus();
-            Y_ABORT_UNLESS(result.HasCookie());
+            Y_VERIFY(result.HasCookie());
             const ui64 cookie = result.GetCookie();
-            Y_ABORT_UNLESS(result.HasBlobID());
+            Y_VERIFY(result.HasBlobID());
             const TLogoBlobID blobId = LogoBlobIDFromLogoBlobID(result.GetBlobID());
 
             if (ReportDetailedPartMap) {
@@ -205,7 +205,7 @@ public:
                     replyStatus);
             }
 
-            TRope resultBuffer = ev.GetBlobData(result);
+            TString resultBuffer = result.HasBuffer() ? result.GetBuffer() : TString();
             ui32 resultShift = result.HasShift() ? result.GetShift() : 0;
 
             // Currently CRC can be checked only if blob part is fully read
@@ -222,14 +222,7 @@ public:
             if (replyStatus == NKikimrProto::OK) {
                 // TODO(cthulhu): Verify shift and response size, and cookie
                 R_LOG_DEBUG_SX(logCtx, "BPG58", "Got# OK orderNumber# " << orderNumber << " vDiskId# " << vdisk.ToString());
-                resultBuffer.Compact();
-                if (resultBuffer.GetOccupiedMemorySize() > resultBuffer.size() * 2) {
-                    auto temp = TRcBuf::Uninitialized(resultBuffer.size());
-                    resultBuffer.ExtractFrontPlain(temp.GetDataMut(), temp.size());
-                    resultBuffer.Insert(resultBuffer.End(), std::move(temp));
-                }
-                Blackboard.AddResponseData(blobId, orderNumber, resultShift, std::move(resultBuffer), result.GetKeep(),
-                    result.GetDoNotKeep());
+                Blackboard.AddResponseData(blobId, orderNumber, resultShift, resultBuffer, result.GetKeep(), result.GetDoNotKeep());
             } else if (replyStatus == NKikimrProto::NODATA) {
                 R_LOG_DEBUG_SX(logCtx, "BPG59", "Got# NODATA orderNumber# " << orderNumber
                         << " vDiskId# " << vdisk.ToString());
@@ -245,7 +238,7 @@ public:
                         << " vDiskId# " << vdisk.ToString());
                 Blackboard.AddNotYetResponse(blobId, orderNumber, result.GetKeep(), result.GetDoNotKeep());
             } else {
-                Y_ABORT_UNLESS(false, "Unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(replyStatus).data());
+                Y_VERIFY(false, "Unexpected reply status# %s", NKikimrProto::EReplyStatus_Name(replyStatus).data());
             }
         }
 
@@ -283,7 +276,7 @@ public:
         Blackboard.ChangeAll();
         Step(logCtx, outVGets, outVPuts, outGetResult);
         Blackboard.AccelerationMode = prevMode;
-        Y_ABORT_UNLESS(!outGetResult, "%s Unexpected get result in AccelerateGet, outGetResult# %s, DumpFullState# %s",
+        Y_VERIFY(!outGetResult, "%s Unexpected get result in AccelerateGet, outGetResult# %s, DumpFullState# %s",
             RequestPrefix.data(), outGetResult->Print(false).c_str(), DumpFullState().c_str());
     }
 

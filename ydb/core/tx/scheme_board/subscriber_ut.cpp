@@ -2,13 +2,13 @@
 #include "subscriber.h"
 #include "ut_helpers.h"
 
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 #include <ydb/core/base/statestorage_impl.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/testlib/basics/helpers.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/vector.h>
@@ -25,7 +25,7 @@ class TSubscriberTest: public NUnitTest::TTestBase {
         Context->Send(proxy, edge, new TEvStateStorage::TEvListSchemeBoard());
         auto ev = Context->GrabEdgeEvent<TEvStateStorage::TEvListSchemeBoardResult>(edge);
 
-        Y_ABORT_UNLESS(ev->Get()->Info);
+        Y_VERIFY(ev->Get()->Info);
         auto allReplicas = ev->Get()->Info->SelectAllReplicas();
         return TVector<TActorId>(allReplicas.begin(), allReplicas.end());
     }
@@ -104,7 +104,7 @@ void TSubscriberTest::NotifyDelete() {
     const TActorId edge = Context->AllocateEdgeActor();
 
     auto replicas = ResolveReplicas();
-    Y_ABORT_UNLESS(replicas.size() > 2);
+    Y_VERIFY(replicas.size() > 2);
 
     for (const auto& replica : replicas) {
         Context->HandshakeReplica(replica, edge);
@@ -257,7 +257,7 @@ class TSubscriberCombinationsTest: public NUnitTest::TTestBase {
         context.Send(proxy, edge, new TEvStateStorage::TEvListSchemeBoard());
         auto ev = context.GrabEdgeEvent<TEvStateStorage::TEvListSchemeBoardResult>(edge);
 
-        Y_ABORT_UNLESS(ev->Get()->Info);
+        Y_VERIFY(ev->Get()->Info);
         auto allReplicas = ev->Get()->Info->SelectAllReplicas();
         return TVector<TActorId>(allReplicas.begin(), allReplicas.end());
     }

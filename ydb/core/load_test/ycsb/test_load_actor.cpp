@@ -105,7 +105,7 @@ public:
 
     void CreateSession(const TActorContext& ctx) {
         auto kqpProxy = NKqp::MakeKqpProxyID(ctx.SelfID.NodeId());
-        LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
             << " sends event for session creation to proxy# " << kqpProxy.ToString());
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvCreateSessionRequest>();
@@ -118,7 +118,7 @@ public:
             return;
 
         auto kqpProxy = NKqp::MakeKqpProxyID(ctx.SelfID.NodeId());
-        LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
             << " sends session close query to proxy: " << kqpProxy);
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvCloseSessionRequest>();
@@ -131,7 +131,7 @@ public:
 
         if (response.GetYdbStatus() == Ydb::StatusIds_StatusCode_SUCCESS) {
             Session = response.GetResponse().GetSessionId();
-            LOG_TRACE_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag << " session: " << Session);
+            LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag << " session: " << Session);
             PrepareTable(ctx);
         } else {
             StopWithError(ctx, "failed to create session: " + ev->Get()->ToString());
@@ -303,9 +303,6 @@ public:
         // i.e. shard which calculates stats, compacts, etc
 
         if (!Request.HasTableSetup() || Request.GetTableSetup().GetSkipWarmup()) {
-            LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
-                << " skipped warmup");
-
             State = EState::RunLoad;
             PrepareTable(ctx);
             return;
@@ -328,15 +325,9 @@ public:
         case NKikimrDataShardLoad::TEvYCSBTestLoadRequest::CommandCase::kReadIteratorStart:
             cmd.SetRowCount(Request.GetReadIteratorStart().GetRowCount());
             break;
-        case NKikimrDataShardLoad::TEvYCSBTestLoadRequest::CommandCase::kReadKqpStart:
-            cmd.SetRowCount(Request.GetReadKqpStart().GetRowCount());
-            break;
-        default: {
-            LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
-                << " skipped warmup");
+        default:
             State = EState::RunLoad;
             return PrepareTable(ctx);
-        }
         }
 
         const auto& target = Request.GetTargetShard();
@@ -404,14 +395,6 @@ public:
                 counters,
                 TSubLoadId(Tag, ctx.SelfID, ++LastTag)));
             break;
-        case NKikimrDataShardLoad::TEvYCSBTestLoadRequest::CommandCase::kReadKqpStart:
-            actor.reset(CreateKqpSelectActor(
-                Request.GetReadKqpStart(),
-                Request.GetTargetShard(),
-                ctx.SelfID,
-                counters,
-                TSubLoadId(Tag, ctx.SelfID, ++LastTag)));
-            break;
         default: {
             TStringStream ss;
             ss << "TLoad: unexpected command case# " << Request.Command_case()
@@ -443,7 +426,7 @@ public:
             return PrepareTable(ctx);
         }
 
-        LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
             << " received finished from actor# " << ev->Sender << " with tag# " << record.GetTag());
 
         FinishedTests.push_back({record.GetTag(), record.GetErrorReason(), TAppData::TimeProvider->Now(), record.GetReport()});
@@ -461,15 +444,11 @@ public:
         ui64 oks = 0;
         ui64 errors = 0;
         ui64 subtestCount = 0;
-        ui64 actualDurationMs = 0; // i.e. time for RPS calculation
         for (const auto& test: FinishedTests) {
             oks += test.Report.GetOperationsOK();
             errors += test.Report.GetOperationsError();
             subtestCount += test.Report.GetSubtestCount();
-            actualDurationMs += test.Report.GetDurationMs();
         }
-
-        size_t rps = oks * 1000 / actualDurationMs ? actualDurationMs : 1;
 
         TIntrusivePtr<TEvLoad::TLoadReport> report(new TEvLoad::TLoadReport());
         report->Duration = duration;
@@ -479,49 +458,11 @@ public:
         value["oks"] = oks;
         value["errors"] = errors;
         value["subtests"] = subtestCount;
-        value["rps"] = rps;
-
-        TString configString;
-        google::protobuf::TextFormat::PrintToString(Request, &configString);
-
-#define PARAM(NAME, VALUE) \
-    TABLER() { \
-        TABLED() { str << NAME; } \
-        TABLED() { str << VALUE; } \
-    }
-
-        TStringStream str;
-        HTML(str) {
-            TABLE_CLASS("table table-condensed") {
-                TABLEHEAD() {
-                    TABLER() {
-                        TABLEH() { str << "Parameter"; }
-                        TABLEH() { str << "Value"; }
-                    }
-                }
-                TABLEBODY() {
-                    PARAM("Elapsed time total", duration.Seconds() << "s");
-                    PARAM("Elapsed RPS time (all actors)", TDuration::MilliSeconds(actualDurationMs).Seconds() << "s");
-                    PARAM("RPS", rps);
-                    PARAM("OKs", oks);
-                    PARAM("Errors", errors);
-                    PARAM("Finished subactors", FinishedTests.size())
-                }
-            }
-            DIV() {
-                str << configString;
-            }
-        }
-
-#undef PARAM
 
         auto finishEv = std::make_unique<TEvLoad::TEvLoadTestFinished>(Tag, report);
         finishEv->JsonResult = std::move(value);
-        finishEv->LastHtmlPage = str.Str();
-
         ctx.Send(Parent, finishEv.release());
-
-        Stop(ctx);
+        Die(ctx);
     }
 
     void Handle(NMon::TEvHttpInfo::TPtr& ev, const TActorContext& ctx) {
@@ -592,13 +533,13 @@ public:
     }
 
     void HandlePoison(const TActorContext& ctx) {
-        LOG_INFO_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
+        LOG_DEBUG_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
             << " actor recieved PoisonPill, going to die with subactorsCount# " << LoadActors.size());
         Stop(ctx);
     }
 
     void StopWithError(const TActorContext& ctx, const TString& reason) {
-        LOG_ERROR_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
+        LOG_WARN_S(ctx, NKikimrServices::DS_LOAD_TEST, "TLoad# " << Tag
             << " stopped with error: " << reason << ", killing subactorsCount# " << LoadActors.size());
 
         ctx.Send(Parent, new TEvDataShardLoad::TEvTestLoadFinished(Tag, reason));

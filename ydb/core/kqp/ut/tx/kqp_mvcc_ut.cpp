@@ -23,7 +23,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         auto session2 = db.CreateSession().GetValueSync().GetSession();
 
         auto result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u;
         )"), TTxControl::BeginTx(TTxSettings::SerializableRW())).ExtractValueSync();
 
         UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
@@ -50,10 +50,10 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
             if (result.GetStatus() == EStatus::SUCCESS)
                 continue;
 
-            if (settings.AppConfig.GetTableServiceConfig().GetEnableKqpDataQuerySourceRead() && false) {
+            if (settings.AppConfig.GetTableServiceConfig().GetEnableKqpDataQuerySourceRead()) {
                 UNIT_ASSERT_C(HasIssue(result.GetIssues(), NYql::TIssuesIds::DEFAULT_ERROR,
                     [](const NYql::TIssue& issue){
-                        return issue.GetMessage().Contains("has no snapshot at");
+                        return issue.GetMessage().Contains("bellow low watermark");
                     }), result.GetIssues().ToString());
 
                 UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::ABORTED);
@@ -88,7 +88,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         auto session2 = db.CreateSession().GetValueSync().GetSession();
 
         auto result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u;
         )"), TTxControl::BeginTx(TTxSettings::SerializableRW())).ExtractValueSync();
 
         auto tx = result.GetTransaction();
@@ -124,7 +124,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         ])", FormatResultSetYson(result.GetResultSet(0)));
 
         result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 2u OR Key = 4000000002u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 2u OR Key = 4000000002u;
         )"), TTxControl::Tx(*tx).CommitTx()).ExtractValueSync();
 
         UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
@@ -207,7 +207,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         auto session2 = db.CreateSession().GetValueSync().GetSession();
 
         auto result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u;
         )"), TTxControl::BeginTx(TTxSettings::SerializableRW())).ExtractValueSync();
 
         auto tx = result.GetTransaction();
@@ -244,7 +244,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         auto session2 = db.CreateSession().GetValueSync().GetSession();
 
         auto result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u;
         )"), TTxControl::BeginTx(TTxSettings::SerializableRW())).ExtractValueSync();
 
         auto tx = result.GetTransaction();
@@ -292,7 +292,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         auto session2 = db.CreateSession().GetValueSync().GetSession();
 
         auto result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 1u OR Key = 4000000001u;
         )"), TTxControl::BeginTx(TTxSettings::SerializableRW())).ExtractValueSync();
 
         auto tx = result.GetTransaction();
@@ -310,7 +310,7 @@ Y_UNIT_TEST_SUITE(KqpSnapshotRead) {
         UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
 
         result = session1.ExecuteDataQuery(Q_(R"(
-            SELECT * FROM `/Root/TwoShard` WHERE Key = 2u OR Key = 4000000002u ORDER BY Key;
+            SELECT * FROM `/Root/TwoShard` WHERE Key = 2u OR Key = 4000000002u;
         )"), TTxControl::Tx(*tx)).ExtractValueSync();
 
         UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());

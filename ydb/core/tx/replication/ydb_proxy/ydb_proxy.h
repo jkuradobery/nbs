@@ -2,7 +2,6 @@
 
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
-#include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 
 #include <ydb/core/base/defs.h>
 #include <ydb/core/base/events.h>
@@ -11,7 +10,8 @@ namespace NKikimrReplication {
     class TStaticCredentials;
 }
 
-namespace NKikimr::NReplication {
+namespace NKikimr {
+namespace NReplication {
 
 #pragma push_macro("RemoveDirectory")
 #undef RemoveDirectory
@@ -41,15 +41,6 @@ struct TEvYdbProxy {
         EV_REQUEST_RESPONSE(RenameTables),
         EV_REQUEST_RESPONSE(DescribeTable),
 
-        EvTopic = EvBegin + 2 * 100,
-        EV_REQUEST_RESPONSE(CreateTopic),
-        EV_REQUEST_RESPONSE(AlterTopic),
-        EV_REQUEST_RESPONSE(DropTopic),
-        EV_REQUEST_RESPONSE(DescribeTopic),
-        EV_REQUEST_RESPONSE(DescribeConsumer),
-        EV_REQUEST_RESPONSE(CreateTopicReader),
-        EV_REQUEST_RESPONSE(ReadTopic),
-
         EvEnd,
     };
 
@@ -75,11 +66,6 @@ struct TEvYdbProxy {
         }
 
         using TBase = TGenericRequest<TDerived, EventType, Args...>;
-    };
-
-    template <typename TDerived, ui32 EventType>
-    struct TGenericRequest<TDerived, EventType, void>: public TEventLocal<TDerived, EventType> {
-        using TBase = TGenericRequest<TDerived, EventType, void>;
     };
 
     template <typename TDerived, ui32 EventType, typename T>
@@ -127,14 +113,6 @@ struct TEvYdbProxy {
     DEFINE_GENERIC_REQUEST_RESPONSE(CopyTables, NYdb::TStatus, TVector<NYdb::NTable::TCopyItem>, NYdb::NTable::TCopyTablesSettings);
     DEFINE_GENERIC_REQUEST_RESPONSE(RenameTables, NYdb::TStatus, TVector<NYdb::NTable::TRenameItem>, NYdb::NTable::TRenameTablesSettings);
     DEFINE_GENERIC_REQUEST_RESPONSE(DescribeTable, NYdb::NTable::TDescribeTableResult, TString, NYdb::NTable::TDescribeTableSettings);
-    // Topic
-    DEFINE_GENERIC_REQUEST_RESPONSE(CreateTopic, NYdb::TStatus, TString, NYdb::NTopic::TCreateTopicSettings);
-    DEFINE_GENERIC_REQUEST_RESPONSE(AlterTopic, NYdb::TStatus, TString, NYdb::NTopic::TAlterTopicSettings);
-    DEFINE_GENERIC_REQUEST_RESPONSE(DropTopic, NYdb::TStatus, TString, NYdb::NTopic::TDropTopicSettings);
-    DEFINE_GENERIC_REQUEST_RESPONSE(DescribeTopic, NYdb::NTopic::TDescribeTopicResult, TString, NYdb::NTopic::TDescribeTopicSettings);
-    DEFINE_GENERIC_REQUEST_RESPONSE(DescribeConsumer, NYdb::NTopic::TDescribeConsumerResult, TString, TString, NYdb::NTopic::TDescribeConsumerSettings);
-    DEFINE_GENERIC_REQUEST_RESPONSE(CreateTopicReader, TActorId, NYdb::NTopic::TReadSessionSettings);
-    DEFINE_GENERIC_REQUEST_RESPONSE(ReadTopic, NYdb::NTopic::TReadSessionEvent::TEvent, void);
 
     #undef DEFINE_GENERIC_REQUEST_RESPONSE
     #undef DEFINE_GENERIC_RESPONSE
@@ -149,4 +127,5 @@ IActor* CreateYdbProxy(const TString& endpoint, const TString& database, const T
 IActor* CreateYdbProxy(const TString& endpoint, const TString& database,
     const NKikimrReplication::TStaticCredentials& credentials);
 
-}
+} // NReplication
+} // NKikimr

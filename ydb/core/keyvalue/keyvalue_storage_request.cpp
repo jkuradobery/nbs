@@ -1,6 +1,6 @@
 #include "keyvalue_flat_impl.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <ydb/public/lib/base/msgbus.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/hive.h>
@@ -220,11 +220,11 @@ public:
     }
 
     void Handle(TEvBlobStorage::TEvGetResult::TPtr &ev, const TActorContext &ctx) {
-        Y_ABORT_UNLESS(!InFlightBatchByCookie.empty());
+        Y_VERIFY(!InFlightBatchByCookie.empty());
 
         // Find the corresponding request (as replies come in random order)
         auto foundIt = InFlightBatchByCookie.find(ev->Cookie);
-        Y_ABORT_UNLESS(foundIt != InFlightBatchByCookie.end(), "Cookie# %" PRIu64 " not found!", ev->Cookie);
+        Y_VERIFY(foundIt != InFlightBatchByCookie.end(), "Cookie# %" PRIu64 " not found!", ev->Cookie);
         TInFlightBatch &request = foundIt->second;
 
         InFlightQueries -= request.ReadQueue.size();
@@ -233,7 +233,7 @@ public:
         IntermediateResults->Stat.GetLatencies.push_back(durationMs);
 
         auto resetReadItems = [&](NKikimrProto::EReplyStatus status) {
-            Y_ABORT_UNLESS(status != NKikimrProto::UNKNOWN);
+            Y_VERIFY(status != NKikimrProto::UNKNOWN);
             for (const auto& item : request.ReadQueue) {
                 auto& readItem = *item.ReadItem;
                 readItem.Status = status;
@@ -276,20 +276,23 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(ev->Get()->ResponseSz == request.ReadQueue.size());
+        Y_VERIFY(ev->Get()->ResponseSz == request.ReadQueue.size());
         auto groupId = ev->Get()->GroupId;
         decltype(request.ReadQueue)::iterator it = request.ReadQueue.begin();
         for (ui32 i = 0, num = ev->Get()->ResponseSz; i < num; ++i, ++it) {
-            auto& response = ev->Get()->Responses[i];
+            const auto& response = ev->Get()->Responses[i];
             auto& read = *it->Read;
             auto& readItem = *it->ReadItem;
 
             if (response.Status == NKikimrProto::OK) {
-                Y_ABORT_UNLESS(response.Buffer.size() == readItem.BlobSize);
-                Y_ABORT_UNLESS(readItem.ValueOffset + readItem.BlobSize <= read.ValueSize);
+                if (read.Value.size() != read.ValueSize) {
+                    read.Value.resize(read.ValueSize);
+                }
+                Y_VERIFY(response.Buffer.size() == readItem.BlobSize);
+                Y_VERIFY(readItem.ValueOffset + readItem.BlobSize <= read.ValueSize);
+                memcpy(const_cast<char *>(read.Value.data()) + readItem.ValueOffset, response.Buffer.data(), response.Buffer.size());
                 IntermediateResults->Stat.GroupReadBytes[std::make_pair(response.Id.Channel(), groupId)] += response.Buffer.size();
                 IntermediateResults->Stat.GroupReadIops[std::make_pair(response.Id.Channel(), groupId)] += 1; // FIXME: count distinct blobs?
-                read.Value.Write(readItem.ValueOffset, std::move(response.Buffer));
             } else {
                 TStringStream err;
                 if (read.Message.size()) {
@@ -303,7 +306,7 @@ public:
                 read.Message = err.Str();
             }
 
-            Y_ABORT_UNLESS(response.Status != NKikimrProto::UNKNOWN);
+            Y_VERIFY(response.Status != NKikimrProto::UNKNOWN);
             readItem.Status = response.Status;
             readItem.InFlight = false;
         }
@@ -482,7 +485,7 @@ public:
         ctx.Send(keyValueActorId, new TEvKeyValue::TEvNotify(
             IntermediateResults->RequestUid,
             IntermediateResults->CreatedAtGeneration, IntermediateResults->CreatedAtStep,
-            IntermediateResults->Stat, status, std::move(IntermediateResults->RefCountsIncr)));
+            IntermediateResults->Stat, status));
         Die(ctx);
     }
 
@@ -502,7 +505,7 @@ public:
         bool isHandleClassSet = false;
         for (it = ReadItems.begin(); it != ReadItems.end(); ++it) {
             auto& readItem = *it->ReadItem;
-            Y_ABORT_UNLESS(!readItem.InFlight && readItem.Status == NKikimrProto::UNKNOWN);
+            Y_VERIFY(!readItem.InFlight && readItem.Status == NKikimrProto::UNKNOWN);
 
             const TLogoBlobID& id = readItem.LogoBlobId;
             bool isSameChannel = (request.ReadQueue.empty() || id.Channel() == prevId.Channel());
@@ -511,7 +514,7 @@ public:
                 continue;
             }
             const ui32 group = TabletInfo->GroupFor(id.Channel(), id.Generation());
-            Y_ABORT_UNLESS(group != Max<ui32>(), "ReadItem Blob# %s is mapped to an invalid group (-1)!",
+            Y_VERIFY(group != Max<ui32>(), "ReadItem Blob# %s is mapped to an invalid group (-1)!",
                     id.ToString().c_str());
             bool isSameGroup = (prevGroup == group || prevGroup == Max<ui32>());
             if (!isSameGroup) {
@@ -568,10 +571,10 @@ public:
             ++queryIdx;
 
             const ui32 group = TabletInfo->GroupFor(readItem.LogoBlobId.Channel(), readItem.LogoBlobId.Generation());
-            Y_ABORT_UNLESS(group != Max<ui32>(), "Get Blob# %s is mapped to an invalid group (-1)!",
+            Y_VERIFY(group != Max<ui32>(), "Get Blob# %s is mapped to an invalid group (-1)!",
                     readItem.LogoBlobId.ToString().c_str());
             if (prevGroup != Max<ui32>()) {
-                Y_ABORT_UNLESS(prevGroup == group);
+                Y_VERIFY(prevGroup == group);
             } else {
                 prevGroup = group;
             }
@@ -584,7 +587,7 @@ public:
         ++NextInFlightBatchCookie;
         InFlightBatchByCookie[cookie] = std::move(request);
 
-        Y_ABORT_UNLESS(queryIdx == readQueryCount);
+        Y_VERIFY(queryIdx == readQueryCount);
 
         auto ev = std::make_unique<TEvBlobStorage::TEvGet>(readQueries, readQueryCount, IntermediateResults->Deadline, handleClass, false);
         ev->ReaderTabletData = {TabletInfo->TabletID, TabletGeneration};
@@ -596,9 +599,12 @@ public:
         for (ui64 i = 0; i < IntermediateResults->GetStatuses.size(); ++i) {
             auto &getStatus = IntermediateResults->GetStatuses[i];
             if (getStatus.Status != NKikimrProto::OK) {
-                Y_ABORT_UNLESS(getStatus.Status == NKikimrProto::UNKNOWN);
+                Y_VERIFY(getStatus.Status == NKikimrProto::UNKNOWN);
+                const ui32 groupId = TabletInfo->GroupFor(getStatus.LogoBlobId.Channel(), getStatus.LogoBlobId.Generation());
+                Y_VERIFY(groupId != Max<ui32>(), "GetStatus Blob# %s is mapped to an invalid group (-1)!",
+                        getStatus.LogoBlobId.ToString().c_str());
                 SendToBSProxy(
-                        ctx, getStatus.GroupId,
+                        ctx, groupId,
                         new TEvBlobStorage::TEvStatus(IntermediateResults->Deadline), i);
                 ++GetStatusRequestsSent;
             }
@@ -627,21 +633,17 @@ public:
             using Type = std::decay_t<decltype(request)>;
             if constexpr (std::is_same_v<Type, TIntermediate::TWrite>) {
                 if (request.Status != NKikimrProto::SCHEDULED) {
-                    Y_ABORT_UNLESS(request.Status == NKikimrProto::UNKNOWN);
+                    Y_VERIFY(request.Status == NKikimrProto::UNKNOWN);
 
-                    const TRope& data = request.Data;
-                    auto iter = data.begin();
-
+                    ui64 offset = 0;
                     for (const TLogoBlobID& logoBlobId : request.LogoBlobIds) {
-                        const auto begin = iter;
-                        iter += logoBlobId.BlobSize();
                         THolder<TEvBlobStorage::TEvPut> put(
                             new TEvBlobStorage::TEvPut(
-                                logoBlobId, TRcBuf(TRope(begin, iter)),
+                                logoBlobId, request.Data.substr(offset, logoBlobId.BlobSize()),
                                 IntermediateResults->Deadline, request.HandleClass,
                                 request.Tactic));
                         const ui32 groupId = TabletInfo->GroupFor(logoBlobId.Channel(), logoBlobId.Generation());
-                        Y_ABORT_UNLESS(groupId != Max<ui32>(), "Put Blob# %s is mapped to an invalid group (-1)!",
+                        Y_VERIFY(groupId != Max<ui32>(), "Put Blob# %s is mapped to an invalid group (-1)!",
                                 logoBlobId.ToString().c_str());
                         LOG_DEBUG_S(ctx, NKikimrServices::KEYVALUE, "KeyValue# " << TabletInfo->TabletID
                                 << " Send TEvPut# " << put->ToString() << " to groupId# " << groupId
@@ -650,6 +652,7 @@ public:
                         SendPutToGroup(ctx, groupId, TabletInfo.Get(), std::move(put), i);
 
                         ++WriteRequestsSent;
+                        offset += logoBlobId.BlobSize();
                     }
                 }
             }
@@ -657,7 +660,7 @@ public:
 
         for (ui64 i : IntermediateResults->WriteIndices) {
             auto &cmd = IntermediateResults->Commands[i];
-            Y_ABORT_UNLESS(std::holds_alternative<TIntermediate::TWrite>(cmd));
+            Y_VERIFY(std::holds_alternative<TIntermediate::TWrite>(cmd));
             auto& write = std::get<TIntermediate::TWrite>(cmd);
             sendWrite(i, write);
         }

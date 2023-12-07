@@ -61,11 +61,6 @@ namespace NTest {
             {
                 return Token == seen.Token && Ref == seen.Ref;
             }
-            
-            bool operator<(const TSeen &seen) const noexcept
-            {
-                return Token < seen.Token || Token == seen.Token && Ref < seen.Ref;
-            }
 
             const void *Token = nullptr;
             ui64 Ref = Max<ui64>();
@@ -94,7 +89,7 @@ namespace NTest {
 
         TResult Locate(const TPart *part, ui64 ref, ELargeObj lob) noexcept override
         {
-            if (ShouldPass((const void*)part->Large.Get(), ref, false)) {
+            if (ShouldPass((const void*)part->Large.Get(), ref)) {
                 return TTestEnv::Locate(part, ref, lob);
             } else {
                 return { true, nullptr };
@@ -103,46 +98,29 @@ namespace NTest {
 
         const TSharedData* TryGetPage(const TPart* part, TPageId ref, TGroupId groupId) override
         {
-            auto pass = ShouldPass((const void*)part, ref | (ui64(groupId.Raw()) << 32), 
-                part->GetPageType(ref, groupId) == EPage::Index || part->GetPageType(ref, groupId) == EPage::BTreeIndex);
+            auto pass = ShouldPass((const void*)part, ref | (ui64(groupId.Raw()) << 32));
 
             return pass ? TTestEnv::TryGetPage(part, ref, groupId) : nullptr;
         }
 
-        bool ShouldPass(const void *token, ui64 id, bool isIndex)
+        bool ShouldPass(const void *token, ui64 id)
         {
-            const TSeen seen(token, id);
-            const auto pass = IsRecent(seen, isIndex) || AmILucky();
+            const auto pass = IsRecent({ token, id }) || AmILucky();
 
             Touches++, Success += pass ? 1 : 0;
 
             if (!pass) {
-                if (isIndex) {
-                    // allow to pass on index page next ttl times
-                    IndexTraceTtl[seen] = Rnd.Uniform(5, 10);
-                } else {
-                    Offset = (Offset + 1) % Trace.size();
-                    Trace[Offset] = seen;
-                }
+                Offset = (Offset + 1) % Trace.size();
+
+                Trace[Offset] = { token, id };
             }
 
             return pass;
         }
 
-        bool IsRecent(TSeen seen, bool isIndex) noexcept
+        bool IsRecent(TSeen seen) const noexcept
         {
-            if (isIndex) {
-                auto it = IndexTraceTtl.find(seen);
-                if (it == IndexTraceTtl.end()) {
-                    return false;
-                }
-                if (it->second-- <= 1) {
-                    IndexTraceTtl.erase(it);
-                }
-                return true;
-            } else {
-                return std::find(Trace.begin(), Trace.end(), seen) != Trace.end();
-            }
+            return std::find(Trace.begin(), Trace.end(), seen) != Trace.end();
         }
 
         bool AmILucky() noexcept
@@ -155,7 +133,6 @@ namespace NTest {
         ui64 Touches = 0;
         ui64 Success = 0;
         TVector<TSeen> Trace;
-        TMap<TSeen, ui64> IndexTraceTtl;
         ui32 Offset = Max<ui32>();
     };
 
@@ -187,13 +164,13 @@ namespace NTest {
 
                 auto got = PageLoadingLogic->Handle(this, page, lower);
 
-                Y_ABORT_UNLESS((Grow = got.Grow) || Fetch || got.Page);
+                Y_VERIFY((Grow = got.Grow) || Fetch || got.Page);
 
                 return { got.Need, got.Page };
             }
 
         private:
-            ui64 AddToQueue(TPageId pageId, EPage) noexcept override
+            ui64 AddToQueue(TPageId pageId, ui16 /* type */) noexcept override
             {
                 Fetch.push_back(pageId);
 
@@ -254,14 +231,10 @@ namespace NTest {
         {
             auto* partStore = CheckedCast<const TPartStore*>(part);
 
-            Y_ABORT_UNLESS(groupId.Index < partStore->Store->GetGroupCount());
+            Y_VERIFY(groupId.Index < partStore->Store->GetGroupCount());
 
-            if (part->GetPageType(pageId, groupId) == EPage::Index || part->GetPageType(pageId, groupId) == EPage::BTreeIndex) {
-                return partStore->Store->GetPage(groupId.Index, pageId);
-            } else {
-                ui32 room = (groupId.Historic ? partStore->Store->GetRoomCount() : 0) + groupId.Index;
-                return Get(part, room).DoLoad(pageId, AheadLo, AheadHi).Page;
-            }
+            ui32 room = (groupId.Historic ? partStore->Store->GetRoomCount() : 0) + groupId.Index;
+            return Get(part, room).DoLoad(pageId, AheadLo, AheadHi).Page;
         }
 
     private:
@@ -271,28 +244,26 @@ namespace NTest {
 
             auto& slots = Parts[part];
             if (slots.empty()) {
-                slots.reserve(partStore->Store->GetRoomCount() + part->HistoricGroupsCount);
+                slots.reserve(partStore->Store->GetRoomCount() + part->HistoricIndexes.size());
                 for (ui32 room : xrange(partStore->Store->GetRoomCount())) {
                     if (room < partStore->Store->GetGroupCount()) {
                         NPage::TGroupId groupId(room);
-                        auto *cache = new NFwd::TCache(part, this, groupId);
-                        slots.push_back(Settle(partStore, room, cache));
+                        slots.push_back(Settle(partStore, room, new NFwd::TCache(partStore->GetGroupIndex(groupId))));
                     } else if (room == partStore->Store->GetOuterRoom()) {
                         slots.push_back(Settle(partStore, room, MakeOuter(partStore)));
                     } else if (room == partStore->Store->GetExternRoom()) {
                         slots.push_back(Settle(partStore, room, MakeExtern(partStore)));
                     } else {
-                        Y_ABORT("Don't know how to work with room %" PRIu32, room);
+                        Y_FAIL("Don't know how to work with room %" PRIu32, room);
                     }
                 }
-                for (ui32 group : xrange(part->HistoricGroupsCount)) {
+                for (ui32 group : xrange(part->HistoricIndexes.size())) {
                     NPage::TGroupId groupId(group, true);
-                    auto *cache = new NFwd::TCache(part, this, groupId);
-                    slots.push_back(Settle(partStore, group, cache));
+                    slots.push_back(Settle(partStore, group, new NFwd::TCache(partStore->GetGroupIndex(groupId))));
                 }
             }
 
-            Y_ABORT_UNLESS(room < slots.size());
+            Y_VERIFY(room < slots.size());
 
             return Queues.at(slots[room]);
         }
@@ -311,7 +282,7 @@ namespace NTest {
         NFwd::IPageLoadingLogic* MakeExtern(const TPartStore *part) const noexcept
         {
             if (auto &large = part->Large) {
-                Y_ABORT_UNLESS(part->Blobs, "Part has frames but not blobs");
+                Y_VERIFY(part->Blobs, "Part has frames but not blobs");
 
                 TVector<ui32> edges(large->Stats().Tags.size(), Edge);
 

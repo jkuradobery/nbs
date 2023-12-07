@@ -99,7 +99,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageHullCompactDeferredQueueTest) {
             for (ui32 i = 0; i < numDiskParts; ++i) {
                 const ui32 mask = masks[i];
 
-                Y_ABORT_UNLESS(mask);
+                Y_VERIFY(mask);
 
                 TDiskBlobMerger m;
                 for (ui8 i = 0; i < 6; ++i) {
@@ -112,7 +112,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageHullCompactDeferredQueueTest) {
                 }
 
                 TRope buf = m.CreateDiskBlob(arena);
-                Y_ABORT_UNLESS(buf);
+                Y_VERIFY(buf);
                 item.DiskData.emplace_back(GetResMapId(buf), m.GetDiskBlob().GetParts());
 
                 wholeMask |= mask;

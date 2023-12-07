@@ -4,7 +4,7 @@
 
 #include <ydb/core/base/path.h>
 #include <ydb/core/grpc_services/rpc_scheme_base.h>
-#include <ydb/core/grpc_services/rpc_common/rpc_common.h>
+#include <ydb/core/grpc_services/rpc_common.h>
 #include <ydb/core/keyvalue/keyvalue_events.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/mind/local.h>
@@ -384,7 +384,7 @@ public:
     }
 
     STFUNC(StateFunc) {
-        return TBase::StateWork(ev);
+        return TBase::StateWork(ev, ctx);
     }
 };
 
@@ -427,7 +427,7 @@ public:
     }
 
     STFUNC(StateFunc) {
-        return TBase::StateWork(ev);
+        return TBase::StateWork(ev, ctx);
     }
 };
 
@@ -480,7 +480,7 @@ public:
     }
 
     STFUNC(StateFunc) {
-        return TBase::StateWork(ev);
+        return TBase::StateWork(ev, ctx);
     }
 };
 
@@ -492,7 +492,7 @@ protected:
         Ydb::StatusIds::StatusCode status = Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
         NYql::TIssues issues;
         if (!self->ValidateRequest(status, issues)) {
-            self->Reply(status, issues, self->ActorContext());
+            self->Reply(status, issues, TActivationContext::AsActorContext());
             return;
         }
         if (const auto& userToken = self->Request_->GetSerializedToken()) {
@@ -521,7 +521,7 @@ protected:
         TEvTxProxySchemeCache::TEvNavigateKeySetResult* res = ev->Get();
         NSchemeCache::TSchemeCacheNavigate *request = res->Request.Get();
 
-        auto ctx = self->ActorContext();
+        auto ctx = TActivationContext::AsActorContext();
 
         if (res->Request->ResultSet.size() != 1) {
             self->Reply(StatusIds::INTERNAL_ERROR, "Received an incorrect answer from SchemeCache.", NKikimrIssues::TIssuesIds::UNEXPECTED, ctx);
@@ -531,9 +531,6 @@ protected:
         switch (request->ResultSet[0].Status) {
         case NSchemeCache::TSchemeCacheNavigate::EStatus::Ok:
             break;
-        case NSchemeCache::TSchemeCacheNavigate::EStatus::AccessDenied:
-            self->Reply(StatusIds::UNAUTHORIZED, "Access denied.", NKikimrIssues::TIssuesIds::ACCESS_DENIED, ctx);
-            return false;
         case NSchemeCache::TSchemeCacheNavigate::EStatus::RootUnknown:
         case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown:
             self->Reply(StatusIds::SCHEME_ERROR, "Path isn't exist.", NKikimrIssues::TIssuesIds::PATH_NOT_EXIST, ctx);
@@ -574,7 +571,7 @@ protected:
                 << ", path# " << path
                 << ", access# " << NACLib::AccessRightsToString(access),
             NKikimrIssues::TIssuesIds::ACCESS_DENIED,
-            self->ActorContext());
+            TActivationContext::AsActorContext());
         return false;
     }
 
@@ -604,7 +601,7 @@ protected:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
         default:
-            return TBase::StateFuncBase(ev);
+            return TBase::StateFuncBase(ev, ctx);
         }
     }
 
@@ -654,7 +651,7 @@ protected:
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
             hFunc(TEvLocal::TEvEnumerateTabletsResult, Handle);
         default:
-            return TBase::StateFuncBase(ev);
+            return TBase::StateFuncBase(ev, ctx);
         }
     }
 
@@ -708,7 +705,7 @@ protected:
     void Handle(TEvLocal::TEvEnumerateTabletsResult::TPtr &ev) {
         const NKikimrLocal::TEvEnumerateTabletsResult &record = ev->Get()->Record;
         if (!record.HasStatus() || record.GetStatus() != NKikimrProto::OK) {
-            this->Reply(StatusIds::INTERNAL_ERROR, "Received an incorrect answer from Local.", NKikimrIssues::TIssuesIds::UNEXPECTED, this->ActorContext());
+            this->Reply(StatusIds::INTERNAL_ERROR, "Received an incorrect answer from Local.", NKikimrIssues::TIssuesIds::UNEXPECTED, TActivationContext::AsActorContext());
             return;
         }
 
@@ -771,7 +768,7 @@ protected:
             hFunc(TKVRequest::TResponse, Handle);
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
         default:
-            return TBase::StateFuncBase(ev);
+            return TBase::StateFuncBase(ev, ctx);
         }
     }
 
@@ -787,7 +784,7 @@ protected:
         const NKikimrSchemeOp::TSolomonVolumeDescription &desc = request->ResultSet[0].SolomonVolumeInfo->Description;
 
         if (rec.partition_id() >= desc.PartitionsSize()) {
-            this->Reply(StatusIds::SCHEME_ERROR, "The partition wasn't found. Partition ID was larger or equal partition count.", NKikimrIssues::TIssuesIds::DEFAULT_ERROR, this->ActorContext());
+            this->Reply(StatusIds::SCHEME_ERROR, "The partition wasn't found. Partition ID was larger or equal partition count.", NKikimrIssues::TIssuesIds::DEFAULT_ERROR, TActivationContext::AsActorContext());
             return;
         }
 
@@ -795,7 +792,7 @@ protected:
         if (const auto &partition = desc.GetPartitions(rec.partition_id()); partition.GetPartitionId() == partitionId) {
             KVTabletId = partition.GetTabletId();
         } else {
-            Y_DEBUG_ABORT_UNLESS(false);
+            Y_VERIFY_DEBUG(false);
             for (const NKikimrSchemeOp::TSolomonVolumeDescription::TPartition &partition : desc.GetPartitions()) {
                 if (partition.GetPartitionId() == partitionId)  {
                     KVTabletId = partition.GetTabletId();
@@ -805,7 +802,7 @@ protected:
         }
 
         if (!KVTabletId) {
-            this->Reply(StatusIds::INTERNAL_ERROR, "Partition wasn't found.", NKikimrIssues::TIssuesIds::DEFAULT_ERROR, this->ActorContext());
+            this->Reply(StatusIds::INTERNAL_ERROR, "Partition wasn't found.", NKikimrIssues::TIssuesIds::DEFAULT_ERROR, TActivationContext::AsActorContext());
             return;
         }
 
@@ -847,12 +844,12 @@ protected:
 
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr& ev) {
         if (ev->Get()->Status != NKikimrProto::OK) {
-            this->Reply(StatusIds::UNAVAILABLE, "Failed to connect to coordination node.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, this->ActorContext());
+            this->Reply(StatusIds::UNAVAILABLE, "Failed to connect to coordination node.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, TActivationContext::AsActorContext());
         }
     }
 
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr&) {
-        this->Reply(StatusIds::UNAVAILABLE, "Connection to coordination node was lost.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, this->ActorContext());
+        this->Reply(StatusIds::UNAVAILABLE, "Connection to coordination node was lost.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, TActivationContext::AsActorContext());
     }
 
     virtual bool ValidateRequest(Ydb::StatusIds::StatusCode& status, NYql::TIssues& issues) = 0;
@@ -938,7 +935,7 @@ public:
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
     bool ValidateRequest(Ydb::StatusIds::StatusCode& /*status*/, NYql::TIssues& /*issues*/) override {
@@ -960,7 +957,7 @@ public:
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
     bool ValidateRequest(Ydb::StatusIds::StatusCode& /*status*/, NYql::TIssues& /*issues*/) override {
@@ -982,7 +979,7 @@ public:
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
     bool ValidateRequest(Ydb::StatusIds::StatusCode& /*status*/, NYql::TIssues& /*issues*/) override {
@@ -1004,7 +1001,7 @@ public:
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
     bool ValidateRequest(Ydb::StatusIds::StatusCode& /*status*/, NYql::TIssues& /*issues*/) override {

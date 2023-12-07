@@ -3,94 +3,15 @@
 #include <ydb/core/blobstorage/crypto/secured_block.h>
 #include <ydb/core/blobstorage/pdisk/drivedata_serializer.h>
 #include <ydb/library/pdisk_io/file_params.h>
-#include <ydb/core/base/nameservice.h>
-
 
 using namespace NKikimr;
 using namespace NStorage;
 
-void TNodeWarden::RemoveDrivesWithBadSerialsAndReport(TVector<NPDisk::TDriveData>& drives, TStringStream& details) {
-    // Serial number's size definitely won't exceed this number of bytes.
-    size_t maxSerialSizeInBytes = 100;
-
-    auto isValidSerial = [maxSerialSizeInBytes](TString& serial) {
-        if (serial.Size() > maxSerialSizeInBytes) {
-            // Not sensible size.
-            return false;
-        }
-
-        // Check if serial number contains only ASCII characters.
-        for (size_t i = 0; i < serial.Size(); ++i) {
-            i8 c = serial[i];
-
-            if (c <= 0) {
-                // Encountered null terminator earlier than expected or non-ASCII character.
-                return false;
-            }
-
-            if (!isprint(c)) {
-                // Encountered non-printable character.
-                return false;
-            }
-        }
-
-        return true;
-    };
-
-    std::unordered_set<TString> drivePaths;
-
-    for (const auto& drive : drives) {
-        drivePaths.insert(drive.Path);
-    }
-
-    // Remove counters for drives that are no longer present.
-    for (auto countersIt = ByPathDriveCounters.begin(); countersIt != ByPathDriveCounters.end();) {
-        if (drivePaths.find(countersIt->first) == drivePaths.end()) {
-            countersIt = ByPathDriveCounters.erase(countersIt);
-        } else {
-            countersIt++;
-        }
-    }
-
-    // Prepare removal of drives with invalid serials.
-    auto toRemove = std::remove_if(drives.begin(), drives.end(), [&isValidSerial](auto& driveData) {
-        TString& serial = driveData.SerialNumber;
-
-        return !isValidSerial(serial);
-    });
-
-    // Add counters for every drive path.
-    for (auto it = drives.begin(); it != toRemove; ++it) {
-        TString& path = it->Path;
-        ByPathDriveCounters.try_emplace(path, AppData()->Counters, path);
-    }
-
-    // And for drives with invalid serials log serial and report to the monitoring.
-    for (auto it = toRemove; it != drives.end(); ++it) {
-        TString& serial = it->SerialNumber;
-        TString& path = it->Path;
-
-        auto [mapIt, _] = ByPathDriveCounters.try_emplace(path, AppData()->Counters, path);
-
-        // Cut string in case it exceeds max size.
-        size_t size = std::min(serial.Size(), maxSerialSizeInBytes);
-
-        // Encode in case it contains weird symbols.
-        TString encoded = Base64Encode(serial.substr(0, size));
-
-        // Output bad serial number in base64 encoding.
-        STLOG(PRI_WARN, BS_NODE, NW03, "Bad serial number", (Path, path), (SerialBase64, encoded.Quote()), (Details, details.Str()));
-        
-        mapIt->second.BadSerialsRead->Inc();
-    }
-
-    // Remove drives with invalid serials.
-    drives.erase(toRemove, drives.end());
-}
-
 TVector<NPDisk::TDriveData> TNodeWarden::ListLocalDrives() {
-    TStringStream details;
-    TVector<NPDisk::TDriveData> drives = ListDevicesWithPartlabel(details);
+    return {};
+
+#if 0
+    TVector<NPDisk::TDriveData> drives = ListDevicesWithPartlabel();
 
     try {
         TString raw = TFileInput(MockDevicesPath).ReadAll();
@@ -111,9 +32,8 @@ TVector<NPDisk::TDriveData> TNodeWarden::ListLocalDrives() {
         return lhs.Path < rhs.Path;
     });
 
-    RemoveDrivesWithBadSerialsAndReport(drives, details);
-
     return drives;
+#endif
 }
 
 void TNodeWarden::StartInvalidGroupProxy() {
@@ -174,7 +94,7 @@ void TNodeWarden::Bootstrap() {
     }
 
     // start replication broker
-    const auto& replBrokerConfig = Cfg->BlobStorageConfig.GetServiceSet().GetReplBrokerConfig();
+    const auto& replBrokerConfig = Cfg->ServiceSet.GetReplBrokerConfig();
 
     ui64 requestBytesPerSecond = 500000000; // 500 MB/s by default
     if (replBrokerConfig.HasTotalRequestBytesPerSecond()) {
@@ -194,33 +114,11 @@ void TNodeWarden::Bootstrap() {
     actorSystem->RegisterLocalService(MakeBlobStorageReplBrokerID(), Register(CreateReplBrokerActor(maxBytes)));
 
     // determine if we are running in 'mock' mode
-    EnableProxyMock = Cfg->BlobStorageConfig.GetServiceSet().GetEnableProxyMock();
-
-    // fill in a storage config
-    StorageConfig.MutableBlobStorageConfig()->CopyFrom(Cfg->BlobStorageConfig);
-    for (const auto& node : Cfg->NameserviceConfig.GetNode()) {
-        auto *r = StorageConfig.AddAllNodes();
-        r->SetHost(node.GetInterconnectHost());
-        r->SetPort(node.GetPort());
-        r->SetNodeId(node.GetNodeId());
-        if (node.HasLocation()) {
-            r->MutableLocation()->CopyFrom(node.GetLocation());
-        } else if (node.HasWalleLocation()) {
-            r->MutableLocation()->CopyFrom(node.GetWalleLocation());
-        }
-    }
-    StorageConfig.SetClusterUUID(Cfg->NameserviceConfig.GetClusterUUID());
+    EnableProxyMock = Cfg->ServiceSet.GetEnableProxyMock();
 
     // Start a statically configured set
-    if (Cfg->BlobStorageConfig.HasServiceSet()) {
-        const auto& serviceSet = Cfg->BlobStorageConfig.GetServiceSet();
-        if (serviceSet.GroupsSize()) {
-            ApplyServiceSet(Cfg->BlobStorageConfig.GetServiceSet(), true, false, false);
-        } else {
-            Groups.try_emplace(0); // group is gonna be configured soon by DistributedConfigKeeper
-        }
-        StartStaticProxies();
-    }
+    ApplyServiceSet(Cfg->ServiceSet, true, false, false);
+    StartStaticProxies();
     EstablishPipe();
 
     Send(GetNameserviceActorId(), new TEvInterconnect::TEvGetNode(LocalNodeId));
@@ -230,8 +128,6 @@ void TNodeWarden::Bootstrap() {
     }
 
     StartInvalidGroupProxy();
-
-    StartDistributedConfigKeeper();
 }
 
 void TNodeWarden::HandleReadCache() {
@@ -266,8 +162,8 @@ void TNodeWarden::HandleReadCache() {
                     return;
                 }
 
-                Y_ABORT_UNLESS(proto.HasInstanceId());
-                Y_ABORT_UNLESS(proto.HasAvailDomain() && proto.GetAvailDomain() == AvailDomainId);
+                Y_VERIFY(proto.HasInstanceId());
+                Y_VERIFY(proto.HasAvailDomain() && proto.GetAvailDomain() == AvailDomainId);
                 if (!InstanceId) {
                     InstanceId.emplace(proto.GetInstanceId());
                 }
@@ -291,7 +187,7 @@ void TNodeWarden::Handle(NPDisk::TEvSlayResult::TPtr ev) {
     const NPDisk::TEvSlayResult &msg = *ev->Get();
     const TVSlotId vslotId(LocalNodeId, msg.PDiskId, msg.VSlotId);
     const auto it = SlayInFlight.find(vslotId);
-    Y_DEBUG_ABORT_UNLESS(it != SlayInFlight.end());
+    Y_VERIFY_DEBUG(it != SlayInFlight.end());
     STLOG(PRI_INFO, BS_NODE, NW28, "Handle(NPDisk::TEvSlayResult)", (Msg, msg.ToString()),
         (ExpectedRound, it != SlayInFlight.end() ? std::make_optional(it->second) : std::nullopt));
     if (it == SlayInFlight.end() || it->second != msg.SlayOwnerRound) {
@@ -327,11 +223,11 @@ void TNodeWarden::Handle(NPDisk::TEvSlayResult::TPtr ev) {
             break;
 
         case NKikimrProto::RACE:
-            Y_ABORT("Unexpected# %s", msg.ToString().data());
+            Y_FAIL("Unexpected# %s", msg.ToString().data());
             break;
 
         default:
-            Y_ABORT("Unexpected status# %s", msg.ToString().data());
+            Y_FAIL("Unexpected status# %s", msg.ToString().data());
             break;
     };
 }
@@ -418,16 +314,16 @@ void TNodeWarden::Handle(TEvBlobStorage::TEvControllerUpdateDiskStatus::TPtr ev)
     auto differs = [](const auto& updated, const auto& current) {
         TString xUpdated, xCurrent;
         bool success = updated.SerializeToString(&xUpdated);
-        Y_ABORT_UNLESS(success);
+        Y_VERIFY(success);
         success = current.SerializeToString(&xCurrent);
-        Y_ABORT_UNLESS(success);
+        Y_VERIFY(success);
         return xUpdated != xCurrent;
     };
 
     auto& record = ev->Get()->Record;
 
     for (const NKikimrBlobStorage::TVDiskMetrics& m : record.GetVDisksMetrics()) {
-        Y_ABORT_UNLESS(m.HasVSlotId());
+        Y_VERIFY(m.HasVSlotId());
         const TVSlotId vslotId(m.GetVSlotId());
         if (const auto it = LocalVDisks.find(vslotId); it != LocalVDisks.end()) {
             TVDiskRecord& vdisk = it->second;
@@ -447,7 +343,7 @@ void TNodeWarden::Handle(TEvBlobStorage::TEvControllerUpdateDiskStatus::TPtr ev)
     }
 
     for (const NKikimrBlobStorage::TPDiskMetrics& m : record.GetPDisksMetrics()) {
-        Y_ABORT_UNLESS(m.HasPDiskId());
+        Y_VERIFY(m.HasPDiskId());
         if (const auto it = LocalPDisks.find({LocalNodeId, m.GetPDiskId()}); it != LocalPDisks.end()) {
             TPDiskRecord& pdisk = it->second;
             if (pdisk.PDiskMetrics) {
@@ -499,11 +395,11 @@ void TNodeWarden::SendDiskMetrics(bool reportMetrics) {
 
     if (reportMetrics) {
         for (auto& vdisk : std::exchange(VDisksWithUnreportedMetrics, {})) {
-            Y_ABORT_UNLESS(vdisk.VDiskMetrics);
+            Y_VERIFY(vdisk.VDiskMetrics);
             record.AddVDisksMetrics()->CopyFrom(*vdisk.VDiskMetrics);
         }
         for (auto& pdisk : std::exchange(PDisksWithUnreportedMetrics, {})) {
-            Y_ABORT_UNLESS(pdisk.PDiskMetrics);
+            Y_VERIFY(pdisk.PDiskMetrics);
             record.AddPDisksMetrics()->CopyFrom(*pdisk.PDiskMetrics);
         }
     }
@@ -519,11 +415,9 @@ void TNodeWarden::Handle(TEvStatusUpdate::TPtr ev) {
     STLOG(PRI_DEBUG, BS_NODE, NW47, "Handle(TEvStatusUpdate)");
     auto *msg = ev->Get();
     const TVSlotId vslotId(msg->NodeId, msg->PDiskId, msg->VSlotId);
-    if (const auto it = LocalVDisks.find(vslotId); it != LocalVDisks.end() && (it->second.Status != msg->Status ||
-            it->second.OnlyPhantomsRemain != msg->OnlyPhantomsRemain)) {
+    if (const auto it = LocalVDisks.find(vslotId); it != LocalVDisks.end() && it->second.Status != msg->Status) {
         auto& vdisk = it->second;
         vdisk.Status = msg->Status;
-        vdisk.OnlyPhantomsRemain = msg->OnlyPhantomsRemain;
         SendDiskMetrics(false);
 
         if (msg->Status == NKikimrBlobStorage::EVDiskStatus::READY && vdisk.WhiteboardVDiskId) {
@@ -538,10 +432,7 @@ void TNodeWarden::FillInVDiskStatus(google::protobuf::RepeatedPtrField<NKikimrBl
         const NKikimrBlobStorage::EVDiskStatus status = vdisk.RuntimeData
             ? vdisk.Status
             : NKikimrBlobStorage::EVDiskStatus::ERROR;
-
-        const bool onlyPhantomsRemain = status == NKikimrBlobStorage::EVDiskStatus::REPLICATING ? vdisk.OnlyPhantomsRemain : false;
-
-        if (initial || status != vdisk.ReportedVDiskStatus || onlyPhantomsRemain != vdisk.ReportedOnlyPhantomsRemain) {
+        if (initial || status != vdisk.ReportedVDiskStatus) {
             auto *item = pb->Add();
             VDiskIDFromVDiskID(vdisk.GetVDiskId(), item->MutableVDiskId());
             item->SetNodeId(vslotId.NodeId);
@@ -549,9 +440,7 @@ void TNodeWarden::FillInVDiskStatus(google::protobuf::RepeatedPtrField<NKikimrBl
             item->SetVSlotId(vslotId.VDiskSlotId);
             item->SetPDiskGuid(vdisk.Config.GetVDiskLocation().GetPDiskGuid());
             item->SetStatus(status);
-            item->SetOnlyPhantomsRemain(onlyPhantomsRemain);
             vdisk.ReportedVDiskStatus = status;
-            vdisk.ReportedOnlyPhantomsRemain = onlyPhantomsRemain;
         }
     }
 }
@@ -587,7 +476,7 @@ bool ObtainKey(TEncryptionKey *key, const NKikimrProto::TKeyRecord& record) {
     ui8 *keyBytes = 0;
     ui32 keySize = 0;
     key->Key.MutableKeyBytes(&keyBytes, &keySize);
-    Y_ABORT_UNLESS(keySize == 4 * sizeof(ui64));
+    Y_VERIFY(keySize == 4 * sizeof(ui64));
     ui64 *p = (ui64*)keyBytes;
 
     hasher.SetKey((const ui8*)pin.data(), pin.size());
@@ -621,55 +510,37 @@ bool NKikimr::ObtainTenantKey(TEncryptionKey *key, const NKikimrProto::TKeyConfi
     }
 }
 
-bool NKikimr::ObtainPDiskKey(NPDisk::TMainKey *mainKey, const NKikimrProto::TKeyConfig& keyConfig) {
-    Y_ABORT_UNLESS(mainKey);
-    *mainKey = NPDisk::TMainKey{};
-
+bool NKikimr::ObtainPDiskKey(TVector<TEncryptionKey> *keys, const NKikimrProto::TKeyConfig& keyConfig) {
     ui32 keysSize = keyConfig.KeysSize();
     if (!keysSize) {
         Cerr << "No Keys in PDiskKeyConfig! Encrypted pdisks will not start" << Endl;
-        mainKey->ErrorReason = "Empty PDiskKeyConfig";
-        mainKey->Keys = { NPDisk::YdbDefaultPDiskSequence };
-        mainKey->IsInitialized = true;
         return false;
     }
 
-    TVector<TEncryptionKey> keys(keysSize);
+    keys->resize(keysSize);
     for (ui32 i = 0; i < keysSize; ++i) {
         auto &record = keyConfig.GetKeys(i);
         if (record.GetId() == "0" && record.GetContainerPath() == "") {
             // use default pdisk key
-            keys[i].Id = "0";
-            keys[i].Version = record.GetVersion();
+            (*keys)[i].Id = "0";
+            (*keys)[i].Version = record.GetVersion();
 
             ui8 *keyBytes = 0;
             ui32 keySize = 0;
-            keys[i].Key.MutableKeyBytes(&keyBytes, &keySize);
+            (*keys)[i].Key.MutableKeyBytes(&keyBytes, &keySize);
 
             ui64* p = (ui64*)keyBytes;
             p[0] = NPDisk::YdbDefaultPDiskSequence;
         } else {
-            if (!ObtainKey(&keys[i], record)) {
-                mainKey->Keys = {};
-                mainKey->ErrorReason = "Cannot obtain key, ContainerPath# " + record.GetContainerPath();
-                mainKey->IsInitialized = true;
+            if (!ObtainKey(&(*keys)[i], record)) {
                 return false;
             }
-        }
+        } 
     }
 
-    std::sort(keys.begin(), keys.end(), [&](const TEncryptionKey& l, const TEncryptionKey& r) {
+    std::sort(keys->begin(), keys->end(), [&](const TEncryptionKey& l, const TEncryptionKey& r) {
         return l.Version < r.Version;
     });
-
-    for (ui32 i = 0; i < keys.size(); ++i) {
-        const ui8 *key;
-        ui32 keySize;
-        keys[i].Key.GetKeyBytes(&key, &keySize);
-        Y_DEBUG_ABORT_UNLESS(keySize == sizeof(ui64));
-        mainKey->Keys.push_back(*(ui64*)key);
-    }
-    mainKey->IsInitialized = true;
     return true;
 }
 

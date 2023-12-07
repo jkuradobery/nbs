@@ -2,7 +2,7 @@
 #include "cli_cmds.h"
 
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 #include <ydb/public/sdk/cpp/client/resources/ydb_resources.h>
 
 #include <ydb/public/api/grpc/ydb_operation_v1.grpc.pb.h>
@@ -122,7 +122,7 @@ template <typename TService, typename TRequest, typename TResponse,
 class TTenantClientGRpcCommand : public TTenantClientCommand {
 public:
     TRequest GRpcRequest;
-    NYdbGrpc::TGRpcClientConfig ClientConfig;
+    NGrpc::TGRpcClientConfig ClientConfig;
 
     TTenantClientGRpcCommand(const TString &name,
                              const std::initializer_list<TString> &aliases,
@@ -183,7 +183,7 @@ public:
             TTenantClientGRpcCommand::PrintResponse(response);
         } else {
             Ydb::Cms::ListDatabasesResult result;
-            Y_ABORT_UNLESS(response.result().UnpackTo(&result));
+            Y_VERIFY(response.result().UnpackTo(&result));
 
             Cout << "Databases:" << Endl;
             for (auto &path : result.paths())
@@ -211,7 +211,7 @@ public:
             TTenantClientGRpcCommand::PrintResponse(response);
         } else {
             Ydb::Cms::DescribeDatabaseOptionsResult result;
-            Y_ABORT_UNLESS(response.result().UnpackTo(&result));
+            Y_VERIFY(response.result().UnpackTo(&result));
 
             Cout << "Storage units" << Endl;
             for (auto &unit : result.storage_units()) {
@@ -267,7 +267,7 @@ public:
             TTenantClientGRpcCommand::PrintResponse(response);
         } else {
             Ydb::Cms::GetDatabaseStatusResult result;
-            Y_ABORT_UNLESS(response.result().UnpackTo(&result));
+            Y_VERIFY(response.result().UnpackTo(&result));
             // type -> <required, allocated>
             THashMap<TString, std::pair<ui64, ui64>> pools;
             // <type, dc> -> <required, allocated>

@@ -8,7 +8,7 @@ TSimpleException::TSimpleException(TString message)
     : Message_(std::move(message))
 { }
 
-const TString& TSimpleException::GetMessage() const
+const TString& TSimpleException::GetMesage() const
 {
     return Message_;
 }

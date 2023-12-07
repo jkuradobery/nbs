@@ -5,7 +5,6 @@
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 #include <ydb/public/sdk/cpp/client/ydb_params/params.h>
 #include <ydb/public/sdk/cpp/client/ydb_result/result.h>
-#include <ydb/public/sdk/cpp/client/ydb_retry/retry.h>
 #include <ydb/public/sdk/cpp/client/ydb_scheme/scheme.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/query_stats/stats.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/operation/operation.h>
@@ -30,24 +29,14 @@ class TableIndex;
 class TableIndexDescription;
 class ValueSinceUnixEpochModeSettings;
 
-} // namespace Table
-} // namespace Ydb
+}
+}
 
 namespace NYdb {
 
-namespace NRetry::Async {
-template <typename TClient, typename TStatusType>
-class TRetryContext;
-} // namespace NRetry::Async
-
-namespace NRetry::Sync {
-template <typename TClient, typename TStatusType>
-class TRetryContext;
-} // namespace NRetry::Sync
-
 namespace NScheme {
 struct TPermissions;
-} // namespace NScheme
+}
 
 namespace NTable {
 
@@ -101,15 +90,13 @@ struct TTableColumn {
     TString Name;
     TType Type;
     TString Family;
-    std::optional<bool> NotNull;
 
     TTableColumn() = default;
 
-    TTableColumn(TString name, TType type, TString family = TString(), std::optional<bool> notNull = std::nullopt)
+    TTableColumn(TString name, TType type, TString family = TString())
         : Name(std::move(name))
         , Type(std::move(type))
         , Family(std::move(family))
-        , NotNull(std::move(notNull))
     { }
 
     // Conversion from TColumn for API compatibility
@@ -185,12 +172,6 @@ private:
     ui64 SizeBytes = 0;
 };
 
-struct TRenameIndex {
-    TString SourceName_;
-    TString DestinationName_;
-    bool ReplaceDestination_ = false;
-};
-
 bool operator==(const TIndexDescription& lhs, const TIndexDescription& rhs);
 bool operator!=(const TIndexDescription& lhs, const TIndexDescription& rhs);
 
@@ -222,8 +203,6 @@ public:
 
     // Enable virtual timestamps
     TChangefeedDescription& WithVirtualTimestamps();
-    // Enable resolved timestamps
-    TChangefeedDescription& WithResolvedTimestamps(const TDuration& interval);
     // Customise retention period of underlying topic (24h by default).
     TChangefeedDescription& WithRetentionPeriod(const TDuration& value);
     // Initial scan will output the current state of the table first
@@ -232,7 +211,7 @@ public:
     TChangefeedDescription& AddAttribute(const TString& key, const TString& value);
     TChangefeedDescription& SetAttributes(const THashMap<TString, TString>& attrs);
     TChangefeedDescription& SetAttributes(THashMap<TString, TString>&& attrs);
-    // Value that will be emitted in the `awsRegion` field of the record in DynamoDBStreamsJson format
+    // Value that will be emitted in the `awsRegion` field of the record in DocumentTableJson format
     TChangefeedDescription& WithAwsRegion(const TString& value);
 
     const TString& GetName() const;
@@ -240,7 +219,6 @@ public:
     EChangefeedFormat GetFormat() const;
     EChangefeedState GetState() const;
     bool GetVirtualTimestamps() const;
-    const std::optional<TDuration>& GetResolvedTimestamps() const;
     bool GetInitialScan() const;
     const THashMap<TString, TString>& GetAttributes() const;
     const TString& GetAwsRegion() const;
@@ -262,7 +240,6 @@ private:
     EChangefeedFormat Format_;
     EChangefeedState State_ = EChangefeedState::Unknown;
     bool VirtualTimestamps_ = false;
-    std::optional<TDuration> ResolvedTimestamps_;
     std::optional<TDuration> RetentionPeriod_;
     bool InitialScan_ = false;
     THashMap<TString, TString> Attributes_;
@@ -465,11 +442,6 @@ private:
 struct TExplicitPartitions;
 struct TDescribeTableSettings;
 
-enum class EStoreType {
-    Row = 0,
-    Column = 1
-};
-
 //! Represents table description
 class TTableDescription {
     friend class TTableBuilder;
@@ -488,7 +460,6 @@ public:
     TVector<TChangefeedDescription> GetChangefeedDescriptions() const;
     TMaybe<TTtlSettings> GetTtlSettings() const;
     TMaybe<TString> GetTiering() const;
-    EStoreType GetStoreType() const;
 
     // Deprecated. Use GetEntry() of TDescribeTableResult instead
     const TString& GetOwner() const;
@@ -540,7 +511,7 @@ private:
     TTableDescription();
     explicit TTableDescription(const Ydb::Table::CreateTableRequest& request);
 
-    void AddColumn(const TString& name, const Ydb::Type& type, const TString& family, std::optional<bool> notNull);
+    void AddColumn(const TString& name, const Ydb::Type& type, const TString& family);
     void SetPrimaryKeyColumns(const TVector<TString>& primaryKeyColumns);
 
     // common
@@ -552,10 +523,6 @@ private:
     // async
     void AddAsyncSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns);
     void AddAsyncSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns);
-    // unique
-    void AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns);
-    void AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns);
-
     // default
     void AddSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns);
     void AddSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns);
@@ -574,7 +541,6 @@ private:
     void SetPartitioningSettings(const TPartitioningSettings& settings);
     void SetKeyBloomFilter(bool enabled);
     void SetReadReplicasSettings(TReadReplicasSettings::EMode mode, ui64 readReplicasCount);
-    void SetStoreType(EStoreType type);
     const Ydb::Table::DescribeTableResult& GetProto() const;
 
     class TImpl;
@@ -744,8 +710,6 @@ class TTableBuilder {
 public:
     TTableBuilder() = default;
 
-    TTableBuilder& SetStoreType(EStoreType type);
-
     TTableBuilder& AddNullableColumn(const TString& name, const EPrimitiveType& type, const TString& family = TString());
     TTableBuilder& AddNullableColumn(const TString& name, const TDecimalType& type, const TString& family = TString());
     TTableBuilder& AddNullableColumn(const TString& name, const TPgType& type, const TString& family = TString());
@@ -769,10 +733,6 @@ public:
     TTableBuilder& AddAsyncSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns);
     TTableBuilder& AddAsyncSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns);
     TTableBuilder& AddAsyncSecondaryIndex(const TString& indexName, const TString& indexColumn);
-
-    // unique
-    TTableBuilder& AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns);
-    TTableBuilder& AddUniqueSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns);
 
     // default
     TTableBuilder& AddSecondaryIndex(const TString& indexName, const TVector<TString>& indexColumns, const TVector<TString>& dataColumns);
@@ -879,8 +839,8 @@ class TDescribeTableResult;
 class TBeginTransactionResult;
 class TCommitTransactionResult;
 class TKeepAliveResult;
+class TSessionPoolImpl;
 class TBulkUpsertResult;
-class TReadRowsResult;
 class TScanQueryPartIterator;
 
 using TAsyncCreateSessionResult = NThreading::TFuture<TCreateSessionResult>;
@@ -893,15 +853,45 @@ using TAsyncCommitTransactionResult = NThreading::TFuture<TCommitTransactionResu
 using TAsyncTablePartIterator = NThreading::TFuture<TTablePartIterator>;
 using TAsyncKeepAliveResult = NThreading::TFuture<TKeepAliveResult>;
 using TAsyncBulkUpsertResult = NThreading::TFuture<TBulkUpsertResult>;
-using TAsyncReadRowsResult = NThreading::TFuture<TReadRowsResult>;
 using TAsyncScanQueryPartIterator = NThreading::TFuture<TScanQueryPartIterator>;
 
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TCreateSessionSettings : public TOperationRequestSettings<TCreateSessionSettings> {};
 
-using TBackoffSettings = NYdb::NRetry::TBackoffSettings;
-using TRetryOperationSettings = NYdb::NRetry::TRetryOperationSettings;
+struct TBackoffSettings {
+    using TSelf = TBackoffSettings;
+
+    FLUENT_SETTING_DEFAULT(TDuration, SlotDuration, TDuration::Seconds(1));
+    FLUENT_SETTING_DEFAULT(ui32, Ceiling, 6);
+    FLUENT_SETTING_DEFAULT(double, UncertainRatio, 0.5);
+};
+
+struct TRetryOperationSettings {
+    using TSelf = TRetryOperationSettings;
+
+    FLUENT_SETTING_DEFAULT(ui32, MaxRetries, 10);
+    FLUENT_SETTING_DEFAULT(bool, RetryNotFound, true);
+    FLUENT_SETTING_DEFAULT(TDuration, GetSessionClientTimeout, TDuration::Seconds(5));
+    FLUENT_SETTING_DEFAULT(TBackoffSettings, FastBackoffSettings, DefaultFastBackoffSettings());
+    FLUENT_SETTING_DEFAULT(TBackoffSettings, SlowBackoffSettings, DefaultSlowBackoffSettings());
+    FLUENT_SETTING_FLAG(Idempotent);
+    FLUENT_SETTING_FLAG(Verbose);
+
+    static TBackoffSettings DefaultFastBackoffSettings() {
+        return TBackoffSettings()
+            .Ceiling(10)
+            .SlotDuration(TDuration::MilliSeconds(5))
+            .UncertainRatio(0.5);
+    }
+
+    static TBackoffSettings DefaultSlowBackoffSettings() {
+        return TBackoffSettings()
+            .Ceiling(6)
+            .SlotDuration(TDuration::Seconds(1))
+            .UncertainRatio(0.5);
+    }
+};
 
 struct TSessionPoolSettings {
     using TSelf = TSessionPoolSettings;
@@ -927,7 +917,6 @@ struct TSessionPoolSettings {
 
 struct TClientSettings : public TCommonClientSettingsBase<TClientSettings> {
     using TSelf = TClientSettings;
-    using TSessionPoolSettings = TSessionPoolSettings;
 
     // Enable client query cache. Client query cache is used to map query text to
     // prepared query id for ExecuteDataQuery calls on client side.
@@ -952,6 +941,13 @@ struct TClientSettings : public TCommonClientSettingsBase<TClientSettings> {
     // Allow migrate requests between session during session balancing
     FLUENT_SETTING_DEFAULT(bool, AllowRequestMigration, true);
 
+    // Max number of seconds to keep session in SettlerSessionPool
+    // Settler pool is a session pool is used to keep
+    // sessions in case of errors when we dont known actual server
+    // status (e.g. CLIENT_RESOURCE_EXHAUSTED). In this case
+    // sessions from this pool we be keep alived with progressive timeout
+    // to try to return it to main session pool
+    FLUENT_SETTING_DEFAULT(ui32, SettlerSessionPoolTTL, 100);
     // Settings of session pool
     FLUENT_SETTING(TSessionPoolSettings, SessionPoolSettings);
 };
@@ -962,22 +958,16 @@ struct TBulkUpsertSettings : public TOperationRequestSettings<TBulkUpsertSetting
     FLUENT_SETTING_DEFAULT(TString, FormatSettings, "");
 };
 
-struct TReadRowsSettings : public TOperationRequestSettings<TReadRowsSettings> {
-};
-
 struct TStreamExecScanQuerySettings : public TRequestSettings<TStreamExecScanQuerySettings> {
     // Return query plan without actual query execution
     FLUENT_SETTING_DEFAULT(bool, Explain, false);
 
     // Collect runtime statistics with a given detalization mode
     FLUENT_SETTING_DEFAULT(ECollectQueryStatsMode, CollectQueryStats, ECollectQueryStatsMode::None);
-
-    // Collect full query compilation diagnostics
-    FLUENT_SETTING_DEFAULT(bool, CollectFullDiagnostics, false);
 };
 
 class TSession;
-class TSessionPool;
+struct TRetryState;
 
 enum class EDataFormat {
     ApacheArrow = 1,
@@ -987,19 +977,14 @@ enum class EDataFormat {
 class TTableClient {
     friend class TSession;
     friend class TTransaction;
-    friend class TSessionPool;
-    friend class NRetry::Sync::TRetryContext<TTableClient, TStatus>;
-    friend class NRetry::Async::TRetryContext<TTableClient, TAsyncStatus>;
+    friend class TSessionPoolImpl;
+    friend class TRetryOperationContext;
 
 public:
     using TOperationFunc = std::function<TAsyncStatus(TSession session)>;
     using TOperationSyncFunc = std::function<TStatus(TSession session)>;
     using TOperationWithoutSessionFunc = std::function<TAsyncStatus(TTableClient& tableClient)>;
     using TOperationWithoutSessionSyncFunc = std::function<TStatus(TTableClient& tableClient)>;
-    using TSettings = TClientSettings;
-    using TSession = TSession;
-    using TCreateSessionSettings = TCreateSessionSettings;
-    using TAsyncCreateSessionResult = TAsyncCreateSessionResult;
 
 public:
     TTableClient(const TDriver& driver, const TClientSettings& settings = TClientSettings());
@@ -1023,7 +1008,7 @@ public:
     //! Returns new table builder
     TTableBuilder GetTableBuilder();
     //! Returns new params builder
-    TParamsBuilder GetParamsBuilder() const;
+    TParamsBuilder GetParamsBuilder();
     //! Returns new type builder
     TTypeBuilder GetTypeBuilder();
 
@@ -1070,14 +1055,15 @@ public:
     TAsyncBulkUpsertResult BulkUpsert(const TString& table, EDataFormat format,
         const TString& data, const TString& schema = {}, const TBulkUpsertSettings& settings = TBulkUpsertSettings());
 
-    TAsyncReadRowsResult ReadRows(const TString& table, TValue&& keys, const TVector<TString>& columns = {},
-        const TReadRowsSettings& settings = TReadRowsSettings());
-
     TAsyncScanQueryPartIterator StreamExecuteScanQuery(const TString& query,
         const TStreamExecScanQuerySettings& settings = TStreamExecScanQuerySettings());
 
     TAsyncScanQueryPartIterator StreamExecuteScanQuery(const TString& query, const TParams& params,
         const TStreamExecScanQuerySettings& settings = TStreamExecScanQuerySettings());
+
+private:
+    using TOperationWrapperSyncFunc = std::function<TStatus(TRetryState& retryState)>;
+    TStatus RetryOperationSyncHelper(const TOperationWrapperSyncFunc& operationWrapper, const TRetryOperationSettings& settings);
 
 private:
     class TImpl;
@@ -1271,9 +1257,7 @@ struct TCreateTableSettings : public TOperationRequestSettings<TCreateTableSetti
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TDropTableSettings : public TOperationRequestSettings<TDropTableSettings> {
-    using TOperationRequestSettings<TDropTableSettings>::TOperationRequestSettings;
-};
+struct TDropTableSettings : public TOperationRequestSettings<TDropTableSettings> {};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1436,7 +1420,6 @@ struct TAlterTableSettings : public TOperationRequestSettings<TAlterTableSetting
 
     FLUENT_SETTING_VECTOR(TIndexDescription, AddIndexes);
     FLUENT_SETTING_VECTOR(TString, DropIndexes);
-    FLUENT_SETTING_VECTOR(TRenameIndex, RenameIndexes);
 
     FLUENT_SETTING_VECTOR(TChangefeedDescription, AddChangefeeds);
     FLUENT_SETTING_VECTOR(TString, DropChangefeeds);
@@ -1532,9 +1515,7 @@ struct TDescribeTableSettings : public TOperationRequestSettings<TDescribeTableS
     FLUENT_SETTING_DEFAULT(bool, WithPartitionStatistics, false);
 };
 
-struct TExplainDataQuerySettings : public TOperationRequestSettings<TExplainDataQuerySettings> {
-    FLUENT_SETTING_DEFAULT(bool, WithCollectFullDiagnostics, false);
-};
+struct TExplainDataQuerySettings : public TOperationRequestSettings<TExplainDataQuerySettings> {};
 
 struct TPrepareDataQuerySettings : public TOperationRequestSettings<TPrepareDataQuerySettings> {};
 
@@ -1573,10 +1554,6 @@ struct TReadTableSettings : public TRequestSettings<TReadTableSettings> {
     FLUENT_SETTING_OPTIONAL(ui64, RowLimit);
 
     FLUENT_SETTING_OPTIONAL(bool, UseSnapshot);
-
-    FLUENT_SETTING_OPTIONAL(ui64, BatchLimitBytes);
-
-    FLUENT_SETTING_OPTIONAL(ui64, BatchLimitRows);
 };
 
 //! Represents all session operations
@@ -1585,7 +1562,7 @@ class TSession {
     friend class TTableClient;
     friend class TDataQuery;
     friend class TTransaction;
-    friend class TSessionPool;
+    friend class TSessionPoolImpl;
 
 public:
     //! The following methods perform corresponding calls.
@@ -1653,7 +1630,7 @@ public:
 
     class TImpl;
 private:
-    TSession(std::shared_ptr<TTableClient::TImpl> client, const TString& sessionId, const TString& endpointId, bool isOwnedBySessionPool);
+    TSession(std::shared_ptr<TTableClient::TImpl> client, const TString& sessionId, const TString& endpointId);
     TSession(std::shared_ptr<TTableClient::TImpl> client, std::shared_ptr<TSession::TImpl> SessionImpl_);
 
     std::shared_ptr<TTableClient::TImpl> Client_;
@@ -1788,16 +1765,14 @@ private:
 //! Represents result of ExplainDataQuery call
 class TExplainQueryResult : public TStatus {
 public:
-    TExplainQueryResult(TStatus&& status, TString&& plan, TString&& ast, TString&& diagnostics);
+    TExplainQueryResult(TStatus&& status, TString&& plan, TString&& ast);
 
     const TString& GetPlan() const;
     const TString& GetAst() const;
-    const TString& GetDiagnostics() const;
 
 private:
     TString Plan_;
     TString Ast_;
-    TString Diagnostics_;
 };
 
 //! Represents result of DescribeTable call
@@ -1903,31 +1878,24 @@ public:
     const TQueryStats& GetQueryStats() const { return *QueryStats_; }
     TQueryStats ExtractQueryStats() { return std::move(*QueryStats_); }
 
-    bool HasDiagnostics() const { return Diagnostics_.Defined(); }
-    const TString& GetDiagnostics() const { return *Diagnostics_; }
-    TString&& ExtractDiagnostics() { return std::move(*Diagnostics_); }
-
     TScanQueryPart(TStatus&& status)
         : TStreamPartStatus(std::move(status))
     {}
 
-    TScanQueryPart(TStatus&& status, const TMaybe<TQueryStats>& queryStats, const TMaybe<TString>& diagnostics)
+    TScanQueryPart(TStatus&& status, const TMaybe<TQueryStats> &queryStats)
         : TStreamPartStatus(std::move(status))
         , QueryStats_(queryStats)
-        , Diagnostics_(diagnostics)
     {}
 
-    TScanQueryPart(TStatus&& status, TResultSet&& resultSet, const TMaybe<TQueryStats>& queryStats, const TMaybe<TString>& diagnostics)
+    TScanQueryPart(TStatus&& status, TResultSet&& resultSet, const TMaybe<TQueryStats> &queryStats)
         : TStreamPartStatus(std::move(status))
         , ResultSet_(std::move(resultSet))
         , QueryStats_(queryStats)
-        , Diagnostics_(diagnostics)
     {}
 
 private:
     TMaybe<TResultSet> ResultSet_;
     TMaybe<TQueryStats> QueryStats_;
-    TMaybe<TString> Diagnostics_;
 };
 
 using TAsyncScanQueryPart = NThreading::TFuture<TScanQueryPart>;
@@ -1992,17 +1960,6 @@ private:
 class TBulkUpsertResult : public TStatus {
 public:
     explicit TBulkUpsertResult(TStatus&& status);
-};
-
-class TReadRowsResult : public TStatus {
-    TResultSet ResultSet;
-
-  public:
-    explicit TReadRowsResult(TStatus&& status, TResultSet&& resultSet);
-
-    TResultSet GetResultSet() {
-        return std::move(ResultSet);
-    }
 };
 
 } // namespace NTable

@@ -3,7 +3,6 @@
 #include "secret_behaviour.h"
 #include <ydb/core/base/appdata.h>
 #include <ydb/services/metadata/manager/ydb_value_operator.h>
-#include <library/cpp/digest/md5/md5.h>
 
 namespace NKikimr::NMetadata::NSecret {
 
@@ -36,16 +35,6 @@ TString TSecretId::SerializeToString() const {
     TStringBuilder sb;
     sb << "USId:" << OwnerUserId << ":" << SecretId;
     return sb;
-}
-
-
-TString TSecretIdOrValue::DebugString() const {
-    if (SecretId) {
-        return SecretId->SerializeToString();
-    } else if (Value) {
-        return MD5::Calc(*Value);
-    }
-    return "";
 }
 
 }

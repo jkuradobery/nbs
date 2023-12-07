@@ -25,7 +25,7 @@ class TTaggedPointer {
 public:
     TTaggedPointer() {}
     TTaggedPointer(T* ptr, bool mark) {
-        Y_DEBUG_ABORT_UNLESS((uintptr_t(ptr) & 1) == 0);
+        Y_VERIFY_DEBUG((uintptr_t(ptr) & 1) == 0);
         Raw = (void*)(uintptr_t(ptr) | (mark ? 1 : 0));
     }
 
@@ -149,8 +149,7 @@ class TTypeEnvironment;
     XX(EmptyDict, 32 + 2)   \
     XX(Tagged, 48 + 7)      \
     XX(Block, 16 + 13)      \
-    XX(Pg, 16 + 3)          \
-    XX(Multi, 16 + 11)
+    XX(Pg, 16 + 3)
 
 class TTypeBase : public TNode {
 public:
@@ -278,9 +277,6 @@ using TEmptyDictType = TSingularType<TType::EKind::EmptyDict>;
 template <TType::EKind SingularKind>
 TType* GetTypeOfSingular(const TTypeEnvironment& env);
 
-template <typename TLiteralType>
-TLiteralType* GetEmptyLiteral(const TTypeEnvironment& env);
-
 template <TType::EKind SingularKind>
 class TSingular : public TNode {
     friend class TTypeEnvironment;
@@ -350,7 +346,7 @@ public:
 
     // Optimized comparison (only by pointer)
     bool operator == (const TInternName& other) const {
-        Y_DEBUG_ABORT_UNLESS(StrBuf.data() != other.StrBuf.data() || StrBuf.size() == other.StrBuf.size(),
+        Y_VERIFY_DEBUG(StrBuf.data() != other.StrBuf.data() || StrBuf.size() == other.StrBuf.size(),
                        "Lengths must be equal if pointers are equal");
         return StrBuf.data() == other.StrBuf.data();
     }
@@ -488,8 +484,8 @@ public:
     void ClearCookies() const;
 
     NUdf::TUnboxedValuePod NewStringValue(const NUdf::TStringRef& data) const {
-        Y_DEBUG_ABORT_UNLESS(TlsAllocState);
-        Y_DEBUG_ABORT_UNLESS(&Alloc.Ref() == TlsAllocState, "%s", (TStringBuilder()
+        Y_VERIFY_DEBUG(TlsAllocState);
+        Y_VERIFY_DEBUG(&Alloc.Ref() == TlsAllocState, "%s", (TStringBuilder()
             << "typeEnv's: " << Alloc.Ref().GetInfo() << " Tls: " << TlsAllocState->GetInfo()
         ).data());
         if (data.Size() > NUdf::TUnboxedValue::InternalBufferSize) {
@@ -508,8 +504,8 @@ public:
     TScopedAlloc& GetAllocator() const { return Alloc; }
 
     const NUdf::TStringValue& NewString(ui32 size) const {
-        Y_DEBUG_ABORT_UNLESS(TlsAllocState);
-        Y_DEBUG_ABORT_UNLESS(&Alloc.Ref() == TlsAllocState, "%s", (TStringBuilder()
+        Y_VERIFY_DEBUG(TlsAllocState);
+        Y_VERIFY_DEBUG(&Alloc.Ref() == TlsAllocState, "%s", (TStringBuilder()
             << "typeEnv's: " << Alloc.Ref().GetInfo() << " Tls: " << TlsAllocState->GetInfo()
         ).data());
         Strings.emplace(size);
@@ -558,11 +554,6 @@ inline TType* GetTypeOfSingular<TType::EKind::EmptyList>(const TTypeEnvironment&
 template <>
 inline TType* GetTypeOfSingular<TType::EKind::EmptyDict>(const TTypeEnvironment& env) {
     return env.GetTypeOfEmptyDict();
-}
-
-template <>
-inline TTupleLiteral* GetEmptyLiteral(const TTypeEnvironment& env) {
-    return env.GetEmptyTuple();
 }
 
 class TDataType : public TType {
@@ -710,17 +701,17 @@ public:
     }
 
     TStringBuf GetMemberName(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < MembersCount);
+        Y_VERIFY_DEBUG(index < MembersCount);
         return Members[index].first.Str();
     }
 
     TInternName GetMemberNameStr(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < MembersCount);
+        Y_VERIFY_DEBUG(index < MembersCount);
         return Members[index].first;
     }
 
     TType* GetMemberType(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < MembersCount);
+        Y_VERIFY_DEBUG(index < MembersCount);
         return Members[index].second;
     }
 
@@ -753,7 +744,7 @@ public:
     }
 
     TRuntimeNode GetValue(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < GetValuesCount());
+        Y_VERIFY_DEBUG(index < GetValuesCount());
         return Values[index];
     }
 
@@ -933,7 +924,7 @@ public:
     }
 
     TRuntimeNode GetItem() const {
-        Y_DEBUG_ABORT_UNLESS(Item.GetNode());
+        Y_VERIFY_DEBUG(Item.GetNode());
         return Item;
     }
 
@@ -999,7 +990,7 @@ public:
     }
 
     std::pair<TRuntimeNode, TRuntimeNode> GetItem(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < ItemsCount);
+        Y_VERIFY_DEBUG(index < ItemsCount);
         return Items[index];
     }
 
@@ -1053,7 +1044,7 @@ public:
     }
 
     TType* GetArgumentType(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < ArgumentsCount);
+        Y_VERIFY_DEBUG(index < ArgumentsCount);
         return Arguments[index];
     }
 
@@ -1102,7 +1093,7 @@ public:
     }
 
     TRuntimeNode GetInput(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < InputsCount);
+        Y_VERIFY_DEBUG(index < InputsCount);
         return Inputs[index];
     }
 
@@ -1111,7 +1102,7 @@ public:
     }
 
     TRuntimeNode GetResult() const {
-        Y_DEBUG_ABORT_UNLESS(!!Result.GetNode());
+        Y_VERIFY_DEBUG(!!Result.GetNode());
         return Result;
     }
 
@@ -1145,7 +1136,7 @@ inline TTypeBase::TTypeBase(EKind kind, TTypeType* type)
     : TNode(type)
     , Kind(kind)
 {
-    Y_DEBUG_ABORT_UNLESS(kind != EKind::Type);
+    Y_VERIFY_DEBUG(kind != EKind::Type);
 }
 
 
@@ -1197,7 +1188,7 @@ public:
     }
 
     TRuntimeNode GetItem() const {
-        Y_DEBUG_ABORT_UNLESS(Item.GetNode());
+        Y_VERIFY_DEBUG(Item.GetNode());
         return Item;
     }
 
@@ -1217,41 +1208,13 @@ private:
     TRuntimeNode Item;
 };
 
-template<typename TDerived, TType::EKind DerivedKind>
-class TTupleLikeType : public TType {
+class TTupleType : public TType {
 friend class TType;
-using TSelf = TTupleLikeType<TDerived, DerivedKind>;
 public:
-    static TDerived* Create(ui32 elementsCount, TType* const* elements, const TTypeEnvironment& env) {
-        TType **allocatedElements = nullptr;
-        if (elementsCount) {
-            allocatedElements = static_cast<TType **>(env.AllocateBuffer(elementsCount * sizeof(*allocatedElements)));
-            for (ui32 i = 0; i < elementsCount; ++i) {
-              allocatedElements[i] = elements[i];
-            }
-        }
-
-        return ::new (env.Allocate<TDerived>()) TDerived(elementsCount, allocatedElements, env);
-    }
+    static TTupleType* Create(ui32 elementsCount, TType* const* elements, const TTypeEnvironment& env);
 
     using TType::IsSameType;
-    bool IsSameType(const TDerived& typeToCompare) const {
-        if (this == &typeToCompare) {
-            return true;
-        }
-
-        if (ElementsCount != typeToCompare.ElementsCount) {
-            return false;
-        }
-
-        for (size_t index = 0; index < ElementsCount; ++index) {
-            if (!Elements[index]->IsSameType(*typeToCompare.Elements[index])) {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    bool IsSameType(const TTupleType& typeToCompare) const;
 
     size_t CalcHash() const {
         size_t hash = 0;
@@ -1262,128 +1225,29 @@ public:
     }
 
     using TType::IsConvertableTo;
-    bool IsConvertableTo(const TDerived& typeToCompare, bool ignoreTagged = false) const {
-        if (this == &typeToCompare) {
-            return true;
-        }
-
-        if (ElementsCount != typeToCompare.GetElementsCount()) {
-            return false;
-        }
-
-        for (size_t index = 0; index < ElementsCount; ++index) {
-            if (!Elements[index]->IsConvertableTo(*typeToCompare.GetElementType(index), ignoreTagged)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    bool IsConvertableTo(const TTupleType& typeToCompare, bool ignoreTagged = false) const;
 
     ui32 GetElementsCount() const {
         return ElementsCount;
     }
 
     TType* GetElementType(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < ElementsCount);
+        Y_VERIFY_DEBUG(index < ElementsCount);
         return Elements[index];
     }
 
-    TArrayRef<TType* const> GetElements() const {
-        return TArrayRef<TType* const>(Elements, ElementsCount);
-    }
-
-  protected:
-    TTupleLikeType(ui32 elementsCount, TType** elements, const TTypeEnvironment& env)
-        : TType(DerivedKind, env.GetTypeOfType())
-        , ElementsCount(elementsCount)
-        , Elements(elements)
-    {
-    }
-
 private:
-    void DoUpdateLinks(const THashMap<TNode*, TNode*>& links) {
-        for (ui32 i = 0; i < ElementsCount; ++i) {
-            auto &element = Elements[i];
-            auto elementIt = links.find(element);
-            if (elementIt != links.end()) {
-                TNode* newNode = elementIt->second;
-                Y_DEBUG_ABORT_UNLESS(element->Equals(*newNode));
-                element = static_cast<TType*>(newNode);
-            }
-        }
-    }
+    TTupleType(ui32 elemntsCount, TType** elements, const TTypeEnvironment& env, bool validate = true);
 
-    TNode* DoCloneOnCallableWrite(const TTypeEnvironment& env) const {
-        bool needClone = false;
-        for (ui32 i = 0; i < ElementsCount; ++i) {
-            if (Elements[i]->GetCookie()) {
-                needClone = true;
-                break;
-            }
-        }
-
-        if (!needClone) {
-            return const_cast<TSelf*>(this);
-        }
-
-        TType** allocatedElements = nullptr;
-        if (ElementsCount) {
-            allocatedElements = static_cast<TType**>(env.AllocateBuffer(ElementsCount * sizeof(*allocatedElements)));
-            for (ui32 i = 0; i < ElementsCount; ++i) {
-                allocatedElements[i] = Elements[i];
-                auto newNode = (TNode *)Elements[i]->GetCookie();
-                if (newNode) {
-                  allocatedElements[i] = static_cast<TType*>(newNode);
-                }
-            }
-        }
-
-        return ::new (env.Allocate<TDerived>()) TDerived(ElementsCount, allocatedElements, env);
-    }
-
-    void DoFreeze(const TTypeEnvironment& env) {
-            Y_UNUSED(env);
-    }
-
-    bool CalculatePresortSupport() override {
-        for (ui32 i = 0; i < ElementsCount; ++i) {
-            if (!Elements[i]->IsPresortSupported()) {
-                return false;
-            }
-        }
-        return true;
-    }
+    void DoUpdateLinks(const THashMap<TNode*, TNode*>& links);
+    TNode* DoCloneOnCallableWrite(const TTypeEnvironment& env) const;
+    void DoFreeze(const TTypeEnvironment& env);
+    bool CalculatePresortSupport() override;
 
 private:
     ui32 ElementsCount;
     TType** Elements;
 };
-
-class TTupleType : public TTupleLikeType<TTupleType, TType::EKind::Tuple> {
-private:
-    friend class TType;
-    using TBase = TTupleLikeType<TTupleType, TType::EKind::Tuple>;
-    friend TBase;
-
-    TTupleType(ui32 elementsCount, TType** elements, const TTypeEnvironment& env)
-        : TBase(elementsCount, elements, env)
-    {
-    }
-};
-
-class TMultiType : public TTupleLikeType<TMultiType, TType::EKind::Multi> {
-private:
-    friend class TType;
-    using TBase = TTupleLikeType<TMultiType, TType::EKind::Multi>;
-    friend TBase;
-
-    TMultiType(ui32 elementsCount, TType** elements, const TTypeEnvironment& env)
-        : TBase(elementsCount, elements, env)
-    {
-    }
-};
-
 
 class TTupleLiteral : public TNode {
     friend class TNode;
@@ -1398,7 +1262,7 @@ public:
     }
 
     TRuntimeNode GetValue(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index < GetValuesCount());
+        Y_VERIFY_DEBUG(index < GetValuesCount());
         return Values[index];
     }
 
@@ -1627,17 +1491,6 @@ enum class EValueRepresentation {
 
 EValueRepresentation GetValueRepresentation(const TType* type);
 EValueRepresentation GetValueRepresentation(NUdf::TDataTypeId typeId);
-
-TArrayRef<TType* const> GetWideComponents(const TFlowType* type);
-TArrayRef<TType* const> GetWideComponents(const TStreamType* type);
-
-inline ui32 GetWideComponentsCount(const TFlowType* type) {
-    return (ui32)GetWideComponents(type).size();
-}
-
-inline ui32 GetWideComponentsCount(const TStreamType* type) {
-    return (ui32)GetWideComponents(type).size();
-}
 
 template <TType::EKind SingularKind>
 TSingularType<SingularKind>* TSingularType<SingularKind>::Create(TTypeType* type, const TTypeEnvironment& env) {

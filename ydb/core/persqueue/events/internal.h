@@ -2,15 +2,13 @@
 
 #include "global.h"
 
-#include <ydb/core/base/row_version.h>
+#include <ydb/library/persqueue/topic_parser/topic_parser.h>
 #include <ydb/core/protos/pqconfig.pb.h>
+#include <ydb/core/tablet/tablet_counters.h>
 #include <ydb/core/persqueue/key.h>
 #include <ydb/core/persqueue/metering_sink.h>
-#include <ydb/core/tablet/tablet_counters.h>
-#include <ydb/library/persqueue/topic_parser/topic_parser.h>
-
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/actorid.h>
 
 #include <util/generic/maybe.h>
 
@@ -109,10 +107,10 @@ struct TEvPQ {
         EvSplitMessageGroup,
         EvUpdateCounters,
         EvMirrorerCounters,
-        EvAccountReadQuotaRequest,
-        EvAccountReadQuotaResponse,
-        EvAccountReadQuotaConsumed,
-        EvAccountReadQuotaCounters,
+        EvReadLimiterRequest,
+        EvReadLimiterResponse,
+        EvReadLimiterConsumed,
+        EvReadLimiterCounters,
         EvRetryWrite,
         EvInitCredentials,
         EvCredentialsCreated,
@@ -122,24 +120,12 @@ struct TEvPQ {
         EvMetering,
         EvTxCalcPredicate,
         EvTxCalcPredicateResult,
-        EvProposePartitionConfig,
-        EvProposePartitionConfigResult,
         EvTxCommit,
         EvTxCommitDone,
         EvTxRollback,
         EvPartitionConfigChanged,
         EvSubDomainStatus,
         EvStatsWakeup,
-        EvRequestQuota,
-        EvApproveQuota,
-        EvConsumed,
-        EvQuotaUpdated,
-        EvAccountQuotaCountersUpdated,
-        EvQuotaCountersUpdated,
-        EvConsumerRemoved,
-        EvFetchResponse,
-        EvSourceIdRequest,
-        EvSourceIdResponse,
         EvEnd
     };
 
@@ -165,8 +151,6 @@ struct TEvPQ {
             TString ExplicitHashKey;
             bool External;
             bool IgnoreQuotaDeadline;
-            // If specified, Data will contain heartbeat's data
-            std::optional<TRowVersion> HeartbeatVersion;
         };
 
         TEvWrite(const ui64 cookie, const ui64 messageNo, const TString& ownerCookie, const TMaybe<ui64> offset, TVector<TMsg> &&msgs, bool isDirectWrite)
@@ -343,15 +327,9 @@ struct TEvPQ {
         , GetStatForAllConsumers(getStatForAllConsumers)
         {}
 
-        explicit TEvPartitionStatus(const TActorId& sender, const TVector<TString>& consumers)
-        : Sender(sender)
-        , Consumers(consumers)
-        {}
-
         TActorId Sender;
         TString ClientId;
         bool GetStatForAllConsumers;
-        TVector<TString> Consumers;
     };
 
     struct TEvPartitionStatusResponse : public TEventLocal<TEvPartitionStatusResponse, EvPartitionStatusResponse> {
@@ -431,7 +409,7 @@ struct TEvPQ {
         void Check() const
         {
             //error or empty response(all from cache) or not empty response at all
-            Y_ABORT_UNLESS(Error.HasError() || Blobs.empty() || !Blobs[0].Value.empty(),
+            Y_VERIFY(Error.HasError() || Blobs.empty() || !Blobs[0].Value.empty(),
                 "Cookie %" PRIu64 " Error code: %" PRIu32 ", blobs count: %" PRIu64, Cookie, Error.ErrorCode, Blobs.size());
         }
 
@@ -506,12 +484,6 @@ struct TEvPQ {
         : MaxSize(maxSize)
         {}
 
-        TEvChangeCacheConfig(const TString& topicName, ui32 maxSize)
-        : TopicName(topicName)
-        , MaxSize(maxSize)
-        {}
-
-        TString TopicName;
         ui32 MaxSize;
     };
 
@@ -740,32 +712,6 @@ struct TEvPQ {
         bool Predicate = false;
     };
 
-    struct TEvProposePartitionConfig : public TEventLocal<TEvProposePartitionConfig, EvProposePartitionConfig> {
-        TEvProposePartitionConfig(ui64 step, ui64 txId) :
-            Step(step),
-            TxId(txId)
-        {
-        }
-
-        ui64 Step;
-        ui64 TxId;
-        NPersQueue::TTopicConverterPtr TopicConverter;
-        NKikimrPQ::TPQTabletConfig Config;
-    };
-
-    struct TEvProposePartitionConfigResult : public TEventLocal<TEvProposePartitionConfigResult, EvProposePartitionConfigResult> {
-        TEvProposePartitionConfigResult(ui64 step, ui64 txId, ui32 partition) :
-            Step(step),
-            TxId(txId),
-            Partition(partition)
-        {
-        }
-
-        ui64 Step;
-        ui64 TxId;
-        ui32 Partition;
-    };
-
     struct TEvTxCommit : public TEventLocal<TEvTxCommit, EvTxCommit> {
         TEvTxCommit(ui64 step, ui64 txId) :
             Step(step),
@@ -819,60 +765,6 @@ struct TEvPQ {
         {}
 
         ui64 Round;
-    };
-
-    struct TEvRequestQuota : public TEventLocal<TEvRequestQuota, EvRequestQuota> {
-        TEvRequestQuota(TEvPQ::TEvRead::TPtr readRequest)
-            :
-            ReadRequest(std::move(readRequest))
-        {}
-
-        TEvPQ::TEvRead::TPtr ReadRequest;
-    };
-
-    struct TEvApproveQuota : public TEventLocal<TEvApproveQuota, EvApproveQuota> {
-        TEvApproveQuota(TEvPQ::TEvRead::TPtr readRequest, TDuration waitTime)
-            :
-            ReadRequest(std::move(readRequest)),
-            WaitTime(std::move(waitTime))
-        {}
-
-        TEvPQ::TEvRead::TPtr ReadRequest;
-        TDuration WaitTime;
-    };
-
-    struct TEvConsumed : public TEventLocal<TEvConsumed, EvConsumed> {
-        TEvConsumed(ui64 readBytes, ui64 readRequestCookie, const TString& consumer)
-            : ReadBytes(readBytes),
-              ReadRequestCookie(readRequestCookie),
-              Consumer(consumer)
-        {}
-
-        ui64 ReadBytes;
-        ui64 ReadRequestCookie;
-        TString Consumer;
-    };
-
-    struct TEvConsumerRemoved : public TEventLocal<TEvConsumerRemoved, EvConsumerRemoved> {
-        TEvConsumerRemoved(const TString& consumer)
-            : Consumer(consumer)
-        {}
-
-        TString Consumer;
-    };
-
-    struct TEvFetchResponse : public TEventLocal<TEvFetchResponse, EvFetchResponse> {
-        TEvFetchResponse()
-        {}
-        Ydb::StatusIds::StatusCode Status;
-        TString Message;
-        NKikimrClient::TPersQueueFetchResponse Response;
-    };
-
-    struct TEvSourceIdRequest : public TEventPB<TEvSourceIdRequest, NKikimrPQ::TEvSourceIdRequest, EvSourceIdRequest> {
-    };
-
-    struct TEvSourceIdResponse : public TEventPB<TEvSourceIdResponse, NKikimrPQ::TEvSourceIdResponse, EvSourceIdResponse> {
     };
 };
 

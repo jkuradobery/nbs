@@ -9,7 +9,7 @@
 
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 #include <library/cpp/yson/node/node_io.h>
 #include <library/cpp/threading/task_scheduler/task_scheduler.h>
 
@@ -48,7 +48,7 @@ public:
     }
 
     template<typename RespType>
-    void OnResponse(TPromise<TResult> promise, TString sessionId, NYdbGrpc::TGrpcStatus&& status, RespType&& resp, const THashMap<TString, TString>& modulesMapping, bool alwaysFallback = false)
+    void OnResponse(TPromise<TResult> promise, TString sessionId, NGrpc::TGrpcStatus&& status, RespType&& resp, const THashMap<TString, TString>& modulesMapping, bool alwaysFallback = false)
     {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
         YQL_CLOG(TRACE, ProviderDq) << "TDqGateway::callback";
@@ -81,12 +81,12 @@ public:
 
             NYql::TIssues issues;
             auto operation = resp.operation();
-
+            
             for (auto& message_ : *operation.Mutableissues()) {
                 TDeque<std::remove_reference_t<decltype(message_)>*> queue;
                 queue.push_front(&message_);
                 while (!queue.empty()) {
-                    auto& message = *queue.front();
+                    auto& message = *queue.front(); 
                     queue.pop_front();
                     message.Setmessage(NBacktrace::Symbolize(message.Getmessage(), modulesMapping));
                     for (auto &subMsg : *message.Mutableissues()) {
@@ -130,7 +130,6 @@ public:
             if ((status.GRpcStatusCode == grpc::UNAVAILABLE /* terminating state */
                 || status.GRpcStatusCode == grpc::CANCELLED /* server crashed or stopped before task process */)
                 || status.GRpcStatusCode == grpc::RESOURCE_EXHAUSTED /* send message limit */
-                || status.GRpcStatusCode == grpc::INVALID_ARGUMENT /* Bad session */
                 )
             {
                 YQL_CLOG(ERROR, ProviderDq) << "Fallback " << status.GRpcStatusCode;
@@ -176,10 +175,10 @@ public:
     ) {
         auto backoff = TDuration::MilliSeconds(settings->RetryBackoffMs.Get().GetOrElse(1000));
         auto promise = NewPromise<TResult>();
-        const auto fallbackPolicy = settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default);
-        const auto alwaysFallback = EFallbackPolicy::Always == fallbackPolicy;
+        auto fallbackPolicy = settings->FallbackPolicy.Get().GetOrElse("default");
+        auto alwaysFallback = fallbackPolicy == "always";
         auto self = weak_from_this();
-        auto callback = [self, promise, sessionId, alwaysFallback, modulesMapping](NYdbGrpc::TGrpcStatus&& status, TResponse&& resp) mutable {
+        auto callback =  [self, promise, sessionId, alwaysFallback, modulesMapping](NGrpc::TGrpcStatus&& status, TResponse&& resp) mutable {
             auto this_ = self.lock();
             if (!this_) {
                 YQL_CLOG(DEBUG, ProviderDq) << "Gateway was closed: " << sessionId;
@@ -325,12 +324,12 @@ public:
             }
         }
 
-        NYdbGrpc::TCallMeta meta;
+        NGrpc::TCallMeta meta;
         meta.Timeout = OpenSessionTimeout;
 
         auto promise = NewPromise<void>();
         auto self = weak_from_this();
-        auto callback = [self, promise, sessionId](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::OpenSessionResponse&& resp) mutable {
+        auto callback = [self, promise, sessionId](NGrpc::TGrpcStatus&& status, Yql::DqsProto::OpenSessionResponse&& resp) mutable {
             Y_UNUSED(resp);
             YQL_LOG_CTX_ROOT_SESSION_SCOPE(sessionId);
             auto this_ = self.lock();
@@ -368,7 +367,7 @@ public:
         Yql::DqsProto::CloseSessionRequest request;
         request.SetSession(sessionId);
 
-        auto callback = [](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::CloseSessionResponse&& resp) {
+        auto callback = [](NGrpc::TGrpcStatus&& status, Yql::DqsProto::CloseSessionResponse&& resp) {
             Y_UNUSED(resp);
             Y_UNUSED(status);
         };
@@ -409,7 +408,7 @@ public:
         Yql::DqsProto::QueryStatusRequest request;
         request.SetSession(sessionId);
         auto self = weak_from_this();
-        auto callback = [self, sessionId](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::QueryStatusResponse&& resp) {
+        auto callback = [self, sessionId](NGrpc::TGrpcStatus&& status, Yql::DqsProto::QueryStatusResponse&& resp) {
             auto this_ = self.lock();
             if (!this_) {
                 return;
@@ -447,7 +446,7 @@ public:
     void SchedulePingSessionRequest(const TString& sessionId) {
         auto self = weak_from_this();
         auto callback = [self, sessionId](
-            NYdbGrpc::TGrpcStatus&& status,
+            NGrpc::TGrpcStatus&& status,
             Yql::DqsProto::PingSessionResponse&&) mutable
         {
             auto this_ = self.lock();
@@ -490,14 +489,10 @@ public:
         TPromise<void> Promise;
     };
 
-    void Stop() {
-        GrpcClient.Stop();
-    }
-
 private:
-    NYdbGrpc::TGRpcClientConfig GrpcConf;
-    NYdbGrpc::TGRpcClientLow GrpcClient;
-    std::unique_ptr<NYdbGrpc::TServiceConnection<Yql::DqsProto::DqService>> Service;
+    NGrpc::TGRpcClientConfig GrpcConf;
+    NGrpc::TGRpcClientLow GrpcClient;
+    std::unique_ptr<NGrpc::TServiceConnection<Yql::DqsProto::DqService>> Service;
 
     TMutex ProgressMutex;
     TMutex Mutex;
@@ -520,15 +515,6 @@ public:
     TDqGateway(const TString& host, int port, const TString& vanillaJobPath, const TString& vanillaJobMd5, TDuration timeout = TDuration::Minutes(60), TDuration requestTimeout = TDuration::Max())
         : Impl(std::make_shared<TDqGatewayImpl>(host, port, vanillaJobPath, vanillaJobMd5, timeout, requestTimeout))
     { }
-
-    ~TDqGateway()
-    {
-        Stop();
-    }
-
-    void Stop() override {
-        Impl->Stop();
-    }
 
     TFuture<void> OpenSession(const TString& sessionId, const TString& username) override
     {
@@ -567,8 +553,8 @@ TIntrusivePtr<IDqGateway> CreateDqGateway(const TString& host, int port) {
 
 TIntrusivePtr<IDqGateway> CreateDqGateway(const NProto::TDqConfig& config) {
     return new TDqGateway("localhost", config.GetPort(),
-        config.GetYtBackends()[0].GetVanillaJobLite(),
-        config.GetYtBackends()[0].GetVanillaJobLiteMd5(),
+        config.GetYtBackends()[0].GetVanillaJob(),
+        config.GetYtBackends()[0].GetVanillaJobMd5(),
         TDuration::MilliSeconds(config.GetOpenSessionTimeoutMs()),
         TDuration::MilliSeconds(config.GetRequestTimeoutMs()));
 }

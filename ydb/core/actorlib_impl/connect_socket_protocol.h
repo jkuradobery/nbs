@@ -1,8 +1,8 @@
 #pragma once
 
-#include <ydb/library/actors/interconnect/events_local.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect_stream.h>
+#include <library/cpp/actors/interconnect/events_local.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect_stream.h>
 
 namespace NActors {
 
@@ -14,8 +14,8 @@ public:
         const TActorContext& ctx,
         NAddr::IRemoteAddrRef address) noexcept
     {
-        Y_ABORT_UNLESS(address.Get() != nullptr);
-        Y_ABORT_UNLESS(orig != nullptr);
+        Y_VERIFY(address.Get() != nullptr);
+        Y_VERIFY(orig != nullptr);
 
         orig->template AddMsgProtocol<TEvConnectWakeup>(
             &TOrigActor::template CallProtocolStateFunc<
@@ -50,7 +50,8 @@ public:
 
 private:
     void ProtocolFunc(
-        TAutoPtr<NActors::IEventHandle>& ev) noexcept;
+        TAutoPtr<NActors::IEventHandle>& ev,
+        const TActorContext& ctx) noexcept;
 
     void TryAgain(const TActorContext& ctx) noexcept;
     void CheckRetry(const TActorContext& ctx, TString explain) noexcept;

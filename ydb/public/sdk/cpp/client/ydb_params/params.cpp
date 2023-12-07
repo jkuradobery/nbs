@@ -1,8 +1,7 @@
 #include "params.h"
 #include "impl.h"
 
-#include <ydb/public/api/protos/ydb_value.pb.h>
-
+#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/fatal_error_handlers/handlers.h>
 
 #include <util/generic/map.h>
@@ -53,7 +52,7 @@ public:
         : HasTypeInfo_(true)
     {
         for (const auto& pair : typeInfo) {
-            ParamsMap_[pair.first].mutable_type()->CopyFrom(pair.second.GetProto());
+            ParamsMap_[pair.first].mutable_type()->CopyFrom(TProtoAccessor::GetProto(pair.second));
         }
     }
 
@@ -63,7 +62,7 @@ public:
 
     TParamValueBuilder& AddParam(TParamsBuilder& owner, const TString& name) {
         auto param = GetParam(name);
-        Y_ABORT_UNLESS(param);
+        Y_VERIFY(param);
 
         auto result = ValueBuildersMap_.emplace(name, TParamValueBuilder(owner, *param->mutable_type(),
             *param->mutable_value()));
@@ -73,18 +72,18 @@ public:
 
     void AddParam(const TString& name, const TValue& value) {
         auto param = GetParam(name);
-        Y_ABORT_UNLESS(param);
+        Y_VERIFY(param);
 
         if (HasTypeInfo()) {
-            if (!TypesEqual(param->type(), value.GetType().GetProto())) {
+            if (!TypesEqual(param->type(), TProtoAccessor::GetProto(value.GetType()))) {
                 FatalError(TStringBuilder() << "Type mismatch for parameter: " << name << ", expected: "
                     << FormatType(TType(param->type())) << ", actual: " << FormatType(value.GetType()));
             }
         } else {
-            param->mutable_type()->CopyFrom(value.GetType().GetProto());
+            param->mutable_type()->CopyFrom(TProtoAccessor::GetProto(value.GetType()));
         }
 
-        param->mutable_value()->CopyFrom(value.GetProto());
+        param->mutable_value()->CopyFrom(TProtoAccessor::GetProto(value));
     }
 
     TParams Build() {

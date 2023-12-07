@@ -6,7 +6,7 @@
 #include <library/cpp/json/json_value.h>
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <util/stream/null.h>
 #include <util/system/event.h>
 
@@ -115,6 +115,7 @@ Y_UNIT_TEST_SUITE(TestProtocols) {
         }
 
         STFUNC(DefaultFunc) {
+            Y_UNUSED(ctx);
             Y_UNUSED(ev);
         }
 
@@ -172,6 +173,7 @@ Y_UNIT_TEST_SUITE(TestProtocols) {
         }
 
         STFUNC(DefaultFunc) {
+            Y_UNUSED(ctx);
             Y_UNUSED(ev);
         }
 
@@ -267,6 +269,7 @@ Y_UNIT_TEST_SUITE(TestProtocols) {
         }
 
         STFUNC(DefaultFunc) {
+            Y_UNUSED(ctx);
             Y_UNUSED(ev);
         }
 
@@ -481,7 +484,7 @@ Y_UNIT_TEST_SUITE(TestProtocols) {
                             const TActorContext& ctx) noexcept
         {
             if (State != EState::WRITE_DATA_COMPLETE)
-                Y_ABORT("Stream is not ready to write data");
+                Y_FAIL("Stream is not ready to write data");
 
             TEvHTTPSendContent const* msg = ev->Get();
             HTTPWriteContent(this, ctx, msg->Data, msg->Len,msg->Last);

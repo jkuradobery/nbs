@@ -1,7 +1,5 @@
 PY3TEST()
 
-STYLE_PYTHON()
-
 DEPENDS(library/python/runtime_py3/test/traceback)
 
 PEERDIR(

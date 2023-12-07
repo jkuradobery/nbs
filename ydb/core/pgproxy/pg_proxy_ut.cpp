@@ -1,18 +1,16 @@
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/testlib/test_runtime.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/testlib/test_runtime.h>
 
 #include <ydb/core/pgproxy/pg_proxy.h>
+#include <ydb/core/pgproxy/pg_listener.h>
 #include <ydb/core/pgproxy/pg_log.h>
 #include <ydb/core/pgproxy/pg_proxy_events.h>
-#include <ydb/library/services/services.pb.h>
 
 #include <util/network/socket.h>
 #include <util/string/hex.h>
-
-#include "pg_listener.h"
 
 #ifdef NDEBUG
 #define Ctest Cnull
@@ -20,16 +18,14 @@
 #define Ctest Cerr
 #endif
 
-using namespace NKikimr::NRawSocket;
-
 class TTestActorRuntime : public NActors::TTestActorRuntimeBase {
 public:
     void InitNodeImpl(TNodeDataBase* node, size_t nodeIndex) override {
         NActors::TTestActorRuntimeBase::InitNodeImpl(node, nodeIndex);
         node->LogSettings->Append(
-            NKikimrServices::EServiceKikimr_MIN,
-            NKikimrServices::EServiceKikimr_MAX,
-            NKikimrServices::EServiceKikimr_Name
+            NPG::EService::MIN,
+            NPG::EService::MAX,
+            NPG::GetEServiceName
         );
     }
 };
@@ -53,7 +49,7 @@ Y_UNIT_TEST_SUITE(TPGTest) {
         TIpPort port = portManager.GetTcpPort();
         TAutoPtr<NActors::IEventHandle> handle;
         actorSystem.Initialize();
-        actorSystem.SetLogPriority(NKikimrServices::PGWIRE, NActors::NLog::PRI_DEBUG);
+        actorSystem.SetLogPriority(NPG::PGWIRE, NActors::NLog::PRI_DEBUG);
         NActors::TActorId database = actorSystem.AllocateEdgeActor();
         NActors::TActorId poller = actorSystem.Register(NActors::CreatePollerActor());
         NActors::IActor* listener = NPG::CreatePGListener(poller, database, {
@@ -73,7 +69,7 @@ Y_UNIT_TEST_SUITE(TPGTest) {
         UNIT_ASSERT_VALUES_EQUAL(authRequest->InitialMessage->GetClientParams()["user"], "user");
         actorSystem.Send(new NActors::IEventHandle(handle->Sender, database, new NPG::TEvPGEvents::TEvAuthResponse()));
         TString received = Receive(s);
-        UNIT_ASSERT_VALUES_EQUAL(received, "520000000800000000");
+        UNIT_ASSERT_VALUES_EQUAL(received, "520000000800000000530000001B496E74657276616C5374796C6500706F737467726573005300000012446174655374796C650049534F0053000000197365727665725F656E636F64696E670055544638005300000019696E74656765725F6461746574696D6573006F6E005300000019636C69656E745F656E636F64696E670055544638005A0000000549");
     }
 
 }

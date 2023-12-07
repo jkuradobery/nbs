@@ -83,7 +83,7 @@ public:
             if (pr.second->Stats.StatsUpdateTime) {
                 auto &stats = *rec.MutableStats();
                 stats.SetRowCount(pr.second->Stats.DataStats.RowCount);
-                stats.SetDataSize(pr.second->Stats.DataStats.DataSize.Size);
+                stats.SetDataSize(pr.second->Stats.DataStats.DataSize);
                 stats.SetLastAccessTime(pr.second->Stats.AccessTime.ToStringLocalUpToSeconds());
                 stats.SetLastUpdateTime(pr.second->Stats.UpdateTime.ToStringLocalUpToSeconds());
                 stats.SetLastStatsUpdateTime(Self->LastDbStatsUpdateTime.ToStringLocalUpToSeconds());
@@ -290,7 +290,7 @@ public:
             tx->FillState(resp);
     }
 
-    void FillDependencies(const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &deps,
+    void FillDependencies(const NFH::TFlatHashSet<TOperation::TPtr> &deps,
                           ::google::protobuf::RepeatedPtrField<NKikimrTxDataShard::TEvGetOperationResponse_TDependency> &arr)
     {
         for (auto &op : deps) {

@@ -14,7 +14,8 @@ public:
 
     TTxType GetTxType() const override { return TXTYPE_LOG_AND_SEND; }
 
-    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override {
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
+    {
         LOG_DEBUG_S(ctx, NKikimrServices::CMS,
                     "TTxLogAndSend Execute");
 
@@ -23,7 +24,8 @@ public:
         return true;
     }
 
-    void Complete(const TActorContext &ctx) override {
+    void Complete(const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxLogAndSend Complete");
 
         if (Event->Get()->Event)
@@ -34,7 +36,8 @@ private:
     TEvPrivate::TEvLogAndSend::TPtr Event;
 };
 
-ITransaction *TCms::CreateTxLogAndSend(TEvPrivate::TEvLogAndSend::TPtr &ev) {
+ITransaction *TCms::CreateTxLogAndSend(TEvPrivate::TEvLogAndSend::TPtr &ev)
+{
     return new TTxLogAndSend(this, ev);
 }
 

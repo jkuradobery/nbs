@@ -1,5 +1,5 @@
-import "ydb/core/scheme/protos/type_info.proto";
-import "ydb/core/scheme/protos/pathid.proto";
+import "ydb/core/protos/base.proto";
+import "ydb/core/protos/type_info.proto";
 import "ydb/core/protos/bind_channel_storage_pool.proto";
 import "ydb/core/protos/pqconfig.proto";
 import "ydb/core/protos/replication.proto";
@@ -13,9 +13,7 @@ import "ydb/core/protos/follower_group.proto";
 import "ydb/core/protos/blob_depot_config.proto";
 import "ydb/public/api/protos/ydb_coordination.proto";
 import "ydb/public/api/protos/ydb_export.proto";
-import "ydb/public/api/protos/ydb_value.proto";
 import "ydb/library/mkql_proto/protos/minikql.proto";
-import "ydb/core/protos/index_builder.proto";
 
 import "google/protobuf/empty.proto";
 
@@ -85,7 +83,6 @@ message TColumnDescription {
     optional string FamilyName = 6; // set Family by name (0 - "default")
     oneof DefaultValue {
         string DefaultFromSequence = 7; // Path to sequence for default values
-        Ydb.TypedValue DefaultFromLiteral = 10; // Literal default value
     }
     optional bool NotNull = 8;
 }
@@ -123,7 +120,7 @@ message TFamilyDescription {
 enum ECompactionStrategy {
     CompactionStrategyUnset = 0;
     CompactionStrategyGenerational = 1;
-    CompactionStrategySharded = 2; // DEPRECATED: use CompactionStrategyGenerational
+    CompactionStrategySharded = 2;
 }
 
 message TCompactionPolicy {
@@ -223,8 +220,6 @@ message TCompactionPolicy {
     optional ECompactionStrategy CompactionStrategy = 20 [default = CompactionStrategyUnset];
     optional TShardPolicy ShardPolicy = 21;
     optional bool KeepEraseMarkers = 22;
-    optional uint32 MinBTreeIndexNodeSize = 23 [default = 7168];
-    optional uint32 MinBTreeIndexNodeKeys = 24 [default = 6];
 
     repeated TGenerationPolicy Generation = 10;
 }
@@ -264,7 +259,7 @@ message TPartitionConfig {
     optional string NamedCompactionPolicy = 1; // One of the predefined policies
     optional TCompactionPolicy CompactionPolicy = 2; // Customized policy
     optional uint64 FollowerCount = 3;
-    optional uint64 ExecutorCacheSize = 4; // (DEPRECATED) Cache size for the whole tablet including all user and system tables
+    optional uint64 ExecutorCacheSize = 4; // Cache size for the whole tablet including all user and system tables
     optional bool AllowFollowerPromotion = 5 [default = true]; // if true followers can upgrade to leader, if false followers only handle reads
     optional uint64 TxReadSizeLimit = 6; // Maximum size in bytes that is allowed to be read by a single Tx
     //optional bool CrossDataCenterFollowers = 7; // deprecated -> CrossDataCenterFollowerCount
@@ -387,22 +382,11 @@ message TTableDescription {
     repeated TSequenceDescription Sequences = 39;
 
     optional TTableReplicationConfig ReplicationConfig = 40;
-    optional bool Temporary = 41;
-}
-
-message TDictionaryEncodingSettings {
-   optional bool Enabled = 1;
 }
 
 message TCompressionOptions {
     optional EColumnCodec CompressionCodec = 2; // LZ4 (in arrow LZ4_FRAME variant) if not set
     optional int32 CompressionLevel = 3; // Use default compression level if not set (0 != not set)
-}
-
-message TOlapColumnDiff {
-    optional string Name = 1;
-    optional TCompressionOptions Compression = 2;
-    optional TDictionaryEncodingSettings DictionaryEncoding = 4;
 }
 
 message TOlapColumnDescription {
@@ -416,9 +400,18 @@ message TOlapColumnDescription {
     optional uint32 TypeId = 4; // TypeId cannot be set explicitly, use Type
     optional NKikimrProto.TTypeInfo TypeInfo = 6;
     optional bool NotNull = 7;
+}
 
-    optional TCompressionOptions Compression = 8;
-    optional TDictionaryEncodingSettings DictionaryEncoding = 9;
+message TAlterOlapColumn {
+    // Existing column name to alter
+    optional string Name = 1;
+
+    // TODO: there's currently nothing to alter
+}
+
+message TDropOlapColumn {
+    // Existing column name to drop
+    optional string Name = 1;
 }
 
 enum EColumnTableEngine {
@@ -454,15 +447,14 @@ message TColumnTableSchema {
     //optional EColumnCodec DefaultCompressionCodec = 6; // deprecated, not used before replace
     //optional int32 DefaultCompressionLevel = 7; // deprecated, not used before replace
     optional TCompressionOptions DefaultCompression = 8;
-
-    optional bool CompositeMarks = 9 [ default = false ];
 }
 
 message TAlterColumnTableSchema {
     repeated TOlapColumnDescription AddColumns = 1;
+    repeated TAlterOlapColumn AlterColumns = 2;
+    repeated TDropOlapColumn DropColumns = 3;
+    repeated string AddKeyColumnNames = 4;
     //optional TCompressionOptions DefaultCompression = 5;
-    repeated TOlapColumnDescription DropColumns = 6;
-    repeated TOlapColumnDiff AlterColumns = 7;
 }
 
 // Schema presets are used to manage multiple tables with the same schema
@@ -610,11 +602,10 @@ message TColumnTableSharding {
             // A simple hash modulo number of shards
             HASH_FUNCTION_MODULO_N = 0;
             HASH_FUNCTION_CLOUD_LOGS = 1;
-            HASH_FUNCTION_CONSISTENCY_64 = 2;
         }
 
         // Hash function used for mapping column values to a column shard
-        optional EHashFunction Function = 1 [default = HASH_FUNCTION_MODULO_N];
+        optional EHashFunction Function = 1;
 
         // A list of columns used for hashing, must not be empty
         repeated string Columns = 2;
@@ -690,7 +681,6 @@ message TLoginModifyUser {
 
 message TLoginRemoveUser {
     optional string User = 1;
-    optional bool MissingOk = 2;
 }
 
 message TLoginCreateGroup {
@@ -744,7 +734,6 @@ enum ECdcStreamFormat {
     ECdcStreamFormatProto = 1;
     ECdcStreamFormatJson = 2;
     ECdcStreamFormatDynamoDBStreamsJson = 3;
-    ECdcStreamFormatDebeziumJson = 4;
 }
 
 message TCdcStreamDescription {
@@ -758,15 +747,12 @@ message TCdcStreamDescription {
     repeated TUserAttribute UserAttributes = 8;
     // AwsRegion used to mark records in DynamoDB-compatible mode (FormatDynamoDBStreamsJson)
     optional string AwsRegion = 9;
-    // Set to '0' to disable resolved timestamps
-    optional uint64 ResolvedTimestampsIntervalMs = 10;
 }
 
 message TCreateCdcStream {
     optional string TableName = 1;
     optional TCdcStreamDescription StreamDescription = 2;
     optional uint64 RetentionPeriodSeconds = 3 [default = 86400]; // 1d by default
-    optional uint32 TopicPartitions = 4;
 }
 
 message TAlterCdcStream {
@@ -795,7 +781,6 @@ enum EIndexType {
     EIndexTypeInvalid = 0;
     EIndexTypeGlobal = 1;
     EIndexTypeGlobalAsync = 2;
-    EIndexTypeGlobalUnique = 3;
 }
 
 enum EIndexState {
@@ -892,22 +877,6 @@ message TYTSettings {
     optional bool UseTypeV3 = 8;
 };
 
-message TSecretId {
-    optional string Id = 1;
-    optional string OwnerId = 2;
-}
-
-message TSecretValue {
-    optional string Data = 1;
-}
-
-message TSecretableVariable {
-    oneof Data {
-        TSecretId SecretId = 1;
-        TSecretValue Value = 2;
-    }
-}
-
 message TS3Settings {
     enum EScheme {
         HTTP = 0;
@@ -920,14 +889,12 @@ message TS3Settings {
     optional string ObjectKeyPattern = 4; // dst for backup, src for restore
     optional string AccessKey = 5;
     optional string SecretKey = 6;
-    optional Ydb.Export.ExportToS3Settings.StorageClass StorageClass = 7 [default = STANDARD];
+    optional Ydb.Export.ExportToS3Settings.StorageClass StorageClass = 7;
     optional bool VerifySSL = 8;
     optional string ProxyHost = 9;
     optional uint32 ProxyPort = 10;
     optional EScheme ProxyScheme = 11;
     optional string Region = 12;
-    optional TSecretableVariable SecretableAccessKey = 13;
-    optional TSecretableVariable SecretableSecretKey = 14;
 
     message TLimits {
         optional uint32 ReadBatchSize = 1 [default = 8388608]; // 8 MB
@@ -978,9 +945,6 @@ message TBackupTask {
     }
 
     optional TCompressionOptions Compression = 13; // currently available for s3
-
-    optional uint64 SnapshotStep = 14;
-    optional uint64 SnapshotTxId = 15;
 }
 
 message TRestoreTask {
@@ -1003,10 +967,6 @@ message TPersQueueGroupAllocate {
 
         optional uint64 OwnerId = 4;
         optional uint64 ShardId = 5;
-
-        optional NKikimrPQ.ETopicPartitionStatus Status = 6;
-        repeated uint32 ParentPartitionIds = 7;
-        optional NKikimrPQ.TPartitionKeyRange KeyRange = 10;
     }
 
     optional string Name = 1;
@@ -1029,14 +989,10 @@ message TPersQueueGroupDeallocate {
 }
 
 message TPersQueueGroupDescription {
-
     message TPartition {
         optional uint32 PartitionId = 1;
         optional uint64 TabletId = 2;
         optional NKikimrPQ.TPartitionKeyRange KeyRange = 3;
-        optional NKikimrPQ.ETopicPartitionStatus Status = 4;
-        repeated uint32 ParentPartitionIds = 5;
-        repeated uint32 ChildPartitionIds = 6;
     }
 
     optional string Name = 1; // mandatory
@@ -1064,18 +1020,6 @@ message TPersQueueGroupDescription {
     optional NKikimrPQ.TBootstrapConfig BootstrapConfig = 13;
 
     optional TPersQueueGroupAllocate Allocate = 14;
-
-    message TPartitionSplit {
-        required uint32 Partition = 1;
-        required bytes SplitBoundary = 2;
-    }
-    repeated TPartitionSplit Split = 15;
-
-    message TPartitionMerge {
-        required uint32 Partition = 1;
-        required uint32 AdjacentPartition = 2;
-    }
-    repeated TPartitionMerge Merge = 16;
 }
 
 message TRtmrVolumeDescription {
@@ -1171,7 +1115,7 @@ message TBlockStoreAssignOp {
     optional uint64 TokenVersion = 3;
 }
 
-message TDropBlockStoreVolume {
+message TDropBlockStoreVolume { 
     optional uint64 FillGeneration = 1;
 }
 
@@ -1369,23 +1313,6 @@ enum EOperationType {
 
     // AlterExtSubDomain suboperations
     ESchemeOpAlterExtSubDomainCreateHive = 85;
-
-    // External Table
-    ESchemeOpCreateExternalTable = 86;
-    ESchemeOpDropExternalTable = 87;
-    ESchemeOpAlterExternalTable = 88;
-
-    // External Data Source
-    ESchemeOpCreateExternalDataSource = 89;
-    ESchemeOpDropExternalDataSource = 90;
-    ESchemeOpAlterExternalDataSource = 91;
-
-    ESchemeOpCreateColumnBuild = 92;
-
-    // View
-    ESchemeOpCreateView = 93;
-    ESchemeOpAlterView = 94;
-    ESchemeOpDropView = 95;
 }
 
 message TApplyIf {
@@ -1495,19 +1422,7 @@ message TModifyScheme {
     optional TPersQueueGroupAllocate AllocatePersQueueGroup = 56;
     optional TPersQueueGroupDeallocate DeallocatePersQueueGroup = 57;
 
-    optional TExternalTableDescription CreateExternalTable = 58;
-
-    optional TExternalDataSourceDescription CreateExternalDataSource = 59;
-
     optional TDropBlockStoreVolume DropBlockStoreVolume = 60;
-
-    optional NKikimrIndexBuilder.TColumnBuildSettings InitiateColumnBuild = 61;
-
-    optional bool SuccessOnNotExist = 62;
-
-    optional bool FailedOnAlreadyExists = 63 [default = true];
-
-    optional TViewDescription CreateView = 64;
 }
 
 // "Script", used by client to parse text files with multiple DDL commands
@@ -1563,9 +1478,6 @@ enum EPathType {
     EPathTypeSequence = 15;
     EPathTypeReplication = 16;
     EPathTypeBlobDepot = 17;
-    EPathTypeExternalTable = 18;
-    EPathTypeExternalDataSource = 19;
-    EPathTypeView = 20;
 }
 
 enum EPathSubType {
@@ -1617,9 +1529,6 @@ message TPathVersion {
     optional uint64 SequenceVersion = 24;
     optional uint64 ReplicationVersion = 25;
     optional uint64 BlobDepotVersion = 26;
-    optional uint64 ExternalTableVersion = 27;
-    optional uint64 ExternalDataSourceVersion = 28;
-    optional uint64 ViewVersion = 29;
 }
 
 // Describes single path
@@ -1705,9 +1614,6 @@ message TPathDescription {
     optional TSequenceDescription SequenceDescription = 24;
     optional TReplicationDescription ReplicationDescription = 25;
     optional TBlobDepotDescription BlobDepotDescription = 26;
-    optional TExternalTableDescription ExternalTableDescription = 27;
-    optional TExternalDataSourceDescription ExternalDataSourceDescription = 28;
-    optional TViewDescription ViewDescription = 29;
 }
 
 // For persisting AlterTable Tx description in Schemeshard internal DB
@@ -1750,82 +1656,4 @@ message TResourceProfile {
     optional string MediumTxTaskType = 11 [default = "transaction"];
     // Resource Broker task type for large transactions.
     optional string LargeTxTaskType = 12 [default = "transaction"];
-}
-
-message TExternalTableDescription {
-    optional string Name = 1;
-    optional NKikimrProto.TPathID PathId = 2;
-    optional uint64 Version = 3;
-    optional string SourceType = 4;
-    optional string DataSourcePath = 5;
-    optional string Location = 6;
-    repeated TColumnDescription Columns = 7;
-    optional bytes Content = 8;
-}
-
-// Access without authorization
-message TNoneAuth {
-}
-
-message TServiceAccountAuth {
-    optional string Id = 1;
-    optional string SecretName = 2;
-}
-
-message TMdbBasic {
-    optional string ServiceAccountId = 1;
-    optional string ServiceAccountSecretName = 2;
-    optional string Login = 3;
-    optional string PasswordSecretName = 4;
-}
-
-message TAws {
-    optional string AwsAccessKeyIdSecretName = 1;
-    optional string AwsSecretAccessKeySecretName = 2;
-    optional string AwsRegion = 3;
-}
-
-message TBasic {
-    optional string Login = 1;
-    optional string PasswordSecretName = 2;
-}
-
-message TAuth {
-    oneof identity {
-        TNoneAuth None = 3;
-        TServiceAccountAuth ServiceAccount = 4;
-        TBasic Basic = 5;
-        TMdbBasic MdbBasic = 6;
-        TAws Aws = 7;
-    }
-}
-
-message TExternalTableReferences {
-    message TReference {
-        optional string Path = 1;
-        optional NKikimrProto.TPathID PathId = 2;
-    }
-    repeated TReference References = 1;
-}
-
-message TExternalDataSourceProperties {
-    map<string, string> Properties = 1;
-}
-
-message TExternalDataSourceDescription {
-    optional string Name = 1;
-    optional NKikimrProto.TPathID PathId = 2;
-    optional uint64 Version = 3;
-    optional string SourceType = 4;
-    optional string Location = 5;
-    optional string Installation = 6;
-    optional TAuth Auth = 7;
-    optional TExternalDataSourceProperties Properties = 8;
-}
-
-message TViewDescription {
-    optional string Name = 1;
-    optional NKikimrProto.TPathID PathId = 2;
-    optional uint64 Version = 3;
-    optional string QueryText = 4;
 }

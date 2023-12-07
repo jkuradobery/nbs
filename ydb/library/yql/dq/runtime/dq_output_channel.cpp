@@ -2,7 +2,6 @@
 #include "dq_transport.h"
 
 #include <ydb/library/yql/utils/yql_panic.h>
-#include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
 
 #include <util/generic/buffer.h>
 #include <util/generic/size_literals.h>
@@ -11,7 +10,7 @@
 
 namespace NYql::NDq {
 
-#define LOG(s) do { if (Y_UNLIKELY(LogFunc)) { LogFunc(TStringBuilder() << "channelId: " << PopStats.ChannelId << ". " << s); } } while (0)
+#define LOG(s) do { if (Y_UNLIKELY(LogFunc)) { LogFunc(TStringBuilder() << "channelId: " << ChannelId << ". " << s); } } while (0)
 
 #ifndef NDEBUG
 #define DLOG(s) LOG(s)
@@ -23,75 +22,82 @@ namespace {
 
 using namespace NKikimr;
 
-using NKikimr::NMiniKQL::TPagedBuffer;
+bool IsSafeToEstimateValueSize(const NMiniKQL::TType* type) {
+    if (type->GetKind() == NMiniKQL::TType::EKind::Data) {
+        return true;
+    }
+    if (type->GetKind() == NMiniKQL::TType::EKind::Optional) {
+        const auto* optionalType = static_cast<const NMiniKQL::TOptionalType*>(type);
+        return IsSafeToEstimateValueSize(optionalType->GetItemType());
+    }
+    if (type->GetKind() == NMiniKQL::TType::EKind::Struct) {
+        const auto* structType = static_cast<const NMiniKQL::TStructType*>(type);
+        for (ui32 i = 0; i < structType->GetMembersCount(); ++i) {
+            if (!IsSafeToEstimateValueSize(structType->GetMemberType(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (type->GetKind() == NMiniKQL::TType::EKind::Tuple) {
+        const auto* tupleType = static_cast<const NMiniKQL::TTupleType*>(type);
+        for (ui32 i = 0; i < tupleType->GetElementsCount(); ++i) {
+            if (!IsSafeToEstimateValueSize(tupleType->GetElementType(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (type->GetKind() == NMiniKQL::TType::EKind::Variant) {
+        const auto* variantType = static_cast<const NMiniKQL::TVariantType*>(type);
+        for (ui32 i = 0; i < variantType->GetAlternativesCount(); ++i) {
+            if (!IsSafeToEstimateValueSize(variantType->GetAlternativeType(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<bool FastPack>
-class TDqOutputChannel : public IDqOutputChannel {
+class TDqOutputChannelOld : public IDqOutputChannel {
 public:
-    TDqOutputStats PushStats;
-    TDqOutputChannelStats PopStats;
-
-    TDqOutputChannel(ui64 channelId, ui32 dstStageId, NMiniKQL::TType* outputType,
-        const NMiniKQL::THolderFactory& holderFactory, const TDqOutputChannelSettings& settings, const TLogFunc& logFunc,
-        NDqProto::EDataTransportVersion transportVersion)
-        : OutputType(outputType)
-        , Packer(OutputType)
-        , Width(OutputType->IsMulti() ? static_cast<NMiniKQL::TMultiType*>(OutputType)->GetElementsCount() : 1u)
-        , Storage(settings.ChannelStorage)
-        , HolderFactory(holderFactory)
-        , TransportVersion(transportVersion)
-        , MaxStoredBytes(settings.MaxStoredBytes)
-        , MaxChunkBytes(settings.MaxChunkBytes)
-        , ChunkSizeLimit(settings.ChunkSizeLimit)
-        , LogFunc(logFunc)
-    {
-        PopStats.Level = settings.Level;
-        PushStats.Level = settings.Level;
-        PopStats.ChannelId = channelId;
-        PopStats.DstStageId = dstStageId;
-    }
+    TDqOutputChannelOld(ui64 channelId, NMiniKQL::TType* outputType, bool collectProfileStats,
+        const NMiniKQL::TTypeEnvironment& typeEnv, const NMiniKQL::THolderFactory& holderFactory, ui64 maxStoredBytes,
+        ui64 maxChunkBytes, ui64 chunkSizeLimit, NDqProto::EDataTransportVersion transportVersion, const TLogFunc& logFunc)
+        : ChannelId(channelId)
+        , OutputType(outputType)
+        , BasicStats(ChannelId)
+        , ProfileStats(collectProfileStats ? &BasicStats : nullptr)
+        , DataSerializer(typeEnv, holderFactory, transportVersion)
+        , MaxStoredBytes(maxStoredBytes)
+        , MaxChunkBytes(maxChunkBytes)
+        , ChunkSizeLimit(chunkSizeLimit)
+        , LogFunc(logFunc) {}
 
     ui64 GetChannelId() const override {
-        return PopStats.ChannelId;
+        return ChannelId;
     }
 
-    ui64 GetValuesCount() const override {
-        return SpilledRowCount + PackedRowCount + ChunkRowCount;
-    }
-
-    const TDqOutputStats& GetPushStats() const override {
-        return PushStats;
-    }
-
-    const TDqOutputChannelStats& GetPopStats() const override {
-        return PopStats;
+    ui64 GetValuesCount(bool /* inMemoryOnly */) const override {
+        return Data.size();
     }
 
     [[nodiscard]]
     bool IsFull() const override {
-        if (!Storage) {
-            return PackedDataSize + Packer.PackedSizeEstimate() >= MaxStoredBytes;
+        return Data.size() * EstimatedRowBytes >= MaxStoredBytes;
+    }
+
+    void Push(NUdf::TUnboxedValue&& value) override {
+        if (!BasicStats.FirstRowIn) {
+            BasicStats.FirstRowIn = TInstant::Now();
         }
-        return Storage->IsFull();
-    }
 
-    virtual void Push(NUdf::TUnboxedValue&& value) override {
-        YQL_ENSURE(!OutputType->IsMulti());
-        DoPush(&value, 1);
-    }
+        ui64 rowsInMemory = Data.size();
 
-    virtual void WidePush(NUdf::TUnboxedValue* values, ui32 width) override {
-        YQL_ENSURE(OutputType->IsMulti());
-        YQL_ENSURE(Width == width);
-        DoPush(values, width);
-    }
-
-    void DoPush(NUdf::TUnboxedValue* values, ui32 width) {
-        ui64 rowsInMemory = PackedRowCount + ChunkRowCount;
-
-        LOG("Push request, rows in memory: " << rowsInMemory << ", bytesInMemory: " << (PackedDataSize + Packer.PackedSizeEstimate())
+        LOG("Push request, rows in memory: " << rowsInMemory << ", bytesInMemory: " << (rowsInMemory * EstimatedRowBytes)
             << ", finished: " << Finished);
         YQL_ENSURE(!IsFull());
 
@@ -99,69 +105,23 @@ public:
             return;
         }
 
-        if (PushStats.CollectBasic()) {
-            PushStats.Rows++;
-            PushStats.Chunks++;
-            PushStats.Resume();
+        if (!EstimatedRowBytes) {
+            EstimatedRowBytes = IsSafeToEstimateValueSize(OutputType)
+                ? TDqDataSerializer::EstimateSize(value, OutputType)
+                : DataSerializer.CalcSerializedSize(value, OutputType);
+            LOG("EstimatedRowSize: " << EstimatedRowBytes << ", type: " << *OutputType
+                << ", safe: " << IsSafeToEstimateValueSize(OutputType));
         }
 
-        if (OutputType->IsMulti()) {
-            Packer.AddWideItem(values, width);
-        } else {
-            Packer.AddItem(*values);
-        }
-        for (ui32 i = 0; i < width; ++i) {
-            values[i] = {};
-        }
+        Data.emplace_back(std::move(value));
+        rowsInMemory++;
 
-        ChunkRowCount++;
+        BasicStats.Bytes += EstimatedRowBytes;
+        BasicStats.RowsIn++;
 
-        size_t packerSize = Packer.PackedSizeEstimate();
-        if (packerSize >= MaxChunkBytes) {
-            Data.emplace_back();
-            Data.back().Buffer = FinishPackAndCheckSize();
-            if (PushStats.CollectBasic()) {
-                PushStats.Bytes += Data.back().Buffer.size();
-            }
-            PackedDataSize += Data.back().Buffer.size();
-            PackedRowCount += ChunkRowCount;
-            Data.back().RowCount = ChunkRowCount;
-            ChunkRowCount = 0;
-            packerSize = 0;
-        }
-
-        while (Storage && PackedDataSize && PackedDataSize + packerSize > MaxStoredBytes) {
-            auto& head = Data.front();
-            size_t bufSize = head.Buffer.size();
-            YQL_ENSURE(PackedDataSize >= bufSize);
-
-            TDqSerializedBatch data;
-            data.Proto.SetTransportVersion(TransportVersion);
-            data.Proto.SetRows(head.RowCount);
-            data.SetPayload(std::move(head.Buffer));
-            Storage->Put(NextStoredId++, SaveForSpilling(std::move(data)));
-
-            PackedDataSize -= bufSize;
-            PackedRowCount -= head.RowCount;
-
-            SpilledRowCount += head.RowCount;
-
-            if (PopStats.CollectFull()) {
-                PopStats.SpilledRows += head.RowCount;
-                PopStats.SpilledBytes += bufSize + sizeof(head.RowCount);
-                PopStats.SpilledBlobs++;
-            }
-
-            Data.pop_front();
-        }
-
-        if (IsFull() || FirstStoredId < NextStoredId) {
-            PopStats.TryPause();
-        }
-
-        if (PopStats.CollectFull()) {
-            PopStats.MaxMemoryUsage = std::max(PopStats.MaxMemoryUsage, PackedDataSize + packerSize);
-            PopStats.MaxRowsInMemory = std::max(PopStats.MaxRowsInMemory, PackedRowCount);
+        if (Y_UNLIKELY(ProfileStats)) {
+            ProfileStats->MaxMemoryUsage = std::max(ProfileStats->MaxMemoryUsage, rowsInMemory * EstimatedRowBytes);
+            ProfileStats->MaxRowsInMemory = std::max(ProfileStats->MaxRowsInMemory, rowsInMemory);
         }
     }
 
@@ -176,54 +136,559 @@ public:
     }
 
     [[nodiscard]]
-    bool Pop(TDqSerializedBatch& data) override {
-        LOG("Pop request, rows in memory: " << GetValuesCount() << ", finished: " << Finished);
+    bool Pop(NDqProto::TData& data, ui64 bytes) override {
+        LOG("Pop request, rows in memory: " << Data.size() << ", finished: " << Finished << ", requested: " << bytes
+            << ", estimatedRowSize: " << EstimatedRowBytes);
 
         if (!HasData()) {
-            PushStats.TryPause();
             if (Finished) {
-                data.Clear();
-                data.Proto.SetTransportVersion(TransportVersion);
+                data.SetTransportVersion(DataSerializer.GetTransportVersion());
+                data.SetRows(0);
+                data.ClearRaw();
             }
             return false;
         }
 
-        data.Clear();
-        data.Proto.SetTransportVersion(TransportVersion);
-        if (FirstStoredId < NextStoredId) {
-            YQL_ENSURE(Storage);
-            LOG("Loading spilled blob. BlobId: " << FirstStoredId);
+        bytes = std::min(bytes, MaxChunkBytes);
+        ui64 takeRows = EstimatedRowBytes ? std::max<ui64>(bytes / EstimatedRowBytes, 1) : 1;
+        takeRows = std::min<ui64>(takeRows, Data.size());
+
+        DLOG("About to take " << takeRows << " rows");
+
+        auto last = std::next(Data.begin(), takeRows);
+
+        if (Y_UNLIKELY(ProfileStats)) {
+            TInstant startTime = TInstant::Now();
+            data = DataSerializer.Serialize(Data.begin(), last, OutputType);
+            ProfileStats->SerializationTime += (TInstant::Now() - startTime);
+        } else {
+            data = DataSerializer.Serialize(Data.begin(), last, OutputType);
+        }
+
+        if (EstimatedRowBytes) {
+            EstimatedRowBytes = EstimatedRowBytes * 0.6 + std::max<ui64>(data.GetRaw().Size() / takeRows, 1) * 0.4;
+            DLOG("Recalc estimated row size: " << EstimatedRowBytes);
+        }
+
+        while (data.GetRaw().size() >= ChunkSizeLimit && takeRows > 1) {
+            ui64 newTakeRows = std::max<ui64>(bytes / EstimatedRowBytes, 1);
+            newTakeRows = std::min<ui64>(newTakeRows, Data.size());
+
+            takeRows = newTakeRows < takeRows ? newTakeRows : takeRows / 2;
+
+            DLOG("Too big data, split it. Try to take " << takeRows);
+
+            NMiniKQL::TUnboxedValueVector values;
+            values.reserve(data.GetRows());
+
+            if (Y_UNLIKELY(ProfileStats)) {
+                TInstant startTime = TInstant::Now();
+                DataSerializer.Deserialize(data, OutputType, values);
+                ProfileStats->SerializationTime += (TInstant::Now() - startTime);
+            } else {
+                DataSerializer.Deserialize(data, OutputType, values);
+            }
+
+            for (ui32 i = 0; i < data.GetRows(); ++i) {
+                Data[i] = std::move(values[i]);
+            }
+
+            last = std::next(Data.begin(), takeRows);
+
+            if (Y_UNLIKELY(ProfileStats)) {
+                TInstant startTime = TInstant::Now();
+                data = DataSerializer.Serialize(Data.begin(), last, OutputType);
+                ProfileStats->SerializationTime += (TInstant::Now() - startTime);
+            } else {
+                data = DataSerializer.Serialize(Data.begin(), last, OutputType);
+            }
+        }
+
+        YQL_ENSURE(data.GetRaw().size() < ChunkSizeLimit);
+
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += takeRows;
+
+        Data.erase(Data.begin(), last);
+        return true;
+    }
+
+    [[nodiscard]]
+    bool Pop(NDqProto::TWatermark& watermark) override {
+        if (!HasData() && Watermark) {
+            watermark = std::move(*Watermark);
+            Watermark = Nothing();
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]]
+    bool Pop(NDqProto::TCheckpoint& checkpoint) override {
+        if (!HasData() && Checkpoint) {
+            checkpoint = std::move(*Checkpoint);
+            Checkpoint = Nothing();
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]]
+    bool PopAll(NDqProto::TData& data) override {
+        if (Data.empty()) {
+            if (Finished) {
+                data.SetTransportVersion(DataSerializer.GetTransportVersion());
+                data.SetRows(0);
+                data.ClearRaw();
+            }
+            return false;
+        }
+
+        if (Y_UNLIKELY(ProfileStats)) {
+            TInstant startTime = TInstant::Now();
+            data = DataSerializer.Serialize(Data.begin(), Data.end(), OutputType);
+            ProfileStats->SerializationTime += (TInstant::Now() - startTime);
+        } else {
+            data = DataSerializer.Serialize(Data.begin(), Data.end(), OutputType);
+        }
+
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += data.GetRows();
+
+        Data.clear();
+        return true;
+    }
+
+    bool PopAll(NKikimr::NMiniKQL::TUnboxedValueVector& data) override {
+        if (Data.empty()) {
+            return false;
+        }
+
+        data.reserve(data.size() + Data.size());
+        for (auto&& v : Data) {
+            data.emplace_back(std::move(v));
+        }
+
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += data.size();
+
+        Data.clear();
+        return true;
+    }
+
+    void Finish() override {
+        LOG("Finish request");
+        Finished = true;
+
+        if (!BasicStats.FirstRowIn) {
+            BasicStats.FirstRowIn = TInstant::Now();
+        }
+    }
+
+    bool HasData() const override {
+        return !Data.empty();
+    }
+
+    bool IsFinished() const override {
+        return Finished && !HasData();
+    }
+
+    ui64 Drop() override { // Drop channel data because channel was finished. Leave checkpoint because checkpoints keep going through channel after finishing channel data transfer.
+        ui64 rows = Data.size();
+        Data.clear();
+        TDataType().swap(Data);
+        return rows;
+    }
+
+    NKikimr::NMiniKQL::TType* GetOutputType() const override {
+        return OutputType;
+    }
+
+    const TDqOutputChannelStats* GetStats() const override {
+        return &BasicStats;
+    }
+
+    void Terminate() override {
+    }
+
+private:
+    const ui64 ChannelId;
+    NKikimr::NMiniKQL::TType* OutputType;
+    TDqOutputChannelStats BasicStats;
+    TDqOutputChannelStats* ProfileStats = nullptr;
+    TDqDataSerializer DataSerializer;
+    const ui64 MaxStoredBytes;
+    ui64 MaxChunkBytes;
+    ui64 ChunkSizeLimit;
+    TLogFunc LogFunc;
+
+    using TDataType = TDeque<NUdf::TUnboxedValue, NKikimr::NMiniKQL::TMKQLAllocator<NUdf::TUnboxedValue>>;
+    TDataType Data;
+
+    ui32 EstimatedRowBytes = 0;
+    bool Finished = false;
+
+    TMaybe<NDqProto::TWatermark> Watermark;
+    TMaybe<NDqProto::TCheckpoint> Checkpoint;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class TDqOutputChannelNew : public IDqOutputChannel {
+    struct TSpilledBlob;
+
+public:
+    TDqOutputChannelNew(ui64 channelId, NMiniKQL::TType* outputType, const NMiniKQL::TTypeEnvironment& typeEnv,
+        const NMiniKQL::THolderFactory& holderFactory, const TDqOutputChannelSettings& settings, const TLogFunc& log)
+        : ChannelId(channelId)
+        , OutputType(outputType)
+        , BasicStats(ChannelId)
+        , ProfileStats(settings.CollectProfileStats ? &BasicStats : nullptr)
+        , DataSerializer(typeEnv, holderFactory, settings.TransportVersion)
+        , Storage(settings.ChannelStorage)
+        , MaxStoredBytes(settings.MaxStoredBytes)
+        , MaxChunkBytes(settings.MaxChunkBytes)
+        , ChunkSizeLimit(settings.ChunkSizeLimit)
+        , LogFunc(log)
+    {
+        if (Storage && 3 * MaxChunkBytes > MaxStoredBytes) {
+            MaxChunkBytes = Max(MaxStoredBytes / 3, 1_MB);
+        }
+    }
+
+    ui64 GetChannelId() const override {
+        return ChannelId;
+    }
+
+    ui64 GetValuesCount(bool inMemoryOnly) const override {
+        if (inMemoryOnly) {
+            return DataHead.size() + DataTail.size();
+        }
+        return DataHead.size() + DataTail.size() + SpilledRows;
+    }
+
+    [[nodiscard]]
+    bool IsFull() const override {
+        if (!Storage) {
+            if (MemoryUsed >= MaxStoredBytes) {
+                YQL_ENSURE(HasData());
+                return true;
+            }
+            return false;
+        }
+
+        return Storage->IsFull();
+    }
+
+    void Push(NUdf::TUnboxedValue&& value) override {
+        if (!BasicStats.FirstRowIn) {
+            BasicStats.FirstRowIn = TInstant::Now();
+        }
+
+        ui64 rowsInMemory = DataHead.size() + DataTail.size();
+
+        LOG("Push request, rows in memory: " << rowsInMemory << ", bytesInMemory: " << MemoryUsed
+            << ", spilled rows: " << SpilledRows << ", spilled blobs: " << SpilledBlobs.size()
+            << ", finished: " << Finished);
+        YQL_ENSURE(!IsFull());
+
+        if (Finished) {
+            return;
+        }
+
+        ui64 estimatedRowSize;
+
+        if (RowFixedSize.has_value()) {
+            estimatedRowSize = *RowFixedSize;
+        } else {
+            bool fixed;
+            estimatedRowSize = TDqDataSerializer::EstimateSize(value, OutputType, &fixed);
+            if (fixed) {
+                RowFixedSize.emplace(estimatedRowSize);
+                LOG("Raw has fixed size: " << estimatedRowSize);
+            }
+        }
+
+        DLOG("Row size: " << estimatedRowSize);
+
+        if (SpilledRows == 0) {
+            YQL_ENSURE(DataTail.empty() && SizeTail.empty());
+            DataHead.emplace_back(std::move(value));
+            SizeHead.emplace_back(estimatedRowSize);
+        } else {
+            DataTail.emplace_back(std::move(value));
+            SizeTail.emplace_back(estimatedRowSize);
+        }
+        rowsInMemory++;
+        MemoryUsed += estimatedRowSize;
+
+        ui64 spilledRows = 0;
+        ui64 spilledBytes = 0;
+        ui64 spilledBlobs = 0;
+
+        // TODO: add PushAndFinish call
+        // if processing is finished we don't have to spill data
+
+        if (MemoryUsed > MaxStoredBytes && Storage) {
+            LOG("Not enough memory to store rows in memory only, start spilling, rowsInMemory: " << rowsInMemory
+                << ", memoryUsed: " << MemoryUsed << ", MaxStoredBytes: " << MaxStoredBytes);
+
+            TDataType* data = nullptr;
+            TDeque<ui64>* size = nullptr;
+
+            ui32 startIndex = std::numeric_limits<ui32>::max();
+
+            if (SpilledRows) {
+                // we have spilled rows already, so we can spill all DataTail
+                data = &DataTail;
+                size = &SizeTail;
+                startIndex = 0;
+            } else {
+                // spill from head
+                // but only if we have rows for at least 2 full chunks
+                ui32 chunks = 1;
+                ui64 chunkSize = 0;
+                startIndex = 0;
+                for (ui64 i = 0; i < SizeHead.size(); ++i) {
+                    chunkSize += SizeHead.at(i);
+                    if (chunkSize >= MaxChunkBytes && (i - startIndex) > 0) {
+                        // LOG("one more chunk, size: " << chunkSize << ", start next chunk from " << i);
+                        chunks++; // this row goes to the next chunk
+                        chunkSize = 0;
+
+                        if (chunks >= 3) {
+                            data = &DataHead;
+                            size = &SizeHead;
+                            break;
+                        }
+
+                        startIndex = i;
+                    }
+                }
+            }
+
+            // LOG("about to spill from index " << startIndex);
+
+            if (data) {
+                while (true) {
+                    ui64 chunkSize = 0;
+                    ui32 rowsInChunk = 0;
+                    ui32 idx = startIndex + spilledRows;
+
+                    while (idx < size->size()) {
+                        ui64 rowSize = size->at(idx);
+                        if (chunkSize == 0 || chunkSize + rowSize <= MaxChunkBytes) {
+                            chunkSize += rowSize;
+                            ++rowsInChunk;
+                            ++idx;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (rowsInChunk > 0) {
+                        // LOG("about to spill from " << (startIndex + spilledRows) << " to " << (startIndex + spilledRows + rowsInChunk));
+
+                        TDataType::iterator first = std::next(data->begin(), startIndex + spilledRows);
+                        TDataType::iterator last = std::next(data->begin(), startIndex + spilledRows + rowsInChunk);
+
+                        NDqProto::TData protoBlob = DataSerializer.Serialize(first, last, OutputType);
+                        TBuffer blob;
+                        TBufferOutput out{blob};
+                        protoBlob.SerializeToArcadiaStream(&out);
+
+                        ui64 blobSize = blob.size();
+                        ui64 blobId = NextBlobId++;
+
+                        LOG("Spill blobId: " << blobId << ", size: " << blobSize << ", rows: " << rowsInChunk);
+                        Storage->Put(blobId, std::move(blob));
+
+                        SpilledBlobs.emplace_back(TSpilledBlob(blobId, chunkSize, blobSize, rowsInChunk));
+                        SpilledRows += rowsInChunk;
+                        MemoryUsed -= chunkSize;
+
+                        spilledRows += rowsInChunk;
+                        spilledBytes += blobSize;
+                        spilledBlobs++;
+                    } else {
+                        break;
+                    }
+                }
+
+                if (data == &DataHead) {
+                    // move rows after spilled ones to the DataTail
+                    YQL_ENSURE(DataTail.empty());
+                    for (ui32 i = startIndex + spilledRows; i < data->size(); ++i) {
+                        DataTail.emplace_back(std::move(DataHead[i]));
+                        SizeTail.emplace_back(SizeHead[i]);
+                    }
+                    data->erase(std::next(data->begin(), startIndex), data->end());
+                    size->erase(std::next(size->begin(), startIndex), size->end());
+                } else {
+                    YQL_ENSURE(startIndex == 0);
+                    data->erase(data->begin(), std::next(data->begin(), spilledRows));
+                    size->erase(size->begin(), std::next(size->begin(), spilledRows));
+                }
+            } else {
+                // LOG("nothing to spill");
+            }
+        }
+
+        BasicStats.Bytes += estimatedRowSize;
+        BasicStats.RowsIn++;
+
+        if (Y_UNLIKELY(ProfileStats)) {
+            ProfileStats->MaxMemoryUsage = std::max(ProfileStats->MaxMemoryUsage, MemoryUsed);
+            ProfileStats->MaxRowsInMemory = std::max(ProfileStats->MaxRowsInMemory, DataHead.size() + DataTail.size());
+            if (spilledRows) {
+                ProfileStats->SpilledRows += spilledRows;
+                ProfileStats->SpilledBytes += spilledBytes;
+                ProfileStats->SpilledBlobs += spilledBlobs;
+            }
+        }
+
+        ValidateUsedMemory();
+
+#if 0
+        TStringStream ss;
+        ss << "-- DUMP --" << Endl;
+        ss << "  Head:" << Endl;
+        for (auto& v : DataHead) {
+            ss << "    "; v.Dump(ss); ss << Endl;
+        }
+        ss << "  Spilled: " << SpilledRows << Endl;
+        ss << "  Tail:" << Endl;
+        for (auto& v : DataTail) {
+            ss << "    "; v.Dump(ss); ss << Endl;
+        }
+        LOG(ss.Str());
+#endif
+    }
+
+    void Push(NDqProto::TWatermark&& watermark) override {
+        YQL_ENSURE(!Watermark);
+        Watermark.ConstructInPlace(std::move(watermark));
+    }
+
+    void Push(NDqProto::TCheckpoint&& checkpoint) override {
+        YQL_ENSURE(!Checkpoint);
+        Checkpoint.ConstructInPlace(std::move(checkpoint));
+    }
+
+    [[nodiscard]]
+    bool Pop(NDqProto::TData& data, ui64 bytes) override {
+        LOG("Pop request, rows in memory: " << DataHead.size() << "/" << DataTail.size()
+            << ", spilled rows: " << SpilledRows << ", spilled blobs: " << SpilledBlobs.size()
+            << ", finished: " << Finished << ", requested: " << bytes << ", maxChunkBytes: " << MaxChunkBytes);
+
+        if (!HasData()) {
+            if (Finished) {
+                data.SetTransportVersion(DataSerializer.GetTransportVersion());
+                data.SetRows(0);
+                data.ClearRaw();
+            }
+            return false;
+        }
+
+        bytes = std::min(bytes, MaxChunkBytes);
+
+        if (DataHead.empty()) {
+            YQL_ENSURE(SpilledRows);
+
+            TSpilledBlob spilledBlob = SpilledBlobs.front();
+
+            LOG("Loading spilled blob. BlobId: " << spilledBlob.BlobId << ", rows: " << spilledBlob.Rows
+                << ", bytes: " << spilledBlob.SerializedSize);
             TBuffer blob;
-            if (!Storage->Get(FirstStoredId, blob)) {
-                LOG("BlobId " << FirstStoredId << " not ready yet");
+            if (!Storage->Get(spilledBlob.BlobId, blob)) {
+                LOG("BlobId " << spilledBlob.BlobId << " not ready yet");
+                // not loaded yet
                 return false;
             }
-            ++FirstStoredId;
-            data = LoadSpilled(std::move(blob));
-            SpilledRowCount -= data.RowCount();
-        } else if (!Data.empty()) {
-            auto& packed = Data.front();
-            PackedRowCount -= packed.RowCount;
-            PackedDataSize -= packed.Buffer.size();
-            data.Proto.SetRows(packed.RowCount);
-            data.SetPayload(std::move(packed.Buffer));
-            Data.pop_front();
-        } else {
-            data.Proto.SetRows(ChunkRowCount);
-            data.SetPayload(FinishPackAndCheckSize());
-            ChunkRowCount = 0;
-        }
 
-        DLOG("Took " << data.RowCount() << " rows");
+            YQL_ENSURE(blob.size() == spilledBlob.SerializedSize, "" << blob.size() << " != " << spilledBlob.SerializedSize);
 
-        if (PopStats.CollectBasic()) {
-            PopStats.Bytes += data.Size();
-            PopStats.Rows += data.RowCount();
-            PopStats.Chunks++;
-            if (!IsFull() || FirstStoredId == NextStoredId) {
-                PopStats.Resume();
+            NDqProto::TData protoBlob;
+            YQL_ENSURE(protoBlob.ParseFromArray(blob.Data(), blob.size()));
+            blob.Reset();
+
+            YQL_ENSURE(protoBlob.GetRows() == spilledBlob.Rows);
+            bool hasResult = false;
+
+            // LOG("bytes: " << bytes << ", loaded blob: " << spilledBlob.SerializedSize);
+
+            if (spilledBlob.SerializedSize <= bytes * 2) {
+                data.Swap(&protoBlob);
+                YQL_ENSURE(data.ByteSizeLong() <= ChunkSizeLimit);
+                hasResult = true;
+                // LOG("return loaded blob as-is");
+            } else {
+                NKikimr::NMiniKQL::TUnboxedValueVector buffer;
+                DataSerializer.Deserialize(protoBlob, OutputType, buffer);
+
+                for (ui32 i = 0; i < buffer.size(); ++i) {
+                    SizeHead.emplace_back(RowFixedSize
+                        ? *RowFixedSize
+                        : TDqDataSerializer::EstimateSize(buffer[i], OutputType));
+                    DataHead.emplace_back(std::move(buffer[i]));
+
+                    MemoryUsed += SizeHead.back();
+                }
+            }
+
+            SpilledRows -= spilledBlob.Rows;
+
+            SpilledBlobs.pop_front();
+            if (SpilledBlobs.empty()) {
+                // LOG("no more spilled blobs, move " << DataTail.size() << " tail rows to the head");
+                DataHead.insert(DataHead.end(), std::make_move_iterator(DataTail.begin()), std::make_move_iterator(DataTail.end()));
+                SizeHead.insert(SizeHead.end(), std::make_move_iterator(SizeTail.begin()), std::make_move_iterator(SizeTail.end()));
+                DataTail.clear();
+                SizeTail.clear();
+            }
+
+            if (hasResult) {
+                BasicStats.Chunks++;
+                BasicStats.RowsOut += data.GetRows();
+                ValidateUsedMemory();
+                return true;
             }
         }
+
+        ui32 takeRows = 0;
+        ui64 chunkSize = 0;
+
+        while (takeRows == 0 || (takeRows < SizeHead.size() && chunkSize + SizeHead[takeRows] <= bytes)) {
+            chunkSize += SizeHead[takeRows];
+            ++takeRows;
+        }
+
+        DLOG("return rows: " << takeRows << ", size: " << chunkSize);
+
+        auto firstDataIt = DataHead.begin();
+        auto lastDataIt = std::next(firstDataIt, takeRows);
+
+        auto firstSizeIt = SizeHead.begin();
+        auto lastSizeIt = std::next(firstSizeIt, takeRows);
+
+        if (Y_UNLIKELY(ProfileStats)) {
+            TInstant startTime = TInstant::Now();
+            data = DataSerializer.Serialize(firstDataIt, lastDataIt, OutputType);
+            ProfileStats->SerializationTime += (TInstant::Now() - startTime);
+        } else {
+            data = DataSerializer.Serialize(firstDataIt, lastDataIt, OutputType);
+        }
+
+        YQL_ENSURE(data.ByteSizeLong() <= ChunkSizeLimit);
+
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += takeRows;
+
+        DataHead.erase(firstDataIt, lastDataIt);
+        SizeHead.erase(firstSizeIt, lastSizeIt);
+        MemoryUsed -= chunkSize;
+
+        ValidateUsedMemory();
 
         return true;
     }
@@ -249,84 +714,71 @@ public:
     }
 
     [[nodiscard]]
-    bool PopAll(TDqSerializedBatch& data) override {
-        if (!HasData()) {
+    bool PopAll(NDqProto::TData& data) override {
+        YQL_ENSURE(!SpilledRows);
+        YQL_ENSURE(DataTail.empty());
+
+        if (DataHead.empty()) {
             if (Finished) {
-                data.Clear();
-                data.Proto.SetTransportVersion(TransportVersion);
+                data.SetTransportVersion(DataSerializer.GetTransportVersion());
+                data.SetRows(0);
+                data.ClearRaw();
             }
             return false;
         }
 
-        data.Clear();
-        data.Proto.SetTransportVersion(TransportVersion);
-        if (SpilledRowCount == 0 && PackedRowCount == 0) {
-            data.Proto.SetRows(ChunkRowCount);
-            data.SetPayload(FinishPackAndCheckSize());
-            ChunkRowCount = 0;
-            return true;
-        }
-
-        // Repack all - thats why PopAll should never be used
-        if (ChunkRowCount) {
-            Data.emplace_back();
-            Data.back().Buffer = FinishPackAndCheckSize();
-            PackedDataSize += Data.back().Buffer.size();
-            PackedRowCount += ChunkRowCount;
-            Data.back().RowCount = ChunkRowCount;
-            ChunkRowCount = 0;
-        }
-
-        NKikimr::NMiniKQL::TUnboxedValueBatch rows(OutputType);
-        for (;;) {
-            TDqSerializedBatch chunk;
-            if (!this->Pop(chunk)) {
-                break;
-            }
-            Packer.UnpackBatch(chunk.PullPayload(), HolderFactory, rows);
-        }
-
-        if (OutputType->IsMulti()) {
-            rows.ForEachRowWide([this](const auto* values, ui32 width) {
-                Packer.AddWideItem(values, width);
-            });
+        if (Y_UNLIKELY(ProfileStats)) {
+            TInstant startTime = TInstant::Now();
+            data = DataSerializer.Serialize(DataHead.begin(), DataHead.end(), OutputType);
+            ProfileStats->SerializationTime += (TInstant::Now() - startTime);
         } else {
-            rows.ForEachRow([this](const auto& value) {
-                Packer.AddItem(value);
-            });
+            data = DataSerializer.Serialize(DataHead.begin(), DataHead.end(), OutputType);
         }
 
-        data.Proto.SetRows(rows.RowCount());
-        data.SetPayload(FinishPackAndCheckSize());
-        if (PopStats.CollectBasic()) {
-            PopStats.Bytes += data.Size();
-            PopStats.Rows += data.RowCount();
-            PopStats.Chunks++;
-            if (!IsFull() || FirstStoredId == NextStoredId) {
-                PopStats.Resume();
-            }
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += data.GetRows();
+
+        DataHead.clear();
+        SizeHead.clear();
+        MemoryUsed = 0;
+
+        return true;
+    }
+
+    bool PopAll(NKikimr::NMiniKQL::TUnboxedValueVector& data) override {
+        YQL_ENSURE(!SpilledRows);
+        YQL_ENSURE(DataTail.empty());
+
+        if (DataHead.empty()) {
+            return false;
         }
-        YQL_ENSURE(!HasData());
+
+        data.reserve(data.size() + DataHead.size());
+        for (auto&& v : DataHead) {
+            data.emplace_back(std::move(v));
+        }
+
+        BasicStats.Chunks++;
+        BasicStats.RowsOut += data.size();
+
+        DataHead.clear();
+        SizeHead.clear();
+        MemoryUsed = 0;
+
         return true;
     }
 
     void Finish() override {
-        LOG("Finish request");
+        DLOG("Finish request");
         Finished = true;
-    }
 
-    TRope FinishPackAndCheckSize() {
-        TRope result = Packer.Finish();
-        if (result.size() > ChunkSizeLimit) {
-            // TODO: may relax requirement if OOB transport is enabled
-            ythrow TDqOutputChannelChunkSizeLimitExceeded() << "Row data size is too big: "
-                << result.size() << " bytes, exceeds limit of " << ChunkSizeLimit << " bytes";
+        if (!BasicStats.FirstRowIn) {
+            BasicStats.FirstRowIn = TInstant::Now();
         }
-        return result;
     }
 
     bool HasData() const override {
-        return GetValuesCount() != 0;
+        return !DataHead.empty() || SpilledRows != 0 || !DataTail.empty();
     }
 
     bool IsFinished() const override {
@@ -334,11 +786,17 @@ public:
     }
 
     ui64 Drop() override { // Drop channel data because channel was finished. Leave checkpoint because checkpoints keep going through channel after finishing channel data transfer.
-        ui64 rows = GetValuesCount();
-        Data.clear();
-        Packer.Clear();
-        SpilledRowCount = PackedDataSize = PackedRowCount = ChunkRowCount = 0;
-        FirstStoredId = NextStoredId;
+        ui64 rows = DataHead.size() + SpilledRows + DataTail.size();
+        DataHead.clear();
+        SizeHead.clear();
+        DataTail.clear();
+        SizeTail.clear();
+        MemoryUsed = 0;
+        TDataType().swap(DataHead);
+        TDataType().swap(DataTail);
+        // todo: send remove request
+        SpilledRows = 0;
+        SpilledBlobs.clear();
         return rows;
     }
 
@@ -346,35 +804,60 @@ public:
         return OutputType;
     }
 
+    const TDqOutputChannelStats* GetStats() const override {
+        return &BasicStats;
+    }
+
     void Terminate() override {
+        if (Storage) {
+            Storage.Reset();
+        }
+    }
+
+    void ValidateUsedMemory() {
+#ifndef NDEBUG
+        ui64 x = 0;
+        for (auto z : SizeHead) x += z;
+        for (auto z : SizeTail) x += z;
+        YQL_ENSURE(x == MemoryUsed, "" << x << " != " << MemoryUsed);
+#endif
     }
 
 private:
+    const ui64 ChannelId;
     NKikimr::NMiniKQL::TType* OutputType;
-    NKikimr::NMiniKQL::TValuePackerTransport<FastPack> Packer;
-    const ui32 Width;
-    const IDqChannelStorage::TPtr Storage;
-    const NMiniKQL::THolderFactory& HolderFactory;
-    const NDqProto::EDataTransportVersion TransportVersion;
+    TDqOutputChannelStats BasicStats;
+    TDqOutputChannelStats* ProfileStats = nullptr;
+    TDqDataSerializer DataSerializer;
+    IDqChannelStorage::TPtr Storage;
     const ui64 MaxStoredBytes;
-    const ui64 MaxChunkBytes;
-    const ui64 ChunkSizeLimit;
+    ui64 MaxChunkBytes;
+    ui64 ChunkSizeLimit;
     TLogFunc LogFunc;
+    std::optional<ui32> RowFixedSize;
 
-    struct TSerializedBatch {
-        TRope Buffer;
-        ui64 RowCount = 0;
+    struct TSpilledBlob {
+        ui64 BlobId;
+        ui64 InMemorySize;
+        ui64 SerializedSize;
+        ui32 Rows;
+
+        TSpilledBlob(ui64 blobId, ui64 inMemorySize, ui64 serializedSize, ui32 rows)
+            : BlobId(blobId), InMemorySize(inMemorySize), SerializedSize(serializedSize), Rows(rows) {}
     };
-    std::deque<TSerializedBatch> Data;
 
-    size_t SpilledRowCount = 0;
-    ui64 FirstStoredId = 0;
-    ui64 NextStoredId = 0;
+    // DataHead ( . SpilledBlobs (. DataTail)? )?
+    using TDataType = TDeque<NUdf::TUnboxedValue, NKikimr::NMiniKQL::TMKQLAllocator<NUdf::TUnboxedValue>>;
+    TDataType DataHead;
+    TDeque<ui64> SizeHead;
+    TDeque<TSpilledBlob> SpilledBlobs;
+    TDataType DataTail;
+    TDeque<ui64> SizeTail;
 
-    size_t PackedDataSize = 0;
-    size_t PackedRowCount = 0;
-    
-    size_t ChunkRowCount = 0;
+    ui64 MemoryUsed = 0; // approx memory usage
+
+    ui64 NextBlobId = 1;
+    ui64 SpilledRows = 0;
 
     bool Finished = false;
 
@@ -385,23 +868,16 @@ private:
 } // anonymous namespace
 
 
-IDqOutputChannel::TPtr CreateDqOutputChannel(ui64 channelId, ui32 dstStageId, NKikimr::NMiniKQL::TType* outputType,
-    const NKikimr::NMiniKQL::THolderFactory& holderFactory,
+IDqOutputChannel::TPtr CreateDqOutputChannel(ui64 channelId, NKikimr::NMiniKQL::TType* outputType,
+    const NKikimr::NMiniKQL::TTypeEnvironment& typeEnv, const NKikimr::NMiniKQL::THolderFactory& holderFactory,
     const TDqOutputChannelSettings& settings, const TLogFunc& logFunc)
 {
-    auto transportVersion = settings.TransportVersion;
-    switch(transportVersion) {
-        case NDqProto::EDataTransportVersion::DATA_TRANSPORT_VERSION_UNSPECIFIED:
-            transportVersion = NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_PICKLE_1_0;
-            [[fallthrough]];
-        case NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_PICKLE_1_0:
-        case NDqProto::EDataTransportVersion::DATA_TRANSPORT_OOB_PICKLE_1_0:
-            return new TDqOutputChannel<false>(channelId, dstStageId, outputType, holderFactory, settings, logFunc, transportVersion);
-        case NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_FAST_PICKLE_1_0:
-        case NDqProto::EDataTransportVersion::DATA_TRANSPORT_OOB_FAST_PICKLE_1_0:
-            return new TDqOutputChannel<true>(channelId, dstStageId, outputType, holderFactory, settings, logFunc, transportVersion);
-        default:
-            YQL_ENSURE(false, "Unsupported transport version " << (ui32)transportVersion);
+    if (settings.AllowGeneratorsInUnboxedValues) {
+        YQL_ENSURE(!settings.ChannelStorage);
+        return new TDqOutputChannelOld(channelId, outputType, settings.CollectProfileStats, typeEnv, holderFactory,
+            settings.MaxStoredBytes, settings.MaxChunkBytes, settings.ChunkSizeLimit, settings.TransportVersion, logFunc);
+    } else {
+        return new TDqOutputChannelNew(channelId, outputType, typeEnv, holderFactory, settings, logFunc);
     }
 }
 

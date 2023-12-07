@@ -5,7 +5,6 @@ SRCS(
     action.cpp
     counters.cpp
     dlq_helpers.cpp
-    events_writer.cpp
     helpers.cpp
     probes.cpp
     queue_attributes.cpp
@@ -27,7 +26,6 @@ PEERDIR(
     library/cpp/monlib/dynamic_counters
     library/cpp/scheme
     library/cpp/string_utils/base64
-    library/cpp/unified_agent_client
     ydb/core/base
     ydb/core/protos
     ydb/core/ymq/proto

@@ -1,6 +1,5 @@
 LIBRARY()
 
-ALLOCATOR_IMPL()
 SRCS(
     bridge.cpp
 )
@@ -8,7 +7,6 @@ SRCS(
 PEERDIR(
     library/cpp/malloc/api
     library/cpp/yt/containers
-    library/cpp/yt/memory
     library/cpp/yt/threading
 )
 

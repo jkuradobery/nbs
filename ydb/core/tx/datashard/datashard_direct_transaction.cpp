@@ -5,22 +5,22 @@
 namespace NKikimr {
 namespace NDataShard {
 
-TDirectTransaction::TDirectTransaction(TInstant receivedAt, ui64 tieBreakerIndex, TEvDataShard::TEvUploadRowsRequest::TPtr& ev)
-    : TOperation(TBasicOpInfo(EOperationKind::DirectTx, Flags, 0, receivedAt, tieBreakerIndex))
+TDirectTransaction::TDirectTransaction(ui64 txId, TInstant receivedAt, ui64 tieBreakerIndex, TEvDataShard::TEvUploadRowsRequest::TPtr& ev)
+    : TOperation(TBasicOpInfo(txId, EOperationKind::DirectTx, Flags, 0, receivedAt, tieBreakerIndex))
     , Impl(new TDirectTxUpload(ev))
 {
 }
 
-TDirectTransaction::TDirectTransaction(TInstant receivedAt, ui64 tieBreakerIndex, TEvDataShard::TEvEraseRowsRequest::TPtr& ev)
-    : TOperation(TBasicOpInfo(EOperationKind::DirectTx, Flags, 0, receivedAt, tieBreakerIndex))
+TDirectTransaction::TDirectTransaction(ui64 txId, TInstant receivedAt, ui64 tieBreakerIndex, TEvDataShard::TEvEraseRowsRequest::TPtr& ev)
+    : TOperation(TBasicOpInfo(txId, EOperationKind::DirectTx, Flags, 0, receivedAt, tieBreakerIndex))
     , Impl(new TDirectTxErase(ev))
 {
 }
 
 void TDirectTransaction::BuildExecutionPlan(bool loaded)
 {
-    Y_ABORT_UNLESS(GetExecutionPlan().empty());
-    Y_ABORT_UNLESS(!loaded);
+    Y_VERIFY(GetExecutionPlan().empty());
+    Y_VERIFY(!loaded);
 
     TVector<EExecutionUnitKind> plan;
     plan.push_back(EExecutionUnitKind::BuildAndWaitDependencies);
@@ -32,19 +32,8 @@ void TDirectTransaction::BuildExecutionPlan(bool loaded)
 
 bool TDirectTransaction::Execute(TDataShard* self, TTransactionContext& txc) {
     auto [readVersion, writeVersion] = self->GetReadWriteVersions(this);
-
-    // NOTE: may throw TNeedGlobalTxId exception, which is handled in direct tx unit
-    absl::flat_hash_set<ui64> volatileReadDependencies;
-    if (!Impl->Execute(self, txc, readVersion, writeVersion, GetGlobalTxId(), volatileReadDependencies)) {
-        if (!volatileReadDependencies.empty()) {
-            for (ui64 txId : volatileReadDependencies) {
-                AddVolatileDependency(txId);
-                bool ok = self->GetVolatileTxManager().AttachBlockedOperation(txId, GetTxId());
-                Y_VERIFY_S(ok, "Unexpected failure to attach " << *static_cast<TOperation*>(this) << " to volatile tx " << txId);
-            }
-        }
+    if (!Impl->Execute(self, txc, readVersion, writeVersion))
         return false;
-    }
 
     if (self->IsMvccEnabled()) {
         // Note: we always wait for completion, so we can ignore the result

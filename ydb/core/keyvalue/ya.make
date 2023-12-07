@@ -41,16 +41,16 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/protos
+    library/cpp/actors/core
+    library/cpp/actors/protos
     ydb/core/base
     ydb/core/blobstorage/base
+    ydb/core/blobstorage/dsproxy
     ydb/core/engine/minikql
     ydb/core/keyvalue/protos
     ydb/core/protos
     ydb/core/tablet_flat
     ydb/core/tx
-    ydb/core/util
     ydb/public/lib/base
 )
 

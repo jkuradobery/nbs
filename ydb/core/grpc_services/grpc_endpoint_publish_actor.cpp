@@ -1,12 +1,11 @@
 #include "grpc_endpoint.h"
 
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 #include <ydb/core/base/path.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/location.h>
 #include <ydb/core/base/statestorage.h>
 
@@ -52,7 +51,7 @@ class TGRpcEndpointPublishActor : public TActorBootstrapped<TGRpcEndpointPublish
         for (const auto &service : Description->ServedServices)
             entry.AddServices(service);
 
-        Y_ABORT_UNLESS(entry.SerializeToString(&payload));
+        Y_VERIFY(entry.SerializeToString(&payload));
 
         PublishActor = Register(CreateBoardPublishActor(assignedPath, payload, SelfId(), statestorageGroupId, 0, true));
     }
@@ -92,6 +91,7 @@ public:
     }
 
     STFUNC(StateResolveDC) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvInterconnect::TEvNodeInfo, Handle);
             cFunc(TEvents::TEvPoisonPill::EventType, PassAway);
@@ -99,6 +99,7 @@ public:
     }
 
     STFUNC(StateWork) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             cFunc(TEvents::TEvPoisonPill::EventType, PassAway);
         }

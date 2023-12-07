@@ -1,4 +1,4 @@
-#include "source.h"
+#include "node.h"
 #include "context.h"
 
 #include <ydb/library/yql/utils/yql_panic.h>
@@ -332,7 +332,7 @@ protected:
                 }
             }
 
-            Y_DEBUG_ABORT_UNLESS(leftSource);
+            Y_VERIFY_DEBUG(leftSource);
             if (sameColumnNamePtr) {
                 SameKeyMap[*sameColumnNamePtr].insert(*leftSource);
                 SameKeyMap[*sameColumnNamePtr].insert(*rightSource);
@@ -567,7 +567,9 @@ public:
             if (extraMembers) {
                 sourceNode = Y(useOrderedForSource ? "OrderedMap" : "Map", sourceNode, BuildLambda(Pos, Y("row"), extraMembers, "row"));
             }
-            sourceNode = Y("RemoveSystemMembers", sourceNode);
+            if (ctx.EnableSystemColumns && source->IsTableSource()) {
+                sourceNode = Y("RemoveSystemMembers", sourceNode);
+            }
             equiJoin = L(equiJoin, Q(Y(sourceNode, BuildQuotedAtom(source->GetPos(), source->GetLabel()))));
         }
         TNodePtr removeMembers;

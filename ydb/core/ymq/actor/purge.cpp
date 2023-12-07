@@ -9,9 +9,6 @@
 #include <ydb/core/ymq/base/query_id.h>
 #include <ydb/core/ymq/queues/common/key_hashes.h>
 
-#include <util/generic/guid.h>
-
-
 using NKikimr::NClient::TValue;
 
 namespace NKikimr::NSQS {
@@ -154,43 +151,23 @@ static void FillMessagesParam(NClient::TWriteValue& messagesParam, const NClient
 }
 
 void TPurgeActor::MakeStage2Request(ui64 cleanupVersion, const TValue& messages, const TMaybe<TValue>& inflyMessages, const ui64 shardId, TShard* shard) {
-    TVector<ui64> offsets;
-    auto collectOffsetsFrom = [&](const TValue& msgs) {
-        for (size_t i = 0; i < msgs.Size(); ++i) {
-            const ui64 offset = msgs[i]["Offset"];
-            offsets.push_back(offset);
-        }
-    };
-
-    collectOffsetsFrom(messages);
-    if (inflyMessages) {
-        collectOffsetsFrom(*inflyMessages);
-    }
-
-    auto onExecuted = [this, shardId, shard, offsets] (const TSqsEvents::TEvExecuted::TRecord& ev) {
+    auto onExecuted = [this, shardId, shard] (const TSqsEvents::TEvExecuted::TRecord& ev) {
         const ui32 status = ev.GetStatus();
         if (status == TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ExecComplete) {
             const TValue val(TValue::Create(ev.GetExecutionEngineEvaluatedResponse()));
             const ui64 messagesDeleted = val["messagesDeleted"];
-            this->Send(
-                QueueLeader_,
-                new TSqsEvents::TEvLocalCounterChanged(
-                    TSqsEvents::TEvLocalCounterChanged::ECounterType::MessagesPurged,
-                    messagesDeleted
-                )
-            );
+            ADD_COUNTER_COUPLE(Counters_, MessagesPurged, purged_count_per_second, messagesDeleted);
             RLOG_SQS_DEBUG("Purged " << messagesDeleted << " messages from queue [" << QueuePath_ << "]");
             const bool versionIsSame = val["versionIsSame"];
             if (versionIsSame) {
                 shard->PreviousSuccessfullyProcessedLastMessage = shard->CurrentLastMessage;
             }
-            {
+            if (!IsFifo_) {
                 const i64 newMessagesCount = val["newMessagesCount"];
-                Y_ABORT_UNLESS(newMessagesCount >= 0);
+                Y_VERIFY(newMessagesCount >= 0);
                 auto notification = MakeHolder<TSqsEvents::TEvQueuePurgedNotification>();
                 notification->Shard = shardId;
                 notification->NewMessagesCount = static_cast<ui64>(newMessagesCount);
-                notification->DeletedOffsets = std::move(offsets);
                 Send(QueueLeader_, std::move(notification));
             }
 

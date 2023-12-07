@@ -1,7 +1,6 @@
 #include "kqp_topics.h"
 
 #include <ydb/core/base/path.h>
-#include <ydb/library/actors/core/log.h>
 
 #define LOG_D(msg) LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::KQP_SESSION, msg)
 
@@ -17,22 +16,22 @@ bool TConsumerOperations::IsValid() const
 
 std::pair<ui64, ui64> TConsumerOperations::GetRange() const
 {
-    Y_ABORT_UNLESS(IsValid());
+    Y_VERIFY(IsValid());
 
     return {Offsets_.Min(), Offsets_.Max()};
 }
 
 void TConsumerOperations::AddOperation(const TString& consumer, const Ydb::Topic::OffsetsRange& range)
 {
-    Y_ABORT_UNLESS(Consumer_.Empty() || Consumer_ == consumer);
+    Y_VERIFY(Consumer_.Empty() || Consumer_ == consumer);
 
     AddOperationImpl(consumer, range.start(), range.end());
 }
 
 void TConsumerOperations::Merge(const TConsumerOperations& rhs)
 {
-    Y_ABORT_UNLESS(rhs.Consumer_.Defined());
-    Y_ABORT_UNLESS(Consumer_.Empty() || Consumer_ == rhs.Consumer_);
+    Y_VERIFY(rhs.Consumer_.Defined());
+    Y_VERIFY(Consumer_.Empty() || Consumer_ == rhs.Consumer_);
 
     for (auto& range : rhs.Offsets_) {
         AddOperationImpl(*rhs.Consumer_, range.first, range.second);
@@ -66,8 +65,8 @@ void TTopicPartitionOperations::AddOperation(const TString& topic, ui32 partitio
                                              const TString& consumer,
                                              const Ydb::Topic::OffsetsRange& range)
 {
-    Y_ABORT_UNLESS(Topic_.Empty() || Topic_ == topic);
-    Y_ABORT_UNLESS(Partition_.Empty() || Partition_ == partition);
+    Y_VERIFY(Topic_.Empty() || Topic_ == topic);
+    Y_VERIFY(Partition_.Empty() || Partition_ == partition);
 
     if (Topic_.Empty()) {
         Topic_ = topic;
@@ -79,8 +78,8 @@ void TTopicPartitionOperations::AddOperation(const TString& topic, ui32 partitio
 
 void TTopicPartitionOperations::AddOperation(const TString& topic, ui32 partition)
 {
-    Y_ABORT_UNLESS(Topic_.Empty() || Topic_ == topic);
-    Y_ABORT_UNLESS(Partition_.Empty() || Partition_ == partition);
+    Y_VERIFY(Topic_.Empty() || Topic_ == topic);
+    Y_VERIFY(Partition_.Empty() || Partition_ == partition);
 
     if (Topic_.Empty()) {
         Topic_ = topic;
@@ -90,10 +89,10 @@ void TTopicPartitionOperations::AddOperation(const TString& topic, ui32 partitio
     HasWriteOperations_ = true;
 }
 
-void TTopicPartitionOperations::BuildTopicTxs(THashMap<ui64, NKikimrPQ::TDataTransaction> &txs)
+void TTopicPartitionOperations::BuildTopicTxs(THashMap<ui64, NKikimrPQ::TKqpTransaction> &txs)
 {
-    Y_ABORT_UNLESS(TabletId_.Defined());
-    Y_ABORT_UNLESS(Partition_.Defined());
+    Y_VERIFY(TabletId_.Defined());
+    Y_VERIFY(Partition_.Defined());
 
     auto& tx = txs[*TabletId_];
 
@@ -116,9 +115,9 @@ void TTopicPartitionOperations::BuildTopicTxs(THashMap<ui64, NKikimrPQ::TDataTra
 
 void TTopicPartitionOperations::Merge(const TTopicPartitionOperations& rhs)
 {
-    Y_ABORT_UNLESS(Topic_.Empty() || Topic_ == rhs.Topic_);
-    Y_ABORT_UNLESS(Partition_.Empty() || Partition_ == rhs.Partition_);
-    Y_ABORT_UNLESS(TabletId_.Empty() || TabletId_ == rhs.TabletId_);
+    Y_VERIFY(Topic_.Empty() || Topic_ == rhs.Topic_);
+    Y_VERIFY(Partition_.Empty() || Partition_ == rhs.Partition_);
+    Y_VERIFY(TabletId_.Empty() || TabletId_ == rhs.TabletId_);
 
     if (Topic_.Empty()) {
         Topic_ = rhs.Topic_;
@@ -135,14 +134,14 @@ void TTopicPartitionOperations::Merge(const TTopicPartitionOperations& rhs)
 
 ui64 TTopicPartitionOperations::GetTabletId() const
 {
-    Y_ABORT_UNLESS(TabletId_.Defined());
+    Y_VERIFY(TabletId_.Defined());
 
     return *TabletId_;
 }
 
 void TTopicPartitionOperations::SetTabletId(ui64 value)
 {
-    Y_ABORT_UNLESS(TabletId_.Empty());
+    Y_VERIFY(TabletId_.Empty());
 
     TabletId_ = value;
 }
@@ -200,21 +199,6 @@ bool TTopicOperations::HasReadOperations() const
 bool TTopicOperations::HasWriteOperations() const
 {
     return HasWriteOperations_;
-}
-
-bool TTopicOperations::HasWriteId() const
-{
-    return WriteId_.GetLockId();
-}
-
-ui64 TTopicOperations::GetWriteId() const
-{
-    return WriteId_.GetLockId();
-}
-
-void TTopicOperations::SetWriteId(NLongTxService::TLockHandle handle)
-{
-    WriteId_ = std::move(handle);
 }
 
 bool TTopicOperations::TabletHasReadOperations(ui64 tabletId) const
@@ -318,7 +302,7 @@ bool TTopicOperations::ProcessSchemeCacheNavigate(const NSchemeCache::TSchemeCac
                 TTopicPartition key{path, partition.GetPartitionId()};
 
                 if (auto p = Operations_.find(key); p != Operations_.end()) {
-                    LOG_D(TStringBuilder() << "(topic, partition, tablet): "
+                    LOG_D("(topic, partition, tablet): "
                           << "'" << key.Topic_ << "'"
                           << ", " << partition.GetPartitionId()
                           << ", " << partition.GetTabletId());
@@ -342,7 +326,7 @@ bool TTopicOperations::ProcessSchemeCacheNavigate(const NSchemeCache::TSchemeCac
     return true;
 }
 
-void TTopicOperations::BuildTopicTxs(THashMap<ui64, NKikimrPQ::TDataTransaction> &txs)
+void TTopicOperations::BuildTopicTxs(THashMap<ui64, NKikimrPQ::TKqpTransaction> &txs)
 {
     for (auto& [_, operations] : Operations_) {
         operations.BuildTopicTxs(txs);

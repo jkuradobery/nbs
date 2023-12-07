@@ -1,7 +1,7 @@
 #pragma once
 
 #include <ydb/core/grpc_services/base/base_service.h>
-#include <ydb/public/api/grpc/ydb_query_v1.grpc.pb.h>
+#include <ydb/public/api/grpc/draft/ydb_query_v1.grpc.pb.h>
 
 namespace NKikimr::NGRpcService {
 
@@ -12,7 +12,7 @@ public:
     using TGrpcServiceBase<Ydb::Query::V1::QueryService>::TGrpcServiceBase;
 
 private:
-    void SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger);
+    void SetupIncomingRequests(NGrpc::TLoggerPtr logger);
 };
 
 } // namespace NKikimr::NGRpcService

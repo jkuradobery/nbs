@@ -1,12 +1,11 @@
 #include "cluster_info.h"
-#include "cms_state.h"
 #include "node_checkers.h"
+#include "cms_state.h"
 
-#include <ydb/core/base/nameservice.h>
-#include <ydb/library/services/services.pb.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/log.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/log.h>
+#include <ydb/core/protos/services.pb.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/ptr.h>
@@ -29,7 +28,7 @@ bool TLockableItem::IsLocked(TErrorInfo &error, TDuration defaultRetryTime,
                              TInstant now, TDuration duration) const
 {
     if (State == RESTART) {
-        Y_ABORT_UNLESS(Lock.Defined());
+        Y_VERIFY(Lock.Defined());
         error.Code = TStatus::DISALLOW_TEMP;
         error.Reason = Sprintf("%s is restarting (permission %s owned by %s)",
                                PrettyItemName().data(), Lock->PermissionId.data(), Lock->Owner.data());
@@ -84,7 +83,7 @@ bool TLockableItem::IsLocked(TErrorInfo &error, TDuration defaultRetryTime,
 bool TLockableItem::IsDown(TErrorInfo &error, TInstant defaultDeadline) const
 {
     if (State == RESTART) {
-        Y_ABORT_UNLESS(Lock.Defined());
+        Y_VERIFY(Lock.Defined());
         error.Code = TStatus::DISALLOW_TEMP;
         error.Reason = Sprintf("%s is restarting (permission %s owned by %s)",
                                PrettyItemName().data(), Lock->PermissionId.data(), Lock->Owner.data());
@@ -377,9 +376,7 @@ void TClusterInfo::AddNode(const TEvInterconnect::TNodeInfo &info, const TActorC
             break;
         }
     }
-
-    node->AddNodeGroup(ClusterNodes);
-
+    ClusterNodes->AddNode(node->NodeId);
     HostNameToNodeId.emplace(node->Host, node->NodeId);
     LockableItems[node->ItemName()] = node;
 }
@@ -394,6 +391,8 @@ void TClusterInfo::SetNodeState(ui32 nodeId, NKikimrCms::EState state, const NKi
     node.StartTime = TInstant::MilliSeconds(info.GetStartTime());
     node.Version = info.GetVersion();
 
+    ClusterNodes->UpdateNode(nodeId, state);
+
     node.Services = TServices();
     for (const auto& role : info.GetRoles()) {
         EService value;
@@ -401,8 +400,6 @@ void TClusterInfo::SetNodeState(ui32 nodeId, NKikimrCms::EState state, const NKi
             node.Services |= value;
         }
     }
-
-    node.UpdateNodeState();
 }
 
 void TClusterInfo::ClearNode(ui32 nodeId)
@@ -414,9 +411,10 @@ void TClusterInfo::ClearNode(ui32 nodeId)
     for (auto tablet : node.Tablets)
         Tablets.erase(tablet);
     node.Tablets.clear();
-    node.HasTenantInfo = false;
     node.State = NKikimrCms::DOWN;
-    node.UpdateNodeState();
+    node.HasTenantInfo = false;
+
+    ClusterNodes->UpdateNode(node.NodeId, NKikimrCms::DOWN);
 }
 
 void TClusterInfo::ApplyInitialNodeTenants(const TActorContext& ctx, const THashMap<ui32, TString>& nodeTenants)
@@ -496,7 +494,7 @@ void TClusterInfo::UpdatePDiskState(const TPDiskID &id, const NKikimrWhiteboard:
 void TClusterInfo::AddVDisk(const NKikimrBlobStorage::TBaseConfig::TVSlot &info)
 {
     ui32 nodeId = info.GetVSlotId().GetNodeId();
-    Y_DEBUG_ABORT_UNLESS(HasNode(nodeId));
+    Y_VERIFY_DEBUG(HasNode(nodeId));
     if (!HasNode(nodeId)) {
         BLOG_ERROR("Got VDisk info from BSC base config for unknown node " << nodeId);
         return;
@@ -516,7 +514,7 @@ void TClusterInfo::AddVDisk(const NKikimrBlobStorage::TBaseConfig::TVSlot &info)
     vdisk->NodeId = nodeId;
     vdisk->SlotId = info.GetVSlotId().GetVSlotId();
 
-    Y_DEBUG_ABORT_UNLESS(HasPDisk(vdisk->PDiskId));
+    Y_VERIFY_DEBUG(HasPDisk(vdisk->PDiskId));
     if (!HasPDisk(vdisk->PDiskId)) {
         BLOG_ERROR("Got VDisk info from BSC base config for unknown PDisk " << vdisk->PDiskId.ToString());
         PDisks.emplace(vdisk->PDiskId, new TPDiskInfo(vdisk->PDiskId));
@@ -560,14 +558,14 @@ void TClusterInfo::AddBSGroup(const NKikimrBlobStorage::TBaseConfig::TGroup &inf
         bsgroup.Erasure = {TErasureType::ErasureSpeciesByName(info.GetErasureSpecies())};
     for (const auto &vdisk : info.GetVSlotId()) {
         TPDiskID pdiskId = {vdisk.GetNodeId(), vdisk.GetPDiskId()};
-        Y_DEBUG_ABORT_UNLESS(HasPDisk(pdiskId));
+        Y_VERIFY_DEBUG(HasPDisk(pdiskId));
         if (!HasPDisk(pdiskId)) {
             BLOG_ERROR("Group " << bsgroup.GroupId << " refers unknown pdisk " << pdiskId.ToString());
             return;
         }
 
         auto &pdisk = PDiskRef(pdiskId);
-        Y_DEBUG_ABORT_UNLESS(pdisk.VSlots.contains(vdisk.GetVSlotId()));
+        Y_VERIFY_DEBUG(pdisk.VSlots.contains(vdisk.GetVSlotId()));
         if (!pdisk.VSlots.contains(vdisk.GetVSlotId())) {
             BLOG_ERROR("Group " << bsgroup.GroupId << " refers unknown slot " <<
                         vdisk.GetVSlotId() << " in disk " << pdiskId.ToString());
@@ -592,7 +590,7 @@ void TClusterInfo::AddNodeTenants(ui32 nodeId, const NKikimrTenantPool::TTenantP
 
     for (const auto& slot : info.GetSlots()) {
         TString slotTenant = slot.GetAssignedTenant();
-        Y_ABORT_UNLESS(slotTenant.empty() || nodeTenant.empty() || slotTenant == nodeTenant);
+        Y_VERIFY(slotTenant.empty() || nodeTenant.empty() || slotTenant == nodeTenant);
         if (!slotTenant.empty())
             nodeTenant = slotTenant;
     }
@@ -647,11 +645,12 @@ void TClusterInfo::ApplyActionWithoutLog(const NKikimrCms::TAction &action)
     switch (action.GetType()) {
     case TAction::RESTART_SERVICES:
     case TAction::SHUTDOWN_HOST:
-    case TAction::REBOOT_HOST:
         if (auto nodes = NodePtrs(action.GetHost(), MakeServices(action))) {
             for (const auto node : nodes) {
-                for (auto &nodeGroup: node->NodeGroups)
-                    nodeGroup->LockNode(node->NodeId);
+                ClusterNodes->LockNode(node->NodeId);
+                if (node->Tenant) {
+                    TenantNodesChecker[node->Tenant]->LockNode(node->NodeId);
+                }
             }
         }
         break;
@@ -659,12 +658,10 @@ void TClusterInfo::ApplyActionWithoutLog(const NKikimrCms::TAction &action)
         for (const auto &device : action.GetDevices()) {
             if (HasPDisk(device)) {
                 auto pdisk = &PDiskRef(device);
-                for (auto &nodeGroup: NodeRef(pdisk->NodeId).NodeGroups)
-                    nodeGroup->LockNode(pdisk->NodeId);
+                ClusterNodes->LockNode(pdisk->NodeId);
             } else if (HasVDisk(device)) {
                 auto vdisk = &VDiskRef(device);
-                for (auto &nodeGroup: NodeRef(vdisk->NodeId).NodeGroups)
-                    nodeGroup->LockNode(vdisk->NodeId);
+                ClusterNodes->LockNode(vdisk->NodeId);
             }
         }
         break;
@@ -698,7 +695,6 @@ TSet<TLockableItem *> TClusterInfo::FindLockedItems(const NKikimrCms::TAction &a
     switch (action.GetType()) {
     case TAction::RESTART_SERVICES:
     case TAction::SHUTDOWN_HOST:
-    case TAction::REBOOT_HOST:
         if (auto nodes = NodePtrs(action.GetHost(), MakeServices(action))) {
             for (const auto node : nodes) {
                 res.insert(node);
@@ -753,7 +749,6 @@ ui64 TClusterInfo::AddLocks(const TPermissionInfo &permission, const TActorConte
         if (item->State == DOWN
             && (permission.Action.GetType() == TAction::RESTART_SERVICES
                 || permission.Action.GetType() == TAction::SHUTDOWN_HOST
-                || permission.Action.GetType() == TAction::REBOOT_HOST
                 || permission.Action.GetType() == TAction::REPLACE_DEVICES)) {
             item->State = RESTART;
             lock = true;;
@@ -889,6 +884,18 @@ void TClusterInfo::MigrateOldInfo(TClusterInfoPtr old)
     }
 }
 
+void TClusterInfo::ApplySysTabletsInfo(const NKikimrConfig::TBootstrap& config) {
+    for (ui32 i = 0; i < config.TabletSize(); ++i) {
+        const auto &tablet = config.GetTablet(i);
+
+        for (ui32 j = 0; j < tablet.NodeSize(); ++j) {
+            ui32 nodeId = tablet.GetNode(j);
+            TabletTypeToNodes[tablet.GetType()].push_back(nodeId);
+            NodeToTabletTypes[nodeId].push_back(tablet.GetType());
+        }
+    }
+}
+
 void TClusterInfo::ApplyStateStorageInfo(TIntrusiveConstPtr<TStateStorageInfo> info) {
     StateStorageInfoReceived = true;
     for (ui32 ringId = 0; ringId < info->Rings.size(); ++ringId) {
@@ -899,7 +906,7 @@ void TClusterInfo::ApplyStateStorageInfo(TIntrusiveConstPtr<TStateStorageInfo> i
             ringInfo->SetDisabled();
 
         for(auto replica : ring.Replicas) {
-            CheckNodeExistenceWithVerify(replica.NodeId());
+            Y_VERIFY(HasNode(replica.NodeId()));
             ringInfo->AddNode(Nodes[replica.NodeId()]);
             StateStorageReplicas.insert(replica.NodeId());
             StateStorageNodeToRingId[replica.NodeId()] = ringId;
@@ -913,26 +920,9 @@ void TClusterInfo::GenerateTenantNodesCheckers() {
     for (auto &[nodeId, nodeInfo] : Nodes) {
         if (nodeInfo->Tenant) {
             if (!TenantNodesChecker.contains(nodeInfo->Tenant))
-                TenantNodesChecker[nodeInfo->Tenant] = TSimpleSharedPtr<TNodesLimitsCounterBase>(new TTenantLimitsCounter(nodeInfo->Tenant, 0, 0));
+                TenantNodesChecker[nodeInfo->Tenant] = TSimpleSharedPtr<TNodesStateBase>(new TTenantState(nodeInfo->Tenant, 0, 0));
 
-            nodeInfo->AddNodeGroup(TenantNodesChecker[nodeInfo->Tenant]);
-        }
-    }
-}
-
-void TClusterInfo::GenerateSysTabletsNodesCheckers() {
-    for (auto tablet : BootstrapConfig.GetTablet()) {
-        SysNodesCheckers[tablet.GetType()] = TSimpleSharedPtr<TSysTabletsNodesCounter>(new TSysTabletsNodesCounter(tablet.GetType()));
-
-        for (auto nodeId : tablet.GetNode()) {
-            if (!HasNode(nodeId)) {
-                BLOG_ERROR(TStringBuilder() << "Got node " << nodeId
-                                            << " with system tablet, which exists in configuration, "
-                                               "but does not exist in cluster.");
-                continue;
-            }
-            NodeToTabletTypes[nodeId].push_back(tablet.GetType());
-            NodeRef(nodeId).AddNodeGroup(SysNodesCheckers[tablet.GetType()]);
+            TenantNodesChecker[nodeInfo->Tenant]->UpdateNode(nodeId, nodeInfo->State);
         }
     }
 }
@@ -1005,11 +995,13 @@ void TOperationLogManager::ApplyAction(const NKikimrCms::TAction &action,
     switch (action.GetType()) {
     case NKikimrCms::TAction::RESTART_SERVICES:
     case NKikimrCms::TAction::SHUTDOWN_HOST:
-    case NKikimrCms::TAction::REBOOT_HOST:
         if (auto nodes = clusterState->NodePtrs(action.GetHost(), MakeServices(action))) {
             for (const auto node : nodes) {
-                for (auto &nodeGroup: node->NodeGroups)
-                    AddNodeLockOperation(node->NodeId, nodeGroup);
+                AddNodeLockOperation(node->NodeId, clusterState->ClusterNodes);
+
+                if (node->Tenant) {
+                    AddNodeLockOperation(node->NodeId, clusterState->TenantNodesChecker[node->Tenant]);
+                }
             }
         }
         break;
@@ -1017,13 +1009,11 @@ void TOperationLogManager::ApplyAction(const NKikimrCms::TAction &action,
         for (const auto &device : action.GetDevices()) {
             if (clusterState->HasPDisk(device)) {
                 auto pdisk = &clusterState->PDisk(device);
-                for (auto &nodeGroup: clusterState->NodeRef(pdisk->NodeId).NodeGroups)
-                    AddNodeLockOperation(pdisk->NodeId, nodeGroup);
+                AddNodeLockOperation(pdisk->NodeId, clusterState->ClusterNodes);
 
             } else if (clusterState->HasVDisk(device)) {
                 auto vdisk = &clusterState->VDisk(device);
-                for (auto &nodeGroup: clusterState->NodeRef(vdisk->NodeId).NodeGroups)
-                    AddNodeLockOperation(vdisk->NodeId, nodeGroup);
+                AddNodeLockOperation(vdisk->NodeId, clusterState->ClusterNodes);
             }
         }
         break;

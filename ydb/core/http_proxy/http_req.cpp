@@ -5,7 +5,7 @@
 #include "custom_metrics.h"
 #include "exceptions_mapping.h"
 
-#include <ydb/library/actors/http/http_proxy.h>
+#include <library/cpp/actors/http/http_proxy.h>
 #include <library/cpp/cgiparam/cgiparam.h>
 #include <library/cpp/digest/old_crc/crc.h>
 #include <library/cpp/http/misc/parsed_request.h>
@@ -17,7 +17,6 @@
 #include <library/cpp/protobuf/json/proto2json_printer.h>
 #include <library/cpp/uri/uri.h>
 
-#include <ydb/core/security/ticket_parser_impl.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/grpc_caching/cached_grpc_request_actor.h>
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
@@ -151,7 +150,7 @@ namespace NKikimr::NHttpProxy {
         };
 
         if constexpr (has_stream_name) {
-            Y_ABORT_UNLESS(req.stream_name().StartsWith(databasePath));
+            Y_VERIFY(req.stream_name().StartsWith(databasePath));
             return req.stream_name().substr(databasePath.size(), -1);
         }
         return ExtractStreamNameWithoutProtoField<TProto>(req).substr(databasePath.size(), -1);
@@ -236,13 +235,13 @@ namespace NKikimr::NHttpProxy {
                     HFunc(TEvServerlessProxy::TEvGrpcRequestResult, HandleGrpcResponse);
                     HFunc(TEvServerlessProxy::TEvToken, HandleToken);
                     default:
-                        HandleUnexpectedEvent(ev);
+                        HandleUnexpectedEvent(ev, ctx);
                         break;
                 }
             }
 
             void SendYdbDriverRequest(const TActorContext& ctx) {
-                Y_ABORT_UNLESS(HttpContext.Driver);
+                Y_VERIFY(HttpContext.Driver);
 
                 RequestState = StateAuthorization;
 
@@ -268,7 +267,7 @@ namespace NKikimr::NHttpProxy {
                 if (!HttpContext.DatabasePath.empty() && !HttpContext.ServiceConfig.GetTestMode()) {
                     clientSettings.Database(HttpContext.DatabasePath);
                 }
-                Y_ABORT_UNLESS(!Client);
+                Y_VERIFY(!Client);
                 Client.Reset(new TDataStreamsClient(*HttpContext.Driver, clientSettings));
                 DiscoveryFuture = MakeHolder<NThreading::TFuture<void>>(Client->DiscoveryCompleted());
                 DiscoveryFuture->Subscribe(
@@ -294,7 +293,7 @@ namespace NKikimr::NHttpProxy {
                                     (const NThreading::TFuture<TProtoResponse>& future) {
                     auto& response = future.GetValueSync();
                     auto result = MakeHolder<TEvServerlessProxy::TEvGrpcRequestResult>();
-                    Y_ABORT_UNLESS(response.operation().ready());
+                    Y_VERIFY(response.operation().ready());
                     if (response.operation().status() == Ydb::StatusIds::SUCCESS) {
                         TProtoResult rs;
                         response.operation().result().UnpackTo(&rs);
@@ -316,8 +315,8 @@ namespace NKikimr::NHttpProxy {
                               "' database: '" << HttpContext.DatabasePath <<
                               "' iam token size: " << HttpContext.IamToken.size());
 
-                Y_ABORT_UNLESS(Client);
-                Y_ABORT_UNLESS(DiscoveryFuture->HasValue());
+                Y_VERIFY(Client);
+                Y_VERIFY(DiscoveryFuture->HasValue());
 
                 TProtoResponse response;
 
@@ -341,8 +340,8 @@ namespace NKikimr::NHttpProxy {
                     });
             }
 
-            void HandleUnexpectedEvent(const TAutoPtr<NActors::IEventHandle>& ev) {
-                Y_UNUSED(ev);
+            void HandleUnexpectedEvent(const TAutoPtr<NActors::IEventHandle>& ev, const TActorContext& ctx) {
+                Y_UNUSED(ev, ctx);
             }
 
             void TryUpdateDbInfo(const TDatabase& db, const TActorContext& ctx) {
@@ -474,8 +473,7 @@ namespace NKikimr::NHttpProxy {
             void HandleGrpcResponse(TEvServerlessProxy::TEvGrpcRequestResult::TPtr ev,
                                     const TActorContext& ctx) {
                 if (ev->Get()->Status->IsSuccess()) {
-                    ProtoToJson(*ev->Get()->Message, HttpContext.ResponseData.Body,
-                                HttpContext.ContentType == MIME_CBOR);
+                    ProtoToJson(*ev->Get()->Message, HttpContext.ResponseData.Body);
                     FillOutputCustomMetrics<TProtoResult>(
                         *(dynamic_cast<TProtoResult*>(ev->Get()->Message.Get())), HttpContext, ctx);
                     ReportLatencyCounters(ctx);
@@ -617,7 +615,6 @@ namespace NKikimr::NHttpProxy {
         DECLARE_PROCESSOR(CreateStream);
         DECLARE_PROCESSOR(ListStreams);
         DECLARE_PROCESSOR(DeleteStream);
-        DECLARE_PROCESSOR(UpdateStream);
         DECLARE_PROCESSOR(DescribeStream);
         DECLARE_PROCESSOR(ListShards);
         DECLARE_PROCESSOR(PutRecord);
@@ -808,41 +805,10 @@ namespace NKikimr::NHttpProxy {
     }
 
     TString THttpResponseData::DumpBody(MimeTypes contentType) {
-        // according to https://json.nlohmann.me/features/binary_formats/cbor/#serialization
-        auto cborBinaryTagBySize = [](size_t size) -> ui8 {
-            if (size <= 23) {
-                return 0x40 + static_cast<ui32>(size);
-            } else if (size <= 255) {
-                return 0x58;
-            } else if (size <= 65536) {
-                return 0x59;
-            }
-
-            return 0x5A;
-        };
         switch (contentType) {
         case MIME_CBOR: {
-            bool gotData = false;
-            std::function<bool(int, nlohmann::json::parse_event_t, nlohmann::basic_json<>&)> bz =
-                [&gotData, &cborBinaryTagBySize](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
-                    if (event == nlohmann::json::parse_event_t::key and parsed == nlohmann::json("Data")) {
-                        gotData = true;
-                        return true;
-                    }
-                    if (event == nlohmann::json::parse_event_t::value and gotData) {
-                        gotData = false;
-                        std::string data = parsed.get<std::string>();
-                        parsed = nlohmann::json::binary({data.begin(), data.end()},
-                                                        cborBinaryTagBySize(data.size()));
-                        return true;
-                    }
-                    return true;
-                };
-
             auto toCborStr = NJson::WriteJson(Body, false);
-            auto json =
-                nlohmann::json::parse(TStringBuf(toCborStr).begin(), TStringBuf(toCborStr).end(), bz, false);
-            auto toCbor = nlohmann::json::to_cbor(json);
+            auto toCbor = nlohmann::json::to_cbor(nlohmann::json::parse(toCborStr, nullptr, false));
             return {(char*)&toCbor[0], toCbor.size()};
         }
         default: {
@@ -927,7 +893,7 @@ namespace NKikimr::NHttpProxy {
                 HFunc(TEvTicketParser::TEvAuthorizeTicketResult, HandleTicketParser);
                 HFunc(TEvents::TEvPoisonPill, HandlePoison);
                 default:
-                    HandleUnexpectedEvent(ev);
+                    HandleUnexpectedEvent(ev, ctx);
                     break;
                 }
         }
@@ -950,7 +916,7 @@ namespace NKikimr::NHttpProxy {
                     NYds::EErrorCodes::NOT_FOUND
                 );
             }
-            Y_ABORT_UNLESS(navigate->ResultSet.size() == 1);
+            Y_VERIFY(navigate->ResultSet.size() == 1);
             if (navigate->ResultSet.front().PQGroupInfo) {
                 const auto& description = navigate->ResultSet.front().PQGroupInfo->Description;
                 FolderId = description.GetPQTabletConfig().GetYcFolderId();
@@ -973,8 +939,8 @@ namespace NKikimr::NHttpProxy {
         void HandleTicketParser(const TEvTicketParser::TEvAuthorizeTicketResult::TPtr& ev, const TActorContext& ctx) {
 
             if (ev->Get()->Error) {
-                return ReplyWithError(ctx, ev->Get()->Error.Retryable ? NYdb::EStatus::UNAVAILABLE : NYdb::EStatus::UNAUTHORIZED, ev->Get()->Error.Message);
-            }
+                return ReplyWithError(ctx, NYdb::EStatus::UNAUTHORIZED, ev->Get()->Error.Message);
+            };
             ctx.Send(Sender, new TEvServerlessProxy::TEvToken(ev->Get()->Token->GetUserSID(), "", ev->Get()->SerializedToken, {"", DatabaseId, DatabasePath, CloudId, FolderId}));
 
             LOG_SP_DEBUG_S(ctx, NKikimrServices::HTTP_PROXY, "Authorized successfully");
@@ -1068,8 +1034,8 @@ namespace NKikimr::NHttpProxy {
             ctx.Send(MakeAccessServiceID(), std::move(request));
         }
 
-        void HandleUnexpectedEvent(const TAutoPtr<NActors::IEventHandle>& ev) {
-            Y_UNUSED(ev);
+        void HandleUnexpectedEvent(const TAutoPtr<NActors::IEventHandle>& ev, const TActorContext& ctx) {
+            Y_UNUSED(ev, ctx);
         }
 
         void HandleAuthenticationResult(NCloud::TEvAccessService::TEvAuthenticateResponse::TPtr& ev,
@@ -1082,14 +1048,11 @@ namespace NKikimr::NHttpProxy {
                     SendAuthenticationRequest(ctx);
                     return;
                 }
-                return ReplyWithError(ctx, ev->Get()->Status.InternalError || NKikimr::IsRetryableGrpcError(ev->Get()->Status)
-                                                                    ? NYdb::EStatus::UNAVAILABLE
-                                                                    : NYdb::EStatus::UNAUTHORIZED,
-                                         TStringBuilder() << "requestid " << RequestId
-                                         << "; can not authenticate service account user");
-
+                return ReplyWithError(ctx, NYdb::EStatus::UNAUTHORIZED, TStringBuilder() <<
+                    "requestid " << RequestId << "; " <<
+                    "can not authenticate service account user: " << ev->Get()->Status.Msg);
             } else if (!ev->Get()->Response.subject().has_service_account()) {
-                return ReplyWithError(ctx, NYdb::EStatus::INTERNAL_ERROR,
+                return ReplyWithError(ctx, NYdb::EStatus::UNAUTHORIZED,
                                       "(this error should not have been reached).");
             }
             RetryCounter.Void();
@@ -1125,14 +1088,12 @@ namespace NKikimr::NHttpProxy {
                     SendIamTokenRequest(ctx);
                     return;
                 }
-                return ReplyWithError(ctx, ev->Get()->Status.InternalError || NKikimr::IsRetryableGrpcError(ev->Get()->Status)
-                                                                    ? NYdb::EStatus::UNAVAILABLE
-                                                                    : NYdb::EStatus::UNAUTHORIZED,
-                                            TStringBuilder() << "IAM token issue error: " << ev->Get()->Status.Msg);
+                return ReplyWithError(ctx, NYdb::EStatus::UNAUTHORIZED, TStringBuilder() <<
+                                      "IAM token issue error: " << ev->Get()->Status.Msg);
             }
             RetryCounter.Void();
 
-            Y_ABORT_UNLESS(!ev->Get()->Response.iam_token().empty());
+            Y_VERIFY(!ev->Get()->Response.iam_token().empty());
 
             ctx.Send(Sender,
                      new TEvServerlessProxy::TEvToken(ServiceAccountId, ev->Get()->Response.iam_token(), "", {}));

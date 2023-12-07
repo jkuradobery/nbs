@@ -8,14 +8,14 @@ PEERDIR(
 
 SRCS(
     draft/datastreams.proto
-    draft/fq.proto
     draft/persqueue_common.proto
     draft/persqueue_error_codes.proto
     draft/ydb_long_tx.proto
-    draft/ydb_maintenance.proto
     draft/ydb_logstore.proto
+    draft/ydb_query.proto
+    fq.proto
     draft/ydb_dynamic_config.proto
-    ydb_federation_discovery.proto
+    federation_discovery.proto
     persqueue_error_codes_v1.proto
     ydb_auth.proto
     ydb_persqueue_v1.proto
@@ -32,7 +32,6 @@ SRCS(
     ydb_monitoring.proto
     ydb_operation.proto
     ydb_query_stats.proto
-    ydb_query.proto
     ydb_rate_limiter.proto
     ydb_scheme.proto
     ydb_scripting.proto
@@ -41,6 +40,7 @@ SRCS(
     ydb_topic.proto
     ydb_value.proto
     ydb_keyvalue.proto
+    yq.proto
 )
 
 CPP_PROTO_PLUGIN0(validation ydb/public/lib/validation)

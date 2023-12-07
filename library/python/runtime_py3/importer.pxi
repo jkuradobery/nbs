@@ -112,10 +112,6 @@ def iter_py_modules(with_keys=False):
                 yield mod
 
 
-def py_src_key(filename):
-    return py_prefix + _b(filename)
-
-
 def iter_prefixes(s):
     i = s.find('.')
     while i >= 0:
@@ -185,10 +181,6 @@ class ResourceImporter(object):
         self.source_map = {}                  # Map from file names to module names.
         self._source_name = {}                # Map from original to altered module names.
         self._package_prefix = ''
-
-        self._before_import_callback = None
-        self._after_import_callback = None
-
         if Y_PYTHON_SOURCE_ROOT and Y_PYTHON_EXTENDED_SOURCE_SEARCH:
             self.arcadia_source_finder = ArcadiaSourceFinder(_s(Y_PYTHON_SOURCE_ROOT))
         else:
@@ -199,11 +191,6 @@ class ResourceImporter(object):
                 k = pp + '.__init__'
                 if k not in self.memory:
                     self.memory.add(k)
-
-    def set_callbacks(self, before_import=None, after_import=None):
-        """Callable[[module], None]"""
-        self._before_import_callback= before_import
-        self._after_import_callback = after_import
 
     def for_package(self, name):
         import copy
@@ -239,22 +226,7 @@ class ResourceImporter(object):
         if self.is_package(module.__name__):
             module.__path__= [executable + path_sep + module.__name__.replace('.', path_sep)]
         # exec(code, module.__dict__)
-
-        # __name__ and __file__ could be overwritten after execution
-        # So these two things are needed if wee want to be consistent at some point
-        initial_modname = module.__name__
-        initial_filename = module.__file__
-
-        if self._before_import_callback:
-            self._before_import_callback(initial_modname, initial_filename)
-
-        # “Zero-cost” exceptions are implemented.
-        # The cost of try statements is almost eliminated when no exception is raised
-        try:
-            _call_with_frames_removed(exec, code, module.__dict__)
-        finally:
-            if self._after_import_callback:
-                self._after_import_callback(initial_modname, initial_filename)
+        _call_with_frames_removed(exec, code, module.__dict__)
 
     # PEP-302 extension 1 of 3: data loader.
     def get_data(self, path):
@@ -362,19 +334,25 @@ class ResourceImporter(object):
                 yield m
 
     def get_resource_reader(self, fullname):
-        import os
-        path = os.path.dirname(self.get_filename(fullname))
-        return _ResfsResourceReader(self, path)
+        try:
+            if not self.is_package(fullname):
+                return None
+        except ImportError:
+            return None
+        return _ResfsResourceReader(self, fullname)
 
 
 class _ResfsResourceReader:
 
-    def __init__(self, importer, path):
+    def __init__(self, importer, fullname):
         self.importer = importer
-        self.path = path
+        self.fullname = fullname
+
+        import os
+        self.prefix = "{}/".format(os.path.dirname(self.importer.get_filename(self.fullname)))
 
     def open_resource(self, resource):
-        path = f'{self.path}/{resource}'
+        path = f'{self.prefix}{resource}'
         from io import BytesIO
         try:
             return BytesIO(self.importer.get_data(path))
@@ -388,7 +366,7 @@ class _ResfsResourceReader:
         raise FileNotFoundError
 
     def is_resource(self, name):
-        path = f'{self.path}/{name}'
+        path = f'{self.prefix}{name}'
         try:
             self.importer.get_data(path)
         except OSError:
@@ -397,19 +375,14 @@ class _ResfsResourceReader:
 
     def contents(self):
         subdirs_seen = set()
-        len_path = len(self.path) + 1  # path + /
-        for key in resfs_files(f"{self.path}/"):
-            relative = key[len_path:]
+        for key in resfs_files(self.prefix):
+            relative = key[len(self.prefix):]
             res_or_subdir, *other = relative.split(b'/')
             if not other:
                 yield _s(res_or_subdir)
             elif res_or_subdir not in subdirs_seen:
                 subdirs_seen.add(res_or_subdir)
                 yield _s(res_or_subdir)
-
-    def files(self):
-        import sitecustomize
-        return sitecustomize.ArcadiaResourceContainer(f"resfs/file/{self.path}/")
 
 
 class BuiltinSubmoduleImporter(BuiltinImporter):
@@ -584,32 +557,13 @@ def executable_path_hook(path):
     raise ImportError(path)
 
 
-def get_path0():
-    """
-    An incomplete and simplified version of _PyPathConfig_ComputeSysPath0.
-    We need this to somewhat properly emulate the behaviour of a normal python interpreter
-    when using ya ide venv.
-
-    """
-    if not sys.argv:
-        return
-    argv0 = sys.argv[0]
-
-    have_module_arg = argv0 == '-m'
-
-    if have_module_arg:
-        return _os.getcwd()
-
-
 if YA_IDE_VENV:
     sys.meta_path.append(importer)
     sys.meta_path.append(BuiltinSubmoduleImporter)
     if executable not in sys.path:
         sys.path.append(executable)
-    path0 = get_path0()
-    if path0 is not None:
-        sys.path.insert(0, path0)
-
+    if '' not in sys.path:
+        sys.path.insert(0, '')
     sys.path_hooks.append(executable_path_hook)
 else:
     sys.meta_path.insert(0, BuiltinSubmoduleImporter)

@@ -117,7 +117,7 @@ namespace NSchemeShardUT_Private {
     void SkipModificationReply(TTestActorRuntime& runtime, ui32 num = 1);
 
     TEvTx* CombineSchemeTransactions(const TVector<TEvTx*>& transactions);
-    void AsyncSend(TTestActorRuntime &runtime, ui64 targetTabletId, IEventBase *ev);
+    void AsyncSendTransaction(TTestActorRuntime& runtime, ui64 schemeShard, TEvTx* evTx);
 
     ////////// generic
 
@@ -175,17 +175,6 @@ namespace NSchemeShardUT_Private {
     GENERIC_HELPERS(DropTable);
     DROP_BY_PATH_ID_HELPERS(DropTable);
     GENERIC_HELPERS(DropTableIndex);
-
-
-    // external table
-    GENERIC_HELPERS(CreateExternalTable);
-    GENERIC_HELPERS(DropExternalTable);
-    DROP_BY_PATH_ID_HELPERS(DropExternalTable);
-
-    // external data source
-    GENERIC_HELPERS(CreateExternalDataSource);
-    GENERIC_HELPERS(DropExternalDataSource);
-    DROP_BY_PATH_ID_HELPERS(DropExternalDataSource);
 
     // backup & restore
     GENERIC_HELPERS(Backup);
@@ -256,11 +245,6 @@ namespace NSchemeShardUT_Private {
     void TestDropBlockStoreVolume(TTestActorRuntime& runtime, ui64 txId, const TString& parentPath, const TString& name, ui64 fillGeneration = 0, const TVector<TExpectedResult>& expectedResults = {NKikimrScheme::StatusAccepted});
     void AsyncAssignBlockStoreVolume(TTestActorRuntime& runtime, ui64 txId, const TString& parentPath, const TString& name, const TString& mountToken, ui64 tokenVersion = 0);
     void TestAssignBlockStoreVolume(TTestActorRuntime& runtime, ui64 txId, const TString& parentPath, const TString& name, const TString& mountToken, ui64 tokenVersion = 0, const TVector<TExpectedResult>& expectedResults = {NKikimrScheme::StatusSuccess});
-
-    // view
-    GENERIC_HELPERS(CreateView);
-    GENERIC_HELPERS(DropView);
-    DROP_BY_PATH_ID_HELPERS(DropView);
 
     #undef DROP_BY_PATH_ID_HELPERS
     #undef GENERIC_WITH_ATTRS_HELPERS
@@ -335,13 +319,9 @@ namespace NSchemeShardUT_Private {
         TVector<TString> DataColumns;
     };
 
-    std::unique_ptr<TEvIndexBuilder::TEvCreateRequest> CreateBuildColumnRequest(ui64 id, const TString& dbName, const TString& src, const TString& columnName, const Ydb::TypedValue& literal);
     TEvIndexBuilder::TEvCreateRequest* CreateBuildIndexRequest(ui64 id, const TString& dbName, const TString& src, const TBuildIndexConfig& cfg);
-    void AsyncBuildColumn(TTestActorRuntime& runtime, ui64 id, ui64 schemeShard, const TString &dbName, const TString &src, const TString& columnName, const Ydb::TypedValue& literal);
     void AsyncBuildIndex(TTestActorRuntime& runtime, ui64 id, ui64 schemeShard, const TString &dbName, const TString &src, const TBuildIndexConfig &cfg);
     void AsyncBuildIndex(TTestActorRuntime& runtime, ui64 id, ui64 schemeShard, const TString &dbName, const TString &src, const TString &name, TVector<TString> columns, TVector<TString> dataColumns = {});
-    void TestBuildColumn(TTestActorRuntime& runtime, ui64 id, ui64 schemeShard, const TString &dbName,
-        const TString &src, const TString& columnName, const Ydb::TypedValue& literal, Ydb::StatusIds::StatusCode expectedStatus);
     void TestBuildIndex(TTestActorRuntime& runtime, ui64 id, ui64 schemeShard, const TString &dbName, const TString &src, const TBuildIndexConfig &cfg, Ydb::StatusIds::StatusCode expectedStatus = Ydb::StatusIds::SUCCESS);
     void TestBuildIndex(TTestActorRuntime& runtime, ui64 id, ui64 schemeShard, const TString &dbName, const TString &src, const TString &name, TVector<TString> columns, Ydb::StatusIds::StatusCode expectedStatus = Ydb::StatusIds::SUCCESS);
     TEvIndexBuilder::TEvCancelRequest* CreateCancelBuildIndexRequest(const ui64 id, const TString& dbName, const ui64 buildIndexId);
@@ -354,7 +334,6 @@ namespace NSchemeShardUT_Private {
     NKikimrIndexBuilder::TEvForgetResponse TestForgetBuildIndex(TTestActorRuntime& runtime, const ui64 id, const ui64 schemeShard, const TString &dbName, const ui64 buildIndexId, Ydb::StatusIds::StatusCode expectedStatus = Ydb::StatusIds::SUCCESS);
 
     ////////// export
-    TVector<TString> GetExportTargetPaths(const TString& requestStr);
     void AsyncExport(TTestActorRuntime& runtime, ui64 schemeshardId, ui64 id, const TString& dbName, const TString& requestStr, const TString& userSID = "");
     void AsyncExport(TTestActorRuntime& runtime, ui64 id, const TString& dbName, const TString& requestStr, const TString& userSID = "");
     void TestExport(TTestActorRuntime& runtime, ui64 schemeshardId, ui64 id, const TString& dbName, const TString& requestStr, const TString& userSID = "",
@@ -546,8 +525,5 @@ namespace NSchemeShardUT_Private {
 
     void SendTEvPeriodicTopicStats(TTestActorRuntime& runtime, ui64 topicId, ui64 generation, ui64 round, ui64 dataSize, ui64 usedReserveSize);
     void WriteToTopic(TTestActorRuntime& runtime, const TString& path, ui32& msgSeqNo, const TString& message);
-    void WriteRow(TTestActorRuntime& runtime, const TString& key, const TString& value, ui64 tabletId = TTestTxConfig::FakeHiveTablets);
-    void WriteRowPg(TTestActorRuntime& runtime, const TString& key, ui32 value, ui64 tabletId = TTestTxConfig::FakeHiveTablets);
-    void UploadRows(TTestActorRuntime& runtime, const TString& tablePath, int partitionIdx, const TVector<ui32>& keyTags, const TVector<ui32>& valueTags, const TVector<ui32>& recordIds);
 
 } //NSchemeShardUT_Private

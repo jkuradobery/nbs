@@ -26,12 +26,12 @@ public:
         , InitItems(std::move(initItems))
         , Outputs(std::move(outputs))
         , UpdateItems(std::move(updateItems))
-        , InputsOnInit(GetPasstroughtMapOneToOne(Inputs, InitItems))
-        , InputsOnUpdate(GetPasstroughtMapOneToOne(Inputs, UpdateItems))
-        , InitOnInputs(GetPasstroughtMapOneToOne(InitItems, Inputs))
-        , UpdateOnInputs(GetPasstroughtMapOneToOne(UpdateItems, Inputs))
-        , OutputsOnUpdate(GetPasstroughtMapOneToOne(Outputs, UpdateItems))
-        , UpdateOnOutputs(GetPasstroughtMapOneToOne(UpdateItems, Outputs))
+        , InputsOnInit(GetPasstroughtMap(Inputs, InitItems))
+        , InputsOnUpdate(GetPasstroughtMap(Inputs, UpdateItems))
+        , InitOnInputs(GetPasstroughtMap(InitItems, Inputs))
+        , UpdateOnInputs(GetPasstroughtMap(UpdateItems, Inputs))
+        , OutputsOnUpdate(GetPasstroughtMap(Outputs, UpdateItems))
+        , UpdateOnOutputs(GetPasstroughtMap(UpdateItems, Outputs))
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Inputs.size()))
         , TempStateIndex(std::exchange(mutables.CurValueIndex, mutables.CurValueIndex + Outputs.size()))
     {}
@@ -46,10 +46,9 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
-        const auto flagType = Type::getInt1Ty(context);
-        const auto flagPtr = new AllocaInst(flagType, 0U, "flag_ptr", &ctx.Func->getEntryBlock().back());
+        const auto flagPtr = new AllocaInst(Type::getInt1Ty(context), 0U, "flag_ptr", &ctx.Func->getEntryBlock().back());
 
         const auto good = BasicBlock::Create(context, "good", ctx.Func);
         const auto done = BasicBlock::Create(context, "done", ctx.Func);
@@ -61,7 +60,7 @@ public:
 
         block = good;
         for (auto i = 0U; i < Inputs.size(); ++i)
-            if (Inputs[i]->GetDependencesCount() > 0U || !InputsOnInit[i] || !InputsOnUpdate[i])
+            if (Inputs[i]->GetDependencesCount() > 0U)
                 EnsureDynamicCast<ICodegeneratorExternalNode*>(Inputs[i])->CreateSetValue(ctx, block, getres.second[i](ctx, block));
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
@@ -109,8 +108,8 @@ public:
             else if (Outputs[i]->GetDependencesCount() > 0 || OutputsOnUpdate[i])
                 result.emplace_back([output = Outputs[i]] (const TCodegenContext& ctx, BasicBlock*& block) { return GetNodeValue(output, ctx, block); });
             else
-                result.emplace_back([this, i, source = getres.second, flagPtr, flagType] (const TCodegenContext& ctx, BasicBlock*& block) {
-                    auto& context = ctx.Codegen.GetContext();
+                result.emplace_back([this, i, source = getres.second, flagPtr] (const TCodegenContext& ctx, BasicBlock*& block) {
+                    auto& context = ctx.Codegen->GetContext();
 
                     const auto init = BasicBlock::Create(context, "init", ctx.Func);
                     const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -118,7 +117,7 @@ public:
 
                     const auto result = PHINode::Create(Type::getInt128Ty(context), 2U, "result", done);
 
-                    const auto flag = new LoadInst(flagType, flagPtr, "flag", block);
+                    const auto flag = new LoadInst(flagPtr, "flag", block);
                     BranchInst::Create(init, next, flag, block);
 
                     block = init;
@@ -147,7 +146,10 @@ private:
         auto** fields = ctx.WideFields.data() + WideFieldsIndex;
 
         for (auto i = 0U; i < Inputs.size(); ++i) {
-            if (const auto& map = InputsOnInit[i]; map && !Inputs[i]->GetDependencesCount()) {
+            if (Inputs[i]->GetDependencesCount() > 0U) {
+                fields[i] = &Inputs[i]->RefValue(ctx);
+                continue;
+            } else if (const auto& map = InputsOnInit[i]) {
                 if (const auto& to = UpdateOnOutputs[*map]) {
                     fields[i] = &Outputs[*to]->RefValue(ctx);
                     continue;
@@ -155,9 +157,6 @@ private:
                     fields[i] = out;
                     continue;
                 }
-            } else {
-                fields[i] = &Inputs[i]->RefValue(ctx);
-                continue;
             }
 
             fields[i] = nullptr;
@@ -199,14 +198,14 @@ private:
         auto** fields = ctx.WideFields.data() + WideFieldsIndex;
 
         for (auto i = 0U; i < Inputs.size(); ++i) {
-            if (const auto& map = InputsOnUpdate[i]; map && !Inputs[i]->GetDependencesCount()) {
+            if (Inputs[i]->GetDependencesCount() > 0U) {
+                fields[i] = &Inputs[i]->RefValue(ctx);
+                continue;
+            } else if (const auto& map = InputsOnUpdate[i]) {
                 if (const auto out = output[*map]) {
                     fields[i] = out;
                     continue;
                 }
-            } else {
-                fields[i] = &Inputs[i]->RefValue(ctx);
-                continue;
             }
 
             fields[i] = nullptr;
@@ -278,8 +277,8 @@ private:
 
 IComputationNode* WrapWideChain1Map(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
     MKQL_ENSURE(callable.GetInputsCount() > 0U, "Expected argument.");
-    const auto inputWidth = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType()));
-    const auto outputWidth = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType()));
+    const auto inputWidth = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType())->GetItemType())->GetElementsCount();
+    const auto outputWidth = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() == inputWidth + outputWidth * 3U + 1U, "Wrong signature.");
 
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);

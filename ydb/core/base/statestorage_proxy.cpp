@@ -2,13 +2,13 @@
 #include "tabletid.h"
 
 #include <ydb/core/base/compile_time_flags.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/helpers/flow_controlled_queue.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/helpers/flow_controlled_queue.h>
 
 #include <util/digest/city.h>
 #include <util/generic/xrange.h>
@@ -71,7 +71,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
 
     template<typename T>
     void SendRequest(const T &op) {
-        Y_ABORT_UNLESS(ReplicaSelection && ReplicaSelection->SelectedReplicas && ReplicaSelection->Sz);
+        Y_VERIFY(ReplicaSelection && ReplicaSelection->SelectedReplicas && ReplicaSelection->Sz);
 
         ui64 cookie = 0;
         const ui32 sendFlags = IEventHandle::FlagTrackDelivery | (UseInterconnectSubscribes ? IEventHandle::FlagSubscribeOnSession : 0);
@@ -173,7 +173,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
     }
 
     void MergeConnectionError(ui64 cookie) {
-        Y_ABORT_UNLESS(cookie < Replicas);
+        Y_VERIFY(cookie < Replicas);
 
         if (Signature[cookie] == 0) {
             Signature[cookie] = Max<ui64>();
@@ -188,8 +188,8 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
         const NKikimrProto::EReplyStatus status = record.GetStatus();
         const ui64 cookie = record.GetCookie();
 
-        Y_ABORT_UNLESS(cookie < Replicas);
-        Y_ABORT_UNLESS(Signature[cookie] == 0 || Signature[cookie] == Max<ui64>());
+        Y_VERIFY(cookie < Replicas);
+        Y_VERIFY(Signature[cookie] == 0 || Signature[cookie] == Max<ui64>());
         Signature[cookie] = ev->Record.GetSignature();
         ++RepliesMerged;
         ++SignaturesMerged;
@@ -214,7 +214,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
                 } else if (!ReplyLeaderTablet) {
                     ReplyLeaderTablet = replyLeaderTablet;
                 } else {
-                    Y_ABORT_UNLESS(ReplyLeaderTablet == replyLeaderTablet || !replyLeaderTablet);
+                    Y_VERIFY(ReplyLeaderTablet == replyLeaderTablet || !replyLeaderTablet);
                 }
 
                 // todo: accurate handling of locked flag
@@ -226,7 +226,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
         } else if (status == NKikimrProto::ERROR) {
             ReplicaSelection->MergeReply(TStateStorageInfo::TSelection::StatusNoInfo, &ReplyStatus, cookie, false);
         } else {
-            Y_ABORT();
+            Y_FAIL();
         }
 
         for (ui32 i = 0, end = record.FollowerSize(); i < end; ++i) {
@@ -319,7 +319,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
             ReplyAndDie(NKikimrProto::RACE);
             return;
         }
-        Y_DEBUG_ABORT_UNLESS(false);
+        Y_VERIFY_DEBUG(false);
         PassAway();
     }
 
@@ -390,7 +390,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
             ReplyAndDie(NKikimrProto::RACE);
             return;
         }
-        Y_DEBUG_ABORT_UNLESS(false);
+        Y_VERIFY_DEBUG(false);
         PassAway();
     }
 
@@ -455,7 +455,7 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
     }
 
     void UpdateSigFor(ui64 cookie, ui64 sig) {
-        Y_ABORT_UNLESS(cookie < Replicas);
+        Y_VERIFY(cookie < Replicas);
 
         if (Signature[cookie] == 0) {
             Signature[cookie] = sig;
@@ -493,8 +493,8 @@ class TStateStorageProxyRequest : public TActor<TStateStorageProxyRequest> {
 
         TEvStateStorage::TEvReplicaInfo *msg = ev->Get();
         const ui64 cookie = msg->Record.GetCookie();
-        Y_ABORT_UNLESS(cookie < Replicas);
-        Y_ABORT_UNLESS(Signature[cookie] == 0 || Signature[cookie] == Max<ui64>());
+        Y_VERIFY(cookie < Replicas);
+        Y_VERIFY(Signature[cookie] == 0 || Signature[cookie] == Max<ui64>());
 
         return UpdateSigFor(cookie, msg->Record.GetSignature());
     }
@@ -540,7 +540,7 @@ public:
                 BLOG_W("ProxyRequest::StateInit unexpected event type# "
                     << ev->GetTypeRewrite()
                     << " event: "
-                    << ev->ToString());
+                    << TString(ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
                 break;
         }
     }
@@ -558,7 +558,7 @@ public:
                 BLOG_W("ProxyRequest::StateLookup unexpected event type# "
                     << ev->GetTypeRewrite()
                     << " event: "
-                    << ev->ToString());
+                    << TString(ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
                 break;
         }
     }
@@ -575,7 +575,7 @@ public:
                 BLOG_W("ProxyRequest::StateUpdate unexpected event type# "
                     << ev->GetTypeRewrite()
                     << " event: "
-                    << ev->ToString());
+                    << TString(ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
                 break;
         }
     }
@@ -592,7 +592,7 @@ public:
                 BLOG_W("ProxyRequest::StateUpdateSig unexpected event type# "
                     << ev->GetTypeRewrite()
                     << " event: "
-                    << ev->ToString());
+                    << TString(ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
                 break;
         }
     }
@@ -797,7 +797,7 @@ class TStateStorageProxy : public TActor<TStateStorageProxy> {
             break;
 
         default:
-            Y_ABORT("unreachable");
+            Y_FAIL("unreachable");
         }
 
         ResolveReplicas(ev, fakeTabletId, SchemeBoardInfo);
@@ -971,7 +971,7 @@ public:
 
     STATEFN(StateInit) {
         BLOG_TRACE("Proxy::StateInit ev type# " << ev->GetTypeRewrite() << " event: "
-            << ev->ToString());
+            << TString(ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
 
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvStateStorage::TEvRequestReplicasDumps, Handle);
@@ -986,7 +986,7 @@ public:
             hFunc(TEvStateStorage::TEvReplicaProbeSubscribe, Handle);
             hFunc(TEvStateStorage::TEvReplicaProbeUnsubscribe, Handle);
         default:
-            TActivationContext::Forward(ev, RegisterWithSameMailbox(new TStateStorageProxyRequest(Info, FlowControlledInfo)));
+            TActivationContext::Send(ev->Forward(RegisterWithSameMailbox(new TStateStorageProxyRequest(Info, FlowControlledInfo))));
             break;
         }
     }
@@ -1021,7 +1021,7 @@ public:
                 BLOG_W("ProxyStub::StateFunc unexpected event type# "
                     << ev->GetTypeRewrite()
                     << " event: "
-                    << ev->ToString());
+                    << TString(ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
                 break;
         }
     }

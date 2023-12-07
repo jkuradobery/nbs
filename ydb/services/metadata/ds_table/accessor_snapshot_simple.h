@@ -30,7 +30,8 @@ private:
     ISnapshotConstructorController::TPtr OutputController;
 protected:
     virtual void OnNewEnrichedSnapshot(NFetcher::ISnapshot::TPtr snapshot) final;
-    virtual void OnConstructSnapshotError(const TString& errorMessage) final;
+    virtual void OnIncorrectSnapshotFromYQL(const TString& errorMessage) final;
+    virtual void OnSnapshotEnrichingError(const TString& errorMessage) final;
 
     virtual void OnBootstrap() override;
 
@@ -97,7 +98,7 @@ public:
             hFunc(TTableExistsActor::TEvController::TEvError, Handle);
             hFunc(TTableExistsActor::TEvController::TEvResult, Handle);
             default:
-                TBase::StateMain(ev);
+                TBase::StateMain(ev, ctx);
         }
     }
     TDSAccessorSimple(const NRequest::TConfig& config, ISnapshotConstructorController::TPtr outputController,

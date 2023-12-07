@@ -55,9 +55,9 @@ template <class T>
 class TRange
 {
 public:
-    using iterator = const T*;
-    using const_iterator = const T*;
-    using size_type = size_t;
+    typedef const T* iterator;
+    typedef const T* const_iterator;
+    typedef size_t size_type;
 
     //! Constructs a null TRange.
     TRange()
@@ -288,7 +288,7 @@ TRange<U> ReinterpretCastRange(TRange<T> range)
 {
     static_assert(sizeof(T) == sizeof(U), "T and U must have equal sizes.");
     return TRange<U>(reinterpret_cast<const U*>(range.Begin()), range.Size());
-}
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -311,7 +311,7 @@ class TMutableRange
     : public TRange<T>
 {
 public:
-    using iterator = T*;
+    typedef T* iterator;
 
     //! Constructs a null TMutableRange.
     TMutableRange()

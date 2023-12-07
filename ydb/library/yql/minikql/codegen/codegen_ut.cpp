@@ -210,30 +210,30 @@ Function *CreateUseExternalFromGeneratedFunction128(const ICodegen::TPtr& codege
     ArgZ->setName("z");
 
     const auto type = FunctionType::get(Type::getVoidTy(Context), { pointerInt128, pointerInt128, pointerInt128 }, false);
-    const auto sum_sqr = main.getOrInsertFunction(ir ? "sum_sqr_128_ir" : "sum_sqr_128", type);
+    const auto sum_sqr = main.getOrInsertFunction(ir ? "sum_sqr_128_ir" : "sum_sqr_128", type).getCallee();
 
     if (codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows) {
-        Value* tmp1 = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "tmp1", BB);
-        Value* tmp2 = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "tmp2", BB);
+        Value* tmp1 = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "tmp1", BB);
+        Value* tmp2 = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "tmp2", BB);
         CallInst::Create(sum_sqr, { &*tmp1, &*ArgX, &*ArgY }, "", BB);
         CallInst::Create(sum_sqr, { &*tmp2, &*ArgZ, &*tmp1 }, "", BB);
-        auto res = new LoadInst(typeInt128, tmp2, "load_res", BB);
+        auto res = new LoadInst(tmp2, "load_res", BB);
         new StoreInst(res, retArg, BB);
         // Create the return instruction and add it to the basic block
         ReturnInst::Create(Context, BB);
     } else {
-        Value* tmp1 = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "tmp1", BB);
-        Value* tmp2 = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "tmp2", BB);
-        Value* argXPtr = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "argXptr", BB);
-        Value* argYPtr = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "argYptr", BB);
-        Value* argZPtr = new AllocaInst(typeInt128, 0U, nullptr, llvm::Align(16), "argZptr", BB);
+        Value* tmp1 = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "tmp1", BB);
+        Value* tmp2 = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "tmp2", BB);
+        Value* argXPtr = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "argXptr", BB);
+        Value* argYPtr = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "argYptr", BB);
+        Value* argZPtr = new AllocaInst(typeInt128, 0U, nullptr, Align(16), "argZptr", BB);
         new StoreInst(&*ArgX, argXPtr, BB);
         new StoreInst(&*ArgY, argYPtr, BB);
         new StoreInst(&*ArgZ, argZPtr, BB);
 
         CallInst::Create(sum_sqr, { &*tmp1, &*argXPtr, &*argYPtr }, "", BB);
         CallInst::Create(sum_sqr, { &*tmp2, &*argZPtr, &*tmp1 }, "", BB);
-        auto res = new LoadInst(typeInt128, tmp2, "load_res", BB);
+        auto res = new LoadInst(tmp2, "load_res", BB);
 
         // Create the return instruction and add it to the basic block
         ReturnInst::Create(Context, res, BB);

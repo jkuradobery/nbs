@@ -1,18 +1,28 @@
 #include "service_actor.h"
 
 #include <ydb/core/base/counters.h>
+#include <ydb/core/base/tablet_pipe.h>
+#include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
+#include <ydb/core/grpc_services/local_rpc/local_rpc.h>
+#include <ydb/core/keyvalue/keyvalue_events.h>
 #include <ydb/core/kqp/common/kqp.h>
+#include <ydb/core/protos/ydb_result_set_old.pb.h>
+#include <ydb/core/tx/datashard/datashard.h>
+#include <ydb/core/tx/schemeshard/schemeshard.h>
+#include <ydb/core/tx/tx_proxy/proxy.h>
+#include <ydb/core/ydb_convert/ydb_convert.h>
 
 #include <ydb/library/workload/workload_factory.h>
 #include <ydb/library/workload/stock_workload.h>
 #include <ydb/library/workload/kv_workload.h>
 
+#include <ydb/public/lib/operation_id/operation_id.h>
+#include <ydb/public/sdk/cpp/client/ydb_params/params.h>
 #include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/histogram/hdr/histogram.h>
-#include <library/cpp/time_provider/time_provider.h>
 
 #include <util/generic/queue.h>
 #include <util/random/fast.h>
@@ -169,7 +179,7 @@ private:
             Queries = WorkloadQueryGen->GetWorkload(WorkloadType);
         }
 
-        Y_ABORT_UNLESS(!Queries.empty());
+        Y_VERIFY(!Queries.empty());
         auto q = std::move(Queries.front());
         Queries.pop_front();
 
@@ -185,6 +195,8 @@ private:
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
         auto& response = ev->Get()->Record.GetRef();
+
+        Transactions->Dec();
 
         if (response.GetYdbStatus() == Ydb::StatusIds_StatusCode_SUCCESS) {
             LOG_DEBUG_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Worker Tag# " << ParentTag << "." << WorkerTag << " data request status: Success");
@@ -318,7 +330,7 @@ public:
         }
 
         LOG_INFO_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " Schedule PoisonPill");
-        EarlyStop = false;
+        // TODO: report error in case of such death
         ctx.Schedule(TDuration::Seconds(DurationSeconds + 10), new TEvents::TEvPoisonPill);
 
         CreateSessionForTablesDDL(ctx);
@@ -326,12 +338,12 @@ public:
 
     void HandleWakeup(const TActorContext& ctx) {
         if (ResultsReceived) {
-            // if death process is started, then break wakeup circuit
+            // if death process is started, then brake wakeup circuit
             return;
         }
         size_t targetSessions;
         if (IncreaseSessions) {
-            targetSessions = 1 + NumOfSessions * (TAppData::TimeProvider->Now() - TestStartTime).Seconds() / DurationSeconds;
+            targetSessions = 1 + NumOfSessions * (TInstant::Now() - Start).Seconds() / DurationSeconds;
             targetSessions = std::min(targetSessions, NumOfSessions);
         } else {
             targetSessions = NumOfSessions;
@@ -366,15 +378,13 @@ private:
     // death
 
     void HandlePoisonPill(const TActorContext& ctx) {
-        EarlyStop = (TAppData::TimeProvider->Now() - TestStartTime).Seconds() < DurationSeconds;
         LOG_CRIT_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " HandlePoisonPill, "
             << "but it is supposed to pass away by receiving TEvKqpWorkerResponse from all of the workers");
         StartDeathProcess(ctx);
     }
 
     void StartDeathProcess(const TActorContext& ctx) {
-        LOG_NOTICE_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " TKqpLoadActor StartDeathProcess called,"
-            << " DeleteTableOnFinish: " << DeleteTableOnFinish);
+        LOG_DEBUG_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " TKqpLoadActor StartDeathProcess called");
 
         Become(&TKqpLoadActor::StateEndOfWork);
 
@@ -386,6 +396,8 @@ private:
     }
 
     void DropTables(const TActorContext& ctx) {
+        LOG_NOTICE_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " creating event for tables drop");
+
         auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
         ev->Record.MutableRequest()->SetDatabase(WorkingDir);
         ev->Record.MutableRequest()->SetSessionId(TableSession);
@@ -402,7 +414,7 @@ private:
         auto& response = ev->Get()->Record.GetRef();
 
         if (response.GetYdbStatus() == Ydb::StatusIds_StatusCode_SUCCESS) {
-            LOG_NOTICE_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " drop tables status: SUCCESS");
+            LOG_INFO_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " drop tables status: SUCCESS");
         } else {
             LOG_ERROR_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " drop tables status: FAIL, reason: " + ev->Get()->ToString());
         }
@@ -413,23 +425,13 @@ private:
     void DeathReport(const TActorContext& ctx) {
         CloseSession(ctx);
 
-        TIntrusivePtr<TEvLoad::TLoadReport> report = nullptr;
-        TString errorReason;
-        if (ResultsReceived >= Workers.size()) {
-            report.Reset(new TEvLoad::TLoadReport());
-            report->Duration = TDuration::Seconds(DurationSeconds);
-            errorReason = "OK, called StartDeathProcess";
-        } else if (EarlyStop) {
-            errorReason = "Abort, stop signal received";
-        } else {
-            errorReason = "Abort, timeout";
-        }
+        TIntrusivePtr<TEvLoad::TLoadReport> Report(new TEvLoad::TLoadReport());
+        Report->Duration = TDuration::Seconds(DurationSeconds);
 
-        auto* finishEv = new TEvLoad::TEvLoadTestFinished(Tag, report, errorReason);
+        auto* finishEv = new TEvLoad::TEvLoadTestFinished(Tag, Report, "OK, called StartDeathProcess");
         finishEv->LastHtmlPage = RenderHTML();
         finishEv->JsonResult = GetJsonResult();
         ctx.Send(Parent, finishEv);
-        LOG_NOTICE_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " DeathReport");
         PassAway();
     }
 
@@ -438,7 +440,6 @@ private:
     NJson::TJsonValue GetJsonResult() const {
         NJson::TJsonValue value;
         value["duration_s"] = DurationSeconds;
-        value["txs"] = Total->LatencyHist.GetTotalCount();
         value["rps"] = Total->LatencyHist.GetTotalCount() / static_cast<double>(DurationSeconds);
         value["errors"] = Total->Errors;
         {
@@ -511,7 +512,7 @@ private:
 
         if (response.GetYdbStatus() == Ydb::StatusIds_StatusCode_SUCCESS) {
             Become(&TKqpLoadActor::StateMain);
-            LOG_NOTICE_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " tables are created");
+            LOG_INFO_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " tables are created");
             InitData = WorkloadQueryGen->GetInitialData();
             InsertInitData(ctx);
         } else {
@@ -523,7 +524,7 @@ private:
     // table initialization
 
     void InsertInitData(const TActorContext& ctx) {
-        Y_ABORT_UNLESS(!InitData.empty());
+        Y_VERIFY(!InitData.empty());
         auto q = std::move(InitData.front());
         InitData.pop_front();
 
@@ -543,8 +544,7 @@ private:
         }
 
         if (InitData.empty()) {
-            LOG_NOTICE_S(ctx, NKikimrServices::KQP_LOAD_TEST, "Tag# " << Tag << " initial query is executed, going to create workers");
-            TestStartTime = TAppData::TimeProvider->Now();
+            Start = TInstant::Now();
             if (IncreaseSessions) {
                 ctx.Schedule(TDuration::Seconds(1), new TEvents::TEvWakeup);
             } else {
@@ -592,8 +592,8 @@ private:
                 TABLEBODY() {
                     TABLER() {
                         TABLED() {
-                            if (TestStartTime) {
-                                str << (TAppData::TimeProvider->Now() - TestStartTime).Seconds() << " / " << DurationSeconds;
+                            if (Start) {
+                                str << (TInstant::Now() - Start).Seconds() << " / " << DurationSeconds;
                             } else {
                                 str << -1 << " / " << DurationSeconds;
                             }
@@ -629,7 +629,7 @@ private:
             WorkloadType,
             Tag,
             Workers.size(),
-            TestStartTime + TDuration::Seconds(DurationSeconds),
+            Start + TDuration::Seconds(DurationSeconds),
             Transactions,
             TransactionsBytesWritten);
         Workers.push_back(ctx.Register(worker));
@@ -646,8 +646,7 @@ private:
         ctx.Send(kqp_proxy, ev.Release());
     }
 
-    TInstant TestStartTime;
-    bool EarlyStop = false;
+    TInstant Start;
     TString TableSession = "wrong sessionId";
     TString WorkingDir;
     ui64 WorkloadType;

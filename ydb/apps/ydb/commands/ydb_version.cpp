@@ -8,7 +8,7 @@
 namespace NYdb::NConsoleClient {
 
 TCommandVersion::TCommandVersion()
-    : TClientCommand("version", {}, "Print YDB CLI version")
+    : TClientCommand("version", {}, "Print Yandex.Cloud YDB CLI version")
 {}
 
 void TCommandVersion::Config(TConfig& config) {
@@ -57,7 +57,7 @@ int TCommandVersion::Run(TConfig& config) {
         return EXIT_SUCCESS;
     }
     if (!Semantic) {
-        Cout << "YDB CLI ";
+        Cout << "Yandex.Cloud YDB CLI ";
     }
     Cout << StripString(NResource::Find(TStringBuf(VersionResourceName))) << Endl;
     return EXIT_SUCCESS;

@@ -4,7 +4,7 @@
 #include "columnshard_impl.h"
 #include "blob_cache.h"
 
-#include <ydb/core/formats/arrow/arrow_batch_builder.h>
+#include <ydb/core/formats/arrow_batch_builder.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
 #include <ydb/core/scheme/scheme_types_proto.h>
 #include <ydb/core/testlib/tablet_helpers.h>
@@ -21,7 +21,7 @@ inline TPrivateEvent* TryGetPrivateEvent(TAutoPtr<IEventHandle>& ev) {
     if (ev->GetTypeRewrite() != TPrivateEvent::EventType) {
         return nullptr;
     }
-    return dynamic_cast<TPrivateEvent*>(ev->StaticCastAsLocal<IEventBase>());
+    return dynamic_cast<TPrivateEvent*>(ev->GetBase());
 }
 
 class TTester : public TNonCopyable {
@@ -44,7 +44,7 @@ struct TTestSchema {
         TString Name;
         TString Codec;
         std::optional<int> CompressionLevel;
-        NKikimrSchemeOp::TS3Settings S3 = FakeS3();
+        std::optional<NKikimrSchemeOp::TS3Settings> S3;
 
         TStorageTier(const TString& name = {})
             : Name(name)
@@ -58,7 +58,7 @@ struct TTestSchema {
             } else if (Codec == "zstd") {
                 return NKikimrSchemeOp::EColumnCodec::ColumnCodecZSTD;
             }
-            Y_ABORT_UNLESS(false);
+            Y_VERIFY(false);
         }
 
         bool HasCodec() const {
@@ -105,9 +105,6 @@ struct TTestSchema {
 
     struct TTableSpecials : public TStorageTier {
         std::vector<TStorageTier> Tiers;
-        bool WaitEmptyAfter = false;
-
-        TTableSpecials() noexcept = default;
 
         bool HasTiers() const {
             return !Tiers.empty();
@@ -117,7 +114,7 @@ struct TTestSchema {
             return EvictAfter.has_value();
         }
 
-        TTableSpecials WithCodec(const TString& codec) const {
+        TTableSpecials WithCodec(const TString& codec) {
             TTableSpecials out = *this;
             out.SetCodec(codec);
             return out;
@@ -130,7 +127,7 @@ struct TTestSchema {
     };
 
     static auto YdbSchema(const std::pair<TString, TTypeInfo>& firstKeyItem = {"timestamp", TTypeInfo(NTypeIds::Timestamp) }) {
-        std::vector<std::pair<TString, TTypeInfo>> schema = {
+        TVector<std::pair<TString, TTypeInfo>> schema = {
             // PK
             firstKeyItem,
             {"resource_type", TTypeInfo(NTypeIds::Utf8) },
@@ -147,7 +144,7 @@ struct TTestSchema {
     };
 
     static auto YdbExoticSchema() {
-        std::vector<std::pair<TString, TTypeInfo>> schema = {
+        TVector<std::pair<TString, TTypeInfo>> schema = {
             // PK
             {"timestamp", TTypeInfo(NTypeIds::Timestamp) },
             {"resource_type", TTypeInfo(NTypeIds::Utf8) },
@@ -165,7 +162,7 @@ struct TTestSchema {
     };
 
     static auto YdbPkSchema() {
-        std::vector<std::pair<TString, TTypeInfo>> schema = {
+        TVector<std::pair<TString, TTypeInfo>> schema = {
             {"timestamp", TTypeInfo(NTypeIds::Timestamp) },
             {"resource_type", TTypeInfo(NTypeIds::Utf8) },
             {"resource_id", TTypeInfo(NTypeIds::Utf8) },
@@ -175,7 +172,7 @@ struct TTestSchema {
     }
 
     static auto YdbAllTypesSchema() {
-        std::vector<std::pair<TString, TTypeInfo>> schema = {
+        TVector<std::pair<TString, TTypeInfo>> schema = {
             { "ts", TTypeInfo(NTypeIds::Timestamp) },
 
             { "i8", TTypeInfo(NTypeIds::Int8) },
@@ -211,7 +208,7 @@ struct TTestSchema {
         NKikimrSchemeOp::TOlapColumnDescription col;
         col.SetId(id);
         col.SetName(name);
-        auto columnType = NScheme::ProtoColumnTypeFromTypeInfoMod(type, "");
+        auto columnType = NScheme::ProtoColumnTypeFromTypeInfo(type);
         col.SetTypeId(columnType.TypeId);
         if (columnType.TypeInfo) {
             *col.MutableTypeInfo() = *columnType.TypeInfo;
@@ -219,8 +216,8 @@ struct TTestSchema {
         return col;
     }
 
-    static void InitSchema(const std::vector<std::pair<TString, TTypeInfo>>& columns,
-                           const std::vector<std::pair<TString, TTypeInfo>>& pk,
+    static void InitSchema(const TVector<std::pair<TString, TTypeInfo>>& columns,
+                           const TVector<std::pair<TString, TTypeInfo>>& pk,
                            const TTableSpecials& specials,
                            NKikimrSchemeOp::TColumnTableSchema* schema)
     {
@@ -230,7 +227,7 @@ struct TTestSchema {
             *schema->MutableColumns()->Add() = CreateColumn(i + 1, columns[i].first, columns[i].second);
         }
 
-        Y_ABORT_UNLESS(pk.size() > 0);
+        Y_VERIFY(pk.size() > 0);
         for (auto& column : ExtractNames(pk)) {
             schema->AddKeyColumnNames(column);
         }
@@ -244,8 +241,8 @@ struct TTestSchema {
     }
 
     static void InitTtl(const TTableSpecials& specials, NKikimrSchemeOp::TColumnDataLifeCycle::TTtl* ttl) {
-        Y_ABORT_UNLESS(specials.HasTtl());
-        Y_ABORT_UNLESS(!specials.TtlColumn.empty());
+        Y_VERIFY(specials.HasTtl());
+        Y_VERIFY(!specials.TtlColumn.empty());
         ttl->SetColumnName(specials.TtlColumn);
         ttl->SetExpireAfterSeconds((*specials.EvictAfter).Seconds());
     }
@@ -254,18 +251,20 @@ struct TTestSchema {
         ttlSettings->SetVersion(1);
         if (specials.HasTiers()) {
             ttlSettings->SetUseTiering("Tiering1");
-        }
-        if (specials.HasTtl()) {
+            if (specials.HasTtl()) {
+                InitTtl(specials, ttlSettings->MutableEnabled());
+            }
+            return true;
+        } else if (specials.HasTtl()) {
             InitTtl(specials, ttlSettings->MutableEnabled());
+            return true;
         }
-        return specials.HasTiers() || specials.HasTtl();
+        return false;
     }
 
-    static TString CreateTableTxBody(ui64 pathId, const std::vector<std::pair<TString, TTypeInfo>>& columns,
-        const std::vector<std::pair<TString, TTypeInfo>>& pk,
-        const TTableSpecials& specialsExt = {})
-    {
-        auto specials = specialsExt;
+    static TString CreateTableTxBody(ui64 pathId, const TVector<std::pair<TString, TTypeInfo>>& columns,
+        const TVector<std::pair<TString, TTypeInfo>>& pk,
+        const TTableSpecials& specials = {}) {
         NKikimrTxColumnShard::TSchemaTxBody tx;
         auto* table = tx.MutableEnsureTables()->AddTables();
         table->SetPathId(pathId);
@@ -288,8 +287,8 @@ struct TTestSchema {
         return out;
     }
 
-    static TString CreateInitShardTxBody(ui64 pathId, const std::vector<std::pair<TString, TTypeInfo>>& columns,
-        const std::vector<std::pair<TString, TTypeInfo>>& pk,
+    static TString CreateInitShardTxBody(ui64 pathId, const TVector<std::pair<TString, TTypeInfo>>& columns,
+        const TVector<std::pair<TString, TTypeInfo>>& pk,
         const TTableSpecials& specials = {}, const TString& ownerPath = "/Root/olap") {
         NKikimrTxColumnShard::TSchemaTxBody tx;
         auto* table = tx.MutableInitShard()->AddTables();
@@ -306,8 +305,8 @@ struct TTestSchema {
         return out;
     }
 
-    static TString CreateStandaloneTableTxBody(ui64 pathId, const std::vector<std::pair<TString, TTypeInfo>>& columns,
-                                               const std::vector<std::pair<TString, TTypeInfo>>& pk,
+    static TString CreateStandaloneTableTxBody(ui64 pathId, const TVector<std::pair<TString, TTypeInfo>>& columns,
+                                               const TVector<std::pair<TString, TTypeInfo>>& pk,
                                                const TTableSpecials& specials = {}) {
         NKikimrTxColumnShard::TSchemaTxBody tx;
         auto* table = tx.MutableEnsureTables()->AddTables();
@@ -353,8 +352,11 @@ struct TTestSchema {
 
     static NMetadata::NFetcher::ISnapshot::TPtr BuildSnapshot(const TTableSpecials& specials);
 
-    static TString CommitTxBody(ui64, const std::vector<ui64>& writeIds) {
+    static TString CommitTxBody(ui64 metaShard, const TVector<ui64>& writeIds) {
         NKikimrTxColumnShard::TCommitTxBody proto;
+        if (metaShard) {
+            proto.SetTxInitiator(metaShard);
+        }
         for (ui64 id : writeIds) {
             proto.AddWriteIds(id);
         }
@@ -364,7 +366,7 @@ struct TTestSchema {
         return txBody;
     }
 
-    static TString TtlTxBody(const std::vector<ui64>& pathIds, TString ttlColumnName, ui64 tsSeconds) {
+    static TString TtlTxBody(const TVector<ui64>& pathIds, TString ttlColumnName, ui64 tsSeconds) {
         NKikimrTxColumnShard::TTtlTxBody proto;
         proto.SetTtlColumnName(ttlColumnName);
         proto.SetUnixTimeSeconds(tsSeconds);
@@ -377,8 +379,8 @@ struct TTestSchema {
         return txBody;
     }
 
-    static std::vector<TString> ExtractNames(const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns) {
-        std::vector<TString> out;
+    static TVector<TString> ExtractNames(const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns) {
+        TVector<TString> out;
         out.reserve(columns.size());
         for (auto& col : columns) {
             out.push_back(col.first);
@@ -386,8 +388,8 @@ struct TTestSchema {
         return out;
     }
 
-    static std::vector<NScheme::TTypeInfo> ExtractTypes(const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns) {
-        std::vector<NScheme::TTypeInfo> types;
+    static TVector<NScheme::TTypeInfo> ExtractTypes(const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns) {
+        TVector<NScheme::TTypeInfo> types;
         types.reserve(columns.size());
         for (auto& [name, type] : columns) {
             types.push_back(type);
@@ -397,30 +399,18 @@ struct TTestSchema {
 };
 
 bool ProposeSchemaTx(TTestBasicRuntime& runtime, TActorId& sender, const TString& txBody, NOlap::TSnapshot snap);
-void ProvideTieringSnapshot(TTestBasicRuntime& runtime, const TActorId& sender, NMetadata::NFetcher::ISnapshot::TPtr snapshot);
+void ProvideTieringSnapshot(TTestBasicRuntime& runtime, TActorId& sender, NMetadata::NFetcher::ISnapshot::TPtr snapshot);
 void PlanSchemaTx(TTestBasicRuntime& runtime, TActorId& sender, NOlap::TSnapshot snap);
-
-void PlanWriteTx(TTestBasicRuntime& runtime, TActorId& sender, NOlap::TSnapshot snap, bool waitResult = true);
-
-bool WriteData(TTestBasicRuntime& runtime, TActorId& sender, const ui64 shardId, const ui64 writeId, const ui64 tableId, const TString& data,
-                              const std::vector<std::pair<TString, TTypeInfo>>& ydbSchema, std::vector<ui64>* writeIds);
-
-bool WriteData(TTestBasicRuntime& runtime, TActorId& sender, const ui64 writeId, const ui64 tableId, const TString& data,
-                              const std::vector<std::pair<TString, TTypeInfo>>& ydbSchema, bool waitResult = true, std::vector<ui64>* writeIds = nullptr);
-
+bool WriteData(TTestBasicRuntime& runtime, TActorId& sender, ui64 metaShard, ui64 writeId, ui64 tableId,
+               const TString& data, std::shared_ptr<arrow::Schema> schema = {}, bool waitResult = true);
 std::optional<ui64> WriteData(TTestBasicRuntime& runtime, TActorId& sender, const NLongTxService::TLongTxId& longTxId,
-                              ui64 tableId, const ui64 writePartId, const TString& data,
-                              const std::vector<std::pair<TString, TTypeInfo>>& ydbSchema);
-
-ui32 WaitWriteResult(TTestBasicRuntime& runtime, ui64 shardId, std::vector<ui64>* writeIds = nullptr);
-
-void ScanIndexStats(TTestBasicRuntime& runtime, TActorId& sender, const std::vector<ui64>& pathIds,
+                              ui64 tableId, const TString& dedupId, const TString& data,
+                              std::shared_ptr<arrow::Schema> schema = {});
+ui32 WaitWriteResult(TTestBasicRuntime& runtime, ui64 metaShard);
+void ScanIndexStats(TTestBasicRuntime& runtime, TActorId& sender, const TVector<ui64>& pathIds,
                     NOlap::TSnapshot snap, ui64 scanId = 0);
-
-void ProposeCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 shardId, ui64 txId, const std::vector<ui64>& writeIds);
-void ProposeCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 txId, const std::vector<ui64>& writeIds);
-
-void PlanCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 shardId, ui64 planStep, const TSet<ui64>& txIds);
+void ProposeCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 metaShard, ui64 txId, const TVector<ui64>& writeIds);
+void ProposeCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 txId, const TVector<ui64>& writeIds);
 void PlanCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 planStep, const TSet<ui64>& txIds);
 
 inline void PlanCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 planStep, ui64 txId) {
@@ -429,116 +419,9 @@ inline void PlanCommit(TTestBasicRuntime& runtime, TActorId& sender, ui64 planSt
     PlanCommit(runtime, sender, planStep, ids);
 }
 
-struct TTestBlobOptions {
-    THashSet<TString> NullColumns;
-    THashSet<TString> SameValueColumns;
-    ui32 SameValue = 42;
-};
-
-TCell MakeTestCell(const TTypeInfo& typeInfo, ui32 value, std::vector<TString>& mem);
-TString MakeTestBlob(std::pair<ui64, ui64> range, const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns,
-                     const TTestBlobOptions& options = {}, const std::set<std::string>& notNullColumns = {});
+TString MakeTestBlob(std::pair<ui64, ui64> range, const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns,
+                     const THashSet<TString>& nullColumns = {});
 TSerializedTableRange MakeTestRange(std::pair<ui64, ui64> range, bool inclusiveFrom, bool inclusiveTo,
-                                    const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns);
+                                    const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns);
 
-
-}
-
-namespace NKikimr::NColumnShard {
-    class TTableUpdatesBuilder {
-        std::vector<std::unique_ptr<arrow::ArrayBuilder>> Builders;
-        std::shared_ptr<arrow::Schema> Schema;
-        ui32 RowsCount = 0;
-    public:
-        class TRowBuilder {
-            TTableUpdatesBuilder& Owner;
-            YDB_READONLY(ui32, Index, 0);
-        public:
-            TRowBuilder(ui32 index, TTableUpdatesBuilder& owner)
-                : Owner(owner)
-                , Index(index)
-            {}
-
-            TRowBuilder Add(const char* data) {
-                return Add<std::string>(data);
-            }
-
-            template <class TData>
-            TRowBuilder Add(const TData& data) {
-                Y_ABORT_UNLESS(Index < Owner.Builders.size());
-                auto& builder = Owner.Builders[Index];
-                auto type = builder->type();
-
-                NArrow::SwitchType(type->id(), [&](const auto& t) {
-                    using TWrap = std::decay_t<decltype(t)>;
-                    using T = typename TWrap::T;
-                    using TBuilder = typename arrow::TypeTraits<typename TWrap::T>::BuilderType;
-
-                    auto& typedBuilder = static_cast<TBuilder&>(*builder);
-                    if constexpr (std::is_arithmetic<TData>::value) {
-                        if constexpr (arrow::has_c_type<T>::value) {
-                            using CType = typename T::c_type;
-                            Y_ABORT_UNLESS(typedBuilder.Append((CType)data).ok());
-                            return true;
-                        }
-                    }
-                    if constexpr (std::is_same<TData, std::string>::value) {
-                        if constexpr (arrow::has_string_view<T>::value && arrow::is_parameter_free_type<T>::value) {
-                            Y_ABORT_UNLESS(typedBuilder.Append(data.data(), data.size()).ok());
-                            return true;
-                        }
-                    }
-                    Y_ABORT("Unknown type combination");
-                    return false;
-                });
-                return TRowBuilder(Index + 1, Owner);
-            }
-
-            TRowBuilder AddNull() {
-                Y_ABORT_UNLESS(Index < Owner.Builders.size());
-                auto res = Owner.Builders[Index]->AppendNull();
-                return TRowBuilder(Index + 1, Owner);
-            }
-        };
-
-        TTableUpdatesBuilder(std::shared_ptr<arrow::Schema> schema)
-            : Schema(schema)
-        {
-            Builders = NArrow::MakeBuilders(schema);
-            Y_ABORT_UNLESS(Builders.size() == schema->fields().size());
-        }
-
-        TRowBuilder AddRow() {
-            ++RowsCount;
-            return TRowBuilder(0, *this);
-        }
-
-        std::shared_ptr<arrow::RecordBatch> BuildArrow() {
-            TVector<std::shared_ptr<arrow::Array>> columns;
-            columns.reserve(Builders.size());
-            for (auto&& builder : Builders) {
-                auto arrayDataRes = builder->Finish();
-                Y_ABORT_UNLESS(arrayDataRes.ok());
-                columns.push_back(*arrayDataRes);
-            }
-            return arrow::RecordBatch::Make(Schema, RowsCount, columns);
-        }
-    };
-
-    NOlap::TIndexInfo BuildTableInfo(const std::vector<std::pair<TString, NScheme::TTypeInfo>>& ydbSchema,
-                         const std::vector<std::pair<TString, NScheme::TTypeInfo>>& key);
-
-
-    struct TestTableDescription {
-        std::vector<std::pair<TString, NScheme::TTypeInfo>> Schema = NTxUT::TTestSchema::YdbSchema();
-        std::vector<std::pair<TString, NScheme::TTypeInfo>> Pk = NTxUT::TTestSchema::YdbPkSchema();
-        bool InStore = true;
-    };
-
-    void SetupSchema(TTestBasicRuntime& runtime, TActorId& sender, ui64 pathId,
-                 const TestTableDescription& table = {}, TString codec = "none");
-
-    void PrepareTablet(TTestBasicRuntime& runtime, const ui64 tableId, const std::vector<std::pair<TString, NScheme::TTypeInfo>>& schema, const ui32 keySize = 1);
-
-    std::shared_ptr<arrow::RecordBatch> ReadAllAsBatch(TTestBasicRuntime& runtime, const ui64 tableId, const NOlap::TSnapshot& snapshot, const std::vector<std::pair<TString, NScheme::TTypeInfo>>& schema);
 }

@@ -1,6 +1,8 @@
 #include "controller_impl.h"
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 class TController::TTxInitSchema: public TTxBase {
 public:
@@ -33,4 +35,6 @@ void TController::RunTxInitSchema(const TActorContext& ctx) {
     Execute(new TTxInitSchema(this), ctx);
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

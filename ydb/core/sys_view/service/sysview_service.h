@@ -19,10 +19,10 @@ void CollectQueryStats(const TActorContext& ctx, const NKqpProto::TKqpStatsQuery
     const TString& userSID, ui64 parametersSize, const TString& database,
     const NKikimrKqp::EQueryType type, ui64 requestUnits);
 
-THolder<NActors::IActor> CreateSysViewService(
+THolder<IActor> CreateSysViewService(
     TExtCountersConfig&& config, bool hasExternalCounters);
 
-THolder<NActors::IActor> CreateSysViewServiceForTests();
+THolder<IActor> CreateSysViewServiceForTests();
 
 } // NSysView
 } // NKikimr

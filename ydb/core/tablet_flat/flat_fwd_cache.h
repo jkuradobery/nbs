@@ -11,7 +11,6 @@ namespace NTable {
 namespace NFwd {
 
     class TCache : public IPageLoadingLogic {
-        using TGroupId = NPage::TGroupId;
 
         template<size_t Items>
         struct TRound {
@@ -25,7 +24,7 @@ namespace NFwd {
                     auto it = std::find_if(Pages.begin(), Pages.end(), pred);
 
                     if (it == Pages.end()) {
-                        Y_ABORT("Failed to locate page within forward trace");
+                        Y_FAIL("Failed to locate page within forward trace");
                     }
 
                     return &it->Data;
@@ -36,7 +35,7 @@ namespace NFwd {
 
             ui32 Emplace(TPage &page)
             {
-                Y_ABORT_UNLESS(page, "Cannot push invalid page to trace cache");
+                Y_VERIFY(page, "Cannot push invalid page to trace cache");
 
                 Offset = (Pages.size() + Offset - 1) % Pages.size();
 
@@ -58,8 +57,8 @@ namespace NFwd {
     public:
         TCache() = delete;
 
-        TCache(const TPart* part, IPages* env, TGroupId groupId, const TIntrusiveConstPtr<TSlices>& bounds = nullptr)
-            : Index(part, env, groupId, 1, bounds)
+        TCache(const NPage::TIndex& index, const TIntrusiveConstPtr<TSlices>& bounds = nullptr)
+            : Index(index, 1, bounds)
         { }
 
         ~TCache()
@@ -69,7 +68,7 @@ namespace NFwd {
 
         TResult Handle(IPageLoadingQueue *head, TPageId pageId, ui64 lower) noexcept override
         {
-            Y_ABORT_UNLESS(pageId != Max<TPageId>(), "Invalid requested pageId");
+            Y_VERIFY(pageId != Max<TPageId>(), "Invalid requested pageId");
 
             if (auto *page = Trace.Get(pageId))
                 return { page, false, true };
@@ -98,9 +97,9 @@ namespace NFwd {
                 }
 
                 if (it == Pages.end() || it->PageId != one.PageId) {
-                    Y_ABORT("Got page that hasn't been requested for load");
+                    Y_FAIL("Got page that hasn't been requested for load");
                 } if (one.Data.size() > OnFetch) {
-                    Y_ABORT("Forward cache ahead counters is out of sync");
+                    Y_FAIL("Forward cache ahead counters is out of sync");
                 }
 
                 Stat.Saved += one.Data.size();
@@ -121,7 +120,7 @@ namespace NFwd {
             };
 
             while (auto more = Index.More(until())) {
-                auto size = head->AddToQueue(more, EPage::DataPage);
+                auto size = head->AddToQueue(more, ui16(EPage::DataPage));
 
                 Stat.Fetch += size;
                 OnFetch += size;
@@ -141,9 +140,9 @@ namespace NFwd {
                 auto &page = Pages.at(Offset);
 
                 if (!Pages || page.PageId != drop.PageId) {
-                    Y_ABORT("Dropping page that is not exist in cache");
+                    Y_FAIL("Dropping page that is not exist in cache");
                 } else if (page.Size == 0) {
-                    Y_ABORT("Dropping page that has not been touched");
+                    Y_FAIL("Dropping page that has not been touched");
                 } else if (page.Usage == EUsage::Keep) {
                     OnHold -= Trace.Emplace(page);
                 } else if (auto size = page.Release().size()) {

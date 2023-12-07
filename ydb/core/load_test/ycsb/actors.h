@@ -42,13 +42,6 @@ IActor *CreateReadIteratorActor(
     TIntrusivePtr<::NMonitoring::TDynamicCounters> counters,
     const TSubLoadId& id);
 
-IActor *CreateKqpSelectActor(
-    const NKikimrDataShardLoad::TEvYCSBTestLoadRequest::TReadStart& cmd,
-    const NKikimrDataShardLoad::TEvYCSBTestLoadRequest::TTargetShard& target,
-    const TActorId& parent,
-    TIntrusivePtr<::NMonitoring::TDynamicCounters> counters,
-    const TSubLoadId& id);
-
 class TLoadManagerException : public yexception {
 };
 

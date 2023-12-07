@@ -9,32 +9,22 @@
 namespace NYql::NS3Details {
 
 class TFileTreeBuilder {
-
-    struct TTreeKey {
-        TString Name;
-        bool IsDirectory = false;
-
-        std::strong_ordering operator<=>(const TTreeKey& other) const = default;
-    };
-
     struct TPath {
-        using TFileTreeMap = std::map<TTreeKey, TPath>;
-
         ui64 FileSize = 0;
         bool Read = false;
-        TFileTreeMap Children;
+        std::map<TString, TPath> Children;
     };
 
 public:
-    void AddPath(const TString& path, ui64 fileSize, bool isDirectory);
+    void AddPath(const TString& path, ui64 fileSize);
     void Save(NS3::TRange* range) const;
 
 private:
-    void SaveImpl(NS3::TRange::TPath* path, const TTreeKey& nodeKey, const TPath& srcPath) const;
+    void SaveImpl(NS3::TRange::TPath* path, const TString& name, const TPath& srcPath) const;
     static std::vector<TString> SplitPath(const TString& path);
 
 private:
-    TPath::TFileTreeMap Roots;
+    std::map<TString, TPath> Roots;
 };
 
 } // namespace NYql::NS3Details

@@ -4,7 +4,6 @@ SRCS(
     read_session_messages.cpp
     common.cpp
     write_session.cpp
-    write_session_impl.cpp
     read_session.h
     read_session.cpp
     persqueue.cpp
@@ -13,7 +12,7 @@ SRCS(
 
 PEERDIR(
     library/cpp/containers/disjoint_interval_tree
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/monlib/dynamic_counters
     library/cpp/monlib/metrics
     library/cpp/string_utils/url

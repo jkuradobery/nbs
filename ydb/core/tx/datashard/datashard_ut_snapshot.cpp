@@ -1,4 +1,4 @@
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include "datashard_ut_common_kqp.h"
 #include "datashard_active_transaction.h"
 
@@ -23,7 +23,7 @@ namespace {
     class TTextFormatBuilder : public IBlockBuilder {
     public:
         bool Start(
-                const std::vector<std::pair<TString, NScheme::TTypeInfo>>& columns,
+                const TVector<std::pair<TString, NScheme::TTypeInfo>>& columns,
                 ui64 maxRowsInBlock,
                 ui64 maxBytesInBlock,
                 TString& err) override
@@ -65,7 +65,7 @@ namespace {
         }
 
     private:
-        std::vector<std::pair<TString, NScheme::TTypeInfo>> Columns;
+        TVector<std::pair<TString, NScheme::TTypeInfo>> Columns;
         TString Buffer;
     };
 
@@ -873,7 +873,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
         bool captureTimecast = false;
         TVector<THolder<IEventHandle>> capturedSplit;
         TVector<THolder<IEventHandle>> capturedTimecast;
-        auto captureEvents = [&](TAutoPtr<IEventHandle> &ev) -> auto {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvDataShard::TEvSplit::EventType: {
                     if (captureSplit) {
@@ -1048,7 +1048,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
         size_t observedPlanStepTxs = 0;
         // Capture and block all readset messages
         TVector<THolder<IEventHandle>> readSets;
-        auto captureRS = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+        auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
             switch (ev->GetTypeRewrite()) {
                 case TEvTxProcessing::TEvPlanStep::EventType: {
                     const auto* msg = ev->Get<TEvTxProcessing::TEvPlanStep>();
@@ -1151,12 +1151,11 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
     };
 
     struct TInjectLocks {
-        NKikimrDataEvents::TKqpLocks::ELocksOp Op = NKikimrDataEvents::TKqpLocks::Commit;
+        NKikimrTxDataShard::TKqpLocks_ELocksOp Op = NKikimrTxDataShard::TKqpLocks::Commit;
         TVector<TLockInfo> Locks;
 
-        TInjectLocks& AddLocks(const TVector<TLockInfo>& locks) {
+        void AddLocks(const TVector<TLockInfo>& locks) {
             Locks.insert(Locks.end(), locks.begin(), locks.end());
-            return *this;
         }
     };
 
@@ -1165,7 +1164,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
         TInjectLockSnapshotObserver(TTestActorRuntime& runtime)
             : Runtime(runtime)
         {
-            PrevObserver = runtime.SetObserverFunc([this](TAutoPtr<IEventHandle>& ev) {
+            PrevObserver = runtime.SetObserverFunc([this](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
                 return this->Process(ev);
             });
         }
@@ -1207,7 +1206,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
                     Cerr << record.DebugString() << Endl;
                     if (record.GetTxKind() == NKikimrTxDataShard::TX_KIND_DATA) {
                         NKikimrTxDataShard::TDataTransaction tx;
-                        Y_ABORT_UNLESS(tx.ParseFromString(record.GetTxBody()));
+                        Y_VERIFY(tx.ParseFromString(record.GetTxBody()));
                         Cerr << "TxBody (original):" << Endl;
                         Cerr << tx.DebugString() << Endl;
                         if (tx.HasMiniKQL()) {
@@ -1222,7 +1221,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
                             if (InjectClearTasks && tx.GetKqpTransaction().TasksSize() > 0) {
                                 tx.MutableKqpTransaction()->ClearTasks();
                                 TString txBody;
-                                Y_ABORT_UNLESS(tx.SerializeToString(&txBody));
+                                Y_VERIFY(tx.SerializeToString(&txBody));
                                 record.SetTxBody(txBody);
                                 Cerr << "TxBody: cleared Tasks" << Endl;
                             }
@@ -1247,7 +1246,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
                                     protoLocks->AddReceivingShards(shard);
                                 }
                                 TString txBody;
-                                Y_ABORT_UNLESS(tx.SerializeToString(&txBody));
+                                Y_VERIFY(tx.SerializeToString(&txBody));
                                 record.SetTxBody(txBody);
                                 Cerr << "TxBody: injected Locks" << Endl;
                             }
@@ -1272,7 +1271,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
                                 tx.SetLockNodeId(Inject.LockNodeId);
                             }
                             TString txBody;
-                            Y_ABORT_UNLESS(tx.SerializeToString(&txBody));
+                            Y_VERIFY(tx.SerializeToString(&txBody));
                             record.SetTxBody(txBody);
                             Cerr << "TxBody: injected LockId" << Endl;
                         }
@@ -1320,7 +1319,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
                     break;
                 }
             }
-            return PrevObserver(ev);
+            return PrevObserver(Runtime, ev);
         }
 
         void UnblockReadSets() {
@@ -1388,8 +1387,8 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
 
         // We should have been acquiring locks
         TLockSnapshot snapshot = observer.Last;
-        Y_ABORT_UNLESS(snapshot.LockId != 0);
-        Y_ABORT_UNLESS(snapshot.MvccSnapshot);
+        Y_VERIFY(snapshot.LockId != 0);
+        Y_VERIFY(snapshot.MvccSnapshot);
 
         // Perform an immediate write, pretending it happens as part of the above snapshot tx
         observer.Inject = snapshot;
@@ -1484,8 +1483,8 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
 
         // We should have been acquiring locks
         TLockSnapshot snapshot = observer.Last;
-        Y_ABORT_UNLESS(snapshot.LockId != 0);
-        Y_ABORT_UNLESS(snapshot.MvccSnapshot);
+        Y_VERIFY(snapshot.LockId != 0);
+        Y_VERIFY(snapshot.MvccSnapshot);
 
         // Perform an immediate write, pretending it happens as part of the above snapshot tx
         // We expect read lock to be upgraded to write lock and become persistent
@@ -1809,7 +1808,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
         for (ui32 columnId : columns) {
             record.AddColumns(columnId);
         }
-        record.SetResultFormat(NKikimrDataEvents::FORMAT_CELLVEC);
+        record.SetResultFormat(NKikimrTxDataShard::CELLVEC);
         return request;
     }
 
@@ -2217,7 +2216,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
 
             TVector<TCell> key{ TCell::Make(ui32(2)) };
             TVector<TCell> values{ TCell::Make(ui32(22)) };
-            TSerializedCellVec serializedKey(key);
+            TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
             TString serializedValues(TSerializedCellVec::Serialize(values));
             rows->emplace_back(serializedKey, serializedValues);
 
@@ -2631,7 +2630,7 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
             UPSERT INTO `/Root/table-1` (key, value) VALUES (0, 0);
             UPSERT INTO `/Root/table-2` (key, value) VALUES (0, 0);
             )"), commitSender, commitSenderTxId, true));
-
+ 
         runtime.SimulateSleep(TDuration::Seconds(1));
         UNIT_ASSERT(!observer.BlockedReadSets.empty());
         observer.InjectClearTasks = false;
@@ -3387,465 +3386,6 @@ Y_UNIT_TEST_SUITE(DataShardSnapshots) {
         auto table1snapshot3 = ReadShardedTable(server, "/Root/table-1-moved", snapshot);
         UNIT_ASSERT_VALUES_EQUAL(table1snapshot3,
             "ERROR: WrongRequest\n");
-    }
-
-    Y_UNIT_TEST(LockedWriteWithAsyncIndexAndVolatileCommit) {
-        TPortManager pm;
-        TServerSettings::TControls controls;
-        controls.MutableDataShardControls()->SetPrioritizedMvccSnapshotReads(1);
-        controls.MutableDataShardControls()->SetUnprotectedMvccSnapshotReads(1);
-        controls.MutableDataShardControls()->SetEnableLockedWrites(1);
-
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetControls(controls);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        TDisableDataShardLogBatching disableDataShardLogBatching;
-        CreateShardedTable(server, sender, "/Root", "table-1", 1);
-        WaitTxNotification(server, sender,
-            AsyncAlterAddIndex(server, "/Root", "/Root/table-1",
-                TShardedTableOptions::TIndex{"by_value", {"value"}, {}, NKikimrSchemeOp::EIndexTypeGlobalAsync}));
-
-        CreateShardedTable(server, sender, "/Root", "table-2", 1);
-        WaitTxNotification(server, sender,
-            AsyncAlterAddIndex(server, "/Root", "/Root/table-2",
-                TShardedTableOptions::TIndex{"by_value", {"value"}, {}, NKikimrSchemeOp::EIndexTypeGlobalAsync}));
-
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1)"));
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 10)"));
-
-        SimulateSleep(server, TDuration::Seconds(1));
-
-        TInjectLockSnapshotObserver observer(runtime);
-
-        // Start a snapshot read transaction
-        TString sessionId, txId;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
-                SELECT key, value FROM `/Root/table-1`
-                WHERE key >= 1 AND key <= 3
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }");
-
-        // We will reuse this snapshot
-        auto snapshot = observer.Last.MvccSnapshot;
-
-        using NLongTxService::TLockHandle;
-        TLockHandle lock1handle(123, runtime.GetActorSystem(0));
-
-        // Write uncommitted changes to keys 1 and 2 using tx 123
-        observer.Inject.LockId = 123;
-        observer.Inject.LockNodeId = runtime.GetNodeId(0);
-        observer.Inject.MvccSnapshot = snapshot;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 11), (2, 21)
-                )")),
-            "<empty>");
-        auto locks1 = observer.LastLocks;
-        observer.Inject = {};
-
-        // Write uncommitted changes to keys 10 and 20 using tx 123
-        observer.Inject.LockId = 123;
-        observer.Inject.LockNodeId = runtime.GetNodeId(0);
-        observer.Inject.MvccSnapshot = snapshot;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 110), (20, 210)
-                )")),
-            "<empty>");
-        auto locks2 = observer.LastLocks;
-        observer.Inject = {};
-
-        SimulateSleep(server, TDuration::Seconds(1));
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleStaleRoExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-1` VIEW by_value
-                WHERE value in (1, 11, 21)
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }");
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleStaleRoExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-2` VIEW by_value
-                WHERE value in (10, 110, 210)
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 10 } items { uint32_value: 10 } }");
-
-        // Commit changes in tx 123
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(true);
-        observer.InjectClearTasks = true;
-        observer.InjectLocks.emplace().AddLocks(locks1).AddLocks(locks2);
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                UPSERT INTO `/Root/table-1` (key, value) VALUES (0, 0);
-                UPSERT INTO `/Root/table-2` (key, value) VALUES (0, 0);
-                )")),
-            "<empty>");
-        observer.InjectClearTasks = false;
-        observer.InjectLocks.reset();
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(false);
-
-        SimulateSleep(server, TDuration::Seconds(1));
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleStaleRoExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-1` VIEW by_value
-                WHERE value in (1, 11, 21)
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 1 } items { uint32_value: 11 } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 21 } }");
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleStaleRoExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-2` VIEW by_value
-                WHERE value in (10, 110, 210)
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 10 } items { uint32_value: 110 } }, "
-            "{ items { uint32_value: 20 } items { uint32_value: 210 } }");
-    }
-
-    Y_UNIT_TEST(LockedWriteWithPendingVolatileCommit) {
-        TServerSettings::TControls controls;
-        controls.MutableDataShardControls()->SetEnableLockedWrites(1);
-
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetControls(controls);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        TDisableDataShardLogBatching disableDataShardLogBatching;
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false},
-                            {"value2", "Uint32", false, false}});
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1)"));
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-2` (key, value) VALUES (10, 10)"));
-
-        SimulateSleep(runtime, TDuration::Seconds(1));
-
-        TInjectLockSnapshotObserver observer(runtime);
-        observer.BlockReadSets = true;
-
-        Cerr << "!!! Sending volatile upsert" << Endl;
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(true);
-        TString volatileSessionId = CreateSessionRPC(runtime, "/Root");
-        auto upsertResult = SendRequest(
-            runtime,
-            MakeSimpleRequestRPC(R"(
-                UPSERT INTO `/Root/table-1` (key, value) VALUES (2, 2);
-                UPSERT INTO `/Root/table-2` (key, value) VALUES (20, 20);
-                )", volatileSessionId, "", true),
-            "/Root");
-        SimulateSleep(runtime, TDuration::Seconds(1));
-        runtime.GetAppData(0).FeatureFlags.SetEnableDataShardVolatileTransactions(false);
-
-        // Should be 2 expectations + 2 commit decisions
-        UNIT_ASSERT(!upsertResult.HasValue());
-        UNIT_ASSERT_VALUES_EQUAL(observer.BlockedReadSets.size(), 4u);
-
-        // Start a snapshot read transaction, make sure not to touch the uncommitted 2 key
-        TString sessionId, txId;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
-                SELECT key, value FROM `/Root/table-1`
-                WHERE key >= 1 AND key <= 1
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }");
-
-        // We will reuse this snapshot
-        auto snapshot = observer.Last.MvccSnapshot;
-
-        using NLongTxService::TLockHandle;
-        TLockHandle lock1handle(123, runtime.GetActorSystem(0));
-
-        // Write uncommitted changes to keys 1 and 2 using tx 123
-        observer.Inject.LockId = 123;
-        observer.Inject.LockNodeId = runtime.GetNodeId(0);
-        observer.Inject.MvccSnapshot = snapshot;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                UPSERT INTO `/Root/table-1` (key, value2) VALUES (1, 11), (2, 22)
-                )")),
-            "<empty>");
-        auto locks1 = observer.LastLocks;
-        observer.Inject = {};
-
-        // Commit changes in tx 123
-        observer.InjectClearTasks = true;
-        observer.InjectLocks.emplace().Locks = locks1;
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                UPSERT INTO `/Root/table-1` (key, value2) VALUES (0, 0)
-                )")),
-            "<empty>");
-        observer.InjectClearTasks = false;
-        observer.InjectLocks.reset();
-
-        // This compaction verifies there's no commit race with the waiting
-        // distributed transaction. If commits happen in incorrect order we
-        // would observe unexpected results.
-        const auto shard1 = GetTableShards(server, sender, "/Root/table-1").at(0);
-        const auto tableId1 = ResolveTableId(server, sender, "/Root/table-1");
-        CompactTable(runtime, shard1, tableId1, false);
-
-        observer.UnblockReadSets();
-        UNIT_ASSERT_VALUES_EQUAL(
-            FormatResult(AwaitResponse(runtime, std::move(upsertResult))),
-            "<empty>");
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                SELECT key, value, value2 FROM `/Root/table-1`
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } items { uint32_value: 11 } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 2 } items { uint32_value: 22 } }");
-    }
-
-    Y_UNIT_TEST(ReadIteratorLocalSnapshotThenRestart) {
-        NKikimrConfig::TAppConfig app;
-        app.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(true);
-
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetAppConfig(app);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        TDisableDataShardLogBatching disableDataShardLogBatching;
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false}});
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        const auto shards1 = GetTableShards(server, sender, "/Root/table-1");
-
-        // Perform a snapshot read, this will persist "reads from snapshots" flag
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-1`
-                UNION ALL
-                SELECT key, value
-                FROM `/Root/table-2`
-                )")),
-            "");
-
-        // Insert rows using a single-shard write
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1), (2, 2), (3, 3)"));
-
-        bool haveReadResult = false;
-        bool haveReadResultSnapshot = false;
-        bool blockReads = false;
-        bool blockReadAcks = true;
-        bool blockReadResults = true;
-        std::vector<std::unique_ptr<IEventHandle>> reads;
-        std::vector<std::unique_ptr<IEventHandle>> readAcks;
-        std::vector<std::unique_ptr<IEventHandle>> readResults;
-
-        auto readObserverHolder = runtime.AddObserver<TEvDataShard::TEvRead>([&](auto& ev) {
-            if (blockReads) {
-                reads.emplace_back(ev.Release());
-            } else {
-                ev->Get()->Record.SetMaxRowsInResult(1);
-            }
-        });
-        auto readResultObserverHolder = runtime.AddObserver<TEvDataShard::TEvReadResult>([&](auto& ev) {
-            if (!haveReadResult) {
-                haveReadResult = true;
-                haveReadResultSnapshot = ev->Get()->Record.HasSnapshot();
-            } else if (blockReadResults) {
-                readResults.emplace_back(ev.Release());
-            }
-        });
-        auto readAckObserverHolder = runtime.AddObserver<TEvDataShard::TEvReadAck>([&](auto& ev) {
-            if (blockReadAcks) {
-                readAcks.emplace_back(ev.Release());
-            }
-        });
-
-        TString sessionId = CreateSessionRPC(runtime, "/Root");
-        auto readFuture = SendRequest(runtime,
-            MakeSimpleRequestRPC("SELECT key, value FROM `/Root/table-1` ORDER BY key", sessionId, "", true /* commitTx */),
-            "/Root");
-
-        auto waitFor = [&](const auto& condition, const TString& description) {
-            if (!condition()) {
-                Cerr << "... waiting for " << description << Endl;
-                TDispatchOptions options;
-                options.CustomFinalCondition = [&]() {
-                    return condition();
-                };
-                runtime.DispatchEvents(options);
-                UNIT_ASSERT_C(condition(), "... failed to wait for " << description);
-            }
-        };
-
-        waitFor([&]{ return haveReadResult; }, "read result");
-        UNIT_ASSERT(haveReadResultSnapshot);
-
-        blockReads = true;
-        RebootTablet(runtime, shards1.at(0), sender);
-        waitFor([&]{ return reads.size() > 0; }, "read retry");
-        UNIT_ASSERT_VALUES_EQUAL(reads.size(), 1u);
-
-        // Update all keys in a single operation
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 11), (2, 22), (3, 33)"));
-
-        blockReads = false;
-        blockReadAcks = false;
-        blockReadResults = false;
-        readAcks.clear();
-        readResults.clear();
-        for (auto& ev : reads) {
-            runtime.Send(ev.release(), 0, true);
-        }
-        reads.clear();
-
-        auto readResponse = AwaitResponse(runtime, std::move(readFuture));
-        UNIT_ASSERT_VALUES_EQUAL(
-            FormatResult(readResponse),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 2 } }, "
-            "{ items { uint32_value: 3 } items { uint32_value: 3 } }");
-    }
-
-    Y_UNIT_TEST(ReadIteratorLocalSnapshotThenWrite) {
-        NKikimrConfig::TAppConfig app;
-        app.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(true);
-
-        TPortManager pm;
-        TServerSettings serverSettings(pm.GetPort(2134));
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetDomainPlanResolution(100)
-            .SetAppConfig(app);
-
-        Tests::TServer::TPtr server = new TServer(serverSettings);
-        auto &runtime = *server->GetRuntime();
-        auto sender = runtime.AllocateEdgeActor();
-
-        runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-        runtime.SetLogPriority(NKikimrServices::TX_PROXY, NLog::PRI_DEBUG);
-
-        InitRoot(server, sender);
-
-        TDisableDataShardLogBatching disableDataShardLogBatching;
-        auto opts = TShardedTableOptions()
-                        .Shards(1)
-                        .Columns({
-                            {"key", "Uint32", true, false},
-                            {"value", "Uint32", false, false}});
-        CreateShardedTable(server, sender, "/Root", "table-1", opts);
-        CreateShardedTable(server, sender, "/Root", "table-2", opts);
-
-        // Perform a snapshot read, this will persist "reads from snapshots" flag
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-1`
-                UNION ALL
-                SELECT key, value
-                FROM `/Root/table-2`
-                )")),
-            "");
-
-        // Insert rows using a single-shard write
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1), (2, 2), (3, 3)"));
-
-        // Wait until mediator goes idle
-        size_t timecastUpdates = 0;
-        auto observerHolder = runtime.AddObserver([&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case TEvMediatorTimecast::TEvUpdate::EventType: {
-                    ++timecastUpdates;
-                    break;
-                }
-                case TEvDataShard::TEvRead::EventType: {
-                    auto* msg = ev->Get<TEvDataShard::TEvRead>();
-                    msg->Record.SetMaxRowsInResult(1);
-                    break;
-                }
-            }
-        });
-
-        auto waitFor = [&](const auto& condition, const TString& description) {
-            if (!condition()) {
-                Cerr << "... waiting for " << description << Endl;
-                TDispatchOptions options;
-                options.CustomFinalCondition = [&]() {
-                    return condition();
-                };
-                runtime.DispatchEvents(options);
-                UNIT_ASSERT_C(condition(), "... failed to wait for " << description);
-            }
-        };
-
-        waitFor([&]{ return timecastUpdates >= 3; }, "at least 3 timecast updates");
-
-        UNIT_ASSERT_VALUES_EQUAL(
-            KqpSimpleExec(runtime, Q_(R"(
-                SELECT key, value
-                FROM `/Root/table-1`
-                ORDER BY key
-                )")),
-            "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
-            "{ items { uint32_value: 2 } items { uint32_value: 2 } }, "
-            "{ items { uint32_value: 3 } items { uint32_value: 3 } }");
-
-        auto start = runtime.GetCurrentTime();
-        ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 11), (2, 22), (3, 33)"));
-        auto duration = runtime.GetCurrentTime() - start;
-        UNIT_ASSERT_C(duration <= TDuration::MilliSeconds(200), "UPSERT takes too much time: " << duration);
     }
 
 }

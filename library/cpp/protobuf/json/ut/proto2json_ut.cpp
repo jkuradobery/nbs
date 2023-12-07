@@ -887,22 +887,6 @@ Y_UNIT_TEST(TestFieldNameMode) {
         UNIT_ASSERT_STRINGS_EQUAL(jsonStr.Str(), modelStr);
     }
 
-    // UseJsonName and UseJsonEnumValue
-    {
-        TString modelStr(R"_({"json_enum":"enum_1"})_");
-
-        TCustomJsonEnumValue proto;
-        proto.SetJsonEnum(EJsonEnum::J_1);
-
-        TStringStream jsonStr;
-        TProto2JsonConfig config;
-        config.SetUseJsonName(true);
-        config.SetUseJsonEnumValue(true);
-
-        UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr, config));
-        UNIT_ASSERT_STRINGS_EQUAL(jsonStr.Str(), modelStr);
-    }
-
     // FieldNameMode with UseJsonName
     {
         TProto2JsonConfig config;
@@ -997,54 +981,46 @@ Y_UNIT_TEST(TestMapWTF) {
     UNIT_ASSERT_JSON_STRINGS_EQUAL(jsonStr.Str(), modelStr);
 } // TestMapWTF
 
-Y_UNIT_TEST(TestStringifyNumbers) {
-#define TEST_SINGLE(flag, field, value, expectString)                            \
-    do {                                                                         \
-        TFlatOptional proto;                                                     \
-        proto.Set##field(value);                                                 \
-                                                                                 \
-        TStringStream jsonStr;                                                   \
-        TProto2JsonConfig config;                                                \
-        config.SetStringifyNumbers(flag);                                        \
-        UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr, config));            \
-        if (expectString) {                                                      \
-            UNIT_ASSERT_EQUAL(jsonStr.Str(), "{\"" #field "\":\"" #value "\"}"); \
-        } else {                                                                 \
-            UNIT_ASSERT_EQUAL(jsonStr.Str(), "{\"" #field "\":" #value "}");     \
-        }                                                                        \
+Y_UNIT_TEST(TestStringifyLongNumbers) {
+#define TEST_SINGLE(flag, value, expectString)                             \
+    do {                                                                   \
+        TFlatOptional proto;                                               \
+        proto.SetSI64(value);                                              \
+                                                                           \
+        TStringStream jsonStr;                                             \
+        TProto2JsonConfig config;                                          \
+        config.SetStringifyLongNumbers(flag);                              \
+        UNIT_ASSERT_NO_EXCEPTION(Proto2Json(proto, jsonStr, config));      \
+        if (expectString) {                                                \
+            UNIT_ASSERT_EQUAL(jsonStr.Str(), "{\"SI64\":\"" #value "\"}"); \
+        } else {                                                           \
+            UNIT_ASSERT_EQUAL(jsonStr.Str(), "{\"SI64\":" #value "}");     \
+        }                                                                  \
     } while (false)
 
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, SI64, 1, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, SI64, 1000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, SI64, 10000000000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, SI64, -1, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, SI64, -1000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, SI64, -10000000000000000, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, 1, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, 1000000000, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, 10000000000000000, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, -1, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, -1000000000, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersNever, -10000000000000000, false);
 
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, SI64, 1, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, SI64, 1000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, SI64, 10000000000000000, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, SI64, -1, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, SI64, -1000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, SI64, -10000000000000000, true);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, 1, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, 1000000000, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, 10000000000000000, true);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, -1, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, -1000000000, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForDouble, -10000000000000000, true);
 
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, SI64, 1, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, SI64, 1000000000, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, SI64, 10000000000000000, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, SI64, -1, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, SI64, -1000000000, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, SI64, -10000000000000000, true);
-
-
-    TEST_SINGLE(TProto2JsonConfig::StringifyInt64Always, UI64, 1, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyInt64Always, UI32, 1000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyInt64Always, UI64, 10000000000000000, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyInt64Always, SI64, -1, true);
-    TEST_SINGLE(TProto2JsonConfig::StringifyInt64Always, SI32, -1000000000, false);
-    TEST_SINGLE(TProto2JsonConfig::StringifyInt64Always, SI64, -10000000000000000, true);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, 1, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, 1000000000, true);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, 10000000000000000, true);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, -1, false);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, -1000000000, true);
+    TEST_SINGLE(TProto2JsonConfig::StringifyLongNumbersForFloat, -10000000000000000, true);
 
 #undef TEST_SINGLE
-} // TestStringifyNumbers
+} // TestStringifyLongNumbers
 
 Y_UNIT_TEST(TestExtension) {
     TExtensionField proto;

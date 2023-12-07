@@ -27,7 +27,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto array = GetNodeValue(Array, ctx, block);
         const auto elementsType = PointerType::getUnqual(array->getType());
@@ -93,7 +93,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetElement(const TCodegenContext& ctx, Value* pointer, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto array = GetNodeValue(Array, ctx, block);
         const auto index = ConstantInt::get(Type::getInt32Ty(context), Index);
@@ -127,14 +127,14 @@ public:
             return DoGenerateGetElement(ctx, pointer, block);
         }
 
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto cache = GetNodeValue(Cache, ctx, block);
 
         const auto fast = BasicBlock::Create(context, "fast", ctx.Func);
         const auto slow = BasicBlock::Create(context, "slow", ctx.Func);
         const auto done = BasicBlock::Create(context, "done", ctx.Func);
 
-        if constexpr (IsOptional) {
+        if (IsOptional) {
             const auto zero = ConstantInt::get(cache->getType(), 0ULL);
             const auto check = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, cache, zero, "check", block);
 
@@ -158,8 +158,8 @@ public:
 
         block = fast;
         const auto index = ConstantInt::get(Type::getInt32Ty(context), this->Index);
-        const auto ptr = GetElementPtrInst::CreateInBounds(cache->getType(), elements, {index}, "ptr", block);
-        const auto item = new LoadInst(cache->getType(), ptr, "item", block);
+        const auto ptr = GetElementPtrInst::CreateInBounds(elements, {index}, "ptr", block);
+        const auto item = new LoadInst(ptr, "item", block);
         ValueAddRef(this->GetRepresentation(), item, ctx, block);
         new StoreInst(item, pointer, block);
         BranchInst::Create(done, block);

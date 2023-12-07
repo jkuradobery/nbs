@@ -143,7 +143,7 @@ std::string fmtInteger(int32_t width, i64 value)
 }
 
 bool IsOverflow(i64 a, i64 b) {
-    if ((a ^ b) < 0) {
+    if (a ^ b < 0) {
         return false;
     }
     if (a > 0) {
@@ -213,6 +213,16 @@ TInstant AddUnit(TInstant current, int64_t interval, IPathGenerator::EIntervalUn
 }
 
 TInstant ParseDate(const TString& dateStr, const TInstant& now) {
+    try {
+        size_t idx = 0;
+        int64_t unixTime = std::stoll(dateStr, &idx);
+        if (idx == dateStr.Size()) {
+            return TInstant::FromValue(unixTime * 1000 * 1000);
+        }
+    } catch (const std::exception&) {
+        // trying other options
+    }
+
     const std::string pattern = "^\\s*(NOW)\\s*(([\\+\\-])\\s*([0-9]+)\\s*(YEARS?|MONTHS?|WEEKS?|DAYS?|HOURS?|MINUTES?|SECONDS?)\\s*)?$";
     std::regex word_regex(pattern);
     auto wordBegin = std::sregex_iterator(dateStr.begin(), dateStr.end(), word_regex);
@@ -246,11 +256,9 @@ struct TPathGenerator: public IPathGenerator {
     TExplicitPartitioningConfig Config;
     TRules Rules;
     TMap<TString, TColumnPartitioningConfig> ColumnConfig; // column name -> config
-    TMap<TString, NUdf::EDataSlot> Columns;
 
 public:
-    TPathGenerator(const TString& projection, const std::vector<TString>& partitionedBy, const TMap<TString, NUdf::EDataSlot>& columns, size_t pathsLimit)
-        : Columns(columns)
+    TPathGenerator(const TString& projection, const std::vector<TString>& partitionedBy, size_t pathsLimit)
     {
         try {
             ParsePartitioningRules(projection, partitionedBy);
@@ -572,10 +580,6 @@ private:
         for (const auto& p: result) {
             Rules.push_back(TExpandedPartitioningRule{.Path=p.first, .ColumnValues=p.second});
         }
-
-        if (Rules.empty()) {
-            ythrow yexception() << "The projection contains an empty set of paths";
-        }
     }
 
     void DoGenerateDate(const std::vector<TColumnPartitioningConfig>& rules,
@@ -587,20 +591,17 @@ private:
                     size_t p = 0) {
         const auto& rule = rules[p];
         const TInstant to = ParseDate(rule.To, now);
-        for (TInstant current = ParseDate(rule.From, now); current <= to; ) {
-            TString copyLocationTemplate = locationTemplate;
-            const TString time = Strftime(rule.Format.c_str(), current);
-            ReplaceAll(copyLocationTemplate, "${" + rule.Name + "}", time);
-            columnsWithValue.push_back(CreateDateColumnWithValue(rule.Name, current));
-            DoGenerate(rules, copyLocationTemplate, columnsWithValue, result, pathsLimit, now, p + 1);
-            columnsWithValue.pop_back();
-
-            try {
-                current = AddUnit(current, rule.Interval, rule.IntervalUnit);
-            } catch (...) {
-                // correct overflow handling
-                break;
+        try {
+            for (TInstant current = ParseDate(rule.From, now); current <= to; current = AddUnit(current, rule.Interval, rule.IntervalUnit)) {
+                TString copyLocationTemplate = locationTemplate;
+                const TString time = Strftime(rule.Format.c_str(), current);
+                ReplaceAll(copyLocationTemplate, "${" + rule.Name + "}", time);
+                columnsWithValue.push_back(TColumnWithValue{.Name=rule.Name, .Type=NUdf::EDataSlot::Date, .Value=Strftime("%F", current)});
+                DoGenerate(rules, copyLocationTemplate, columnsWithValue, result, pathsLimit, now, p + 1);
+                columnsWithValue.pop_back();
             }
+        } catch (...) {
+            // correct overflow handling
         }
     }
 
@@ -667,7 +668,7 @@ private:
         for (int64_t i = rule.Min; i <= rule.Max; i += rule.Interval) {
             TString copyLocationTemplate = locationTemplate;
             ReplaceAll(copyLocationTemplate, "${" + rule.Name + "}", fmtInteger(rule.Digits, i));
-            columnsWithValue.push_back(CreateIntegerColumnWithValue(rule.Name, i));
+            columnsWithValue.push_back(IPathGenerator::TColumnWithValue{.Name=rule.Name, .Type=NUdf::EDataSlot::Int64, .Value=ToString(i)});
             DoGenerate(rules, copyLocationTemplate, columnsWithValue, result, pathsLimit, now, p + 1);
             columnsWithValue.pop_back();
 
@@ -676,63 +677,10 @@ private:
             }
         }
     }
-
-    IPathGenerator::TColumnWithValue CreateDateColumnWithValue(const TString& name, const TInstant& current) {
-        auto it = Columns.find(name);
-        auto slot = it == Columns.end() ? NUdf::EDataSlot::Date : it->second;
-        switch (slot) {
-            case NUdf::EDataSlot::Datetime:
-                return {.Name=name, .Type=NUdf::EDataSlot::Datetime, .Value=Strftime("%FT%TZ", current)};
-            default:
-            break;
-        }
-
-        return {.Name=name, .Type=NUdf::EDataSlot::Date, .Value=Strftime("%F", current)};
-    }
-
-    IPathGenerator::TColumnWithValue CreateIntegerColumnWithValue(const TString& name, int64_t value) {
-        auto it = Columns.find(name);
-        auto slot = it == Columns.end() ? NUdf::EDataSlot::Int64 : it->second;
-        switch (slot) {
-            case NUdf::EDataSlot::Int32:
-                CheckCastInt32(value, name);
-                return {.Name=name, .Type=NUdf::EDataSlot::Int32, .Value=ToString(value)};
-            case NUdf::EDataSlot::Uint32:
-                CheckCastUint32(value, name);
-                return {.Name=name, .Type=NUdf::EDataSlot::Uint32, .Value=ToString(value)};
-            case NUdf::EDataSlot::Uint64:
-                CheckCastUint64(value, name);
-                return {.Name=name, .Type=NUdf::EDataSlot::Uint64, .Value=ToString(value)};
-            default:
-            break;
-        }
-        return {.Name=name, .Type=NUdf::EDataSlot::Int64, .Value=ToString(value)};
-    }
-
-    static void CheckCastInt32(int64_t value, const TString& column) {
-        if (std::numeric_limits<int32_t>::min() <= value && value <= std::numeric_limits<int32_t>::max()) {
-            return;
-        }
-        ythrow yexception() << "The value " << value << " is not representable as an int32 type for column " << column;
-    }
-
-    static void CheckCastUint32(int64_t value, const TString& column) {
-        if (value >= 0 && value <= std::numeric_limits<uint32_t>::max()) {
-            return;
-        }
-        ythrow yexception() << "The value " << value << " is not representable as an uint32 type for column " << column;
-    }
-
-    static void CheckCastUint64(int64_t value, const TString& column) {
-        if (value >= 0) {
-            return;
-        }
-        ythrow yexception() << "The value " << value << " is not representable as an uint64 type for column " << column;
-    }
 };
 
-TPathGeneratorPtr CreatePathGenerator(const TString& projection, const std::vector<TString>& partitionedBy, const TMap<TString, NUdf::EDataSlot>& columns, size_t pathsLimit) {
-    return std::make_shared<TPathGenerator>(projection, partitionedBy, columns, pathsLimit);
+TPathGeneratorPtr CreatePathGenerator(const TString& projection, const std::vector<TString>& partitionedBy, size_t pathsLimit) {
+    return std::make_shared<TPathGenerator>(projection, partitionedBy, pathsLimit);
 }
 
 }

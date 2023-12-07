@@ -1,7 +1,6 @@
 #include "logger.h"
 
 #include <library/cpp/unified_agent_client/clock.h>
-#include <library/cpp/unified_agent_client/helpers.h>
 
 #include <library/cpp/logger/log.h>
 
@@ -59,7 +58,7 @@ namespace NUnifiedAgent {
 
     void TLogger::Log(TLog& log, ELogPriority logPriority, const TStringBuf message, const TString& scope) const {
         try {
-            const auto logLine = FormatLogLine(logPriority, NUnifiedAgent::NPrivate::ReplaceNonUTF(message).Data, scope);
+            const auto logLine = FormatLogLine(logPriority, message, scope);
             if (Throttler && &log == &DefaultLogContext.Log && !Throttler->TryConsume(logLine.size())) {
                 if (DroppedBytes) {
                     DroppedBytes->Add(logLine.size());

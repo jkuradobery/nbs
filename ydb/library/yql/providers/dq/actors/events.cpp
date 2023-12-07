@@ -34,17 +34,19 @@ namespace NYql::NDqs {
         Record = std::move(queryResult);
     }
 
-    TEvGraphRequest::TEvGraphRequest(const Yql::DqsProto::ExecuteGraphRequest& request, NActors::TActorId controlId, NActors::TActorId resultId)
+    TEvGraphRequest::TEvGraphRequest(const Yql::DqsProto::ExecuteGraphRequest& request, NActors::TActorId controlId, NActors::TActorId resultId, NActors::TActorId checkPointCoordinatorId)
     {
         *Record.MutableRequest() = request;
         NActors::ActorIdToProto(controlId, Record.MutableControlId());
         NActors::ActorIdToProto(resultId, Record.MutableResultId());
+        if (checkPointCoordinatorId) {
+            NActors::ActorIdToProto(checkPointCoordinatorId, Record.MutableCheckPointCoordinatorId());
+        }
     }
 
-    TEvReadyState::TEvReadyState(NActors::TActorId sourceId, TString type, NYql::NDqProto::EDqStatsMode statsMode) {
+    TEvReadyState::TEvReadyState(NActors::TActorId sourceId, TString type) {
         NActors::ActorIdToProto(sourceId, Record.MutableSourceId());
         *Record.MutableResultType() = std::move(type);
-        Record.SetStatsMode(statsMode);
     }
 
     TEvReadyState::TEvReadyState(NDqProto::TReadyState&& proto) {

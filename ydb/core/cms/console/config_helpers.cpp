@@ -5,11 +5,10 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/mind/tenant_pool.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #include <util/string/join.h>
 #include <util/system/hostname.h>
@@ -161,7 +160,7 @@ public:
     void OpenPipe(const TActorContext &ctx)
     {
         auto domains = AppData(ctx)->DomainsInfo;
-        Y_ABORT_UNLESS(domains->Domains.size() == 1, "multiple domains are not supported by TConfigHelper");
+        Y_VERIFY(domains->Domains.size() == 1, "multiple domains are not supported by TConfigHelper");
         auto domain = domains->Domains.begin()->second;
         auto group = domains->GetDefaultStateStorageGroup(domain->DomainUid);
         auto console = MakeConsoleID(group);
@@ -175,7 +174,7 @@ public:
     void SendPoolStatusRequest(const TActorContext &ctx)
     {
         auto domains = AppData(ctx)->DomainsInfo;
-        Y_ABORT_UNLESS(domains->Domains.size() == 1, "multiple domains are not supported by TConfigHelper");
+        Y_VERIFY(domains->Domains.size() == 1, "multiple domains are not supported by TConfigHelper");
         auto tenantPool = MakeTenantPoolID(ctx.SelfID.NodeId(), domains->Domains.begin()->second->DomainUid);
         ctx.Send(tenantPool, new TEvTenantPool::TEvGetStatus(true), IEventHandle::FlagTrackDelivery);
     }
@@ -242,7 +241,7 @@ public:
 
             NTabletPipe::SendData(ctx, Pipe, request.Release(), Cookie);
         } else {
-            Y_ABORT("unknown action");
+            Y_FAIL("unknown action");
         }
     }
 
@@ -263,7 +262,7 @@ public:
         else if (Action == EAction::REMOVE_SUBSCRIPTION)
             SendSubscriptionRequest(ctx);
         else
-            Y_ABORT("unknown action");
+            Y_FAIL("unknown action");
     }
 
     void Handle(TEvConsole::TEvAddConfigSubscriptionResponse::TPtr &ev, const TActorContext &ctx) {
@@ -351,8 +350,8 @@ public:
             HFunc(TEvents::TEvUndelivered, Handle);
 
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                   ev->GetTypeRewrite(), ev->ToString().data());
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                   ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
             break;
         }
     }

@@ -14,7 +14,8 @@ public:
     {
     }
 
-    ui64 GetTabletId(const TActorContext &) const override {
+    ui64 GetTabletId(const TActorContext &) const override
+    {
         const TCgiParameters &cgi = this->RequestEvent->Get()->Request.GetParams();
         ui64 tabletId = 0;
 
@@ -29,14 +30,16 @@ public:
         return tabletId;
     }
 
-    TString GetTabletName() const override {
+    TString GetTabletName() const override
+    {
         return "DataShard";
     }
 };
 
 class TJsonProxyDataShardGetOperation : public TJsonProxyDataShard<TEvDataShard::TEvGetOperationRequest,
-                                                                   TEvDataShard::TEvGetOperationResponse>
-{
+                                                                   TEvDataShard::TEvGetOperationResponse> {
+private:
+
 public:
     TJsonProxyDataShardGetOperation(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetOperationRequest,
@@ -44,7 +47,8 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetOperationRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetOperationRequest> PrepareRequest(const TActorContext &) override
+    {
         auto *request = new TEvDataShard::TEvGetOperationRequest;
         const TCgiParameters &cgi = RequestEvent->Get()->Request.GetParams();
         if (cgi.Has("opid")) {
@@ -57,8 +61,9 @@ public:
 };
 
 class TJsonProxyDataShardGetReadTableSinkState : public TJsonProxyDataShard<TEvDataShard::TEvGetReadTableSinkStateRequest,
-                                                                            TEvDataShard::TEvGetReadTableSinkStateResponse>
-{
+                                                                            TEvDataShard::TEvGetReadTableSinkStateResponse> {
+private:
+
 public:
      TJsonProxyDataShardGetReadTableSinkState(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetReadTableSinkStateRequest,
@@ -66,7 +71,8 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetReadTableSinkStateRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetReadTableSinkStateRequest> PrepareRequest(const TActorContext &) override
+    {
         auto *request = new TEvDataShard::TEvGetReadTableSinkStateRequest;
         const TCgiParameters &cgi = RequestEvent->Get()->Request.GetParams();
         if (cgi.Has("opid")) {
@@ -79,8 +85,9 @@ public:
 };
 
 class TJsonProxyDataShardGetReadTableScanState : public TJsonProxyDataShard<TEvDataShard::TEvGetReadTableScanStateRequest,
-                                                                            TEvDataShard::TEvGetReadTableScanStateResponse>
-{
+                                                                            TEvDataShard::TEvGetReadTableScanStateResponse> {
+private:
+
 public:
      TJsonProxyDataShardGetReadTableScanState(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetReadTableScanStateRequest,
@@ -88,7 +95,8 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetReadTableScanStateRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetReadTableScanStateRequest> PrepareRequest(const TActorContext &) override
+    {
         auto *request = new TEvDataShard::TEvGetReadTableScanStateRequest;
         const TCgiParameters &cgi = RequestEvent->Get()->Request.GetParams();
         if (cgi.Has("opid")) {
@@ -101,8 +109,9 @@ public:
 };
 
 class TJsonProxyDataShardGetReadTableStreamState : public TJsonProxyDataShard<TEvDataShard::TEvGetReadTableStreamStateRequest,
-                                                                              TEvDataShard::TEvGetReadTableStreamStateResponse>
-{
+                                                                              TEvDataShard::TEvGetReadTableStreamStateResponse> {
+private:
+
 public:
      TJsonProxyDataShardGetReadTableStreamState(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetReadTableStreamStateRequest,
@@ -110,7 +119,8 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetReadTableStreamStateRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetReadTableStreamStateRequest> PrepareRequest(const TActorContext &) override
+    {
         auto *request = new TEvDataShard::TEvGetReadTableStreamStateRequest;
         const TCgiParameters &cgi = RequestEvent->Get()->Request.GetParams();
         if (cgi.Has("opid")) {
@@ -123,8 +133,9 @@ public:
 };
 
 class TJsonProxyDataShardGetSlowOpProfiles : public TJsonProxyDataShard<TEvDataShard::TEvGetSlowOpProfilesRequest,
-                                                                        TEvDataShard::TEvGetSlowOpProfilesResponse>
-{
+                                                                        TEvDataShard::TEvGetSlowOpProfilesResponse> {
+private:
+
 public:
     TJsonProxyDataShardGetSlowOpProfiles(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetSlowOpProfilesRequest,
@@ -132,14 +143,16 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetSlowOpProfilesRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetSlowOpProfilesRequest> PrepareRequest(const TActorContext &) override
+    {
         return new TEvDataShard::TEvGetSlowOpProfilesRequest;
     }
 };
 
 class TJsonProxyDataShardGetRSInfo : public TJsonProxyDataShard<TEvDataShard::TEvGetRSInfoRequest,
-                                                                TEvDataShard::TEvGetRSInfoResponse>
-{
+                                                                TEvDataShard::TEvGetRSInfoResponse> {
+private:
+
 public:
     TJsonProxyDataShardGetRSInfo(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetRSInfoRequest,
@@ -147,14 +160,16 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetRSInfoRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetRSInfoRequest> PrepareRequest(const TActorContext &) override
+    {
         return new TEvDataShard::TEvGetRSInfoRequest;
     }
 };
 
 class TJsonProxyDataShardGetDataHistogram : public TJsonProxyDataShard<TEvDataShard::TEvGetDataHistogramRequest,
-                                                                       TEvDataShard::TEvGetDataHistogramResponse>
-{
+                                                                       TEvDataShard::TEvGetDataHistogramResponse> {
+private:
+
 public:
     TJsonProxyDataShardGetDataHistogram(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyDataShard<TEvDataShard::TEvGetDataHistogramRequest,
@@ -162,7 +177,8 @@ public:
     {
     }
 
-    TAutoPtr<TEvDataShard::TEvGetDataHistogramRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TEvDataShard::TEvGetDataHistogramRequest> PrepareRequest(const TActorContext &) override
+    {
         return new TEvDataShard::TEvGetDataHistogramRequest;
     }
 };

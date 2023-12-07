@@ -4,7 +4,7 @@ option cc_enable_arenas = true;
 package NYql.NDqProto;
 
 import "google/protobuf/any.proto";
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/library/yql/dq/proto/dq_transport.proto";
 
 enum ERuntimeVersion {
@@ -33,20 +33,6 @@ message TProgram {
         bool HasMapJoin = 1;
         bool HasSort = 2;
         bool HasUdf = 3;
-        bool HasStateAggregation = 4;
-        bool HasFilter = 5;
-        uint32 StageLevel = 6;
-        double LevelDataPrediction = 7;
-        bool HasFinalAggregation = 8;
-        bool HasTop = 9;
-        uint32 GroupByKeysCount = 10;
-        bool HasRangeScan = 11;
-        bool HasLookup = 12;
-        double InputDataPrediction = 13;
-        double OutputDataPrediction = 14;
-
-        bool HasCondense = 15;
-        uint32 NodesCount = 16;
     }
 
     uint32 RuntimeVersion = 1;
@@ -72,8 +58,6 @@ message TChannel {
     uint64 Id = 1;
     EDataTransportVersion TransportVersion = 2;
 
-    uint32 SrcStageId = 11;
-    uint32 DstStageId = 12;
     uint64 SrcTaskId = 3;
     uint64 DstTaskId = 4;
     TEndpoint SrcEndpoint = 5;
@@ -179,11 +163,4 @@ message TDqTask {
     bool CreateSuspended = 8;
     string RateLimiter = 10;
     string RateLimiterResource = 11;
-    uint64 InitialTaskMemoryLimit = 12;
-    map<string, bytes> TaskParams = 13;
-    map<string, string> SecureParams = 14;
-    optional uint32 MetaId = 15;
-    optional bool UseLlvm = 16;
-    repeated bytes ReadRanges = 17;
-    map<string, string> RequestContext = 18;
 }

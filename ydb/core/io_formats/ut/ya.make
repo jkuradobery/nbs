@@ -1,6 +1,9 @@
 UNITTEST_FOR(ydb/core/io_formats)
 
-SIZE(SMALL)
+FORK_SUBTESTS()
+SPLIT_FACTOR(60)
+TIMEOUT(600)
+SIZE(MEDIUM)
 
 PEERDIR(
     ydb/core/io_formats

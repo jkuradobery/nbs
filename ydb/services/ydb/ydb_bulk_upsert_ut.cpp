@@ -230,14 +230,17 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
 
         TString tableName = "/Root/TestNotNullColumns";
 
-        {  /* create table with not null data column */
+        {  /* create table with disabled not null data column */
             auto tableBuilder = client.GetTableBuilder();
             tableBuilder
                     .AddNonNullableColumn("Key", EPrimitiveType::Uint64)
                     .AddNonNullableColumn("Value", EPrimitiveType::Uint64)
                 .SetPrimaryKeyColumns({"Key"});
             auto result = session.CreateTable(tableName, tableBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
+
+            Cerr << result.GetIssues().ToString() << Endl;
+            UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
+            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::PRECONDITION_FAILED);
         }
 
         {  /* create table with not null primary key column */
@@ -351,7 +354,7 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
 
             auto res = client.BulkUpsert("/Root/Traces", rows.Build()).GetValueSync();
             Cerr << res.GetIssues().ToString() << Endl;
-            UNIT_ASSERT_STRING_CONTAINS(res.GetIssues().ToString(), "unknown table");
+            UNIT_ASSERT_STRING_CONTAINS(res.GetIssues().ToString(), "Unknown table '/Root/Traces'");
             UNIT_ASSERT_EQUAL(res.GetStatus(), EStatus::SCHEME_ERROR);
         }
 
@@ -1080,7 +1083,6 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
         bool gotOverload = false;
         bool gotSuccess = false;
         TString blob(100, 'a');
-        TMonotonic start = TMonotonic::Now();
         for (ui64 count = 0; (!gotOverload || !gotSuccess) && count < 100000; count++) {
             TValueBuilder rows;
 
@@ -1116,13 +1118,9 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsert) {
                     gotOverload = true;
                 }
             }
-            auto elapsed = TMonotonic::Now() - start;
-            if (elapsed >= TDuration::Seconds(5)) {
-                break;
-            }
         }
+        UNIT_ASSERT(gotOverload);
         UNIT_ASSERT(gotSuccess);
-        UNIT_ASSERT(!gotOverload);
     }
 
     void CreateTestTable(NYdb::NTable::TTableClient& client) {

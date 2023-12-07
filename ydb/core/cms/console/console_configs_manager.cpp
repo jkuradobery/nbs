@@ -6,7 +6,6 @@
 #include "http.h"
 
 #include <ydb/core/cms/console/validators/registry.h>
-#include <ydb/core/base/feature_flags.h>
 
 #include <ydb/library/yql/public/issue/protos/issue_severity.pb.h>
 
@@ -77,21 +76,6 @@ void TConfigsManager::Bootstrap(const TActorContext &ctx)
                                                          false,
                                                          NKikimrServices::CMS_CONFIGS);
     ConfigsProvider = ctx.Register(new TConfigsProvider(ctx.SelfID));
-
-    ui32 item = (ui32)NKikimrConsole::TConfigItem::AllowEditYamlInUiItem;
-    ctx.Send(MakeConfigsDispatcherID(SelfId().NodeId()),
-             new TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest(item));
-}
-
-void TConfigsManager::Handle(TEvConsole::TEvConfigNotificationRequest::TPtr &ev,
-                                            const TActorContext &ctx)
-{
-    auto &rec = ev->Get()->Record;
-
-    YamlReadOnly = !rec.GetConfig().GetAllowEditYamlInUi();
-
-    auto resp = MakeHolder<TEvConsole::TEvConfigNotificationResponse>(rec);
-    ctx.Send(ev->Sender, resp.Release(), 0, ev->Cookie);
 }
 
 void TConfigsManager::Detach()
@@ -642,13 +626,6 @@ void TConfigsManager::Handle(TEvConsole::TEvDropConfigRequest::TPtr &ev, const T
     TxProcessor->ProcessTx(CreateTxDropYamlConfig(ev), ctx);
 }
 
-void TConfigsManager::Handle(TEvConsole::TEvIsYamlReadOnlyRequest::TPtr &ev, const TActorContext &ctx)
-{
-    auto response = MakeHolder<TEvConsole::TEvIsYamlReadOnlyResponse>();
-    response->Record.SetReadOnly(YamlReadOnly);
-    ctx.Send(ev->Sender, response.Release());
-}
-
 void TConfigsManager::Handle(TEvConsole::TEvGetAllConfigsRequest::TPtr &ev, const TActorContext &ctx)
 {
     TxProcessor->ProcessTx(CreateTxGetYamlConfig(ev), ctx);
@@ -743,7 +720,7 @@ void TConfigsManager::Handle(TEvConsole::TEvResolveAllConfigRequest::TPtr &ev, c
             case NYamlConfig::TLabel::EType::Empty:
                 return Ydb::DynamicConfig::YamlLabelExt::EMPTY;
             default:
-                Y_ABORT("unexpected enum value");
+                Y_FAIL("unexpected enum value");
             }
         };
 
@@ -844,7 +821,7 @@ void TConfigsManager::Handle(TEvConsole::TEvAddVolatileConfigRequest::TPtr &ev, 
             auto resolved = NYamlConfig::ResolveAll(tree);
 
             for (auto &[_, config] : resolved.Configs) {
-                auto cfg = NYamlConfig::YamlToProto(config.second, true);
+                auto cfg = NYamlConfig::YamlToProto(config.second);
             }
 
             if (ClusterName != clusterName) {
@@ -947,7 +924,7 @@ void TConfigsManager::Handle(TEvPrivate::TEvCleanupSubscriptions::TPtr &/*ev*/, 
 
 void TConfigsManager::ForwardToConfigsProvider(TAutoPtr<IEventHandle> &ev, const TActorContext &ctx)
 {
-    ctx.Forward(ev, ConfigsProvider);
+    ctx.Send(ev->Forward(ConfigsProvider));
 }
 
 void TConfigsManager::ScheduleSubscriptionsCleanup(const TActorContext &ctx)

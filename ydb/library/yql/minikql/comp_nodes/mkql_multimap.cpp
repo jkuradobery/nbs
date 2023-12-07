@@ -39,19 +39,18 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
 
         const auto zero = BasicBlock::Create(context, "zero", ctx.Func);
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
         const auto pass = BasicBlock::Create(context, "pass", ctx.Func);
 
-        const auto result = PHINode::Create(valueType, NewItems.size() + 1U, "result", pass);
+        const auto result = PHINode::Create(state->getType(), NewItems.size() + 1U, "result", pass);
 
         const auto choise = SwitchInst::Create(state, zero, NewItems.size() - 1U, block);
 
@@ -208,7 +207,7 @@ public:
     }
 
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -231,11 +230,11 @@ public:
 
             const auto size = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetListLength>(Type::getInt64Ty(context), list, ctx.Codegen, block);
             const auto itemsPtr = *Stateless || ctx.AlwaysInline ?
-                new AllocaInst(elementsType, 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
-                new AllocaInst(elementsType, 0U, "items_ptr", block);
+                new AllocaInst(PointerType::getUnqual(list->getType()), 0U, "items_ptr", &ctx.Func->getEntryBlock().back()):
+                new AllocaInst(PointerType::getUnqual(list->getType()), 0U, "items_ptr", block);
             const auto full = BinaryOperator::CreateMul(size, ConstantInt::get(size->getType(), NewItems.size()), "full", block);
             const auto array = GenNewArray(ctx, full, itemsPtr, block);
-            const auto items = new LoadInst(elementsType, itemsPtr, "items", block);
+            const auto items = new LoadInst(itemsPtr, "items", block);
 
             const auto loop = BasicBlock::Create(context, "loop", ctx.Func);
             const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -253,14 +252,14 @@ public:
             BranchInst::Create(next, stop, more, block);
 
             block = next;
-            const auto src = GetElementPtrInst::CreateInBounds(list->getType(), elements, {index}, "src", block);
-            const auto item = new LoadInst(list->getType(), src, "item", block);
+            const auto src = GetElementPtrInst::CreateInBounds(elements, {index}, "src", block);
+            const auto item = new LoadInst(src, "item", block);
             codegenItem->CreateSetValue(ctx, block, item);
             const auto from = BinaryOperator::CreateMul(index, ConstantInt::get(index->getType(), NewItems.size()), "from", block);
 
             for (ui32 i = 0U; i < NewItems.size(); ++i) {
                 const auto pos = BinaryOperator::CreateAdd(from, ConstantInt::get(from->getType(), i), (TString("pos_") += ToString(i)).c_str(), block);
-                const auto dst = GetElementPtrInst::CreateInBounds(list->getType(), items, {pos}, (TString("dst_") += ToString(i)).c_str(), block);
+                const auto dst = GetElementPtrInst::CreateInBounds(items, {pos}, (TString("dst_") += ToString(i)).c_str(), block);
                 GetNodeValue(dst, NewItems[i], ctx, block);
             }
 
@@ -282,18 +281,18 @@ public:
             const auto doFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TListMultiMapWrapper::MakeLazyList));
             const auto ptrType = PointerType::getUnqual(StructType::get(context));
             const auto self = CastInst::Create(Instruction::IntToPtr, ConstantInt::get(Type::getInt64Ty(context), uintptr_t(this)), ptrType, "self", block);
-            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
                 const auto funType = FunctionType::get(list->getType() , {self->getType(), ctx.Ctx->getType(), list->getType()}, false);
                 const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "function", block);
-                const auto value = CallInst::Create(funType, doFuncPtr, {self, ctx.Ctx, list}, "value", block);
+                const auto value = CallInst::Create(doFuncPtr, {self, ctx.Ctx, list}, "value", block);
                 map->addIncoming(value, block);
             } else {
                 const auto resultPtr = new AllocaInst(list->getType(), 0U, "return", block);
                 new StoreInst(list, resultPtr, block);
                 const auto funType = FunctionType::get(Type::getVoidTy(context), {self->getType(), resultPtr->getType(), ctx.Ctx->getType(), resultPtr->getType()}, false);
                 const auto doFuncPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "function", block);
-                CallInst::Create(funType, doFuncPtr, {self, resultPtr, ctx.Ctx, resultPtr}, "", block);
-                const auto value = new LoadInst(list->getType(), resultPtr, "value", block);
+                CallInst::Create(doFuncPtr, {self, resultPtr, ctx.Ctx, resultPtr}, "", block);
+                const auto value = new LoadInst(resultPtr, "value", block);
                 map->addIncoming(value, block);
             }
             BranchInst::Create(done, block);
@@ -310,21 +309,21 @@ private:
         std::for_each(NewItems.cbegin(), NewItems.cend(), std::bind(&TListMultiMapWrapper::DependsOn, this, std::placeholders::_1));
     }
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         TMutableCodegeneratorRootNode<TListMultiMapWrapper>::GenerateFunctions(codegen);
         MapFunc = GenerateMapper(codegen, TBaseComputation::MakeName("Next"));
-        codegen.ExportSymbol(MapFunc);
+        codegen->ExportSymbol(MapFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         TMutableCodegeneratorRootNode<TListMultiMapWrapper>::FinalizeFunctions(codegen);
         if (MapFunc)
-            Map = reinterpret_cast<TMapPtr>(codegen.GetPointerToFunction(MapFunc));
+            Map = reinterpret_cast<TMapPtr>(codegen->GetPointerToFunction(MapFunc));
     }
 
-    Function* GenerateMapper(NYql::NCodegen::ICodegen& codegen, const TString& name) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateMapper(const NYql::NCodegen::ICodegen::TPtr& codegen, const TString& name) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
 
@@ -335,7 +334,7 @@ private:
 
         const auto valueType = Type::getInt128Ty(context);
         const auto positionType = Type::getInt64Ty(context);
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt1Ty(context);
         const auto funcType = FunctionType::get(statusType, {PointerType::getUnqual(contextType), containerType, PointerType::getUnqual(positionType), PointerType::getUnqual(valueType)}, false);
@@ -353,10 +352,10 @@ private:
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
         auto block = main;
 
-        const auto container = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-            new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
+        const auto container = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            new LoadInst(containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
-        const auto position = new LoadInst(positionArg->getType()->getPointerElementType(), positionArg, "position", false, block);
+        const auto position = new LoadInst(positionArg, "position", false, block);
 
         const auto zero = BasicBlock::Create(context, "zero", ctx.Func);
         const auto good = BasicBlock::Create(context, "good", ctx.Func);
@@ -448,16 +447,15 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
 
         const auto zero = BasicBlock::Create(context, "zero", ctx.Func);
         const auto work = BasicBlock::Create(context, "work", ctx.Func);
         const auto pass = BasicBlock::Create(context, "pass", ctx.Func);
 
-        const auto result = PHINode::Create(valueType, NewItems.size() + 1U, "result", pass);
+        const auto result = PHINode::Create(state->getType(), NewItems.size() + 1U, "result", pass);
 
         const auto choise = SwitchInst::Create(state, zero, NewItems.size() - 1U, block);
 
@@ -550,8 +548,7 @@ IComputationNode* WrapMultiMap(TCallable& callable, const TComputationNodeFactor
 
 IComputationNode* WrapNarrowMultiMap(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
     MKQL_ENSURE(callable.GetInputsCount() > 2U, "Expected at least three arguments.");
-    auto wideComponents = GetWideComponents(AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType()));
-    const auto width = wideComponents.size();
+    const auto width = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() > width + 2U, "Wrong signature.");
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
     if (const auto wide = dynamic_cast<IComputationWideFlowNode*>(flow)) {

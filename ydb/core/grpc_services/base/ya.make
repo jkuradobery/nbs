@@ -6,7 +6,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/grpc/server
+    library/cpp/grpc/server
     library/cpp/string_utils/quote
     ydb/core/base
     ydb/core/grpc_services/counters

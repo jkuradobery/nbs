@@ -1,18 +1,10 @@
 #include "mkql_block_agg_minmax.h"
 
-#include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_node_builder.h>
-#include <ydb/library/yql/minikql/mkql_string_util.h>
+#include <ydb/library/yql/minikql/mkql_node_cast.h>
 
-#include <ydb/library/yql/minikql/computation/mkql_block_builder.h>
-#include <ydb/library/yql/minikql/computation/mkql_block_reader.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
-
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
-#include <ydb/library/yql/minikql/arrow/arrow_util.h>
-#include <ydb/library/yql/minikql/arrow/mkql_bit_utils.h>
-
-#include <ydb/library/yql/public/udf/arrow/block_item_comparator.h>
 
 #include <arrow/scalar.h>
 #include <arrow/array/builder_primitive.h>
@@ -22,125 +14,71 @@ namespace NMiniKQL {
 
 namespace {
 
-template<typename T>
-inline bool AggLess(T a, T b) {
-    if constexpr (std::is_floating_point<T>::value) {
-        if (std::isunordered(a, b)) {
-            // biggest fp value in agg ordering is NaN
-            return std::isnan(a) < std::isnan(b);
-        }
-    }
-    return a < b;
-}
-
 template <bool IsMin, typename T>
-inline T UpdateMinMax(T x, T y) {
+T UpdateMinMax(T x, T y) {
     if constexpr (IsMin) {
-        return AggLess(x, y) ? x : y;
+        return x < y ? x : y;
     } else {
-        return AggLess(y, x) ? x : y;
+        return x > y ? x : y;
     }
 }
 
-template<bool IsMin, typename T>
-inline void UpdateMinMax(TMaybe<T>& state, bool& stateUpdated, T value) {
-    if constexpr (IsMin) {
-        if (!state || AggLess(value, *state)) {
-            state = value;
-            stateUpdated = true;
-        }
-    } else {
-        if (!state || AggLess(*state, value)) {
-            state = value;
-            stateUpdated = true;
-        }
-    }
-}
+template <typename TTag, typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregatorNullableOrScalar;
 
-template<bool IsMin>
-inline void UpdateMinMax(NYql::NUdf::IBlockItemComparator& comparator, TBlockItem& state, bool& stateUpdated, TBlockItem value) {
-    if constexpr (IsMin) {
-        if (!state || comparator.Less(value, state)) {
-            state = value;
-            stateUpdated = true;
-        }
-    } else {
-        if (!state || comparator.Less(state, value)) {
-            state = value;
-            stateUpdated = true;
-        }
-    }
-}
-
-template<typename TTag, typename TString, bool IsMin>
-class TMinMaxBlockStringAggregator;
-
-template<typename TTag, bool IsNullable, bool IsScalar, typename TIn, bool IsMin>
-class TMinMaxBlockFixedAggregator;
-
-template<typename TTag, bool IsMin>
-class TMinMaxBlockGenericAggregator;
-
-template <bool IsNullable, typename TIn, bool IsMin>
-struct TState;
-
-template<typename TIn, bool IsMin>
-constexpr TIn InitialStateValue() {
-    static_assert(std::is_arithmetic<TIn>::value);
-    if constexpr (std::is_floating_point<TIn>::value) {
-        static_assert(std::numeric_limits<TIn>::has_infinity && std::numeric_limits<TIn>::has_quiet_NaN);
-        if constexpr (IsMin) {
-            // biggest fp value in agg ordering is NaN
-            return std::numeric_limits<TIn>::quiet_NaN();
-        } else {
-            return -std::numeric_limits<TIn>::infinity();
-        }
-    } else {
-        if constexpr (IsMin) {
-            return std::numeric_limits<TIn>::max();
-        } else {
-            return std::numeric_limits<TIn>::min();
-        }
-    }
-}
+template <typename TTag, typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregator;
 
 template <typename TIn, bool IsMin>
-struct TState<true, TIn, IsMin> {
-    TIn Value = InitialStateValue<TIn, IsMin>();
-    ui8 IsValid = 0;
+struct TState {
+    TIn Value_;
+    ui8 IsValid_ = 0;
+
+    TState() {
+        if constexpr (IsMin) {
+            Value_ = std::numeric_limits<TIn>::max();
+        } else {
+            Value_ = std::numeric_limits<TIn>::min();
+        }
+    }
 };
 
 template <typename TIn, bool IsMin>
-struct TState<false, TIn, IsMin> {
-    TIn Value = InitialStateValue<TIn, IsMin>();
+struct TSimpleState {
+    TIn Value_;
+
+    TSimpleState() {
+        if constexpr (IsMin) {
+            Value_ = std::numeric_limits<TIn>::max();
+        } else {
+            Value_ = std::numeric_limits<TIn>::min();
+        }
+    }
 };
 
-using TGenericState = NUdf::TUnboxedValuePod;
-
-template <bool IsNullable, typename TIn, bool IsMin>
+template <typename TIn, bool IsMin, typename TBuilder>
 class TColumnBuilder : public IAggColumnBuilder {
-    using TBuilder = typename NYql::NUdf::TFixedSizeArrayBuilder<TIn, IsNullable>;
-    using TStateType = TState<IsNullable, TIn, IsMin>;
 public:
-    TColumnBuilder(ui64 size, TType* type, TComputationContext& ctx)
-        : Builder_(TTypeInfoHelper(), type, ctx.ArrowMemoryPool, size)
+    TColumnBuilder(ui64 size, const std::shared_ptr<arrow::DataType>& dataType, TComputationContext& ctx)
+        : Builder_(dataType, &ctx.ArrowMemoryPool)
         , Ctx_(ctx)
     {
+        ARROW_OK(Builder_.Reserve(size));
     }
 
     void Add(const void* state) final {
-        auto typedState = static_cast<const TStateType*>(state);
-        if constexpr (IsNullable) {
-            if (!typedState->IsValid) {
-                Builder_.Add(TBlockItem());
-                return;
-            }
+        auto typedState = static_cast<const TState<TIn, IsMin>*>(state);
+        if (typedState->IsValid_) {
+            Builder_.UnsafeAppend(typedState->Value_);
+        } else {
+            Builder_.UnsafeAppendNull();
         }
-        Builder_.Add(TBlockItem(typedState->Value));
     }
 
     NUdf::TUnboxedValue Build() final {
-        return Ctx_.HolderFactory.CreateArrowBlock(Builder_.Build(true));
+        std::shared_ptr<arrow::ArrayData> result;
+        ARROW_OK(Builder_.FinishInternal(&result));
+        return Ctx_.HolderFactory.CreateArrowBlock(result);
     }
 
 private:
@@ -148,819 +86,459 @@ private:
     TComputationContext& Ctx_;
 };
 
-class TGenericColumnBuilder : public IAggColumnBuilder {
+template <typename TIn, bool IsMin, typename TBuilder>
+class TSimpleColumnBuilder : public IAggColumnBuilder {
 public:
-    TGenericColumnBuilder(ui64 size, TType* columnType, TComputationContext& ctx)
-        : Builder_(MakeArrayBuilder(TTypeInfoHelper(), columnType, ctx.ArrowMemoryPool, size, &ctx.Builder->GetPgBuilder()))
+    TSimpleColumnBuilder(ui64 size, const std::shared_ptr<arrow::DataType>& dataType, TComputationContext& ctx)
+        : Builder_(dataType, &ctx.ArrowMemoryPool)
         , Ctx_(ctx)
     {
+        ARROW_OK(Builder_.Reserve(size));
     }
 
     void Add(const void* state) final {
-        Builder_->Add(*static_cast<const TGenericState*>(state));
+        auto typedState = static_cast<const TSimpleState<TIn, IsMin>*>(state);
+        Builder_.UnsafeAppend(typedState->Value_);
     }
 
     NUdf::TUnboxedValue Build() final {
-        return Ctx_.HolderFactory.CreateArrowBlock(Builder_->Build(true));
+        std::shared_ptr<arrow::ArrayData> result;
+        ARROW_OK(Builder_.FinishInternal(&result));
+        return Ctx_.HolderFactory.CreateArrowBlock(result);
     }
 
 private:
-    const std::unique_ptr<IArrayBuilder> Builder_;
+    TBuilder Builder_;
     TComputationContext& Ctx_;
 };
 
-template <bool IsMin>
-void PushValueToState(TGenericState* typedState, const arrow::Datum& datum, ui64 row, IBlockReader& reader,
-    IBlockItemConverter& converter, NYql::NUdf::IBlockItemComparator& comparator, TComputationContext& ctx)
-{
-    TBlockItem stateItem;
-    bool stateChanged = false;
-    if (datum.is_scalar()) {
-        if (datum.scalar()->is_valid) {
-            stateItem = reader.GetScalarItem(*datum.scalar());
-            stateChanged = true;
-        }
-    } else {
-        if (*typedState) {
-            stateItem = converter.MakeItem(*typedState);
-        }
-
-        const auto& array = datum.array();
-
-        TBlockItem curr = reader.GetItem(*array, row);
-        if (curr) {
-            UpdateMinMax<IsMin>(comparator, stateItem, stateChanged, curr);
-        }
-    }
-
-    if (stateChanged) {
-        typedState->DeleteUnreferenced();
-        *typedState = converter.MakeValue(stateItem, ctx.HolderFactory);
-    }
-}
-
-template<bool IsMin>
-class TMinMaxBlockGenericAggregator<TCombineAllTag, IsMin> : public TCombineAllTag::TBase {
+template <typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregatorNullableOrScalar<TCombineAllTag, TIn, TInScalar, TBuilder, IsMin> : public TCombineAllTag::TBase {
 public:
     using TBase = TCombineAllTag::TBase;
 
-    TMinMaxBlockGenericAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TGenericState), filterColumn, ctx)
+    TMinMaxBlockAggregatorNullableOrScalar(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType, TComputationContext& ctx)
+        : TBase(sizeof(TState<TIn, IsMin>), filterColumn, ctx)
         , ArgColumn_(argColumn)
-        , ReaderOne_(MakeBlockReader(TTypeInfoHelper(), type))
-        , ReaderTwo_(MakeBlockReader(TTypeInfoHelper(), type))
-        , Converter_(MakeBlockItemConverter(TTypeInfoHelper(), type, ctx.Builder->GetPgBuilder()))
-        , Compare_(TBlockTypeHelper().MakeComparator(type))
     {
+        Y_UNUSED(builderDataType);
     }
 
     void InitState(void* state) final {
-        new(state) TGenericState();
-    }
-
-    void DestroyState(void* state) noexcept final {
-        auto typedState = static_cast<TGenericState*>(state);
-        typedState->DeleteUnreferenced();
-        *typedState = TGenericState();
+        new(state) TState<TIn, IsMin>();
     }
 
     void AddMany(void* state, const NUdf::TUnboxedValue* columns, ui64 batchLength, std::optional<ui64> filtered) final {
-        TGenericState& typedState = *static_cast<TGenericState*>(state);
+        auto typedState = static_cast<TState<TIn, IsMin>*>(state);
         Y_UNUSED(batchLength);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-
-        IBlockReader* currReader = ReaderOne_.get();
-        IBlockReader* stateReader = ReaderTwo_.get();
-
-        TBlockItem stateItem;
-        bool stateChanged = false;
         if (datum.is_scalar()) {
             if (datum.scalar()->is_valid) {
-                stateItem = currReader->GetScalarItem(*datum.scalar());
-                stateChanged = true;
-            }
-        } else {
-            if (typedState) {
-                stateItem = Converter_->MakeItem(typedState);
-            }
-
-            const auto& array = datum.array();
-            auto len = array->length;
-
-            const ui8* filterBitmap = nullptr;
-            if (filtered) {
-                const auto& filterDatum = TArrowBlock::From(columns[*FilterColumn_]).GetDatum();
-                const auto& filterArray = filterDatum.array();
-                MKQL_ENSURE(filterArray->GetNullCount() == 0, "Expected non-nullable bool column");
-                filterBitmap = filterArray->template GetValues<uint8_t>(1);
-            }
-            auto& comparator = *Compare_;
-            for (auto i = 0; i < len; ++i) {
-                TBlockItem curr = currReader->GetItem(*array, i);
-                if (curr && (!filterBitmap || filterBitmap[i])) {
-                    bool changed = false;
-                    UpdateMinMax<IsMin>(comparator, stateItem, changed, curr);
-                    if (changed) {
-                        std::swap(currReader, stateReader);
-                        stateChanged = true;
-                    }
-                }
-            }
-        }
-
-        if (stateChanged) {
-            typedState.DeleteUnreferenced();
-            typedState = Converter_->MakeValue(stateItem, Ctx_.HolderFactory);
-        }
-    }
-
-    NUdf::TUnboxedValue FinishOne(const void *state) final {
-        auto typedState = *static_cast<const TGenericState *>(state);
-        return typedState;
-    }
-
-private:
-    const ui32 ArgColumn_;
-    const std::unique_ptr<IBlockReader> ReaderOne_;
-    const std::unique_ptr<IBlockReader> ReaderTwo_;
-    const std::unique_ptr<IBlockItemConverter> Converter_;
-    const NYql::NUdf::IBlockItemComparator::TPtr Compare_;
-};
-
-template<bool IsMin>
-class TMinMaxBlockGenericAggregator<TCombineKeysTag, IsMin> : public TCombineKeysTag::TBase {
-public:
-    using TBase = TCombineKeysTag::TBase;
-
-    TMinMaxBlockGenericAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TGenericState), filterColumn, ctx)
-        , ArgColumn_(argColumn)
-        , Type_(type)
-        , Reader_(MakeBlockReader(TTypeInfoHelper(), type))
-        , Converter_(MakeBlockItemConverter(TTypeInfoHelper(), type, ctx.Builder->GetPgBuilder()))
-        , Compare_(TBlockTypeHelper().MakeComparator(type))
-    {
-    }
-
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        new(state) TGenericState();
-        UpdateKey(state, batchNum, columns, row);
-    }
-
-    void DestroyState(void* state) noexcept final {
-        auto typedState = static_cast<TGenericState*>(state);
-        typedState->DeleteUnreferenced();
-        *typedState = TGenericState();
-    }
-
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
-        auto typedState = static_cast<TGenericState*>(state);
-        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        PushValueToState<IsMin>(typedState, datum, row, *Reader_, *Converter_, *Compare_, Ctx_);
-    }
-
-    std::unique_ptr<IAggColumnBuilder> MakeStateBuilder(ui64 size) final {
-        return std::make_unique<TGenericColumnBuilder>(size, Type_, Ctx_);
-    }
-
-private:
-    const ui32 ArgColumn_;
-    TType* const Type_;
-    const std::unique_ptr<IBlockReader> Reader_;
-    const std::unique_ptr<IBlockItemConverter> Converter_;
-    const NYql::NUdf::IBlockItemComparator::TPtr Compare_;
-};
-
-template<bool IsMin>
-class TMinMaxBlockGenericAggregator<TFinalizeKeysTag, IsMin> : public TFinalizeKeysTag::TBase {
-public:
-    using TBase = TFinalizeKeysTag::TBase;
-
-    TMinMaxBlockGenericAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TGenericState), filterColumn, ctx)
-        , ArgColumn_(argColumn)
-        , Type_(type)
-        , Reader_(MakeBlockReader(TTypeInfoHelper(), type))
-        , Converter_(MakeBlockItemConverter(TTypeInfoHelper(), type, ctx.Builder->GetPgBuilder()))
-        , Compare_(TBlockTypeHelper().MakeComparator(type))
-    {
-    }
-
-    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        new(state) TGenericState();
-        UpdateState(state, batchNum, columns, row);
-    }
-
-    void DestroyState(void* state) noexcept final {
-        auto typedState = static_cast<TGenericState*>(state);
-        typedState->DeleteUnreferenced();
-        *typedState = TGenericState();
-    }
-
-    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
-        auto typedState = static_cast<TGenericState*>(state);
-        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        PushValueToState<IsMin>(typedState, datum, row, *Reader_, *Converter_, *Compare_, Ctx_);
-    }
-
-    std::unique_ptr<IAggColumnBuilder> MakeResultBuilder(ui64 size) final {
-        return std::make_unique<TGenericColumnBuilder>(size, Type_, Ctx_);
-    }
-
-private:
-    const ui32 ArgColumn_;
-    TType* const Type_;
-    const std::unique_ptr<IBlockReader> Reader_;
-    const std::unique_ptr<IBlockItemConverter> Converter_;
-    const NYql::NUdf::IBlockItemComparator::TPtr Compare_;
-};
-
-template <typename TStringType, bool IsMin>
-void PushValueToState(TGenericState* typedState, const arrow::Datum& datum, ui64 row) {
-    using TOffset = typename TPrimitiveDataType<TStringType>::TResult::offset_type;;
-
-    TMaybe<NUdf::TStringRef> currentState;
-    if (*typedState) {
-        currentState = typedState->AsStringRef();
-    }
-
-    bool stateUpdated = false;
-    if (datum.is_scalar()) {
-        if (datum.scalar()->is_valid) {
-            auto buffer = arrow::internal::checked_cast<const arrow::BaseBinaryScalar&>(*datum.scalar()).value;
-            const char* data = reinterpret_cast<const char*>(buffer->data());
-            auto value = NUdf::TStringRef(data, buffer->size());
-            UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-        }
-    } else {
-        const auto& array = datum.array();
-
-        const TOffset* offsets = array->GetValues<TOffset>(1);
-        const char* data = array->GetValues<char>(2, 0);
-
-        if (array->GetNullCount() == 0) {
-            auto value = NUdf::TStringRef(data + offsets[row], offsets[row + 1] - offsets[row]);
-            UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-        } else {
-            auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
-            ui64 fullIndex = row + array->offset;
-            if ((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1) {
-                auto value = NUdf::TStringRef(data + offsets[row], offsets[row + 1] - offsets[row]);
-                UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-            }
-        }
-    }
-
-    if (stateUpdated) {
-        auto newState = MakeString(*currentState);
-        typedState->DeleteUnreferenced();
-        *typedState = std::move(newState);
-    }
-}
-
-template<typename TStringType, bool IsMin>
-class TMinMaxBlockStringAggregator<TCombineAllTag, TStringType, IsMin> : public TCombineAllTag::TBase {
-public:
-    using TBase = TCombineAllTag::TBase;
-    using TOffset = typename TPrimitiveDataType<TStringType>::TResult::offset_type;
-
-    TMinMaxBlockStringAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TGenericState), filterColumn, ctx)
-        , ArgColumn_(argColumn)
-    {
-        Y_UNUSED(type);
-    }
-
-    void InitState(void* state) final {
-        new(state) TGenericState();
-    }
-
-    void DestroyState(void* state) noexcept final {
-        auto typedState = static_cast<TGenericState*>(state);
-        typedState->DeleteUnreferenced();
-        *typedState = TGenericState();
-    }
-
-    void AddMany(void* state, const NUdf::TUnboxedValue* columns, ui64 batchLength, std::optional<ui64> filtered) final {
-        TGenericState& typedState = *static_cast<TGenericState*>(state);
-        Y_UNUSED(batchLength);
-        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-
-        TMaybe<NUdf::TStringRef> currentState;
-        if (typedState) {
-            currentState = typedState.AsStringRef();
-        }
-        bool stateUpdated = false;
-        if (datum.is_scalar()) {
-            if (datum.scalar()->is_valid) {
-                auto buffer = arrow::internal::checked_cast<const arrow::BaseBinaryScalar&>(*datum.scalar()).value;
-                const char* data = reinterpret_cast<const char*>(buffer->data());
-                auto value = NUdf::TStringRef(data, buffer->size());
-                UpdateMinMax<IsMin>(currentState, stateUpdated, value);
+                typedState->Value_ = datum.scalar_as<TInScalar>().value;
+                typedState->IsValid_ = 1;
             }
         } else {
             const auto& array = datum.array();
+            auto ptr = array->GetValues<TIn>(1);
             auto len = array->length;
             auto count = len - array->GetNullCount();
             if (!count) {
                 return;
             }
 
-            const TOffset* offsets = array->GetValues<TOffset>(1);
-            const char* data = array->GetValues<char>(2, 0);
             if (!filtered) {
+                typedState->IsValid_ = 1;
+                TIn value = typedState->Value_;
                 if (array->GetNullCount() == 0) {
-                    for (int64_t i = 0; i < len; ++i) {
-                        NUdf::TStringRef value(data + offsets[i], offsets[i + 1] - offsets[i]);
-                        UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-                    }
-                } else {
-                    auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
-                    for (int64_t i = 0; i < len; ++i) {
-                        ui64 fullIndex = i + array->offset;
-                        if ((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1) {
-                            NUdf::TStringRef value(data + offsets[i], offsets[i + 1] - offsets[i]);
-                            UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-                        }
-                    }
-                }
-            } else {
-                const auto& filterDatum = TArrowBlock::From(columns[*FilterColumn_]).GetDatum();
-                const auto& filterArray = filterDatum.array();
-                MKQL_ENSURE(filterArray->GetNullCount() == 0, "Expected non-nullable bool column");
-                const ui8* filterBitmap = filterArray->template GetValues<uint8_t>(1);
-                if (array->GetNullCount() == 0) {
-                    for (int64_t i = 0; i < len; ++i) {
-                        if (filterBitmap[i]) {
-                            NUdf::TStringRef value(data + offsets[i], offsets[i + 1] - offsets[i]);
-                            UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-                        }
-                    }
-                } else {
-                    auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
-                    for (int64_t i = 0; i < len; ++i) {
-                        ui64 fullIndex = i + array->offset;
-                        if (filterBitmap[i] && ((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1)) {
-                            NUdf::TStringRef value(data + offsets[i], offsets[i + 1] - offsets[i]);
-                            UpdateMinMax<IsMin>(currentState, stateUpdated, value);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (stateUpdated) {
-            auto newState = MakeString(*currentState);
-            typedState.DeleteUnreferenced();
-            typedState = std::move(newState);
-        }
-    }
-
-    NUdf::TUnboxedValue FinishOne(const void* state) final {
-        auto typedState = *static_cast<const TGenericState*>(state);
-        return typedState;
-    }
-
-
-private:
-    const ui32 ArgColumn_;
-};
-
-template<typename TStringType, bool IsMin>
-class TMinMaxBlockStringAggregator<TCombineKeysTag, TStringType, IsMin> : public TCombineKeysTag::TBase {
-public:
-    using TBase = TCombineKeysTag::TBase;
-
-    TMinMaxBlockStringAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TGenericState), filterColumn, ctx)
-        , ArgColumn_(argColumn)
-        , Type_(type)
-    {
-    }
-
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        new(state) TGenericState();
-        UpdateKey(state, batchNum, columns, row);
-    }
-
-    void DestroyState(void* state) noexcept final {
-        auto typedState = static_cast<TGenericState*>(state);
-        typedState->DeleteUnreferenced();
-        *typedState = TGenericState();
-    }
-
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
-        auto typedState = static_cast<TGenericState*>(state);
-        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        PushValueToState<TStringType, IsMin>(typedState, datum, row);
-    }
-
-    std::unique_ptr<IAggColumnBuilder> MakeStateBuilder(ui64 size) final {
-        return std::make_unique<TGenericColumnBuilder>(size, Type_, Ctx_);
-    }
-
-private:
-    const ui32 ArgColumn_;
-    TType* const Type_;
-};
-
-template<typename TStringType, bool IsMin>
-class TMinMaxBlockStringAggregator<TFinalizeKeysTag, TStringType, IsMin> : public TFinalizeKeysTag::TBase {
-public:
-    using TBase = TFinalizeKeysTag::TBase;
-
-    TMinMaxBlockStringAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TGenericState), filterColumn, ctx)
-        , ArgColumn_(argColumn)
-        , Type_(type)
-    {
-    }
-
-    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        new(state) TGenericState();
-        UpdateState(state, batchNum, columns, row);
-    }
-
-    void DestroyState(void* state) noexcept final {
-        auto typedState = static_cast<TGenericState*>(state);
-        typedState->DeleteUnreferenced();
-        *typedState = TGenericState();
-    }
-
-    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
-        auto typedState = static_cast<TGenericState*>(state);
-        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        PushValueToState<TStringType, IsMin>(typedState, datum, row);
-    }
-
-    std::unique_ptr<IAggColumnBuilder> MakeResultBuilder(ui64 size) final {
-        return std::make_unique<TGenericColumnBuilder>(size, Type_, Ctx_);
-    }
-
-private:
-    const ui32 ArgColumn_;
-    TType* const Type_;
-};
-
-template <bool IsNullable, bool IsScalar, typename TIn, bool IsMin>
-class TMinMaxBlockFixedAggregator<TCombineAllTag, IsNullable, IsScalar, TIn, IsMin> : public TCombineAllTag::TBase {
-public:
-    using TBase = TCombineAllTag::TBase;
-    using TStateType = TState<IsNullable, TIn, IsMin>;
-    using TInScalar = typename TPrimitiveDataType<TIn>::TScalarResult;
-
-    TMinMaxBlockFixedAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TStateType), filterColumn, ctx)
-        , ArgColumn_(argColumn)
-    {
-        Y_UNUSED(type);
-    }
-
-    void InitState(void* state) final {
-        new(state) TStateType();
-    }
-
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TStateType>::value);
-        Y_UNUSED(state);
-    }
-
-    void AddMany(void* state, const NUdf::TUnboxedValue* columns, ui64 batchLength, std::optional<ui64> filtered) final {
-        auto typedState = static_cast<TStateType*>(state);
-        Y_UNUSED(batchLength);
-        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        if constexpr (IsScalar) {
-            Y_ENSURE(datum.is_scalar());
-            if constexpr (IsNullable) {
-                if (datum.scalar()->is_valid) {
-                    typedState->Value = datum.scalar_as<TInScalar>().value;
-                    typedState->IsValid = 1;
-                }
-            } else {
-                typedState->Value = datum.scalar_as<TInScalar>().value;
-            }
-        } else {
-            const auto& array = datum.array();
-            auto ptr = array->GetValues<TIn>(1);
-            auto len = array->length;
-            auto nullCount = IsNullable ? array->GetNullCount() : 0;
-            auto count = len - nullCount;
-            if (!count) {
-                return;
-            }
-
-            if (!filtered) {
-                TIn value = typedState->Value;
-                if constexpr (IsNullable) {
-                    typedState->IsValid = 1;
-                }
-
-                if (IsNullable && nullCount != 0) {
-                    auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
-                    for (int64_t i = 0; i < len; ++i) {
-                        ui64 fullIndex = i + array->offset;
-                        ui8 notNull = (nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1;
-                        value = UpdateMinMax<IsMin>(value, SelectArg(notNull, ptr[i], value));
-                    }
-                } else {
                     for (int64_t i = 0; i < len; ++i) {
                         value = UpdateMinMax<IsMin>(value, ptr[i]);
                     }
+                } else {
+                    auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
+                    for (int64_t i = 0; i < len; ++i) {
+                        ui64 fullIndex = i + array->offset;
+                        // bit 1 -> mask 0xFF..FF, bit 0 -> mask 0x00..00
+                        TIn mask = -TIn((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1);
+                        value = UpdateMinMax<IsMin>(value, TIn((ptr[i] & mask) | (value & ~mask)));
+                    }
                 }
 
-                typedState->Value = value;
+                typedState->Value_ = value;
             } else {
                 const auto& filterDatum = TArrowBlock::From(columns[*FilterColumn_]).GetDatum();
                 const auto& filterArray = filterDatum.array();
                 MKQL_ENSURE(filterArray->GetNullCount() == 0, "Expected non-nullable bool column");
                 const ui8* filterBitmap = filterArray->template GetValues<uint8_t>(1);
 
-                TIn value = typedState->Value;
-                ui64 validCount = 0;
-                if (IsNullable && nullCount != 0) {
+                TIn value = typedState->Value_;
+                if (array->GetNullCount() == 0) {
+                    typedState->IsValid_ = 1;
+                    for (int64_t i = 0; i < len; ++i) {
+                        TIn filterMask = -TIn(filterBitmap[i]);
+                        value = UpdateMinMax<IsMin>(value, TIn((ptr[i] & filterMask) | (value & ~filterMask)));
+                    }
+                } else {
+                    ui64 count = 0;
                     auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
                     for (int64_t i = 0; i < len; ++i) {
                         ui64 fullIndex = i + array->offset;
-                        ui8 notNullAndFiltered = ((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1) & filterBitmap[i];
-                        value = UpdateMinMax<IsMin>(value, SelectArg(notNullAndFiltered, ptr[i], value));
-                        validCount += notNullAndFiltered;
+                        // bit 1 -> mask 0xFF..FF, bit 0 -> mask 0x00..00
+                        TIn mask = -TIn((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1);
+                        TIn filterMask = -TIn(filterBitmap[i]);
+                        mask &= filterMask;
+                        value = UpdateMinMax<IsMin>(value, TIn((ptr[i] & mask) | (value & ~mask)));
+                        count += mask & 1;
                     }
-                } else {
-                    for (int64_t i = 0; i < len; ++i) {
-                        ui8 filtered = filterBitmap[i];
-                        value = UpdateMinMax<IsMin>(value, SelectArg(filtered, ptr[i], value));
-                        validCount += filtered;
-                    }
+
+                    typedState->IsValid_ |= count ? 1 : 0;
                 }
 
-                if constexpr (IsNullable) {
-                    typedState->IsValid |= validCount ? 1 : 0;
-                }
-                typedState->Value = value;
+                typedState->Value_ = value;
             }
         }
     }
 
     NUdf::TUnboxedValue FinishOne(const void* state) final {
-        auto typedState = static_cast<const TStateType*>(state);
-        if constexpr (IsNullable) {
-            if (!typedState->IsValid) {
-                return NUdf::TUnboxedValuePod();
-            }
+        auto typedState = static_cast<const TState<TIn, IsMin>*>(state);
+        if (!typedState->IsValid_) {
+            return NUdf::TUnboxedValuePod();
         }
 
-        return NUdf::TUnboxedValuePod(typedState->Value);
+        return NUdf::TUnboxedValuePod(typedState->Value_);
     }
 
 private:
     const ui32 ArgColumn_;
 };
 
-template <bool IsNullable, bool IsScalar, typename TIn, bool IsMin>
-static void PushValueToState(TState<IsNullable, TIn, IsMin>* typedState, const arrow::Datum& datum, ui64 row) {
-    using TInScalar = typename TPrimitiveDataType<TIn>::TScalarResult;
-    if constexpr (IsScalar) {
-        Y_ENSURE(datum.is_scalar());
-        if constexpr (IsNullable) {
-            if (datum.scalar()->is_valid) {
-                typedState->Value = datum.scalar_as<TInScalar>().value;
-                typedState->IsValid = 1;
-            }
-        } else {
-            typedState->Value = datum.scalar_as<TInScalar>().value;
+template <typename TIn, typename TInScalar, bool IsMin>
+void PushValueToState(TState<TIn, IsMin>* typedState, const arrow::Datum& datum, ui64 row) {
+    if (datum.is_scalar()) {
+        if (datum.scalar()->is_valid) {
+            typedState->Value_ = datum.scalar_as<TInScalar>().value;
+            typedState->IsValid_ = 1;
         }
     } else {
-        const auto &array = datum.array();
+        const auto& array = datum.array();
         auto ptr = array->GetValues<TIn>(1);
-        if constexpr (IsNullable) {
-            if (array->GetNullCount() == 0) {
-                typedState->IsValid = 1;
-                typedState->Value = UpdateMinMax<IsMin>(typedState->Value, ptr[row]);
-            } else {
-                auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
-                ui64 fullIndex = row + array->offset;
-                ui8 notNull = (nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1;
-                typedState->Value = UpdateMinMax<IsMin>(typedState->Value, SelectArg(notNull, ptr[row], typedState->Value));
-                typedState->IsValid |= notNull;
-            }
+        if (array->GetNullCount() == 0) {
+            typedState->IsValid_ = 1;
+            typedState->Value_ = UpdateMinMax<IsMin>(typedState->Value_, ptr[row]);
         } else {
-            typedState->Value = UpdateMinMax<IsMin>(typedState->Value, ptr[row]);
+            auto nullBitmapPtr = array->GetValues<uint8_t>(0, 0);
+            ui64 fullIndex = row + array->offset;
+            // bit 1 -> mask 0xFF..FF, bit 0 -> mask 0x00..00
+            TIn mask = -TIn((nullBitmapPtr[fullIndex >> 3] >> (fullIndex & 0x07)) & 1);
+            typedState->Value_ = UpdateMinMax<IsMin>(typedState->Value_, TIn((ptr[row] & mask) | (typedState->Value_ & ~mask)));
+            typedState->IsValid_ |= mask & 1;
         }
     }
 }
 
-template <bool IsNullable, bool IsScalar, typename TIn, bool IsMin>
-class TMinMaxBlockFixedAggregator<TCombineKeysTag, IsNullable, IsScalar, TIn, IsMin> : public TCombineKeysTag::TBase {
+template <typename TIn, bool IsMin>
+void PushValueToSimpleState(TSimpleState<TIn, IsMin>* typedState, const arrow::Datum& datum, ui64 row) {
+    const auto& array = datum.array();
+    auto ptr = array->GetValues<TIn>(1);
+    typedState->Value_ = UpdateMinMax<IsMin>(typedState->Value_, ptr[row]);
+}
+
+template <typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregatorNullableOrScalar<TCombineKeysTag, TIn, TInScalar, TBuilder, IsMin> : public TCombineKeysTag::TBase {
 public:
     using TBase = TCombineKeysTag::TBase;
-    using TStateType = TState<IsNullable, TIn, IsMin>;
 
-    TMinMaxBlockFixedAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TStateType), filterColumn, ctx)
+    TMinMaxBlockAggregatorNullableOrScalar(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType, TComputationContext& ctx)
+        : TBase(sizeof(TState<TIn, IsMin>), filterColumn, ctx)
         , ArgColumn_(argColumn)
-        , Type_(type)
+        , BuilderDataType_(builderDataType)
     {
     }
 
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        new(state) TStateType();
-        UpdateKey(state, batchNum, columns, row);
+    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        new(state) TState<TIn, IsMin>();
+        UpdateKey(state, columns, row);
     }
 
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TStateType>::value);
-        Y_UNUSED(state);
-    }
-
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
-        auto typedState = static_cast<TStateType*>(state);
+    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        auto typedState = static_cast<TState<TIn, IsMin>*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        PushValueToState<IsNullable, IsScalar, TIn, IsMin>(typedState, datum, row);
+        PushValueToState<TIn, TInScalar, IsMin>(typedState, datum, row);
     }
 
     std::unique_ptr<IAggColumnBuilder> MakeStateBuilder(ui64 size) final {
-        return std::make_unique<TColumnBuilder<IsNullable, TIn, IsMin>>(size, Type_, Ctx_);
+        return std::make_unique<TColumnBuilder<TIn, IsMin, TBuilder>>(size, BuilderDataType_, Ctx_);
     }
 
 private:
     const ui32 ArgColumn_;
     const std::shared_ptr<arrow::DataType> BuilderDataType_;
-    TType* const Type_;
 };
 
-template <bool IsNullable, bool IsScalar, typename TIn, bool IsMin>
-class TMinMaxBlockFixedAggregator<TFinalizeKeysTag, IsNullable, IsScalar, TIn, IsMin> : public TFinalizeKeysTag::TBase {
+template <typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregatorNullableOrScalar<TFinalizeKeysTag, TIn, TInScalar, TBuilder, IsMin> : public TFinalizeKeysTag::TBase {
 public:
     using TBase = TFinalizeKeysTag::TBase;
-    using TStateType = TState<IsNullable, TIn, IsMin>;
 
-    TMinMaxBlockFixedAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn, TComputationContext& ctx)
-        : TBase(sizeof(TStateType), filterColumn, ctx)
+    TMinMaxBlockAggregatorNullableOrScalar(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType, TComputationContext& ctx)
+        : TBase(sizeof(TState<TIn, IsMin>), filterColumn, ctx)
         , ArgColumn_(argColumn)
-        , Type_(type)
+        , BuilderDataType_(builderDataType)
     {
     }
 
-    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        new(state) TStateType();
-        UpdateState(state, batchNum, columns, row);
+    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        new(state) TState<TIn, IsMin>();
+        UpdateState(state, columns, row);
     }
 
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TStateType>::value);
-        Y_UNUSED(state);
-    }
-
-    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
-        auto typedState = static_cast<TStateType*>(state);
+    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        auto typedState = static_cast<TState<TIn, IsMin>*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
-        PushValueToState<IsNullable, IsScalar, TIn, IsMin>(typedState, datum, row);
+        PushValueToState<TIn, TInScalar, IsMin>(typedState, datum, row);
     }
 
     std::unique_ptr<IAggColumnBuilder> MakeResultBuilder(ui64 size) final {
-        return std::make_unique<TColumnBuilder<IsNullable, TIn, IsMin>>(size, Type_, Ctx_);
+        return std::make_unique<TColumnBuilder<TIn, IsMin, TBuilder>>(size, BuilderDataType_, Ctx_);
     }
 
 private:
     const ui32 ArgColumn_;
-    TType* const Type_;
+    const std::shared_ptr<arrow::DataType> BuilderDataType_;
 };
 
-template<typename TTag, typename TStringType, bool IsMin>
-class TPreparedMinMaxBlockStringAggregator : public TTag::TPreparedAggregator {
+template <typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregator<TCombineAllTag, TIn, TInScalar, TBuilder, IsMin> : public TCombineAllTag::TBase {
 public:
-    using TBase = typename TTag::TPreparedAggregator;
+    using TBase = TCombineAllTag::TBase;
 
-    TPreparedMinMaxBlockStringAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn)
-        : TBase(sizeof(TGenericState))
-        , Type_(type)
-        , FilterColumn_(filterColumn)
+    TMinMaxBlockAggregator(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType, TComputationContext& ctx)
+        : TBase(sizeof(TSimpleState<TIn, IsMin>), filterColumn, ctx)
         , ArgColumn_(argColumn)
-    {}
-
-    std::unique_ptr<typename TTag::TAggregator> Make(TComputationContext& ctx) const final {
-        return std::make_unique<TMinMaxBlockStringAggregator<TTag, TStringType, IsMin>>(Type_, FilterColumn_, ArgColumn_, ctx);
-    }
-private:
-    TType* const Type_;
-    const std::optional<ui32> FilterColumn_;
-    const ui32 ArgColumn_;
-};
-
-template <typename TTag, bool IsNullable, bool IsScalar, typename TIn, bool IsMin>
-class TPreparedMinMaxBlockFixedAggregator : public TTag::TPreparedAggregator {
-public:
-    using TBase = typename TTag::TPreparedAggregator;
-    using TStateType = TState<IsNullable, TIn, IsMin>;
-
-    TPreparedMinMaxBlockFixedAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn)
-        : TBase(sizeof(TStateType))
-        , Type_(type)
-        , FilterColumn_(filterColumn)
-        , ArgColumn_(argColumn)
-    {}
-
-    std::unique_ptr<typename TTag::TAggregator> Make(TComputationContext& ctx) const final {
-        return std::make_unique<TMinMaxBlockFixedAggregator<TTag, IsNullable, IsScalar, TIn, IsMin>>(Type_, FilterColumn_, ArgColumn_, ctx);
+    {
+        Y_UNUSED(builderDataType);
     }
 
-private:
-    TType* const Type_;
-    const std::optional<ui32> FilterColumn_;
-    const ui32 ArgColumn_;
-};
-
-template <typename TTag, bool IsMin>
-class TPreparedMinMaxBlockGenericAggregator : public TTag::TPreparedAggregator {
-public:
-    using TBase = typename TTag::TPreparedAggregator;
-
-    TPreparedMinMaxBlockGenericAggregator(TType* type, std::optional<ui32> filterColumn, ui32 argColumn)
-        : TBase(sizeof(TGenericState))
-        , Type_(type)
-        , FilterColumn_(filterColumn)
-        , ArgColumn_(argColumn)
-    {}
-
-    std::unique_ptr<typename TTag::TAggregator> Make(TComputationContext& ctx) const final {
-        return std::make_unique<TMinMaxBlockGenericAggregator<TTag, IsMin>>(Type_, FilterColumn_, ArgColumn_, ctx);
+    void InitState(void* state) final {
+        new(state) TSimpleState<TIn, IsMin>;
     }
 
-private:
-    TType* const Type_;
-    const std::optional<ui32> FilterColumn_;
-    const ui32 ArgColumn_;
-};
+    void AddMany(void* state, const NUdf::TUnboxedValue* columns, ui64 batchLength, std::optional<ui64> filtered) final {
+        auto typedState = static_cast<TSimpleState<TIn, IsMin>*>(state);
+        Y_UNUSED(batchLength);
+        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
+        MKQL_ENSURE(datum.is_array(), "Expected array");
+        const auto& array = datum.array();
+        auto ptr = array->GetValues<TIn>(1);
+        auto len = array->length;
+        MKQL_ENSURE(array->GetNullCount() == 0, "Expected no nulls");
+        MKQL_ENSURE(len > 0, "Expected at least one value");
+        if (!filtered) {
+            TIn value = typedState->Value_;
+            for (int64_t i = 0; i < len; ++i) {
+                value = UpdateMinMax<IsMin>(value, ptr[i]);
+            }
 
-template<typename TTag, typename TIn, bool IsMin>
-std::unique_ptr<typename TTag::TPreparedAggregator> PrepareMinMaxFixed(TType* type, bool isOptional, bool isScalar, std::optional<ui32> filterColumn, ui32 argColumn) {
-    if (isScalar) {
-        if (isOptional) {
-            return std::make_unique<TPreparedMinMaxBlockFixedAggregator<TTag, true, true, TIn, IsMin>>(type, filterColumn, argColumn);
+            typedState->Value_ = value;
+        } else {
+            const auto& filterDatum = TArrowBlock::From(columns[*FilterColumn_]).GetDatum();
+            const auto& filterArray = filterDatum.array();
+            MKQL_ENSURE(filterArray->GetNullCount() == 0, "Expected non-nullable bool column");
+            const ui8* filterBitmap = filterArray->template GetValues<uint8_t>(1);
+
+            TIn value = typedState->Value_;
+            for (int64_t i = 0; i < len; ++i) {
+                TIn filterMask = -TIn(filterBitmap[i]);
+                value = UpdateMinMax<IsMin>(value, TIn((ptr[i] & filterMask) | (value & ~filterMask)));
+            }
+
+            typedState->Value_ = value;
         }
-        return std::make_unique<TPreparedMinMaxBlockFixedAggregator<TTag, false, true, TIn, IsMin>>(type, filterColumn, argColumn);
     }
-    if (isOptional) {
-        return std::make_unique<TPreparedMinMaxBlockFixedAggregator<TTag, true, false, TIn, IsMin>>(type, filterColumn, argColumn);
+
+    NUdf::TUnboxedValue FinishOne(const void* state) final {
+        auto typedState = static_cast<const TSimpleState<TIn, IsMin>*>(state);
+        return NUdf::TUnboxedValuePod(typedState->Value_);
     }
-    return std::make_unique<TPreparedMinMaxBlockFixedAggregator<TTag, false, false, TIn, IsMin>>(type, filterColumn, argColumn);
-}
+
+private:
+    const ui32 ArgColumn_;
+};
+
+template <typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregator<TCombineKeysTag, TIn, TInScalar, TBuilder, IsMin> : public TCombineKeysTag::TBase {
+public:
+    using TBase = TCombineKeysTag::TBase;
+
+    TMinMaxBlockAggregator(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType, TComputationContext& ctx)
+        : TBase(sizeof(TSimpleState<TIn, IsMin>), filterColumn, ctx)
+        , ArgColumn_(argColumn)
+        , BuilderDataType_(builderDataType)
+    {
+    }
+
+    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        new(state) TSimpleState<TIn, IsMin>();
+        UpdateKey(state, columns, row);
+    }
+
+    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        auto typedState = static_cast<TSimpleState<TIn, IsMin>*>(state);
+        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
+        PushValueToSimpleState<TIn, IsMin>(typedState, datum, row);
+    }
+
+    std::unique_ptr<IAggColumnBuilder> MakeStateBuilder(ui64 size) final {
+        return std::make_unique<TSimpleColumnBuilder<TIn, IsMin, TBuilder>>(size, BuilderDataType_, Ctx_);
+    }
+
+private:
+    const ui32 ArgColumn_;
+    const std::shared_ptr<arrow::DataType> BuilderDataType_;
+};
+
+template <typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TMinMaxBlockAggregator<TFinalizeKeysTag, TIn, TInScalar, TBuilder, IsMin> : public TFinalizeKeysTag::TBase {
+public:
+    using TBase = TFinalizeKeysTag::TBase;
+
+    TMinMaxBlockAggregator(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType, TComputationContext& ctx)
+        : TBase(sizeof(TSimpleState<TIn, IsMin>), filterColumn, ctx)
+        , ArgColumn_(argColumn)
+        , BuilderDataType_(builderDataType)
+    {
+    }
+
+    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        new(state) TSimpleState<TIn, IsMin>();
+        UpdateState(state, columns, row);
+    }
+
+    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
+        auto typedState = static_cast<TSimpleState<TIn, IsMin>*>(state);
+        const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
+        PushValueToSimpleState<TIn, IsMin>(typedState, datum, row);
+    }
+
+    std::unique_ptr<IAggColumnBuilder> MakeResultBuilder(ui64 size) final {
+        return std::make_unique<TSimpleColumnBuilder<TIn, IsMin, TBuilder>>(size, BuilderDataType_, Ctx_);
+    }
+
+private:
+    const ui32 ArgColumn_;
+    const std::shared_ptr<arrow::DataType> BuilderDataType_;
+};
+
+template <typename TTag, typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TPreparedMinMaxBlockAggregatorNullableOrScalar : public TTag::TPreparedAggregator {
+public:
+    using TBase = typename TTag::TPreparedAggregator;
+
+    TPreparedMinMaxBlockAggregatorNullableOrScalar(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType)
+        : TBase(sizeof(TState<TIn, IsMin>))
+        , FilterColumn_(filterColumn)
+        , ArgColumn_(argColumn)
+        , BuilderDataType_(builderDataType)
+    {}
+
+    std::unique_ptr<typename TTag::TAggregator> Make(TComputationContext& ctx) const final {
+        return std::make_unique<TMinMaxBlockAggregatorNullableOrScalar<TTag, TIn, TInScalar, TBuilder, IsMin>>(FilterColumn_, ArgColumn_, BuilderDataType_, ctx);
+    }
+
+private:
+    const std::optional<ui32> FilterColumn_;
+    const ui32 ArgColumn_;
+    const std::shared_ptr<arrow::DataType> BuilderDataType_;
+};
+
+template <typename TTag, typename TIn, typename TInScalar, typename TBuilder, bool IsMin>
+class TPreparedMinMaxBlockAggregator : public TTag::TPreparedAggregator {
+public:
+    using TBase = typename TTag::TPreparedAggregator;
+
+    TPreparedMinMaxBlockAggregator(std::optional<ui32> filterColumn, ui32 argColumn,
+        const std::shared_ptr<arrow::DataType>& builderDataType)
+        : TBase(sizeof(TSimpleState<TIn, IsMin>))
+        , FilterColumn_(filterColumn)
+        , ArgColumn_(argColumn)
+        , BuilderDataType_(builderDataType)
+    {}
+
+    std::unique_ptr<typename TTag::TAggregator> Make(TComputationContext& ctx) const final {
+        return std::make_unique<TMinMaxBlockAggregator<TTag, TIn, TInScalar, TBuilder, IsMin>>(FilterColumn_, ArgColumn_, BuilderDataType_, ctx);
+    }
+
+private:
+    const std::optional<ui32> FilterColumn_;
+    const ui32 ArgColumn_;
+    const std::shared_ptr<arrow::DataType> BuilderDataType_;
+};
 
 template <typename TTag, bool IsMin>
 std::unique_ptr<typename TTag::TPreparedAggregator> PrepareMinMax(TTupleType* tupleType, std::optional<ui32> filterColumn, ui32 argColumn) {
     auto blockType = AS_TYPE(TBlockType, tupleType->GetElementType(argColumn));
-    const bool isScalar = blockType->GetShape() == TBlockType::EShape::Scalar;
     auto argType = blockType->GetItemType();
-
     bool isOptional;
-    auto unpacked = UnpackOptional(argType, isOptional);
-    if (!unpacked->IsData()) {
-        return std::make_unique<TPreparedMinMaxBlockGenericAggregator<TTag, IsMin>>(argType, filterColumn, argColumn);
+    auto dataType = UnpackOptionalData(argType, isOptional);
+    if (blockType->GetShape() == TBlockType::EShape::Scalar || isOptional) {
+        switch (*dataType->GetDataSlot()) {
+        case NUdf::EDataSlot::Int8:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, i8, arrow::Int8Scalar, arrow::Int8Builder, IsMin>>(filterColumn, argColumn, arrow::int8());
+        case NUdf::EDataSlot::Bool:
+        case NUdf::EDataSlot::Uint8:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, ui8, arrow::UInt8Scalar, arrow::UInt8Builder, IsMin>>(filterColumn, argColumn, arrow::uint8());
+        case NUdf::EDataSlot::Int16:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, i16, arrow::Int16Scalar, arrow::Int16Builder, IsMin>>(filterColumn, argColumn, arrow::int16());
+        case NUdf::EDataSlot::Uint16:
+        case NUdf::EDataSlot::Date:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, ui16, arrow::UInt16Scalar, arrow::UInt16Builder, IsMin>>(filterColumn, argColumn, arrow::uint16());
+        case NUdf::EDataSlot::Int32:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, i32, arrow::Int32Scalar, arrow::Int32Builder, IsMin>>(filterColumn, argColumn, arrow::int32());
+        case NUdf::EDataSlot::Uint32:
+        case NUdf::EDataSlot::Datetime:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, ui32, arrow::UInt32Scalar, arrow::UInt32Builder, IsMin>>(filterColumn, argColumn, arrow::uint32());
+        case NUdf::EDataSlot::Int64:
+        case NUdf::EDataSlot::Interval:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, i64, arrow::Int64Scalar, arrow::Int64Builder, IsMin>>(filterColumn, argColumn, arrow::int64());
+        case NUdf::EDataSlot::Uint64:
+        case NUdf::EDataSlot::Timestamp:
+            return std::make_unique<TPreparedMinMaxBlockAggregatorNullableOrScalar<TTag, ui64, arrow::UInt64Scalar, arrow::UInt64Builder, IsMin>>(filterColumn, argColumn, arrow::uint64());
+        default:
+            throw yexception() << "Unsupported MIN/MAX input type";
+        }
     }
-
-    auto dataType = AS_TYPE(TDataType, unpacked);
-    const auto slot = *dataType->GetDataSlot();
-    if (slot == NUdf::EDataSlot::String) {
-        using TStringType = char*;
-        return std::make_unique<TPreparedMinMaxBlockStringAggregator<TTag, TStringType, IsMin>>(argType, filterColumn, argColumn);
-    } else if (slot == NUdf::EDataSlot::Utf8) {
-        using TStringType = NUdf::TUtf8;
-        return std::make_unique<TPreparedMinMaxBlockStringAggregator<TTag, TStringType, IsMin>>(argType, filterColumn, argColumn);
-    }
-    switch (slot) {
-    case NUdf::EDataSlot::Int8:
-        return PrepareMinMaxFixed<TTag, i8, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Bool:
-    case NUdf::EDataSlot::Uint8:
-        return PrepareMinMaxFixed<TTag, ui8, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Int16:
-        return PrepareMinMaxFixed<TTag, i16, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Uint16:
-    case NUdf::EDataSlot::Date:
-        return PrepareMinMaxFixed<TTag, ui16, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Int32:
-        return PrepareMinMaxFixed<TTag, i32, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Uint32:
-    case NUdf::EDataSlot::Datetime:
-        return PrepareMinMaxFixed<TTag, ui32, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Int64:
-    case NUdf::EDataSlot::Interval:
-        return PrepareMinMaxFixed<TTag, i64, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Uint64:
-    case NUdf::EDataSlot::Timestamp:
-        return PrepareMinMaxFixed<TTag, ui64, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Float:
-        return PrepareMinMaxFixed<TTag, float, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    case NUdf::EDataSlot::Double:
-        return PrepareMinMaxFixed<TTag, double, IsMin>(dataType, isOptional, isScalar, filterColumn, argColumn);
-    default:
-        throw yexception() << "Unsupported MIN/MAX input type";
+    else {
+        switch (*dataType->GetDataSlot()) {
+        case NUdf::EDataSlot::Int8:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, i8, arrow::Int8Scalar, arrow::Int8Builder, IsMin>>(filterColumn, argColumn, arrow::int8());
+        case NUdf::EDataSlot::Uint8:
+        case NUdf::EDataSlot::Bool:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, ui8, arrow::UInt8Scalar, arrow::UInt8Builder, IsMin>>(filterColumn, argColumn, arrow::uint8());
+        case NUdf::EDataSlot::Int16:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, i16, arrow::Int16Scalar, arrow::Int16Builder, IsMin>>(filterColumn, argColumn, arrow::int16());
+        case NUdf::EDataSlot::Uint16:
+        case NUdf::EDataSlot::Date:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, ui16, arrow::UInt16Scalar, arrow::UInt16Builder, IsMin>>(filterColumn, argColumn, arrow::uint16());
+        case NUdf::EDataSlot::Int32:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, i32, arrow::Int32Scalar, arrow::Int32Builder, IsMin>>(filterColumn, argColumn, arrow::int32());
+        case NUdf::EDataSlot::Uint32:
+        case NUdf::EDataSlot::Datetime:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, ui32, arrow::UInt32Scalar, arrow::UInt32Builder, IsMin>>(filterColumn, argColumn, arrow::uint32());
+        case NUdf::EDataSlot::Int64:
+        case NUdf::EDataSlot::Interval:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, i64, arrow::Int64Scalar, arrow::Int64Builder, IsMin>>(filterColumn, argColumn, arrow::int64());
+        case NUdf::EDataSlot::Uint64:
+        case NUdf::EDataSlot::Timestamp:
+            return std::make_unique<TPreparedMinMaxBlockAggregator<TTag, ui64, arrow::UInt64Scalar, arrow::UInt64Builder, IsMin>>(filterColumn, argColumn, arrow::uint64());
+        default:
+            throw yexception() << "Unsupported MIN/MAX input type";
+        }
     }
 }
 
@@ -978,24 +556,23 @@ public:
 
     std::unique_ptr<TCombineKeysTag::TPreparedAggregator> PrepareCombineKeys(
         TTupleType* tupleType,
+        std::optional<ui32> filterColumn,
         const std::vector<ui32>& argsColumns,
         const TTypeEnvironment& env) const final {
         Y_UNUSED(env);
-        return PrepareMinMax<TCombineKeysTag, IsMin>(tupleType, std::optional<ui32>(), argsColumns[0]);
+        return PrepareMinMax<TCombineKeysTag, IsMin>(tupleType, filterColumn, argsColumns[0]);
     }
 
     std::unique_ptr<TFinalizeKeysTag::TPreparedAggregator> PrepareFinalizeKeys(
         TTupleType* tupleType,
         const std::vector<ui32>& argsColumns,
-        const TTypeEnvironment& env,
-        TType* returnType) const final {
+        const TTypeEnvironment& env) const final {
         Y_UNUSED(env);
-        Y_UNUSED(returnType);
         return PrepareMinMax<TFinalizeKeysTag, IsMin>(tupleType, std::optional<ui32>(), argsColumns[0]);
     }
 };
 
-} // namespace
+}
 
 std::unique_ptr<IBlockAggregatorFactory> MakeBlockMinFactory() {
     return std::make_unique<TBlockMinMaxFactory<true>>();
@@ -1004,6 +581,6 @@ std::unique_ptr<IBlockAggregatorFactory> MakeBlockMinFactory() {
 std::unique_ptr<IBlockAggregatorFactory> MakeBlockMaxFactory() {
     return std::make_unique<TBlockMinMaxFactory<false>>();
 }
-
+ 
 }
 }

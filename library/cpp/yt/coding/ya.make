@@ -1,7 +1,5 @@
 LIBRARY()
 
-INCLUDE(${ARCADIA_ROOT}/library/cpp/yt/ya_cpp.make.inc)
-
 SRCS(
 )
 
@@ -11,12 +9,4 @@ PEERDIR(
 
 END()
 
-RECURSE_FOR_TESTS(
-    unittests
-)
-
-IF (NOT OPENSOURCE)
-    RECURSE(
-        benchmark
-    )
-ENDIF()
+RECURSE_FOR_TESTS(unittests)

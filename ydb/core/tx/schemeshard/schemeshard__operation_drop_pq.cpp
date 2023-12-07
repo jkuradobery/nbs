@@ -36,13 +36,13 @@ public:
                  << " message# " << ev->Get()->Record.ShortDebugString());
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropPQGroup);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropPQGroup);
 
         auto& record = ev->Get()->Record;
 
-        Y_ABORT_UNLESS(record.GetStatus() == NKikimrProto::OK);
-        Y_ABORT_UNLESS(record.GetActualState() == NKikimrPQ::EDropped);
+        Y_VERIFY(record.GetStatus() == NKikimrProto::OK);
+        Y_VERIFY(record.GetActualState() == NKikimrPQ::EDropped);
 
         auto tabletId = TTabletId(record.GetTabletId());
         auto idx = context.SS->MustGetShardIdx(tabletId);
@@ -53,7 +53,7 @@ public:
             return false;
         }
 
-        Y_ABORT_UNLESS(txState->State == TTxState::DropParts);
+        Y_VERIFY(txState->State == TTxState::DropParts);
         txState->ShardsInProgress.erase(idx);
 
         context.OnComplete.UnbindMsgFromPipe(OperationId, tabletId, idx);
@@ -77,8 +77,8 @@ public:
                     << " at tablet " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropPQGroup);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropPQGroup);
 
         txState->ClearShardsInProgress();
 
@@ -118,15 +118,43 @@ public:
     }
 };
 
-class TDeleteParts: public ::NKikimr::NSchemeShard::TDeleteParts {
-public:
-    explicit TDeleteParts(const TOperationId& id)
-        : ::NKikimr::NSchemeShard::TDeleteParts(id)
-    {
-        IgnoreMessages(DebugHint(), {
-            TEvPersQueue::TEvDropTabletReply::EventType,
-        });
+class TDeleteParts: public TSubOperationState {
+private:
+    TOperationId OperationId;
+
+    TString DebugHint() const override {
+        return TStringBuilder()
+                << "TDropPQ TProposedDeletePart"
+                << ", operationId: " << OperationId;
     }
+
+public:
+    TDeleteParts(TOperationId id)
+        : OperationId(id)
+    {
+        IgnoreMessages(DebugHint(), {TEvPersQueue::TEvDropTabletReply::EventType});
+    }
+
+    bool ProgressState(TOperationContext& context) override {
+        auto ssId = context.SS->SelfTabletId();
+
+        LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                   DebugHint() << " ProgressState"
+                               << ", at schemeshard: " << ssId);
+
+        TTxState* txState = context.SS->FindTx(OperationId);
+
+        // Initiate asynchronous deletion of all shards
+        for (auto shard : txState->Shards) {
+            context.OnComplete.DeleteShard(shard.Idx);
+        }
+
+        NIceDb::TNiceDb db(context.GetDB());
+        context.SS->ChangeTxState(db, OperationId, TTxState::Propose);
+        context.OnComplete.ActivateTx(OperationId);
+        return true;
+    }
+
 };
 
 class TPropose: public TSubOperationState {
@@ -156,7 +184,7 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropPQGroup);
+        Y_VERIFY(txState->TxType == TTxState::TxDropPQGroup);
 
         TPathId pathId = txState->TargetPathId;
         auto path = context.SS->PathsById.at(pathId);
@@ -164,11 +192,11 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         TTopicInfo::TPtr pqGroup = context.SS->Topics.at(pathId);
-        Y_ABORT_UNLESS(pqGroup);
+        Y_VERIFY(pqGroup);
 
         // KIKIMR-13173
         // Repeat it here for a while, delete it from TDeleteParts after
@@ -179,9 +207,9 @@ public:
 
         auto tabletConfig = pqGroup->TabletConfig;
         NKikimrPQ::TPQTabletConfig config;
-        Y_ABORT_UNLESS(!tabletConfig.empty());
+        Y_VERIFY(!tabletConfig.empty());
         bool parseOk = ParseFromStringNoSizeLimit(config, tabletConfig);
-        Y_ABORT_UNLESS(parseOk);
+        Y_VERIFY(parseOk);
 
         const PQGroupReserve reserve(config, pqGroup->TotalPartitionCount);
 
@@ -235,8 +263,8 @@ public:
                                << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxDropPQGroup);
+        Y_VERIFY(txState);
+        Y_VERIFY(txState->TxType == TTxState::TxDropPQGroup);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
         return false;
@@ -407,7 +435,7 @@ public:
         }
 
         TTopicInfo::TPtr pqGroup = context.SS->Topics.at(path.Base()->PathId);
-        Y_ABORT_UNLESS(pqGroup);
+        Y_VERIFY(pqGroup);
 
         if (pqGroup->AlterData) {
             result->SetError(NKikimrScheme::StatusMultipleModifications, "Drop over Create/Alter");
@@ -449,11 +477,31 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TDropPQ");
+        Y_FAIL("no AbortPropose for TDropPQ");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
-        AbortUnsafeDropOperation(OperationId, forceDropTxId, context);
+        LOG_NOTICE_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
+                     "TDropPQ AbortUnsafe"
+                         << ", opId: " << OperationId
+                         << ", forceDropId: " << forceDropTxId
+                         << ", at schemeshard: " << context.SS->TabletID());
+
+        TTxState* txState = context.SS->FindTx(OperationId);
+        Y_VERIFY(txState);
+
+        TPathId pathId = txState->TargetPathId;
+        Y_VERIFY(context.SS->PathsById.contains(pathId));
+        TPathElement::TPtr path = context.SS->PathsById.at(pathId);
+        Y_VERIFY(path);
+
+        if (path->Dropped()) {
+            for (auto shard : txState->Shards) {
+                context.OnComplete.DeleteShard(shard.Idx);
+            }
+        }
+
+        context.OnComplete.DoneOperation(OperationId);
     }
 };
 
@@ -461,12 +509,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateDropPQ(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateDropPQ(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TDropPQ>(id, tx);
 }
 
-ISubOperation::TPtr CreateDropPQ(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateDropPQ(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TDropPQ>(id, state);
 }
 

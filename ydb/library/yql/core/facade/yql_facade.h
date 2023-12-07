@@ -1,16 +1,12 @@
 #pragma once
 
-#include <ydb/library/yql/core/credentials/yql_credentials.h>
-#include <ydb/library/yql/core/file_storage/file_storage.h>
 #include <ydb/library/yql/core/services/yql_plan.h>
 #include <ydb/library/yql/core/services/yql_transform_pipeline.h>
-#include <ydb/library/yql/core/url_lister/interface/url_lister_manager.h>
-#include <ydb/library/yql/core/url_preprocessing/interface/url_preprocessing.h>
-#include <ydb/library/yql/core/yql_type_annotation.h>
-#include <ydb/library/yql/core/yql_user_data.h>
+#include <ydb/library/yql/core/file_storage/file_storage.h>
+#include <ydb/library/yql/core/credentials/yql_credentials.h>
 #include <ydb/library/yql/providers/config/yql_config_provider.h>
 #include <ydb/library/yql/providers/result/provider/yql_result_provider.h>
-#include <ydb/library/yql/public/issue/yql_issue.h>
+#include <ydb/library/yql/core/yql_type_annotation.h>
 #include <ydb/library/yql/sql/sql.h>
 
 #include <library/cpp/random_provider/random_provider.h>
@@ -53,11 +49,9 @@ public:
     void SetCredentials(TCredentials::TPtr credentials);
     void SetGatewaysConfig(const TGatewaysConfig* gatewaysConfig);
     void SetModules(IModuleResolver::TPtr modules);
-    void SetUrlListerManager(IUrlListerManagerPtr urlListerManager);
     void SetUdfResolver(IUdfResolver::TPtr udfResolver);
     void SetUdfIndex(TUdfIndex::TPtr udfIndex, TUdfIndexPackageSet::TPtr udfIndexPackageSet);
     void SetFileStorage(TFileStoragePtr fileStorage);
-    void SetUrlPreprocessing(IUrlPreprocessing::TPtr urlPreprocessing);
     void EnableRangeComputeFor();
     void SetArrowResolver(IArrowResolver::TPtr arrowResolver);
 
@@ -82,12 +76,10 @@ private:
     TCredentials::TPtr Credentials_;
     const TGatewaysConfig* GatewaysConfig_;
     IModuleResolver::TPtr Modules_;
-    IUrlListerManagerPtr UrlListerManager_;
     IUdfResolver::TPtr UdfResolver_;
     TUdfIndex::TPtr UdfIndex_;
     TUdfIndexPackageSet::TPtr UdfIndexPackageSet_;
     TFileStoragePtr FileStorage_;
-    IUrlPreprocessing::TPtr UrlPreprocessing_;
     TString Runner_;
     bool EnableRangeComputeFor_ = false;
     IArrowResolver::TPtr ArrowResolver_;
@@ -106,11 +98,6 @@ public:
 public:
     ~TProgram();
 
-    void AddCredentials(const TVector<std::pair<TString, TCredential>>& credentials);
-    void ClearCredentials();
-
-    void AddUserDataTable(const TUserDataTable& userDataTable);
-
     bool ParseYql();
     bool ParseSql();
     bool ParseSql(const NSQLTranslation::TTranslationSettings& settings);
@@ -120,10 +107,6 @@ public:
     TStatus Discover(const TString& username);
 
     TFutureStatus DiscoverAsync(const TString& username);
-
-    TStatus Lineage(const TString& username, IOutputStream* traceOut = nullptr, IOutputStream* exprOut = nullptr, bool withTypes = false);
-
-    TFutureStatus LineageAsync(const TString& username, IOutputStream* traceOut = nullptr, IOutputStream* exprOut = nullptr, bool withTypes = false);
 
     TStatus Validate(const TString& username, IOutputStream* exprOut = nullptr, bool withTypes = false);
 
@@ -156,14 +139,6 @@ public:
             IOutputStream* tracePlan = nullptr,
             IOutputStream* exprOut = nullptr,
             bool withTypes = false);
-
-    TStatus LineageWithConfig(
-            const TString& username,
-            const IPipelineConfigurator& pipelineConf);
-
-    TFutureStatus LineageAsyncWithConfig(
-            const TString& username,
-            const IPipelineConfigurator& pipelineConf);
 
     TStatus OptimizeWithConfig(
             const TString& username,
@@ -234,14 +209,10 @@ public:
     }
 
     TMaybe<TString> GetQueryAst();
-    TMaybe<TString> GetQueryPlan(const TPlanSettings& settings = {});
+    TMaybe<TString> GetQueryPlan();
 
     void SetDiagnosticFormat(NYson::EYsonFormat format) {
         DiagnosticFormat_ = format;
-    }
-
-    void SetResultType(IDataProvider::EResultFormat type) {
-        ResultType_ = type;
     }
 
     TMaybe<TString> GetDiagnostics();
@@ -252,8 +223,6 @@ public:
     TMaybe<TString> GetStatistics(bool totalOnly = false, THashMap<TString, TStringBuf> extraYsons = {});
 
     TMaybe<TString> GetDiscoveredData();
-
-    TMaybe<TString> GetLineage();
 
     TString ResultsAsString() const;
     void ConfigureYsonResultFormat(NYson::EYsonFormat format);
@@ -340,12 +309,10 @@ private:
         const TUserDataTable& userDataTable,
         const TCredentials::TPtr& credentials,
         const IModuleResolver::TPtr& modules,
-        const IUrlListerManagerPtr& urlListerManager,
         const IUdfResolver::TPtr& udfResolver,
         const TUdfIndex::TPtr& udfIndex,
         const TUdfIndexPackageSet::TPtr& udfIndexPackageSet,
         const TFileStoragePtr& fileStorage,
-        const IUrlPreprocessing::TPtr& urlPreprocessing,
         const TGatewaysConfig* gatewaysConfig,
         const TString& filename,
         const TString& sourceCode,
@@ -374,11 +341,8 @@ private:
     TString TakeSessionId();
 
     NThreading::TFuture<IGraphTransformer::TStatus> AsyncTransformWithFallback(bool applyAsyncChanges);
-    void SaveExprRoot();
 
 private:
-    std::optional<bool> CheckFallbackIssues(const TIssues& issues);
-
     const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry_;
     const TIntrusivePtr<IRandomProvider> RandomProvider_;
     const TIntrusivePtr<ITimeProvider> TimeProvider_;
@@ -387,12 +351,10 @@ private:
     TVector<TDataProviderInfo> DataProviders_;
     TYqlOperationOptions OperationOptions_;
     TCredentials::TPtr Credentials_;
-    const IUrlListerManagerPtr UrlListerManager_;
     const IUdfResolver::TPtr UdfResolver_;
     const TUdfIndex::TPtr UdfIndex_;
     const TUdfIndexPackageSet::TPtr UdfIndexPackageSet_;
     const TFileStoragePtr FileStorage_;
-    TUserDataTable SavedUserDataTable_;
     const TUserDataStorage::TPtr UserDataStorage_;
     const TGatewaysConfig* GatewaysConfig_;
     TString Filename_;
@@ -413,7 +375,6 @@ private:
     TAutoPtr<IGraphTransformer> Transformer_;
     TIntrusivePtr<TResultProviderConfig> ResultProviderConfig_;
     bool SupportsResultPosition_ = false;
-    IDataProvider::EResultFormat ResultType_;
     NYson::EYsonFormat ResultFormat_;
     NYson::EYsonFormat OutputFormat_;
     TMaybe<NYson::EYsonFormat> DiagnosticFormat_;
@@ -432,10 +393,9 @@ private:
     TString ExtractedQueryParametersMetadataYson_;
     const bool EnableRangeComputeFor_;
     const IArrowResolver::TPtr ArrowResolver_;
-    i64 FallbackCounter_ = 0;
+    i64 FallbackCounter = 0;
     const EHiddenMode HiddenMode_ = EHiddenMode::Disable;
     THiddenQueryAborter AbortHidden_ = [](){};
-    TMaybe<TString> LineageStr_;
 };
 
 } // namspace NYql

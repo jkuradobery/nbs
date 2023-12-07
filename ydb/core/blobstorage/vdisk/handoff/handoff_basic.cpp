@@ -75,7 +75,7 @@ namespace NKikimr {
         {}
 
         TProxyState::TProxyState(IInputStream &) {
-            Y_ABORT("Not supported");
+            Y_FAIL("Not supported");
         }
 
         void TProxyState::Init(const TVDiskID &selfVDiskID, const TVDiskID &targetVDiskID, ui32 maxElems, ui32 maxBytes) {
@@ -94,10 +94,10 @@ namespace NKikimr {
                                   const TLogoBlobID &id,
                                   ui64 fullDataSize,
                                   TRope&& data) {
-            Y_ABORT_UNLESS(Initialized, "Restore(%p): SelfVDiskID# %s TargetVDiskID# %s id# %s",
+            Y_VERIFY(Initialized, "Restore(%p): SelfVDiskID# %s TargetVDiskID# %s id# %s",
                    this, SelfVDiskID.ToString().data(), TargetVDiskID.ToString().data(), id.ToString().data());
             ui32 byteSize = TEvLocalHandoff::ByteSize(data.GetSize());
-            Y_DEBUG_ABORT_UNLESS(byteSize < MaxBytes);
+            Y_VERIFY_DEBUG(byteSize < MaxBytes);
 
             while (true) {
                 ui64 monitor = AtomicGet(Monitor);
@@ -121,7 +121,7 @@ namespace NKikimr {
         }
 
         void TProxyState::FreeElement(ui32 byteSize) {
-            Y_DEBUG_ABORT_UNLESS(Initialized);
+            Y_VERIFY_DEBUG(Initialized);
             bool done = false;
             while (!done) {
                 ui64 monitor = AtomicGet(Monitor);

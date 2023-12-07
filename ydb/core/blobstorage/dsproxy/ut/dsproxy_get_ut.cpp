@@ -86,7 +86,7 @@ void TestIntervalsAndCrcAllOk(TErasureType::EErasureSpecies erasureSpecies, bool
             for (ui64 vGetIdx = 0; vGetIdx < vGets.size(); ++vGetIdx) {
                 bool isLast = (vGetIdx == vGets.size() - 1);
                 auto &request = vGets[vGetIdx]->Record;
-                Y_ABORT_UNLESS(request.HasCookie());
+                Y_VERIFY(request.HasCookie());
                 //ui64 messageCookie = request->Record.GetCookie();
                 TEvBlobStorage::TEvVGetResult vGetResult;
                 group.OnVGet(*vGets[vGetIdx], vGetResult);
@@ -120,7 +120,7 @@ void TestIntervalsAndCrcAllOk(TErasureType::EErasureSpecies erasureSpecies, bool
                 UNIT_ASSERT_VALUES_EQUAL(a.Status, NKikimrProto::OK);
                 UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
                 UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-                blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+                blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer);
             }
         }
     }
@@ -132,9 +132,9 @@ Y_UNIT_TEST(TestBlock42GetIntervalsAllOk) {
     TestIntervalsAndCrcAllOk(TErasureType::Erasure4Plus2Block, false, false);
 }
 
-//Y_UNIT_TEST(TestBlock42GetIntervalsAllOkVerbose) {
-//    TestIntervalsAndCrcAllOk(TErasureType::Erasure4Plus2Block, true, false);
-//}
+Y_UNIT_TEST(TestBlock42GetIntervalsAllOkVerbose) {
+    TestIntervalsAndCrcAllOk(TErasureType::Erasure4Plus2Block, true, false);
+}
 
 Y_UNIT_TEST(TestMirror32GetIntervalsAllOk) {
     TestIntervalsAndCrcAllOk(TErasureType::ErasureMirror3Plus2, false, false);
@@ -145,9 +145,9 @@ Y_UNIT_TEST(TestBlock42GetBlobCrcCheck) {
     TestIntervalsAndCrcAllOk(TErasureType::Erasure4Plus2Block, false, true);
 }
 
-//Y_UNIT_TEST(TestBlock42GetBlobCrcCheckVerbose) {
-//    TestIntervalsAndCrcAllOk(TErasureType::Erasure4Plus2Block, true, true);
-//}
+Y_UNIT_TEST(TestBlock42GetBlobCrcCheckVerbose) {
+    TestIntervalsAndCrcAllOk(TErasureType::Erasure4Plus2Block, true, true);
+}
 
 Y_UNIT_TEST(TestMirror32GetBlobCrcCheck) {
     TestIntervalsAndCrcAllOk(TErasureType::ErasureMirror3Plus2, false, true);
@@ -307,7 +307,7 @@ private:
             TAutoPtr<TEvBlobStorage::TEvGetResult> &getResult) {
         for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
             auto &putRequest = vPuts[vPutIdx]->Record;
-            Y_ABORT_UNLESS(putRequest.HasCookie());
+            Y_VERIFY(putRequest.HasCookie());
             auto vdisk = VDiskIDFromVDiskID(putRequest.GetVDiskID());
             auto blobId = LogoBlobIDFromLogoBlobID(putRequest.GetBlobID());
             TBlobCookie cookie(putRequest.GetCookie());
@@ -337,13 +337,13 @@ private:
             TAutoPtr<TEvBlobStorage::TEvGetResult> &getResult) {
         for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
             auto &multiPutRequest = vPuts[vPutIdx]->Record;
-            Y_ABORT_UNLESS(multiPutRequest.HasCookie());
+            Y_VERIFY(multiPutRequest.HasCookie());
 
             auto vdisk = VDiskIDFromVDiskID(multiPutRequest.GetVDiskID());
             UNIT_ASSERT(multiPutRequest.ItemsSize() <= MaxBatchedPutRequests);
             ui64 sendBytes = 0;
             for (auto &item : multiPutRequest.GetItems()) {
-                Y_ABORT_UNLESS(item.HasCookie());
+                Y_VERIFY(item.HasCookie());
                 TLogoBlobID blobId = LogoBlobIDFromLogoBlobID(item.GetBlobID());
                 TString buffer = item.GetBuffer();
                 sendBytes += buffer.size();
@@ -406,7 +406,7 @@ private:
 
             bool isLast = (vGetIdx == vGets.size() - 1);
             auto &request = vGets[vGetIdx]->Record;
-            Y_ABORT_UNLESS(request.HasCookie());
+            Y_VERIFY(request.HasCookie());
             //ui64 messageCookie = request->Record.GetCookie();
             TEvBlobStorage::TEvVGetResult vGetResult;
             Group->OnVGet(*vGets[vGetIdx], vGetResult);
@@ -451,12 +451,44 @@ private:
             UNIT_ASSERT_VALUES_EQUAL(a.Status, NKikimrProto::OK);
             UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
             UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-            BlobSet->Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+            BlobSet->Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer);
         }
     }
 };
 
-void TestIntervalsWipedAllOk(TErasureType::EErasureSpecies erasureSpecies, bool isVerboseNoDataEnabled, bool multiput) {
+void TestIntervalsWipedAllOk(TErasureType::EErasureSpecies erasureSpecies, bool isVerboseNoDataEnabled = false) {
+    TActorSystemStub actorSystemStub;
+
+    const ui32 groupId = 0;
+    TBlobStorageGroupType groupType(erasureSpecies);
+    const ui32 domainCount = groupType.BlobSubgroupSize();
+
+    TVector<ui64> queryCounts = {1, 2, 3, 13, 34};
+
+    for (bool isRestore : {false, true}) {
+        for (ui32 generateMode = 0; generateMode < 2; ++generateMode) {
+            for (ui64 wiped1 = 0; wiped1 < domainCount; ++wiped1) {
+                for (ui64 wiped2 = 0; wiped2 <= wiped1; ++wiped2) {
+                    ui64 maxErrorMask = (wiped1 == wiped2 ? 4 : 24);
+                    for (ui64 errorMask = 0; errorMask <= maxErrorMask; ++errorMask) {
+                        ui64 error1 = errorMask % 5;
+                        ui64 error2 = errorMask / 5;
+                        TTestWipedAllOkStep testStep(
+                                groupId, erasureSpecies, domainCount, queryCounts,
+                                isVerboseNoDataEnabled, isRestore);
+                        testStep.SetGenerateBlobsMode(generateMode);
+                        testStep.Init();
+                        testStep.AddWipedVDisk(wiped1, error1);
+                        testStep.AddWipedVDisk(wiped2, error2);
+                        testStep.Run(false);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void TestIntervalsWipedAllOkVMultiPut(TErasureType::EErasureSpecies erasureSpecies, bool isVerboseNoDataEnabled = false) {
     TActorSystemStub actorSystemStub;
 
     const ui32 groupId = 0;
@@ -480,7 +512,7 @@ void TestIntervalsWipedAllOk(TErasureType::EErasureSpecies erasureSpecies, bool 
                         testStep.Init();
                         testStep.AddWipedVDisk(wiped1, error1);
                         testStep.AddWipedVDisk(wiped2, error2);
-                        testStep.Run(multiput);
+                        testStep.Run(true);
                     }
                 }
             }
@@ -591,7 +623,7 @@ public:
 
             bool isLast = (vGetIdx == vGets.size() - 1);
             auto &request = vGets[vGetIdx]->Record;
-            Y_ABORT_UNLESS(request.HasCookie());
+            Y_VERIFY(request.HasCookie());
             TEvBlobStorage::TEvVGetResult vGetResult;
             Group.OnVGet(*vGets[vGetIdx], vGetResult);
 
@@ -610,7 +642,7 @@ public:
             }
             for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
                 auto &putRequest = vPuts[vPutIdx]->Record;
-                Y_ABORT_UNLESS(putRequest.HasCookie());
+                Y_VERIFY(putRequest.HasCookie());
                 TEvBlobStorage::TEvVPutResult vPutResult;
                 vPutResult.MakeError(NKikimrProto::OK, TString(), putRequest);
 
@@ -709,7 +741,7 @@ Y_UNIT_TEST(TestBlock42VGetCountWithErasure) {
         bool isLast = (vGetIdx == vGets.size() - 1);
         auto &request = vGets[vGetIdx]->Record;
 
-        Y_ABORT_UNLESS(request.HasCookie());
+        Y_VERIFY(request.HasCookie());
         TEvBlobStorage::TEvVGetResult vGetResult;
         group.OnVGet(*vGets[vGetIdx], vGetResult);
 
@@ -730,7 +762,7 @@ Y_UNIT_TEST(TestBlock42VGetCountWithErasure) {
         }
         for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
             auto &putRequest = vPuts[vPutIdx]->Record;
-            Y_ABORT_UNLESS(putRequest.HasCookie());
+            Y_VERIFY(putRequest.HasCookie());
             TEvBlobStorage::TEvVPutResult vPutResult;
             vPutResult.MakeError(NKikimrProto::OK, TString(), putRequest);
 
@@ -765,7 +797,7 @@ Y_UNIT_TEST(TestBlock42VGetCountWithErasure) {
             if (a.Status == NKikimrProto::OK) {
                 UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
                 UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-                blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+                blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer);
             } else {
                 TStringStream str;
                 str << " isRestore# " << isRestore
@@ -856,7 +888,7 @@ Y_UNIT_TEST(TestBlock42WipedOneDiskAndErrorDurringGet) {
         bool isLast = (vGetIdx == vGets.size() - 1);
         auto &request = vGets[vGetIdx]->Record;
 
-        Y_ABORT_UNLESS(request.HasCookie());
+        Y_VERIFY(request.HasCookie());
         TEvBlobStorage::TEvVGetResult vGetResult;
         group.OnVGet(*vGets[vGetIdx], vGetResult);
 
@@ -876,7 +908,7 @@ Y_UNIT_TEST(TestBlock42WipedOneDiskAndErrorDurringGet) {
         }
         for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
             auto &putRequest = vPuts[vPutIdx]->Record;
-            Y_ABORT_UNLESS(putRequest.HasCookie());
+            Y_VERIFY(putRequest.HasCookie());
             TEvBlobStorage::TEvVPutResult vPutResult;
             vPutResult.MakeError(NKikimrProto::OK, TString(), putRequest);
 
@@ -909,7 +941,7 @@ Y_UNIT_TEST(TestBlock42WipedOneDiskAndErrorDurringGet) {
             if (a.Status == NKikimrProto::OK) {
                 UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
                 UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-                blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+                blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer);
             } else {
                 TStringStream str;
                 str << " isRestore# " << isRestore
@@ -1007,7 +1039,7 @@ void TestIntervalsWipedError(TErasureType::EErasureSpecies erasureSpecies, bool 
                                                 if (a.Status == NKikimrProto::OK) {
                                                     UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
                                                     UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-                                                    simulator.BlobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+                                                    simulator.BlobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer);
                                                 } else {
                                                     TStringStream str;
                                                     str << " isRestore# " << isRestore
@@ -1129,7 +1161,7 @@ void TestWipedErrorWithTwoBlobs(TErasureType::EErasureSpecies erasureSpecies, bo
                                 group.SetError(errorDisk, NKikimrProto::ERROR);
                             }
 
-                            Y_ABORT_UNLESS(request.HasCookie());
+                            Y_VERIFY(request.HasCookie());
                             TEvBlobStorage::TEvVGetResult vGetResult;
                             group.OnVGet(*vGets[vGetIdx], vGetResult);
 
@@ -1150,7 +1182,7 @@ void TestWipedErrorWithTwoBlobs(TErasureType::EErasureSpecies erasureSpecies, bo
                             }
                             for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
                                 auto &putRequest = vPuts[vPutIdx]->Record;
-                                Y_ABORT_UNLESS(putRequest.HasCookie());
+                                Y_VERIFY(putRequest.HasCookie());
                                 TEvBlobStorage::TEvVPutResult vPutResult;
                                 vPutResult.MakeError(NKikimrProto::OK, TString(), putRequest);
 
@@ -1183,7 +1215,7 @@ void TestWipedErrorWithTwoBlobs(TErasureType::EErasureSpecies erasureSpecies, bo
                                 if (a.Status == NKikimrProto::OK) {
                                     UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
                                     UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-                                    blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+                                    blobSet.Check(queryIdx % blobCount, q.Id, q.Shift, q.Size, a.Buffer);
                                 } else {
                                     TStringStream str;
                                     str << " isRestore# " << isRestore
@@ -1201,15 +1233,27 @@ void TestWipedErrorWithTwoBlobs(TErasureType::EErasureSpecies erasureSpecies, bo
 }
 
 Y_UNIT_TEST(TestBlock42GetIntervalsWipedAllOk) {
-    TestIntervalsWipedAllOk(TErasureType::Erasure4Plus2Block, false, false);
+    TestIntervalsWipedAllOk(TErasureType::Erasure4Plus2Block);
+}
+
+Y_UNIT_TEST(TestBlock42GetIntervalsWipedAllOkVerbose) {
+    TestIntervalsWipedAllOk(TErasureType::Erasure4Plus2Block, true);
 }
 
 Y_UNIT_TEST(TestBlock42GetIntervalsWipedAllOkVMultiPut) {
-    TestIntervalsWipedAllOk(TErasureType::Erasure4Plus2Block, false, true);
+    TestIntervalsWipedAllOkVMultiPut(TErasureType::Erasure4Plus2Block);
+}
+
+Y_UNIT_TEST(TestBlock42GetIntervalsWipedAllOkVerboseVMultiPut) {
+    TestIntervalsWipedAllOkVMultiPut(TErasureType::Erasure4Plus2Block, true);
 }
 
 Y_UNIT_TEST(TestBlock42GetIntervalsWipedAllOkComparisonVMultiPutAndVPut) {
     TestIntervalsWipedAllOkComparisonVMultiPutAndVPut(TErasureType::Erasure4Plus2Block);
+}
+
+Y_UNIT_TEST(TestBlock42GetIntervalsWipedAllOkVerboseComparisonVMultiPutAndVPut) {
+    TestIntervalsWipedAllOkComparisonVMultiPutAndVPut(TErasureType::Erasure4Plus2Block, true);
 }
 
 Y_UNIT_TEST(TestBlock42GetIntervalsWipedError) {
@@ -1221,11 +1265,11 @@ Y_UNIT_TEST(TestBlock42WipedErrorWithTwoBlobs) {
 }
 
 Y_UNIT_TEST(TestMirror32GetIntervalsWipedAllOk) {
-    TestIntervalsWipedAllOk(TErasureType::ErasureMirror3Plus2, false, false);
+    TestIntervalsWipedAllOk(TErasureType::ErasureMirror3Plus2);
 }
 
 Y_UNIT_TEST(TestMirror32GetIntervalsWipedAllOkVMultiPut) {
-    TestIntervalsWipedAllOk(TErasureType::ErasureMirror3Plus2, false, true);
+    TestIntervalsWipedAllOkVMultiPut(TErasureType::ErasureMirror3Plus2);
 }
 
 Y_UNIT_TEST(TestMirror32GetIntervalsWipedAllOkComparisonVMultiPutAndVPut) {
@@ -1280,7 +1324,7 @@ void SpecificTest(ui32 badA, ui32 badB, ui32 blobSize, TMap<i64, i64> sizeForOff
             if (a.Status == NKikimrProto::OK) {
                 UNIT_ASSERT_VALUES_EQUAL(qb.Shift, a.Shift);
                 UNIT_ASSERT_VALUES_EQUAL(qb.Size, a.RequestedSize);
-                simulator.BlobSet.Check(0, qb.Id, qb.Shift, qb.Size, a.Buffer.ConvertToString());
+                simulator.BlobSet.Check(0, qb.Id, qb.Shift, qb.Size, a.Buffer);
             } else {
                 TStringStream str;
                 str << " isRestore# false setIdx# 0 status# " << a.Status;
@@ -1425,13 +1469,13 @@ public:
             }
         }
 
-        Y_ABORT_UNLESS(RequestsOrder.size() == vGets.size());
+        Y_VERIFY(RequestsOrder.size() == vGets.size());
         for (ui64 vDIdx = 0; vDIdx < RequestsOrder.size(); ++vDIdx) {
             const ui64 vGetIdx = RequestsOrder[vDIdx];
             auto &request = vGets[vGetIdx]->Record;
             VERBOSE("vGetIdx# " << vGetIdx);
             VERBOSE("Send TEvVGet to VDiskID# " << VDiskIDFromVDiskID(request.GetVDiskID()));
-            Y_ABORT_UNLESS(request.HasCookie());
+            Y_VERIFY(request.HasCookie());
             //ui64 messageCookie = request->Record.GetCookie();
             TEvBlobStorage::TEvVGetResult vGetResult;
             Group.OnVGet(*vGets[vGetIdx], vGetResult);
@@ -1447,7 +1491,7 @@ public:
             }
             for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
                 auto &putRequest = vPuts[vPutIdx]->Record;
-                Y_ABORT_UNLESS(putRequest.HasCookie());
+                Y_VERIFY(putRequest.HasCookie());
                 TEvBlobStorage::TEvVPutResult vPutResult;
                 vPutResult.MakeError(NKikimrProto::OK, TString(), putRequest);
 
@@ -1492,7 +1536,7 @@ public:
                 UNIT_ASSERT_VALUES_EQUAL_C(a.Status, NKikimrProto::OK, currentTestState.Str());
                 UNIT_ASSERT_VALUES_EQUAL_C(q.Shift, a.Shift, currentTestState.Str());
                 UNIT_ASSERT_VALUES_EQUAL_C(q.Size, a.RequestedSize, currentTestState.Str());
-                BlobSet.Check(queryIdx, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+                BlobSet.Check(queryIdx, q.Id, q.Shift, q.Size, a.Buffer);
             }
         }
         RequestsOrder.resize(InitialRequestsSize);
@@ -1643,7 +1687,7 @@ public:
             auto &request = vGets[vGetIdx]->Record;
             VERBOSE("vGetIdx# " << vGetIdx << " request# " << vDIdx << " to domainIdx# " << domainIdx);
             VERBOSE("Send TEvVGet to VDiskID# " << VDiskIDFromVDiskID(request.GetVDiskID()));
-            Y_ABORT_UNLESS(request.HasCookie());
+            Y_VERIFY(request.HasCookie());
             //ui64 messageCookie = request->Record.GetCookie();
             TEvBlobStorage::TEvVGetResult vGetResult;
             Group.OnVGet(*vGets[vGetIdx], vGetResult);
@@ -1684,7 +1728,7 @@ public:
         if (!getResult) {
             for (ui64 vPutIdx = 0; vPutIdx < vPuts.size(); ++vPutIdx) {
                 auto &putRequest = vPuts[vPutIdx]->Record;
-                Y_ABORT_UNLESS(putRequest.HasCookie());
+                Y_VERIFY(putRequest.HasCookie());
                 TEvBlobStorage::TEvVPutResult vPutResult;
                 if (Mode == ReadAndWriteErrors && vPutIdx == 0) {
                     vPutResult.MakeError(NKikimrProto::ERROR, TString(), putRequest);
@@ -1711,7 +1755,7 @@ public:
             UNIT_ASSERT_VALUES_EQUAL(a.Status, NKikimrProto::OK);
             UNIT_ASSERT_VALUES_EQUAL(q.Shift, a.Shift);
             UNIT_ASSERT_VALUES_EQUAL(q.Size, a.RequestedSize);
-            BlobSet.Check(queryIdx, q.Id, q.Shift, q.Size, a.Buffer.ConvertToString());
+            BlobSet.Check(queryIdx, q.Id, q.Shift, q.Size, a.Buffer);
         }
     }
 };

@@ -20,12 +20,10 @@ public:
             TCoConfigure::CallableName(),
             TDqReadWrap::CallableName(),
             TDqReadWideWrap::CallableName(),
-            TDqReadBlockWideWrap::CallableName(),
             TDqSource::CallableName(),
             TDqSourceWrap::CallableName(),
             TDqSourceWideWrap::CallableName(),
-            TDqSourceWideBlockWrap::CallableName(),
-            TDqPhyLength::CallableName()
+            TDqSourceWideBlockWrap::CallableName()
         }, Hndl(&TDqDataSourceConstraintTransformer::HandleDefault));
     }
 

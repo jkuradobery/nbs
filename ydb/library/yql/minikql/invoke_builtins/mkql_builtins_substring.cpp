@@ -19,7 +19,7 @@ struct TSubString {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* string, Value* st, Value* cn, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto doFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(SubString));
         const auto start = StartOptional ?
             SelectInst::Create(
@@ -35,10 +35,10 @@ struct TSubString {
                 GetterFor<ui32>(cn, context, block), "count", block
             ):
             GetterFor<ui32>(cn, context, block);
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(string->getType(), {string->getType(), start->getType(), count->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "func", block);
-            const auto result = CallInst::Create(funType, funcPtr, {string, start, count}, "substring", block);
+            const auto result = CallInst::Create(funcPtr, {string, start, count}, "substring", block);
             return result;
         } else {
             const auto ptrArg = new AllocaInst(string->getType(), 0U, "arg", block);
@@ -46,8 +46,8 @@ struct TSubString {
             new StoreInst(string, ptrArg, block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {ptrResult->getType(), ptrArg->getType(), start->getType(), count->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, doFunc, PointerType::getUnqual(funType), "func", block);
-            CallInst::Create(funType, funcPtr, {ptrResult, ptrArg, start, count}, "", block);
-            const auto result = new LoadInst(string->getType(), ptrResult, "substring", block);
+            CallInst::Create(funcPtr, {ptrResult, ptrArg, start, count}, "", block);
+            const auto result = new LoadInst(ptrResult, "substring", block);
             return result;
         }
     }

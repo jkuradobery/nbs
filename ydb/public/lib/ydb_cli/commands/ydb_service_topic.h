@@ -10,9 +10,8 @@
 #include <ydb/public/sdk/cpp/client/ydb_persqueue_public/persqueue.h>
 
 namespace NYdb::NConsoleClient {
-    TString PrepareAllowedCodecsDescription(const TString& descriptionPrefix, const TVector<NTopic::ECodec>& codecs);
-    TVector<NTopic::ECodec> InitAllowedCodecs();
-    const TVector<NTopic::ECodec> AllowedCodecs = InitAllowedCodecs();
+    TVector<NYdb::NTopic::ECodec> InitAllowedCodecs();
+    const TVector<NYdb::NTopic::ECodec> AllowedCodecs = InitAllowedCodecs();
 
     class TCommandWithSupportedCodecs {
     protected:
@@ -85,11 +84,6 @@ namespace NYdb::NConsoleClient {
         TCommandTopicConsumer();
     };
 
-    class TCommandTopicConsumerOffset: public TClientCommandTree {
-    public:
-        TCommandTopicConsumerOffset();
-    };
-
     class TCommandTopicConsumerAdd: public TYdbCommand, public TCommandWithTopicName, public TCommandWithSupportedCodecs {
     public:
         TCommandTopicConsumerAdd();
@@ -112,20 +106,6 @@ namespace NYdb::NConsoleClient {
     private:
         TString ConsumerName_;
     };
-
-    class TCommandTopicConsumerCommitOffset: public TYdbCommand, public TCommandWithTopicName {
-    public:
-        TCommandTopicConsumerCommitOffset();
-        void Config(TConfig& config) override;
-        void Parse(TConfig& config) override;
-        int Run(TConfig& config) override;
-
-    private:
-        TString ConsumerName_;
-        ui64 PartitionId_;
-        ui64 Offset_;
-    };
-
 
     class TCommandWithTransformBody {
     protected:
@@ -151,7 +131,6 @@ namespace NYdb::NConsoleClient {
 
     private:
         TString Consumer_ = "";
-        TVector<ui64> PartitionIds_;
         TMaybe<uint32_t> Offset_;
         TMaybe<uint32_t> Partition_;
         TMaybe<ui64> Timestamp_;

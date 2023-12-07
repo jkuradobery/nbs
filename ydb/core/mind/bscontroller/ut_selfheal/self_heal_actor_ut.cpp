@@ -2,7 +2,6 @@
 #include <ydb/core/util/testactorsys.h>
 #include <ydb/core/mind/bscontroller/self_heal.h>
 #include <ydb/core/mind/bscontroller/impl.h>
-#include <ydb/core/mind/bscontroller/layout_helpers.h>
 
 using namespace NActors;
 using namespace NKikimr;
@@ -16,10 +15,7 @@ void RunTestCase(TCallback&& callback) {
     runtime.Start();
     const TActorId& parentId = runtime.AllocateEdgeActor(1);
     TBlobStorageController Controller({}, new TTabletStorageInfo(1, TTabletTypes::BSController));
-
-    Controller.CreateEmptyHostRecordsMap();
     const TActorId& selfHealId = runtime.Register(Controller.CreateSelfHealActor(), parentId, {}, {}, 1);
-
     callback(selfHealId, parentId, runtime);
     runtime.Stop();
 }
@@ -59,7 +55,6 @@ TEvControllerUpdateSelfHealInfo::TGroupContent Convert(const TIntrusivePtr<TBlob
     TEvControllerUpdateSelfHealInfo::TGroupContent res;
     res.Generation = info->GroupGeneration;
     res.Type = info->Type;
-    res.Geometry = std::make_shared<TGroupGeometryInfo>(CreateGroupGeometry(TBlobStorageGroupType::Erasure4Plus2Block));
     for (ui32 i = 0; i < info->GetTotalVDisksNum(); ++i) {
         auto& x = res.VDisks[info->GetVDiskId(i)];
         x.Location = {1, 1000 + i, 1000};

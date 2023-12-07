@@ -1,9 +1,9 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/event_pb.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_pb.h>
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_holders.h>
 #include <ydb/library/yql/minikql/mkql_node.h>
@@ -23,30 +23,29 @@ namespace NTaskRunnerActor {
 
 struct TTaskRunnerEvents {
     enum {
-        EvCreate = EventSpaceBegin(NActors::TEvents::EEventSpace::ES_USERSPACE) + 20000,
-        EvCreateFinished,
+        ES_CREATE = EventSpaceBegin(NActors::TEvents::EEventSpace::ES_USERSPACE) + 20000,
+        ES_CREATE_FINISHED,
         // channel->Pop -> TEvChannelPopFinished
-        EvPop,
-        EvPopFinished,
-        // channel->Push -> TEvPushFinished
-        EvPush,
-        EvPushFinished,
-        EvContinueRun,
-        // EvContinueRun -> TaskRunner->Run() -> TEvTaskRunFinished
-        EvRunFinished,
+        ES_POP,
+        ES_POP_FINISHED,
+        // channel->Push -> TEvContinueRun
+        ES_PUSH,
+        ES_CONTINUE_RUN,
+        // ES_CONTINUE_RUN -> TaskRunner->Run() -> TEvTaskRunFinished
+        ES_RUN_FINISHED,
 
-        EvAsyncInputPush,
-        EvAsyncInputPushFinished,
+        ES_ASYNC_INPUT_PUSH,
+        ES_ASYNC_INPUT_PUSH_FINISHED,
 
-        EvSinkPop,
-        EvSinkPopFinished,
+        ES_SINK_POP,
+        ES_SINK_POP_FINISHED,
 
-        EvLoadTaskRunnerFromState,
-        EvLoadTaskRunnerFromStateDone,
+        ES_LOAD_TASK_RUNNER_FROM_STATE,
+        ES_LOAD_TASK_RUNNER_FROM_STATE_DONE,
 
-        EvStatistics,
+        ES_STATISTICS,
 
-        EvError
+        ES_ERROR
     };
 };
 
@@ -62,7 +61,7 @@ struct TTaskRunnerActorSensorEntry {
 using TTaskRunnerActorSensors = TVector<TTaskRunnerActorSensorEntry>;
 
 struct TEvError
-    : NActors::TEventLocal<TEvError, TTaskRunnerEvents::EvError>
+    : NActors::TEventLocal<TEvError, TTaskRunnerEvents::ES_ERROR>
 {
     struct TStatus {
         int ExitCode;
@@ -91,7 +90,7 @@ struct TEvError
 };
 
 struct TEvPop
-    : NActors::TEventLocal<TEvPop, TTaskRunnerEvents::EvPop>
+    : NActors::TEventLocal<TEvPop, TTaskRunnerEvents::ES_POP>
 {
     TEvPop() = default;
     TEvPop(ui32 channelId, bool wasFinished, i64 toPop)
@@ -111,20 +110,22 @@ struct TEvPop
 };
 
 struct TEvPush
-    : NActors::TEventLocal<TEvPush, TTaskRunnerEvents::EvPush>
+    : NActors::TEventLocal<TEvPush, TTaskRunnerEvents::ES_PUSH>
 {
     TEvPush() = default;
-    TEvPush(ui32 channelId, bool finish = true, bool pauseAfterPush = false, bool isOut = false)
+    TEvPush(ui32 channelId, bool finish = true, bool askFreeSpace = false, bool pauseAfterPush = false, bool isOut = false)
         : ChannelId(channelId)
         , HasData(false)
         , Finish(finish)
+        , AskFreeSpace(askFreeSpace)
         , PauseAfterPush(pauseAfterPush)
         , IsOut(isOut)
     { }
-    TEvPush(ui32 channelId, TDqSerializedBatch&& data, bool finish = false, bool pauseAfterPush = false)
+    TEvPush(ui32 channelId, NDqProto::TData&& data, bool finish = false, bool askFreeSpace = false, bool pauseAfterPush = false)
         : ChannelId(channelId)
         , HasData(true)
         , Finish(finish)
+        , AskFreeSpace(askFreeSpace)
         , Data(std::move(data))
         , PauseAfterPush(pauseAfterPush)
     { }
@@ -132,62 +133,47 @@ struct TEvPush
     const ui32 ChannelId;
     const bool HasData = false;
     const bool Finish = false;
-    TDqSerializedBatch Data;
+    const bool AskFreeSpace = false;
+    NDqProto::TData Data;
     bool PauseAfterPush = false;
     const bool IsOut = false;
 };
 
-struct TEvPushFinished
-    : NActors::TEventLocal<TEvPushFinished, TTaskRunnerEvents::EvPushFinished> {
-
-    TEvPushFinished() = default;
-
-    TEvPushFinished(ui32 channelId, ui64 freeSpace)
-        : ChannelId(channelId)
-        , FreeSpace(freeSpace)
-    { }
-
-    ui32 ChannelId;
-    ui64 FreeSpace;
-};
-
 struct TEvTaskRunnerCreate
-    : NActors::TEventLocal<TEvTaskRunnerCreate, TTaskRunnerEvents::EvCreate>
+    : NActors::TEventLocal<TEvTaskRunnerCreate, TTaskRunnerEvents::ES_CREATE>
 {
     TEvTaskRunnerCreate() = default;
     TEvTaskRunnerCreate(
         const NDqProto::TDqTask& task,
         const TDqTaskRunnerMemoryLimits& memoryLimits,
-        NDqProto::EDqStatsMode statsMode,
-        const std::shared_ptr<IDqTaskRunnerExecutionContext>& execCtx)
+        const std::shared_ptr<IDqTaskRunnerExecutionContext>& execCtx = std::shared_ptr<IDqTaskRunnerExecutionContext>(new TDqTaskRunnerExecutionContext()),
+        const TDqTaskRunnerParameterProvider& parameterProvider = {})
         : Task(task)
         , MemoryLimits(memoryLimits)
-        , StatsMode(statsMode)
         , ExecCtx(execCtx)
+        , ParameterProvider(parameterProvider)
     { }
 
     NDqProto::TDqTask Task;
     TDqTaskRunnerMemoryLimits MemoryLimits;
-    NDqProto::EDqStatsMode StatsMode;
     std::shared_ptr<IDqTaskRunnerExecutionContext> ExecCtx;
+    TDqTaskRunnerParameterProvider ParameterProvider;
 };
 
 struct TEvTaskRunnerCreateFinished
-    : NActors::TEventLocal<TEvTaskRunnerCreateFinished, TTaskRunnerEvents::EvCreateFinished>
+    : NActors::TEventLocal<TEvTaskRunnerCreateFinished, TTaskRunnerEvents::ES_CREATE_FINISHED>
 {
 
     TEvTaskRunnerCreateFinished() = default;
     TEvTaskRunnerCreateFinished(
         const THashMap<TString, TString>& secureParams,
         const THashMap<TString, TString>& taskParams,
-        const TVector<TString>& readRanges,
         const NKikimr::NMiniKQL::TTypeEnvironment& typeEnv,
         const NKikimr::NMiniKQL::THolderFactory& holderFactory,
         const TTaskRunnerActorSensors& sensors = {})
         : Sensors(sensors)
         , SecureParams(secureParams)
         , TaskParams(taskParams)
-        , ReadRanges(readRanges)
         , TypeEnv(typeEnv)
         , HolderFactory(holderFactory)
     { }
@@ -197,19 +183,18 @@ struct TEvTaskRunnerCreateFinished
     // for sources/sinks
     const THashMap<TString, TString>& SecureParams;
     const THashMap<TString, TString>& TaskParams;
-    const TVector<TString>& ReadRanges;
     const NKikimr::NMiniKQL::TTypeEnvironment& TypeEnv;
     const NKikimr::NMiniKQL::THolderFactory& HolderFactory;
 };
 
 struct TEvTaskRunFinished
-    : NActors::TEventLocal<TEvTaskRunFinished, TTaskRunnerEvents::EvRunFinished>
+    : NActors::TEventLocal<TEvTaskRunFinished, TTaskRunnerEvents::ES_RUN_FINISHED>
 {
     TEvTaskRunFinished() = default;
     TEvTaskRunFinished(
         NDq::ERunStatus runStatus,
-        THashMap<ui32, i64>&& inputChannelsMap,
-        THashMap<ui32, i64>&& sourcesMap,
+        THashMap<ui32, ui64>&& inputMap,
+        THashMap<ui32,  ui64>&& sourcesMap,
         const TTaskRunnerActorSensors& sensors = {},
         const TDqMemoryQuota::TProfileStats& profileStats = {},
         ui64 mkqlMemoryLimit = 0,
@@ -219,7 +204,7 @@ struct TEvTaskRunFinished
         TDuration computeTime = TDuration::Zero())
         : RunStatus(runStatus)
         , Sensors(sensors)
-        , InputChannelFreeSpace(std::move(inputChannelsMap))
+        , InputChannelFreeSpace(std::move(inputMap))
         , SourcesFreeSpace(std::move(sourcesMap))
         , ProfileStats(profileStats)
         , MkqlMemoryLimit(mkqlMemoryLimit)
@@ -232,8 +217,8 @@ struct TEvTaskRunFinished
     NDq::ERunStatus RunStatus;
     TTaskRunnerActorSensors Sensors;
 
-    THashMap<ui32, i64> InputChannelFreeSpace;
-    THashMap<ui32, i64> SourcesFreeSpace;
+    THashMap<ui32, ui64> InputChannelFreeSpace;
+    THashMap<ui32, ui64> SourcesFreeSpace;
     TDqMemoryQuota::TProfileStats ProfileStats;
     ui64 MkqlMemoryLimit = 0;
     THolder<NDqProto::TMiniKqlProgramState> ProgramState;
@@ -243,7 +228,7 @@ struct TEvTaskRunFinished
 };
 
 struct TEvChannelPopFinished
-    : NActors::TEventLocal<TEvChannelPopFinished, TTaskRunnerEvents::EvPopFinished>
+    : NActors::TEventLocal<TEvChannelPopFinished, TTaskRunnerEvents::ES_POP_FINISHED>
 {
     TEvChannelPopFinished() = default;
 
@@ -257,7 +242,7 @@ struct TEvChannelPopFinished
 
     TEvChannelPopFinished(
             ui32 channelId,
-            TVector<TDqSerializedBatch>&& data,
+            TVector<NDqProto::TData>&& data,
             TMaybe<NDqProto::TWatermark>&& watermark,
             TMaybe<NDqProto::TCheckpoint>&& checkpoint,
             bool finished,
@@ -279,7 +264,7 @@ struct TEvChannelPopFinished
 
     const ui32 ChannelId;
     // The order is Data -> Watermark -> Checkpoint
-    TVector<TDqSerializedBatch> Data;
+    TVector<NDqProto::TData> Data;
     TMaybe<NDqProto::TWatermark> Watermark;
     TMaybe<NDqProto::TCheckpoint> Checkpoint;
     bool Finished;
@@ -287,8 +272,6 @@ struct TEvChannelPopFinished
 };
 
 struct TWatermarkRequest {
-    TWatermarkRequest() = default;
-
     TWatermarkRequest(TVector<ui32>&& channelIds, TInstant watermark)
         : ChannelIds(std::move(channelIds))
         , Watermark(watermark) {
@@ -312,7 +295,7 @@ struct TCheckpointRequest {
 };
 
 struct TEvContinueRun
-    : NActors::TEventLocal<TEvContinueRun, TTaskRunnerEvents::EvContinueRun> {
+    : NActors::TEventLocal<TEvContinueRun, TTaskRunnerEvents::ES_CONTINUE_RUN> {
 
     TEvContinueRun() = default;
 
@@ -321,21 +304,33 @@ struct TEvContinueRun
         TMaybe<TCheckpointRequest>&& checkpointRequest,
         bool checkpointOnly
     )
-        : MemLimit(0)
+        : ChannelId(0)
+        , MemLimit(0)
+        , FreeSpace(0)
         , WatermarkRequest(std::move(watermarkRequest))
         , CheckpointRequest(std::move(checkpointRequest))
         , CheckpointOnly(checkpointOnly)
     { }
 
+    TEvContinueRun(ui32 channelId, ui64 freeSpace)
+        : ChannelId(channelId)
+        , AskFreeSpace(false)
+        , MemLimit(0)
+        , FreeSpace(freeSpace)
+    { }
+
     TEvContinueRun(THashSet<ui32>&& inputChannels, ui64 memLimit)
-        : AskFreeSpace(false)
+        : ChannelId(0)
+        , AskFreeSpace(false)
         , InputChannels(std::move(inputChannels))
         , MemLimit(memLimit)
     { }
 
+    ui32 ChannelId;
     bool AskFreeSpace = true;
     const THashSet<ui32> InputChannels;
     ui64 MemLimit;
+    ui64 FreeSpace;
     TMaybe<TWatermarkRequest> WatermarkRequest = Nothing();
     TMaybe<TCheckpointRequest> CheckpointRequest = Nothing();
     bool CheckpointOnly = false;
@@ -344,20 +339,18 @@ struct TEvContinueRun
 };
 
 struct TEvAsyncInputPushFinished
-    : NActors::TEventLocal<TEvAsyncInputPushFinished, TTaskRunnerEvents::EvAsyncInputPushFinished>
+    : NActors::TEventLocal<TEvAsyncInputPushFinished, TTaskRunnerEvents::ES_ASYNC_INPUT_PUSH_FINISHED>
 {
     TEvAsyncInputPushFinished() = default;
-    TEvAsyncInputPushFinished(ui64 index, i64 freeSpaceLeft)
+    TEvAsyncInputPushFinished(ui64 index)
         : Index(index)
-        , FreeSpaceLeft(freeSpaceLeft)
     { }
 
     ui64 Index;
-    i64 FreeSpaceLeft;
 };
 
 struct TEvSinkPop
-    : NActors::TEventLocal<TEvSinkPop, TTaskRunnerEvents::EvSinkPop>
+    : NActors::TEventLocal<TEvSinkPop, TTaskRunnerEvents::ES_SINK_POP>
 {
     TEvSinkPop() = default;
     TEvSinkPop(ui64 index, i64 size)
@@ -370,7 +363,7 @@ struct TEvSinkPop
 };
 
 struct TEvSinkPopFinished
-    : NActors::TEventLocal<TEvSinkPopFinished, TTaskRunnerEvents::EvSinkPopFinished>
+    : NActors::TEventLocal<TEvSinkPopFinished, TTaskRunnerEvents::ES_SINK_POP_FINISHED>
 {
     TEvSinkPopFinished() = default;
     TEvSinkPopFinished(
@@ -389,7 +382,7 @@ struct TEvSinkPopFinished
     { }
 
     const ui64 Index;
-    NDq::TDqSerializedBatch Batch;
+    TVector<TString> Strings;
     TMaybe<NDqProto::TCheckpoint> Checkpoint;
     i64 Size;
     i64 CheckpointSize;
@@ -397,19 +390,19 @@ struct TEvSinkPopFinished
     bool Changed;
 };
 
-struct TEvLoadTaskRunnerFromState : NActors::TEventLocal<TEvLoadTaskRunnerFromState, TTaskRunnerEvents::EvLoadTaskRunnerFromState>{
+struct TEvLoadTaskRunnerFromState : NActors::TEventLocal<TEvLoadTaskRunnerFromState, TTaskRunnerEvents::ES_LOAD_TASK_RUNNER_FROM_STATE>{
     TEvLoadTaskRunnerFromState(TString&& blob) : Blob(std::move(blob)) {}
 
     TMaybe<TString> Blob;
 };
 
-struct TEvLoadTaskRunnerFromStateDone : NActors::TEventLocal<TEvLoadTaskRunnerFromStateDone, TTaskRunnerEvents::EvLoadTaskRunnerFromStateDone>{
+struct TEvLoadTaskRunnerFromStateDone : NActors::TEventLocal<TEvLoadTaskRunnerFromStateDone, TTaskRunnerEvents::ES_LOAD_TASK_RUNNER_FROM_STATE_DONE>{
     TEvLoadTaskRunnerFromStateDone(TMaybe<TString> error) : Error(error) {}
 
     TMaybe<TString> Error;
 };
 
-struct TEvStatistics : NActors::TEventLocal<TEvStatistics, TTaskRunnerEvents::EvStatistics>
+struct TEvStatistics : NActors::TEventLocal<TEvStatistics, TTaskRunnerEvents::ES_STATISTICS>
 {
     explicit TEvStatistics(TVector<ui32>&& sinkIds, TVector<ui32>&& inputTransformIds)
         : SinkIds(std::move(sinkIds))

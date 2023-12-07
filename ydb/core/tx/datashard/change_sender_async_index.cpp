@@ -2,17 +2,16 @@
 #include "change_exchange_impl.h"
 #include "change_sender_common_ops.h"
 #include "change_sender_monitoring.h"
-#include "datashard_impl.h"
 
 #include <ydb/core/base/tablet_pipecache.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tablet_flat/flat_row_eggs.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/maybe.h>
 
@@ -45,7 +44,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvTxUserProxy::TEvGetProxyServicesResponse, Handle);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -59,32 +58,20 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     /// Handshake
 
     void Handshake() {
-        Send(DataShard.ActorId, new TDataShard::TEvPrivate::TEvConfirmReadonlyLease, 0, ++LeaseConfirmationCookie);
+        auto ev = MakeHolder<TEvChangeExchange::TEvHandshake>();
+        ev->Record.SetOrigin(DataShard.TabletId);
+        ev->Record.SetGeneration(DataShard.Generation);
+
+        Send(LeaderPipeCache, new TEvPipeCache::TEvForward(ev.Release(), ShardId, true));
         Become(&TThis::StateHandshake);
     }
 
     STATEFN(StateHandshake) {
         switch (ev->GetTypeRewrite()) {
-            hFunc(TDataShard::TEvPrivate::TEvReadonlyLeaseConfirmation, Handle);
             hFunc(TEvChangeExchange::TEvStatus, Handshake);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
-    }
-
-    void Handle(TDataShard::TEvPrivate::TEvReadonlyLeaseConfirmation::TPtr& ev) {
-        if (ev->Cookie != LeaseConfirmationCookie) {
-            LOG_W("Readonly lease confirmation cookie mismatch"
-                << ": expected# " << LeaseConfirmationCookie
-                << ", got# " << ev->Cookie);
-            return;
-        }
-
-        auto handshake = MakeHolder<TEvChangeExchange::TEvHandshake>();
-        handshake->Record.SetOrigin(DataShard.TabletId);
-        handshake->Record.SetGeneration(DataShard.Generation);
-
-        Send(LeaderPipeCache, new TEvPipeCache::TEvForward(handshake.Release(), ShardId, true));
     }
 
     void Handshake(TEvChangeExchange::TEvStatus::TPtr& ev) {
@@ -114,7 +101,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvChangeExchange::TEvRecords, Handle);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -131,7 +118,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
             }
 
             auto& proto = *records->Record.AddRecords();
-            record.Serialize(proto);
+            record.SerializeToProto(proto);
             Adjust(proto);
         }
 
@@ -147,18 +134,18 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
         record.SetPathOwnerId(IndexTablePathId.OwnerId);
         record.SetLocalPathId(IndexTablePathId.LocalPathId);
 
-        Y_ABORT_UNLESS(record.HasAsyncIndex());
+        Y_VERIFY(record.HasAsyncIndex());
         AdjustTags(*record.MutableAsyncIndex());
     }
 
-    void AdjustTags(NKikimrChangeExchange::TDataChange& record) const {
+    void AdjustTags(NKikimrChangeExchange::TChangeRecord::TDataChange& record) const {
         AdjustTags(*record.MutableKey()->MutableTags());
 
         switch (record.GetRowOperationCase()) {
-        case NKikimrChangeExchange::TDataChange::kUpsert:
+        case NKikimrChangeExchange::TChangeRecord::TDataChange::kUpsert:
             AdjustTags(*record.MutableUpsert()->MutableTags());
             break;
-        case NKikimrChangeExchange::TDataChange::kReset:
+        case NKikimrChangeExchange::TChangeRecord::TDataChange::kReset:
             AdjustTags(*record.MutableReset()->MutableTags());
             break;
         default:
@@ -169,7 +156,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     void AdjustTags(google::protobuf::RepeatedField<ui32>& tags) const {
         for (int i = 0; i < tags.size(); ++i) {
             auto it = TagMap.find(tags[i]);
-            Y_ABORT_UNLESS(it != TagMap.end());
+            Y_VERIFY(it != TagMap.end());
             tags[i] = it->second;
         }
     }
@@ -180,7 +167,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvChangeExchange::TEvStatus, Handle);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -202,10 +189,6 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
     }
 
     bool CanRetry() const {
-        if (CurrentStateFunc() != static_cast<TReceiveFunc>(&TThis::StateHandshake)) {
-            return false;
-        }
-
         return Attempt < MaxAttempts;
     }
 
@@ -243,7 +226,7 @@ class TAsyncIndexChangeSenderShard: public TActorBootstrapped<TAsyncIndexChangeS
             SimplePanel(html, "Info", [this](IOutputStream& html) {
                 HTML(html) {
                     DL_CLASS("dl-horizontal") {
-                        TermDescLink(html, "ShardId", ShardId, TabletPath(ShardId));
+                        TermDesc(html, "ShardId", ShardId);
                         TermDesc(html, "IndexTablePathId", IndexTablePathId);
                         TermDesc(html, "LeaderPipeCache", LeaderPipeCache);
                         TermDesc(html, "LastRecordOrder", LastRecordOrder);
@@ -283,7 +266,6 @@ public:
         , ShardId(shardId)
         , IndexTablePathId(indexTablePathId)
         , TagMap(tagMap)
-        , LeaseConfirmationCookie(0)
         , LastRecordOrder(0)
     {
     }
@@ -310,7 +292,6 @@ private:
     mutable TMaybe<TString> LogPrefix;
 
     TActorId LeaderPipeCache;
-    ui64 LeaseConfirmationCookie;
     ui64 LastRecordOrder;
 
     // Retry on delivery problem
@@ -450,7 +431,7 @@ class TAsyncIndexChangeSenderMain
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleUserTable);
             sFunc(TEvents::TEvWakeup, ResolveUserTable);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -483,7 +464,7 @@ class TAsyncIndexChangeSenderMain
         }
 
         for (const auto& [tag, column] : entry.Columns) {
-            Y_DEBUG_ABORT_UNLESS(!MainColumnToTag.contains(column.Name));
+            Y_VERIFY_DEBUG(!MainColumnToTag.contains(column.Name));
             MainColumnToTag.emplace(column.Name, tag);
         }
 
@@ -505,7 +486,7 @@ class TAsyncIndexChangeSenderMain
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleIndex);
             sFunc(TEvents::TEvWakeup, ResolveIndex);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -537,10 +518,10 @@ class TAsyncIndexChangeSenderMain
             return;
         }
 
-        Y_ABORT_UNLESS(entry.ListNodeEntry->Children.size() == 1);
+        Y_VERIFY(entry.ListNodeEntry->Children.size() == 1);
         const auto& indexTable = entry.ListNodeEntry->Children.at(0);
 
-        Y_ABORT_UNLESS(indexTable.Kind == TNavigate::KindTable);
+        Y_VERIFY(indexTable.Kind == TNavigate::KindTable);
         IndexTablePathId = indexTable.PathId;
 
         ResolveIndexTable();
@@ -561,7 +542,7 @@ class TAsyncIndexChangeSenderMain
             hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleIndexTable);
             sFunc(TEvents::TEvWakeup, ResolveIndexTable);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -598,9 +579,9 @@ class TAsyncIndexChangeSenderMain
 
         for (const auto& [tag, column] : entry.Columns) {
             auto it = MainColumnToTag.find(column.Name);
-            Y_ABORT_UNLESS(it != MainColumnToTag.end());
+            Y_VERIFY(it != MainColumnToTag.end());
 
-            Y_DEBUG_ABORT_UNLESS(!TagMap.contains(it->second));
+            Y_VERIFY_DEBUG(!TagMap.contains(it->second));
             TagMap.emplace(it->second, tag);
 
             if (column.KeyOrder < 0) {
@@ -640,7 +621,7 @@ class TAsyncIndexChangeSenderMain
             hFunc(TEvTxProxySchemeCache::TEvResolveKeySetResult, HandleKeys);
             sFunc(TEvents::TEvWakeup, ResolveIndexTable);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -686,7 +667,7 @@ class TAsyncIndexChangeSenderMain
     /// Main
 
     STATEFN(StateMain) {
-        return StateBase(ev);
+        return StateBase(ev, TlsActivationContext->AsActorContext());
     }
 
     void Resolve() override {
@@ -698,11 +679,11 @@ class TAsyncIndexChangeSenderMain
     }
 
     ui64 GetPartitionId(const TChangeRecord& record) const override {
-        Y_ABORT_UNLESS(KeyDesc);
-        Y_ABORT_UNLESS(KeyDesc->GetPartitions());
+        Y_VERIFY(KeyDesc);
+        Y_VERIFY(KeyDesc->GetPartitions());
 
         const auto range = TTableRange(record.GetKey());
-        Y_ABORT_UNLESS(range.Point);
+        Y_VERIFY(range.Point);
 
         TVector<TKeyDesc::TPartitionInfo>::const_iterator it = LowerBound(
             KeyDesc->GetPartitions().begin(), KeyDesc->GetPartitions().end(), true,
@@ -717,7 +698,7 @@ class TAsyncIndexChangeSenderMain
             }
         );
 
-        Y_ABORT_UNLESS(it != KeyDesc->GetPartitions().end());
+        Y_VERIFY(it != KeyDesc->GetPartitions().end());
         return it->ShardId; // partition = shard
     }
 
@@ -752,7 +733,7 @@ class TAsyncIndexChangeSenderMain
 
     void Handle(TEvChangeExchange::TEvRemoveSender::TPtr& ev) {
         LOG_D("Handle " << ev->Get()->ToString());
-        Y_ABORT_UNLESS(ev->Get()->PathId == PathId);
+        Y_VERIFY(ev->Get()->PathId == PathId);
 
         RemoveRecords();
         PassAway();

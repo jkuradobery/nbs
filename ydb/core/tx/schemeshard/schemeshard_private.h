@@ -28,8 +28,6 @@ struct TEvPrivate {
         EvConsoleConfigsTimeout,
         EvRunCdcStreamScan,
         EvPersistTopicStats,
-        EvProcessStatistics,
-        EvStatFastBroadcastCheck,
         EvEnd
     };
 
@@ -179,12 +177,6 @@ struct TEvPrivate {
         TEvRunCdcStreamScan(const TPathId& streamPathId)
             : StreamPathId(streamPathId)
         {}
-    };
-
-    struct TEvProcessStatistics: public TEventLocal<TEvProcessStatistics, EvProcessStatistics> {
-    };
-
-    struct TEvStatFastBroadcastCheck: public TEventLocal<TEvStatFastBroadcastCheck, EvStatFastBroadcastCheck> {
     };
 
 }; // TEvPrivate

@@ -18,9 +18,9 @@ SRCS(
 GENERATE_ENUM_SERIALIZATION(read_table_impl.h)
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/helpers
-    ydb/library/actors/interconnect
+    library/cpp/actors/core
+    library/cpp/actors/helpers
+    library/cpp/actors/interconnect
     util/draft
     ydb/core/actorlib_impl
     ydb/core/base

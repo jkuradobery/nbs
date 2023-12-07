@@ -3,7 +3,6 @@
 #include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypeArray.h>
 #include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypeDate.h>
 #include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypeDateTime64.h>
-#include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypesDecimal.h>
 #include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypeEnum.h>
 #include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypeFactory.h>
 #include <ydb/library/yql/udfs/common/clickhouse/client/src/DataTypes/DataTypeInterval.h>
@@ -27,7 +26,6 @@
 #include <arrow/io/api.h>
 #include <arrow/compute/cast.h>
 #include <arrow/status.h>
-#include <arrow/util/future.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/file_reader.h>
 
@@ -37,9 +35,8 @@
 #include "yql_s3_source_factory.h"
 #include "yql_s3_actors_util.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/yql/core/yql_expr_type_annotation.h>
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_impl.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
@@ -50,67 +47,53 @@
 #include <ydb/library/yql/minikql/comp_nodes/mkql_factories.h>
 #include <ydb/library/yql/providers/common/http_gateway/yql_http_default_retry_policy.h>
 #include <ydb/library/yql/providers/common/schema/mkql/yql_mkql_schema.h>
-#include <ydb/library/yql/public/udf/arrow/block_builder.h>
-#include <ydb/library/yql/public/udf/arrow/block_reader.h>
-#include <ydb/library/yql/public/udf/arrow/util.h>
 #include <ydb/library/yql/utils/yql_panic.h>
-#include <ydb/library/yql/parser/pg_wrapper/interface/arrow.h>
 
 #include <ydb/library/yql/providers/s3/common/util.h>
 #include <ydb/library/yql/providers/s3/compressors/factory.h>
-#include <ydb/library/yql/providers/s3/credentials/credentials.h>
-#include <ydb/library/yql/providers/s3/object_listers/yql_s3_list.h>
 #include <ydb/library/yql/providers/s3/proto/range.pb.h>
 #include <ydb/library/yql/providers/s3/range_helpers/path_list_reader.h>
 #include <ydb/library/yql/providers/s3/serializations/serialization_interval.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/actor_coroutine.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/util/datetime.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_coroutine.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/size_literals.h>
 #include <util/stream/format.h>
-#include <util/system/fstat.h>
 
-#include <algorithm>
 #include <queue>
 
 #ifdef THROW
 #undef THROW
 #endif
-#include <library/cpp/string_utils/quote/quote.h>
 #include <library/cpp/xml/document/xml-document.h>
+
 
 #define LOG_E(name, stream) \
     LOG_ERROR_S(*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
 #define LOG_W(name, stream) \
-    LOG_WARN_S (*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
+    LOG_WARN_S(*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
 #define LOG_I(name, stream) \
-    LOG_INFO_S (*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
+    LOG_INFO_S(*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
 #define LOG_D(name, stream) \
     LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
 #define LOG_T(name, stream) \
     LOG_TRACE_S(*TlsActivationContext, NKikimrServices::KQP_COMPUTE, name << ": " << this->SelfId() << ", TxId: " << TxId << ". " << stream)
 
-#define LOG_CORO_E(stream) \
-    LOG_ERROR_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, "TS3ReadCoroImpl: " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId \
-    << " [" << Path << "]. RETRY{ Offset: " << RetryStuff->Offset << ", Delay: " << RetryStuff->NextRetryDelay << ", RequestId: " << RetryStuff->RequestId << "}. " << stream)
-#define LOG_CORO_W(stream) \
-    LOG_WARN_S (GetActorContext(), NKikimrServices::KQP_COMPUTE, "TS3ReadCoroImpl: " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId \
-    << " [" << Path << "]. RETRY{ Offset: " << RetryStuff->Offset << ", Delay: " << RetryStuff->NextRetryDelay << ", RequestId: " << RetryStuff->RequestId << "}. " << stream)
-#define LOG_CORO_I(stream) \
-    LOG_INFO_S (GetActorContext(), NKikimrServices::KQP_COMPUTE, "TS3ReadCoroImpl: " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId \
-    << " [" << Path << "]. RETRY{ Offset: " << RetryStuff->Offset << ", Delay: " << RetryStuff->NextRetryDelay << ", RequestId: " << RetryStuff->RequestId << "}. " << stream)
-#define LOG_CORO_D(stream) \
-    LOG_DEBUG_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, "TS3ReadCoroImpl: " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId \
-    << " [" << Path << "]. RETRY{ Offset: " << RetryStuff->Offset << ", Delay: " << RetryStuff->NextRetryDelay << ", RequestId: " << RetryStuff->RequestId << "}. " << stream)
-#define LOG_CORO_T(stream) \
-    LOG_TRACE_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, "TS3ReadCoroImpl: " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId \
-    << " [" << Path << "]. RETRY{ Offset: " << RetryStuff->Offset << ", Delay: " << RetryStuff->NextRetryDelay << ", RequestId: " << RetryStuff->RequestId << "}. " << stream)
+#define LOG_CORO_E(name, stream) \
+    LOG_ERROR_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, name << ": " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId << ". " << stream)
+#define LOG_CORO_W(name, stream) \
+    LOG_WARN_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, name << ": " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId << ". " << stream)
+#define LOG_CORO_I(name, stream) \
+    LOG_INFO_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, name << ": " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId << ". " << stream)
+#define LOG_CORO_D(name, stream) \
+    LOG_DEBUG_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, name << ": " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId << ". " << stream)
+#define LOG_CORO_T(name, stream) \
+    LOG_TRACE_S(GetActorContext(), NKikimrServices::KQP_COMPUTE, name << ": " << SelfActorId << ", CA: " << ComputeActorId << ", TxId: " << TxId << ". " << stream)
 
 #define THROW_ARROW_NOT_OK(status)                                     \
     do                                                                 \
@@ -124,10 +107,9 @@ namespace NYql::NDq {
 using namespace ::NActors;
 using namespace ::NYql::NS3Details;
 
-using ::NYql::NS3Lister::ES3PatternVariant;
-using ::NYql::NS3Lister::ES3PatternType;
-
 namespace {
+
+constexpr TDuration MEMORY_USAGE_REPORT_PERIOD = TDuration::Seconds(10);
 
 struct TS3ReadAbort : public yexception {
     using yexception::yexception;
@@ -135,15 +117,6 @@ struct TS3ReadAbort : public yexception {
 
 struct TS3ReadError : public yexception {
     using yexception::yexception;
-};
-
-struct TObjectPath {
-    TString Path;
-    size_t Size;
-    size_t PathIndex;
-
-    TObjectPath(TString path, size_t size, size_t pathIndex)
-        : Path(std::move(path)), Size(size), PathIndex(pathIndex) { }
 };
 
 struct TEvPrivate {
@@ -159,11 +132,10 @@ struct TEvPrivate {
         EvRetry,
         EvNextBlock,
         EvNextRecordBatch,
+        EvBlockProcessed,
         EvFileFinished,
+        EvPause,
         EvContinue,
-        EvObjectPathBatch,
-        EvObjectPathReadError,
-        EvReadResult2,
 
         EvEnd
     };
@@ -172,20 +144,15 @@ struct TEvPrivate {
 
     // Events
     struct TEvReadResult : public TEventLocal<TEvReadResult, EvReadResult> {
-        TEvReadResult(
-            IHTTPGateway::TContent&& result,
-            const TString& requestId,
-            size_t pathInd,
-            TString path)
+        TEvReadResult(IHTTPGateway::TContent&& result, const TString& requestId, size_t pathInd)
             : Result(std::move(result))
             , RequestId(requestId)
             , PathIndex(pathInd)
-            , Path(std::move(path)) { }
+        {}
 
         IHTTPGateway::TContent Result;
         const TString RequestId;
         const size_t PathIndex;
-        const TString Path;
     };
 
     struct TEvDataPart : public TEventLocal<TEvDataPart, EvDataPart> {
@@ -194,45 +161,36 @@ struct TEvPrivate {
     };
 
     struct TEvReadStarted : public TEventLocal<TEvReadStarted, EvReadStarted> {
-        TEvReadStarted(CURLcode curlResponseCode, long httpResponseCode)
-            : CurlResponseCode(curlResponseCode), HttpResponseCode(httpResponseCode) {}
-        const CURLcode CurlResponseCode;
+        explicit TEvReadStarted(long httpResponseCode) : HttpResponseCode(httpResponseCode) {}
         const long HttpResponseCode;
     };
 
     struct TEvReadFinished : public TEventLocal<TEvReadFinished, EvReadFinished> {
-        TEvReadFinished(size_t pathIndex, CURLcode curlResponseCode, TIssues&& issues)
-            : PathIndex(pathIndex), CurlResponseCode(curlResponseCode), Issues(std::move(issues)) {
+        TEvReadFinished(size_t pathIndex, TIssues&& issues)
+            : PathIndex(pathIndex), Issues(std::move(issues)) {
         }
         const size_t PathIndex;
-        const CURLcode CurlResponseCode;
         TIssues Issues;
     };
 
     struct TEvFileFinished : public TEventLocal<TEvFileFinished, EvFileFinished> {
-        TEvFileFinished(size_t pathIndex, ui64 ingressDelta, TDuration cpuTimeDelta)
-            : PathIndex(pathIndex), IngressDelta(ingressDelta), CpuTimeDelta(cpuTimeDelta) {
+        TEvFileFinished(size_t pathIndex, ui64 ingressBytes)
+            : PathIndex(pathIndex), IngressBytes(ingressBytes) {
         }
         const size_t PathIndex;
-        const ui64 IngressDelta;
-        const TDuration CpuTimeDelta;
+        ui64 IngressBytes;
     };
 
     struct TEvReadError : public TEventLocal<TEvReadError, EvReadError> {
-        TEvReadError(
-            TIssues&& error,
-            const TString& requestId,
-            size_t pathInd,
-            TString path)
+        TEvReadError(TIssues&& error, const TString& requestId, size_t pathInd = std::numeric_limits<size_t>::max())
             : Error(std::move(error))
             , RequestId(requestId)
             , PathIndex(pathInd)
-            , Path(std::move(path)) { }
+        {}
 
         const TIssues Error;
         const TString RequestId;
         const size_t PathIndex;
-        const TString Path;
     };
 
     struct TEvRetryEventFunc : public NActors::TEventLocal<TEvRetryEventFunc, EvRetry> {
@@ -241,458 +199,50 @@ struct TEvPrivate {
     };
 
     struct TEvNextBlock : public NActors::TEventLocal<TEvNextBlock, EvNextBlock> {
-        TEvNextBlock(NDB::Block& block, size_t pathInd, ui64 ingressDelta, TDuration cpuTimeDelta)
-            : PathIndex(pathInd), IngressDelta(ingressDelta), CpuTimeDelta(cpuTimeDelta) {
-            Block.swap(block);
-        }
+        TEvNextBlock(NDB::Block& block, size_t pathInd, std::function<void()> functor = [](){}, ui64 ingressBytes = 0) : PathIndex(pathInd), Functor(functor), IngressBytes(ingressBytes) { Block.swap(block); }
         NDB::Block Block;
         const size_t PathIndex;
-        const ui64 IngressDelta;
-        const TDuration CpuTimeDelta;
+        std::function<void()> Functor;
+        ui64 IngressBytes;
     };
 
     struct TEvNextRecordBatch : public NActors::TEventLocal<TEvNextRecordBatch, EvNextRecordBatch> {
-        TEvNextRecordBatch(const std::shared_ptr<arrow::RecordBatch>& batch, size_t pathInd, ui64 ingressDelta, TDuration cpuTimeDelta)
-            : Batch(batch), PathIndex(pathInd), IngressDelta(ingressDelta), CpuTimeDelta(cpuTimeDelta) {
-        }
+        TEvNextRecordBatch(const std::shared_ptr<arrow::RecordBatch>& batch, size_t pathInd, std::function<void()> functor = []() {}, ui64 ingressBytes = 0) : Batch(batch), PathIndex(pathInd), Functor(functor), IngressBytes(ingressBytes) { }
         std::shared_ptr<arrow::RecordBatch> Batch;
         const size_t PathIndex;
-        const ui64 IngressDelta;
-        const TDuration CpuTimeDelta;
+        std::function<void()> Functor;
+        ui64 IngressBytes;
+    };
+
+    struct TEvBlockProcessed : public NActors::TEventLocal<TEvBlockProcessed, EvBlockProcessed> {
+        TEvBlockProcessed() {}
+    };
+
+    struct TEvPause : public NActors::TEventLocal<TEvPause, EvPause> {
     };
 
     struct TEvContinue : public NActors::TEventLocal<TEvContinue, EvContinue> {
-    };
-
-    struct TEvObjectPathBatch :
-        public NActors::TEventLocal<TEvObjectPathBatch, EvObjectPathBatch> {
-        std::vector<TObjectPath> ObjectPaths;
-        bool NoMoreFiles = false;
-        TEvObjectPathBatch(
-            std::vector<TObjectPath> objectPaths, bool noMoreFiles)
-            : ObjectPaths(std::move(objectPaths)), NoMoreFiles(noMoreFiles) { }
-    };
-
-    struct TEvObjectPathReadError :
-        public NActors::TEventLocal<TEvObjectPathReadError, EvObjectPathReadError> {
-        TIssues Issues;
-        TEvObjectPathReadError(TIssues issues) : Issues(std::move(issues)) { }
-    };
-
-    struct TReadRange {
-        int64_t Offset;
-        int64_t Length;
-    };
-
-    struct TEvReadResult2 : public TEventLocal<TEvReadResult2, EvReadResult2> {
-        TEvReadResult2(TReadRange readRange, IHTTPGateway::TContent&& result) : ReadRange(readRange), Failure(false), Result(std::move(result)) { }
-        TEvReadResult2(TReadRange readRange, TIssues&& issues) : ReadRange(readRange), Failure(true), Result(""), Issues(std::move(issues)) { }
-        const TReadRange ReadRange;
-        const bool Failure;
-        IHTTPGateway::TContent Result;
-        const TIssues Issues;
     };
 
 };
 
 using namespace NKikimr::NMiniKQL;
 
-class TS3FileQueueActor : public TActorBootstrapped<TS3FileQueueActor> {
-public:
-    static constexpr char ActorName[] = "YQ_S3_FILE_QUEUE_ACTOR";
-
-    struct TEvPrivatePrivate {
-        enum {
-            EvGetNextFile = EventSpaceBegin(TEvents::ES_PRIVATE),
-            EvNextListingChunkReceived,
-            EvEnd
-        };
-        static_assert(
-            EvEnd <= EventSpaceEnd(TEvents::ES_PRIVATE),
-            "expected EvEnd <= EventSpaceEnd(TEvents::ES_PRIVATE)");
-
-        struct TEvGetNextFile : public TEventLocal<TEvGetNextFile, EvGetNextFile> {
-            size_t RequestedAmount = 1;
-            TEvGetNextFile(size_t requestedAmount) : RequestedAmount(requestedAmount){};
-        };
-        struct TEvNextListingChunkReceived :
-            public TEventLocal<TEvNextListingChunkReceived, EvNextListingChunkReceived> {
-            NS3Lister::TListResult ListingResult;
-            TEvNextListingChunkReceived(NS3Lister::TListResult listingResult)
-                : ListingResult(std::move(listingResult)){};
-        };
-    };
-    using TBase = TActorBootstrapped<TS3FileQueueActor>;
-
-    TS3FileQueueActor(
-        TTxId  txId,
-        TPathList paths,
-        size_t prefetchSize,
-        ui64 fileSizeLimit,
-        IHTTPGateway::TPtr gateway,
-        TString url,
-        TS3Credentials::TAuthInfo authInfo,
-        TString pattern,
-        ES3PatternVariant patternVariant,
-        ES3PatternType patternType)
-        : TxId(std::move(txId))
-        , PrefetchSize(prefetchSize)
-        , FileSizeLimit(fileSizeLimit)
-        , MaybeIssues(Nothing())
-        , Gateway(std::move(gateway))
-        , Url(std::move(url))
-        , AuthInfo(std::move(authInfo))
-        , Pattern(std::move(pattern))
-        , PatternVariant(patternVariant)
-        , PatternType(patternType) {
-        for (size_t i = 0; i < paths.size(); ++i) {
-            if (paths[i].IsDirectory) {
-                Directories.emplace_back(paths[i].Path, 0, paths[i].PathIndex);
-            } else {
-                Objects.emplace_back(paths[i].Path, paths[i].Size, paths[i].PathIndex);
-            }
-        }
-    }
-
-    void Bootstrap() {
-        if (Directories.empty()) {
-            LOG_I("TS3FileQueueActor", "Bootstrap there is no directories to list");
-            Become(&TS3FileQueueActor::NoMoreDirectoriesState);
-        } else {
-            LOG_I("TS3FileQueueActor", "Bootstrap there are directories to list");
-            TryPreFetch();
-            Become(&TS3FileQueueActor::ThereAreDirectoriesToListState);
-        }
-    }
-
-    STATEFN(ThereAreDirectoriesToListState) {
-        try {
-            switch (const auto etype = ev->GetTypeRewrite()) {
-                hFunc(TEvPrivatePrivate::TEvGetNextFile, HandleGetNextFile);
-                hFunc(TEvPrivatePrivate::TEvNextListingChunkReceived, HandleNextListingChunkReceived);
-                cFunc(TEvents::TSystem::Poison, PassAway);
-                default:
-                    MaybeIssues = TIssues{TIssue{TStringBuilder() << "An event with unknown type has been received: '" << etype << "'"}};
-                    TransitToErrorState();
-                    break;
-            }
-        } catch (const std::exception& e) {
-            MaybeIssues = TIssues{TIssue{TStringBuilder() << "An unknown exception has occurred: '" << e.what() << "'"}};
-            TransitToErrorState();
-        }
-    }
-
-    void HandleGetNextFile(TEvPrivatePrivate::TEvGetNextFile::TPtr& ev) {
-        auto requestAmount = ev->Get()->RequestedAmount;
-        LOG_D("TS3FileQueueActor", "HandleGetNextFile requestAmount:" << requestAmount);
-        if (Objects.size() > requestAmount) {
-            LOG_D("TS3FileQueueActor", "HandleGetNextFile sending right away");
-            SendObjects(ev->Sender, requestAmount);
-            TryPreFetch();
-        } else {
-            LOG_D("TS3FileQueueActor", "HandleGetNextFile have not enough objects cached. Start fetching");
-            RequestQueue.emplace_back(ev->Sender, requestAmount);
-            TryFetch();
-        }
-    }
-
-    void HandleNextListingChunkReceived(TEvPrivatePrivate::TEvNextListingChunkReceived::TPtr& ev) {
-        Y_ENSURE(FetchingInProgress());
-        ListingFuture = Nothing();
-        LOG_D("TS3FileQueueActor", "HandleNextListingChunkReceived");
-        if (SaveRetrievedResults(ev->Get()->ListingResult)) {
-            AnswerPendingRequests();
-            if (RequestQueue.empty()) {
-                LOG_D("TS3FileQueueActor", "HandleNextListingChunkReceived RequestQueue is empty. Trying to prefetch");
-                TryPreFetch();
-            } else {
-                LOG_D("TS3FileQueueActor", "HandleNextListingChunkReceived RequestQueue is not empty. Fetching more objects");
-                TryFetch();
-            }
-        } else {
-            TransitToErrorState();
-        }
-    }
-
-    bool SaveRetrievedResults(const NS3Lister::TListResult& listingResult) {
-        LOG_T("TS3FileQueueActor", "SaveRetrievedResults");
-        if (std::holds_alternative<NS3Lister::TListError>(listingResult)) {
-            MaybeIssues = std::get<NS3Lister::TListError>(listingResult).Issues;
-            return false;
-        }
-
-        auto listingChunk = std::get<NS3Lister::TListEntries>(listingResult);
-        LOG_D("TS3FileQueueActor", "SaveRetrievedResults saving: " << listingChunk.Objects.size() << " entries");
-        Y_ENSURE(listingChunk.Directories.empty());
-        for (auto& object: listingChunk.Objects) {
-            if (object.Path.EndsWith('/')) {
-                // skip 'directories'
-                continue;
-            }
-            if (object.Size > FileSizeLimit) {
-                auto errorMessage = TStringBuilder()
-                                    << "Size of object " << object.Path << " = "
-                                    << object.Size
-                                    << " and exceeds limit = " << FileSizeLimit;
-                LOG_E("TS3FileQueueActor", errorMessage);
-                MaybeIssues = TIssues{TIssue{errorMessage}};
-                return false;
-            }
-            LOG_T("TS3FileQueueActor", "SaveRetrievedResults adding path: " << object.Path);
-            Objects.emplace_back(object.Path, object.Size, CurrentDirectoryPathIndex);
-        }
-        return true;
-    }
-
-    void AnswerPendingRequests() {
-        while (!RequestQueue.empty()) {
-            auto requestToFulfil = std::find_if(
-                RequestQueue.begin(),
-                RequestQueue.end(),
-                [this](auto& val) { return val.second <= Objects.size(); });
-
-            if (requestToFulfil != RequestQueue.end()) {
-                auto [actorId, requestedAmount] = *requestToFulfil;
-                LOG_T(
-                    "TS3FileQueueActor",
-                    "AnswerPendingRequests responding to "
-                        << requestToFulfil->first << " with " << requestToFulfil->second
-                        << " items");
-                SendObjects(actorId, requestedAmount);
-                RequestQueue.erase(requestToFulfil);
-            } else {
-                LOG_T(
-                    "TS3FileQueueActor",
-                    "AnswerPendingRequests no more pending requests to fulfil");
-                break;
-            }
-        }
-    }
-
-    bool FetchingInProgress() const { return ListingFuture.Defined(); }
-
-    void TransitToNoMoreDirectoriesToListState() {
-        LOG_I("TS3FileQueueActor", "TransitToNoMoreDirectoriesToListState no more directories to list");
-        for (auto& [requestorId, size]: RequestQueue) {
-            SendObjects(requestorId, size);
-        }
-        RequestQueue.clear();
-        Become(&TS3FileQueueActor::NoMoreDirectoriesState);
-    }
-
-    void TransitToErrorState() {
-        Y_ENSURE(MaybeIssues.Defined());
-        LOG_I("TS3FileQueueActor", "TransitToErrorState an error occurred sending ");
-        for (auto& [requestorId, _]: RequestQueue) {
-            Send(
-                requestorId,
-                std::make_unique<TEvPrivate::TEvObjectPathReadError>(*MaybeIssues));
-        }
-        RequestQueue.clear();
-        Objects.clear();
-        Directories.clear();
-        Become(&TS3FileQueueActor::AnErrorOccurredState);
-    }
-
-    STATEFN(NoMoreDirectoriesState) {
-        try {
-            switch (const auto etype = ev->GetTypeRewrite()) {
-                hFunc(TEvPrivatePrivate::TEvGetNextFile, HandleGetNextFileForEmptyState);
-                cFunc(TEvents::TSystem::Poison, PassAway);
-                default:
-                    MaybeIssues = TIssues{TIssue{TStringBuilder() << "An event with unknown type has been received: '" << etype << "'"}};
-                    TransitToErrorState();
-                    break;
-            }
-        } catch (const std::exception& e) {
-            MaybeIssues = TIssues{TIssue{TStringBuilder() << "An unknown exception has occurred: '" << e.what() << "'"}};
-            TransitToErrorState();
-        }
-    }
-
-    void HandleGetNextFileForEmptyState(TEvPrivatePrivate::TEvGetNextFile::TPtr& ev) {
-        LOG_D("TS3FileQueueActor", "HandleGetNextFileForEmptyState Giving away rest of Objects");
-        SendObjects(ev->Sender, ev->Get()->RequestedAmount);
-    }
-
-    STATEFN(AnErrorOccurredState) {
-        try {
-            switch (const auto etype = ev->GetTypeRewrite()) {
-                hFunc(TEvPrivatePrivate::TEvGetNextFile, HandleGetNextFileForErrorState);
-                cFunc(TEvents::TSystem::Poison, PassAway);
-                default:
-                    MaybeIssues = TIssues{TIssue{TStringBuilder() << "An event with unknown type has been received: '" << etype << "'"}};
-                    break;
-            }
-        } catch (const std::exception& e) {
-            MaybeIssues = TIssues{TIssue{TStringBuilder() << "An unknown exception has occurred: '" << e.what() << "'"}};
-        }
-    }
-
-    void HandleGetNextFileForErrorState(TEvPrivatePrivate::TEvGetNextFile::TPtr& ev) {
-        LOG_D(
-            "TS3FileQueueActor",
-            "HandleGetNextFileForErrorState Giving away rest of Objects");
-        Send(ev->Sender, std::make_unique<TEvPrivate::TEvObjectPathReadError>(*MaybeIssues));
-    }
-
-    void PassAway() override {
-        if (!MaybeIssues.Defined()) {
-            for (auto& [requestorId, size]: RequestQueue) {
-                SendObjects(requestorId, size);
-            }
-        } else {
-            for (auto& [requestorId, _]: RequestQueue) {
-                Send(
-                    requestorId,
-                    std::make_unique<TEvPrivate::TEvObjectPathReadError>(*MaybeIssues));
-            }
-        }
-
-        RequestQueue.clear();
-        Objects.clear();
-        Directories.clear();
-        TBase::PassAway();
-    }
-
-private:
-    void SendObjects(const TActorId& recipient, size_t amount) {
-        Y_ENSURE(!MaybeIssues.Defined());
-        size_t correctedAmount = std::min(amount, Objects.size());
-        std::vector<TObjectPath> result;
-        if (correctedAmount != 0) {
-            result.reserve(correctedAmount);
-            for (size_t i = 0; i < correctedAmount; ++i) {
-                result.push_back(Objects.back());
-                Objects.pop_back();
-            }
-        }
-
-        LOG_T(
-            "TS3FileQueueActor",
-            "SendObjects amount: " << amount << " correctedAmount: " << correctedAmount
-                                   << " result size: " << result.size());
-
-        Send(
-            recipient,
-            std::make_unique<TEvPrivate::TEvObjectPathBatch>(
-                std::move(result), HasNoMoreItems()));
-    }
-    bool HasNoMoreItems() const {
-        return !(MaybeLister.Defined() && (*MaybeLister)->HasNext()) &&
-               Directories.empty() && Objects.empty();
-    }
-
-    bool TryPreFetch () {
-        if (Objects.size() < PrefetchSize) {
-            return TryFetch();
-        }
-        return false;
-    }
-    bool TryFetch() {
-        if (FetchingInProgress()) {
-            LOG_D("TS3FileQueueActor", "TryFetch fetching already in progress");
-            return true;
-        }
-
-        if (MaybeLister.Defined() && (*MaybeLister)->HasNext()) {
-            LOG_D("TS3FileQueueActor", "TryFetch fetching from current lister");
-            Fetch();
-            return true;
-        }
-
-        if (!Directories.empty()) {
-            LOG_D("TS3FileQueueActor", "TryFetch fetching from new lister");
-
-            auto [path, size, pathIndex] = Directories.back();
-            Directories.pop_back();
-            CurrentDirectoryPathIndex = pathIndex;
-            MaybeLister = NS3Lister::MakeS3Lister(
-                Gateway,
-                NS3Lister::TListingRequest{
-                    Url,
-                    AuthInfo,
-                    PatternVariant == ES3PatternVariant::PathPattern
-                        ? Pattern
-                        : TStringBuilder{} << path << Pattern,
-                    PatternType,
-                    path},
-                Nothing(),
-                false);
-            Fetch();
-            return true;
-        }
-
-        LOG_D("TS3FileQueueActor", "TryFetch couldn't start fetching");
-        MaybeLister = Nothing();
-        TransitToNoMoreDirectoriesToListState();
-        return false;
-    }
-    void Fetch() {
-        Y_ENSURE(!ListingFuture.Defined());
-        Y_ENSURE(MaybeLister.Defined());
-        NActors::TActorSystem* actorSystem = NActors::TActivationContext::ActorSystem();
-        ListingFuture =
-            (*MaybeLister)
-                ->Next()
-                .Subscribe([actorSystem, selfId = SelfId()](
-                               const NThreading::TFuture<NS3Lister::TListResult>& future) {
-                    actorSystem->Send(
-                        selfId,
-                        new TEvPrivatePrivate::TEvNextListingChunkReceived(
-                            future.GetValue()));
-                });
-    }
-
-private:
-    const TTxId TxId;
-
-    std::vector<TObjectPath> Objects;
-    std::vector<TObjectPath> Directories;
-
-    size_t PrefetchSize;
-    ui64 FileSizeLimit;
-    TMaybe<NS3Lister::IS3Lister::TPtr> MaybeLister = Nothing();
-    TMaybe<NThreading::TFuture<NS3Lister::TListResult>> ListingFuture;
-    size_t CurrentDirectoryPathIndex = 0;
-    std::deque<std::pair<TActorId, size_t>> RequestQueue;
-    TMaybe<TIssues> MaybeIssues;
-
-    const IHTTPGateway::TPtr Gateway;
-    const TString Url;
-    const TS3Credentials::TAuthInfo AuthInfo;
-    const TString Pattern;
-    const ES3PatternVariant PatternVariant;
-    const ES3PatternType PatternType;
-};
-
-ui64 SubtractSaturating(ui64 lhs, ui64 rhs) {
-    return (lhs > rhs) ? lhs - rhs : 0;
-}
-
 class TS3ReadActor : public TActorBootstrapped<TS3ReadActor>, public IDqComputeActorAsyncInput {
 public:
     TS3ReadActor(ui64 inputIndex,
-        TCollectStatsLevel statsLevel,
         const TTxId& txId,
         IHTTPGateway::TPtr gateway,
         const THolderFactory& holderFactory,
         const TString& url,
-        const TS3Credentials::TAuthInfo& authInfo,
-        const TString& pattern,
-        ES3PatternVariant patternVariant,
+        const TString& token,
         TPathList&& paths,
         bool addPathIndex,
+        ui64 startPathIndex,
         const NActors::TActorId& computeActorId,
         ui64 sizeLimit,
-        const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy,
-        const TS3ReadActorFactoryConfig& readActorFactoryCfg,
-        ::NMonitoring::TDynamicCounterPtr counters,
-        ::NMonitoring::TDynamicCounterPtr taskCounters,
-        ui64 fileSizeLimit,
-        std::optional<ui64> rowsLimitHint)
-        : ReadActorFactoryCfg(readActorFactoryCfg)
-        , Gateway(std::move(gateway))
+        const IRetryPolicy<long>::TPtr& retryPolicy
+    )   : Gateway(std::move(gateway))
         , HolderFactory(holderFactory)
         , InputIndex(inputIndex)
         , TxId(txId)
@@ -700,103 +250,25 @@ public:
         , RetryPolicy(retryPolicy)
         , ActorSystem(TActivationContext::ActorSystem())
         , Url(url)
-        , AuthInfo(authInfo)
-        , Pattern(pattern)
-        , PatternVariant(patternVariant)
+        , Token(token)
         , Paths(std::move(paths))
         , AddPathIndex(addPathIndex)
+        , StartPathIndex(startPathIndex)
         , SizeLimit(sizeLimit)
-        , Counters(counters)
-        , TaskCounters(taskCounters)
-        , FileSizeLimit(fileSizeLimit)
-        , FilesRemained(rowsLimitHint) {
-        if (Counters) {
-            QueueDataSize = Counters->GetCounter("QueueDataSize");
-            QueueDataLimit = Counters->GetCounter("QueueDataLimit");
-            QueueBlockCount = Counters->GetCounter("QueueBlockCount");
-            QueueDataLimit->Add(ReadActorFactoryCfg.DataInflight);
-        }
-        if (TaskCounters) {
-            TaskQueueDataSize = TaskCounters->GetCounter("QueueDataSize");
-            TaskQueueDataLimit = TaskCounters->GetCounter("QueueDataLimit");
-            TaskQueueDataLimit->Add(ReadActorFactoryCfg.DataInflight);
-        }
-        IngressStats.Level = statsLevel;
-    }
+    {}
 
     void Bootstrap() {
         LOG_D("TS3ReadActor", "Bootstrap" << ", InputIndex: " << InputIndex);
-        FileQueueActor = RegisterWithSameMailbox(new TS3FileQueueActor{
-            TxId,
-            std::move(Paths),
-            ReadActorFactoryCfg.MaxInflight * 2,
-            FileSizeLimit,
-            Gateway,
-            Url,
-            AuthInfo,
-            Pattern,
-            PatternVariant,
-            ES3PatternType::Wildcard});
-        SendPathRequest();
         Become(&TS3ReadActor::StateFunc);
-    }
-
-    bool TryStartDownload() {
-        if (ObjectPathCache.empty()) {
-            // no path is pending
-            return false;
-        }
-        if (QueueTotalDataSize > ReadActorFactoryCfg.DataInflight) {
-            // too large data inflight
-            return false;
-        }
-        if (DownloadInflight >= ReadActorFactoryCfg.MaxInflight) {
-            // too large download inflight
-            return false;
-        }
-        if (ConsumedEnoughFiles()) {
-            // started enough downloads
-            return false;
-        }
-
-        StartDownload();
-        return true;
-    }
-
-    void StartDownload() {
-        DownloadInflight++;
-        const auto& [path, size, index] = ReadPathFromCache();
-        auto url = Url + path;
-        auto id = index;
-        const TString requestId = CreateGuidAsString();
-        LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
-        Gateway->Download(
-            UrlEscapeRet(url, true),
-            IHTTPGateway::MakeYcHeaders(requestId, AuthInfo.GetToken(), {}, AuthInfo.GetAwsUserPwd(), AuthInfo.GetAwsSigV4()),
-            0U,
-            std::min(size, SizeLimit),
-            std::bind(&TS3ReadActor::OnDownloadFinished, ActorSystem, SelfId(), requestId, std::placeholders::_1, id, path),
-            {},
-            RetryPolicy);
-    }
-
-    TObjectPath ReadPathFromCache() {
-        Y_ENSURE(!ObjectPathCache.empty());
-        auto object = ObjectPathCache.back();
-        ObjectPathCache.pop_back();
-        if (ObjectPathCache.empty() && !IsObjectQueueEmpty && !ConsumedEnoughFiles()) {
-            SendPathRequest();
-        }
-        return object;
-    }
-    void SendPathRequest() {
-        Y_ENSURE(!IsWaitingObjectQueueResponse);
-        const ui64 requestedAmount = std::min(ReadActorFactoryCfg.MaxInflight, FilesRemained.value_or(std::numeric_limits<ui64>::max()));
-        Send(
-            FileQueueActor,
-            std::make_unique<TS3FileQueueActor::TEvPrivatePrivate::TEvGetNextFile>(
-                requestedAmount));
-        IsWaitingObjectQueueResponse = true;
+        for (size_t pathInd = 0; pathInd < Paths.size(); ++pathInd) {
+            const TPath& path = Paths[pathInd];
+            auto url = Url + std::get<TString>(path);
+            auto id = pathInd + StartPathIndex;
+            const TString requestId = CreateGuidAsString();
+            LOG_D("TS3ReadActor", "Download: " << url << ", ID: " << id << ", request id: [" << requestId << "]");
+            Gateway->Download(url, MakeHeaders(Token, requestId), std::min(std::get<size_t>(path), SizeLimit),
+                std::bind(&TS3ReadActor::OnDownloadFinished, ActorSystem, SelfId(), requestId, std::placeholders::_1, id), {}, RetryPolicy);
+        };
     }
 
     static constexpr char ActorName[] = "S3_READ_ACTOR";
@@ -805,63 +277,34 @@ private:
     void SaveState(const NDqProto::TCheckpoint&, NDqProto::TSourceState&) final {}
     void LoadState(const NDqProto::TSourceState&) final {}
     void CommitState(const NDqProto::TCheckpoint&) final {}
+    ui64 GetInputIndex() const final { return InputIndex; }
 
-    ui64 GetInputIndex() const final {
-        return InputIndex;
-    }
-
-    const TDqAsyncStats& GetIngressStats() const override {
-        return IngressStats;
-    }
-
-    TDuration GetCpuTime() override {
-        return CpuTime;
-    }
-
-    bool ConsumedEnoughFiles() const {
-        return FilesRemained && (*FilesRemained == 0);
+    ui64 GetIngressBytes() override {
+        return IngressBytes;
     }
 
     STRICT_STFUNC(StateFunc,
         hFunc(TEvPrivate::TEvReadResult, Handle);
         hFunc(TEvPrivate::TEvReadError, Handle);
-        hFunc(TEvPrivate::TEvObjectPathBatch, HandleObjectPathBatch);
-        hFunc(TEvPrivate::TEvObjectPathReadError, HandleObjectPathReadError);
     )
 
-    void HandleObjectPathBatch(TEvPrivate::TEvObjectPathBatch::TPtr& objectPathBatch) {
-        Y_ENSURE(IsWaitingObjectQueueResponse);
-        IsWaitingObjectQueueResponse = false;
-        ListedFiles += objectPathBatch->Get()->ObjectPaths.size();
-        IsObjectQueueEmpty = objectPathBatch->Get()->NoMoreFiles;
-        ObjectPathCache.insert(
-            ObjectPathCache.end(),
-            std::make_move_iterator(objectPathBatch->Get()->ObjectPaths.begin()),
-            std::make_move_iterator(objectPathBatch->Get()->ObjectPaths.end()));
-        while (TryStartDownload()) {}
-
-        if (LastFileWasProcessed()) {
-            Send(ComputeActorId, new TEvNewAsyncInputDataArrived(InputIndex));
-        }
-    }
-    void HandleObjectPathReadError(TEvPrivate::TEvObjectPathReadError::TPtr& result) {
-        IsObjectQueueEmpty = true;
-        LOG_E("TS3ReadActor", "Error while object listing, details: TEvObjectPathReadError: " << result->Get()->Issues.ToOneLineString());
-        auto issues = NS3Util::AddParentIssue(TStringBuilder{} << "Error while object listing", TIssues{result->Get()->Issues});
-        Send(ComputeActorId, new TEvAsyncInputError(InputIndex, issues, NYql::NDqProto::StatusIds::EXTERNAL_ERROR));
-    }
-
-    static void OnDownloadFinished(TActorSystem* actorSystem, TActorId selfId, const TString& requestId, IHTTPGateway::TResult&& result, size_t pathInd, const TString path) {
-        if (!result.Issues) {
-            actorSystem->Send(new IEventHandle(selfId, TActorId(), new TEvPrivate::TEvReadResult(std::move(result.Content), requestId, pathInd, path)));
-        } else {
-            actorSystem->Send(new IEventHandle(selfId, TActorId(), new TEvPrivate::TEvReadError(std::move(result.Issues), requestId, pathInd, path)));
+    static void OnDownloadFinished(TActorSystem* actorSystem, TActorId selfId, const TString& requestId, IHTTPGateway::TResult&& result, size_t pathInd) {
+        switch (result.index()) {
+        case 0U:
+            actorSystem->Send(new IEventHandle(selfId, TActorId(), new TEvPrivate::TEvReadResult(std::get<IHTTPGateway::TContent>(std::move(result)), requestId, pathInd)));
+            return;
+        case 1U:
+            actorSystem->Send(new IEventHandle(selfId, TActorId(), new TEvPrivate::TEvReadError(std::get<TIssues>(std::move(result)), requestId, pathInd)));
+            return;
+        default:
+            break;
         }
     }
 
-    i64 GetAsyncInputData(TUnboxedValueBatch& buffer, TMaybe<TInstant>&, bool& finished, i64 freeSpace) final {
+    i64 GetAsyncInputData(TUnboxedValueVector& buffer, TMaybe<TInstant>&, bool& finished, i64 freeSpace) final {
         i64 total = 0LL;
         if (!Blocks.empty()) {
+            buffer.reserve(buffer.size() + Blocks.size());
             do {
                 auto& content = std::get<IHTTPGateway::TContent>(Blocks.front());
                 const auto size = content.size();
@@ -878,64 +321,27 @@ private:
                 Blocks.pop();
                 total += size;
                 freeSpace -= size;
-
-                QueueTotalDataSize -= size;
-                if (Counters) {
-                    QueueDataSize->Sub(size);
-                    QueueBlockCount->Dec();
-                }
-                if (TaskCounters) {
-                    TaskQueueDataSize->Sub(size);
-                }
-                TryStartDownload();
             } while (!Blocks.empty() && freeSpace > 0LL);
         }
 
-        if (LastFileWasProcessed() || ConsumedEnoughFiles()) {
+        if (Blocks.empty() && IsDoneCounter == Paths.size()) {
             finished = true;
             ContainerCache.Clear();
         }
 
-        if (!total) {
-            IngressStats.TryPause();
-        }
-
         return total;
-    }
-    bool LastFileWasProcessed() const {
-        return Blocks.empty() && (ListedFiles == CompletedFiles) && IsObjectQueueEmpty;
     }
 
     void Handle(TEvPrivate::TEvReadResult::TPtr& result) {
-        ++CompletedFiles;
+        ++IsDoneCounter;
         const auto id = result->Get()->PathIndex;
-        const auto path = result->Get()->Path;
+        const auto path = std::get<TString>(Paths[id - StartPathIndex]);
         const auto httpCode = result->Get()->Result.HttpResponseCode;
         const auto requestId = result->Get()->RequestId;
+        IngressBytes += result->Get()->Result.size();
         LOG_D("TS3ReadActor", "ID: " << id << ", Path: " << path << ", read size: " << result->Get()->Result.size() << ", HTTP response code: " << httpCode << ", request id: [" << requestId << "]");
         if (200 == httpCode || 206 == httpCode) {
-            auto size = result->Get()->Result.size();
-
-            // in TS3ReadActor all files (aka Splits) are loaded in single Chunks
-            IngressStats.Bytes += size;
-            IngressStats.Chunks++;
-            IngressStats.Splits++;
-            IngressStats.Resume();
-
-            QueueTotalDataSize += size;
-            if (Counters) {
-                QueueBlockCount->Inc();
-                QueueDataSize->Add(size);
-            }
-            if (TaskCounters) {
-                TaskQueueDataSize->Add(size);
-            }
             Blocks.emplace(std::make_tuple(std::move(result->Get()->Result), id));
-            DownloadInflight--;
-            if (FilesRemained) {
-                *FilesRemained = SubtractSaturating(*FilesRemained, 1);
-            }
-            TryStartDownload();
             Send(ComputeActorId, new TEvNewAsyncInputDataArrived(InputIndex));
         } else {
             TString errorText = result->Get()->Result.Extract();
@@ -950,10 +356,10 @@ private:
     }
 
     void Handle(TEvPrivate::TEvReadError::TPtr& result) {
-        ++CompletedFiles;
+        ++IsDoneCounter;
         auto id = result->Get()->PathIndex;
         const auto requestId = result->Get()->RequestId;
-        const auto path = result->Get()->Path;
+        const auto path = std::get<TString>(Paths[id - StartPathIndex]);
         LOG_W("TS3ReadActor", "Error while reading file " << path << ", details: ID: " << id << ", TEvReadError: " << result->Get()->Error.ToOneLineString() << ", request id: [" << requestId << "]");
         auto issues = NS3Util::AddParentIssue(TStringBuilder{} << "Error while reading file " << path << " with request id [" << requestId << "]", TIssues{result->Get()->Error});
         Send(ComputeActorId, new TEvAsyncInputError(InputIndex, std::move(issues), NYql::NDqProto::StatusIds::EXTERNAL_ERROR));
@@ -962,78 +368,47 @@ private:
     // IActor & IDqComputeActorAsyncInput
     void PassAway() override { // Is called from Compute Actor
         LOG_D("TS3ReadActor", "PassAway");
-
-        if (Counters) {
-            QueueDataSize->Sub(QueueTotalDataSize);
-            QueueBlockCount->Sub(Blocks.size());
-            QueueDataLimit->Sub(ReadActorFactoryCfg.DataInflight);
-        }
-        if (TaskCounters) {
-            TaskQueueDataSize->Sub(QueueTotalDataSize);
-            TaskQueueDataLimit->Sub(ReadActorFactoryCfg.DataInflight);
-        }
-        QueueTotalDataSize = 0;
-
         ContainerCache.Clear();
-        Send(FileQueueActor, new NActors::TEvents::TEvPoison());
         TActorBootstrapped<TS3ReadActor>::PassAway();
     }
 
+    static IHTTPGateway::THeaders MakeHeaders(const TString& token, const TString& requestId) {
+        IHTTPGateway::THeaders headers{TString{"X-Request-ID:"} += requestId};
+        if (token) {
+            headers.emplace_back(TString("X-YaCloud-SubjectToken:") += token);
+        }
+        return headers;
+    }
+
 private:
-    const TS3ReadActorFactoryConfig ReadActorFactoryCfg;
+    size_t IsDoneCounter = 0U;
+
     const IHTTPGateway::TPtr Gateway;
     const THolderFactory& HolderFactory;
     TPlainContainerCache ContainerCache;
 
     const ui64 InputIndex;
-    TDqAsyncStats IngressStats;
     const TTxId TxId;
     const NActors::TActorId ComputeActorId;
-    const IHTTPGateway::TRetryPolicy::TPtr RetryPolicy;
+    const IRetryPolicy<long>::TPtr RetryPolicy;
 
     TActorSystem* const ActorSystem;
 
     const TString Url;
-    const TS3Credentials::TAuthInfo AuthInfo;
-    const TString Pattern;
-    const ES3PatternVariant PatternVariant;
-    TPathList Paths;
-    std::vector<TObjectPath> ObjectPathCache;
-    bool IsObjectQueueEmpty = false;
-    bool IsWaitingObjectQueueResponse = false;
-    size_t ListedFiles = 0;
-    size_t CompletedFiles = 0;
-    NActors::TActorId FileQueueActor;
+    const TString Token;
+    const TPathList Paths;
     const bool AddPathIndex;
+    const ui64 StartPathIndex;
     const ui64 SizeLimit;
-    TDuration CpuTime;
+    ui64 IngressBytes = 0;
 
     std::queue<std::tuple<IHTTPGateway::TContent, ui64>> Blocks;
-
-    ::NMonitoring::TDynamicCounters::TCounterPtr QueueDataSize;
-    ::NMonitoring::TDynamicCounters::TCounterPtr QueueDataLimit;
-    ::NMonitoring::TDynamicCounters::TCounterPtr QueueBlockCount;
-    ::NMonitoring::TDynamicCounters::TCounterPtr DownloadPaused;
-    ::NMonitoring::TDynamicCounters::TCounterPtr DeferredQueueSize;
-    ::NMonitoring::TDynamicCounters::TCounterPtr TaskDownloadPaused;
-    ::NMonitoring::TDynamicCounters::TCounterPtr TaskQueueDataSize;
-    ::NMonitoring::TDynamicCounters::TCounterPtr TaskQueueDataLimit;
-    ::NMonitoring::TDynamicCounterPtr Counters;
-    ::NMonitoring::TDynamicCounterPtr TaskCounters;
-    ui64 QueueTotalDataSize = 0;
-    ui64 DownloadInflight = 0;
-    const ui64 FileSizeLimit;
-    std::optional<ui64> FilesRemained;
 };
 
 struct TReadSpec {
     using TPtr = std::shared_ptr<TReadSpec>;
 
     bool Arrow = false;
-    ui64 ParallelRowGroupCount = 0;
-    bool RowGroupReordering = true;
-    ui64 ParallelDownloadCount = 0;
-    std::unordered_map<TStringBuf, TType*, THash<TStringBuf>> RowSpec;
     NDB::ColumnsWithTypeAndName CHColumns;
     std::shared_ptr<arrow::Schema> ArrowSchema;
     NDB::FormatSettings Settings;
@@ -1053,15 +428,15 @@ struct TRetryStuff {
         std::size_t sizeLimit,
         const TTxId& txId,
         const TString& requestId,
-        const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy
+        const IRetryPolicy<long>::TPtr& retryPolicy
     ) : Gateway(std::move(gateway))
-      , Url(UrlEscapeRet(url, true))
+      , Url(std::move(url))
       , Headers(headers)
       , Offset(0U)
       , SizeLimit(sizeLimit)
       , TxId(txId)
       , RequestId(requestId)
-      , RetryPolicy(retryPolicy)
+      , RetryState(retryPolicy->CreateRetryState())
       , Cancelled(false)
     {}
 
@@ -1071,18 +446,10 @@ struct TRetryStuff {
     std::size_t Offset, SizeLimit;
     const TTxId TxId;
     const TString RequestId;
-    IHTTPGateway::TRetryPolicy::IRetryState::TPtr RetryState;
-    IHTTPGateway::TRetryPolicy::TPtr RetryPolicy;
+    const IRetryPolicy<long>::IRetryState::TPtr RetryState;
     IHTTPGateway::TCancelHook CancelHook;
     TMaybe<TDuration> NextRetryDelay;
     std::atomic_bool Cancelled;
-
-    const IHTTPGateway::TRetryPolicy::IRetryState::TPtr& GetRetryState() {
-        if (!RetryState) {
-            RetryState = RetryPolicy->CreateRetryState();
-        }
-        return RetryState;
-    }
 
     void Cancel() {
         Cancelled.store(true);
@@ -1097,922 +464,381 @@ struct TRetryStuff {
     }
 };
 
-void OnDownloadStart(TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, CURLcode curlResponseCode, long httpResponseCode) {
-    actorSystem->Send(new IEventHandle(self, parent, new TEvPrivate::TEvReadStarted(curlResponseCode, httpResponseCode)));
+void OnDownloadStart(TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, long httpResponseCode) {
+    actorSystem->Send(new IEventHandle(self, parent, new TEvPrivate::TEvReadStarted(httpResponseCode)));
 }
 
 void OnNewData(TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, IHTTPGateway::TCountedContent&& data) {
     actorSystem->Send(new IEventHandle(self, parent, new TEvPrivate::TEvDataPart(std::move(data))));
 }
 
-void OnDownloadFinished(TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, size_t pathIndex, CURLcode curlResponseCode, TIssues issues) {
-    actorSystem->Send(new IEventHandle(self, parent, new TEvPrivate::TEvReadFinished(pathIndex, curlResponseCode, std::move(issues))));
+void OnDownloadFinished(TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, size_t pathIndex, TIssues issues) {
+    actorSystem->Send(new IEventHandle(self, parent, new TEvPrivate::TEvReadFinished(pathIndex, std::move(issues))));
 }
 
 void DownloadStart(const TRetryStuff::TPtr& retryStuff, TActorSystem* actorSystem, const TActorId& self, const TActorId& parent, size_t pathIndex, const ::NMonitoring::TDynamicCounters::TCounterPtr& inflightCounter) {
-    retryStuff->CancelHook = retryStuff->Gateway->Download(
-        retryStuff->Url,
-        retryStuff->Headers,
-        retryStuff->Offset,
-        retryStuff->SizeLimit,
-        std::bind(&OnDownloadStart, actorSystem, self, parent, std::placeholders::_1, std::placeholders::_2),
+    retryStuff->CancelHook = retryStuff->Gateway->Download(retryStuff->Url,
+        retryStuff->Headers, retryStuff->Offset, retryStuff->SizeLimit,
+        std::bind(&OnDownloadStart, actorSystem, self, parent, std::placeholders::_1),
         std::bind(&OnNewData, actorSystem, self, parent, std::placeholders::_1),
-        std::bind(&OnDownloadFinished, actorSystem, self, parent, pathIndex, std::placeholders::_1, std::placeholders::_2),
+        std::bind(&OnDownloadFinished, actorSystem, self, parent, pathIndex, std::placeholders::_1),
         inflightCounter);
 }
 
-template <bool isOptional>
-std::shared_ptr<arrow::Array> ArrowDate32AsYqlDate(const std::shared_ptr<arrow::DataType>& targetType, const std::shared_ptr<arrow::Array>& value) {
-    ::NYql::NUdf::TFixedSizeArrayBuilder<ui16, isOptional> builder(NKikimr::NMiniKQL::TTypeInfoHelper(), targetType, *arrow::system_memory_pool(), value->length());
-    ::NYql::NUdf::TFixedSizeBlockReader<i32, isOptional> reader;
-    for (i64 i = 0; i < value->length(); ++i) {
-        const NUdf::TBlockItem item = reader.GetItem(*value->data(), i);
-        if constexpr (isOptional) {
-            if (!item) {
-                builder.Add(item);
-                continue;
+template <typename T>
+class IBatchReader {
+public:
+    virtual ~IBatchReader() = default;
+
+    virtual bool Next(T& value) = 0;
+};
+
+class TBlockReader : public IBatchReader<NDB::Block> {
+public:
+    TBlockReader(std::unique_ptr<NDB::IBlockInputStream>&& stream)
+        : Stream(std::move(stream))
+    {}
+
+    bool Next(NDB::Block& value) final {
+        value = Stream->read();
+        return !!value;
+    }
+
+private:
+    std::unique_ptr<NDB::IBlockInputStream> Stream;
+};
+
+using TColumnConverter = std::function<std::shared_ptr<arrow::Array>(const std::shared_ptr<arrow::Array>&)>;
+
+class TArrowParquetBatchReader : public IBatchReader<std::shared_ptr<arrow::RecordBatch>> {
+public:
+    TArrowParquetBatchReader(std::unique_ptr<parquet::arrow::FileReader>&& fileReader, std::vector<int>&& columnIndices, std::vector<TColumnConverter>&& columnConverters)
+        : FileReader(std::move(fileReader))
+        , ColumnIndices(std::move(columnIndices))
+        , ColumnConverters(std::move(columnConverters))
+        , TotalGroups(FileReader->num_row_groups())
+        , CurrentGroup(0)
+    {}
+
+    bool Next(std::shared_ptr<arrow::RecordBatch>& value) final {
+        for (;;) {
+            if (CurrentGroup == TotalGroups) {
+                return false;
             }
-        } else if (!item) {
-            throw parquet::ParquetException(TStringBuilder() << "null value for date could not be represented in non-optional type");
-        }
 
-        const i32 v = item.As<i32>();
-        if (v < 0 || v > ::NYql::NUdf::MAX_DATE) {
-            throw parquet::ParquetException(TStringBuilder() << "date in parquet is out of range [0, " << ::NYql::NUdf::MAX_DATE << "]: " << v);
-        }
-        builder.Add(NUdf::TBlockItem(static_cast<ui16>(v)));
-    }
-    return builder.Build(true).make_array();
-}
+            if (!CurrentBatchReader) {
+                THROW_ARROW_NOT_OK(FileReader->ReadRowGroup(CurrentGroup++, ColumnIndices, &CurrentTable));
+                CurrentBatchReader = std::make_unique<arrow::TableBatchReader>(*CurrentTable);
+            }
 
-TColumnConverter BuildColumnConverter(const std::string& columnName, const std::shared_ptr<arrow::DataType>& originalType, const std::shared_ptr<arrow::DataType>& targetType, TType* yqlType) {
-    if (yqlType->IsPg()) {
-        auto pgType = AS_TYPE(TPgType, yqlType);
-        auto conv = BuildPgColumnConverter(originalType, pgType);
-        if (!conv) {
-            ythrow yexception() << "Arrow type: " << originalType->ToString() <<
-                " of field: " << columnName << " isn't compatible to PG type: " << NPg::LookupType(pgType->GetTypeId()).Name;
-        }
-
-        return conv;
-    }
-
-if (originalType->id() == arrow::Type::DATE32) {
-        // TODO: support more than 1 optional level
-        bool isOptional = false;
-        auto unpackedYqlType = UnpackOptional(yqlType, isOptional);
-
-        // arrow date -> yql date
-        if (unpackedYqlType->IsData()) {
-            auto slot = AS_TYPE(TDataType, unpackedYqlType)->GetDataSlot();
-            if (slot == NUdf::EDataSlot::Date) {
-                return [targetType, isOptional](const std::shared_ptr<arrow::Array>& value) {
-                    if (isOptional) {
-                        return ArrowDate32AsYqlDate<true>(targetType, value);
+            THROW_ARROW_NOT_OK(CurrentBatchReader->ReadNext(&value));
+            if (value) {
+                auto columns = value->columns();
+                for (size_t i = 0; i < ColumnConverters.size(); ++i) {
+                    auto converter = ColumnConverters[i];
+                    if (converter) {
+                        columns[i] = converter(columns[i]);
                     }
-                    return ArrowDate32AsYqlDate<false>(targetType, value);
-                };
-            }
-        }
-    }
-
-    if (targetType->Equals(originalType)) {
-        return {};
-    }
-
-    YQL_ENSURE(arrow::compute::CanCast(*originalType, *targetType), "Mismatch type for field: " << columnName << ", expected: "
-        << targetType->ToString() << ", got: " << originalType->ToString());
-
-
-    return [targetType](const std::shared_ptr<arrow::Array>& value) {
-        auto res = arrow::compute::Cast(*value, targetType);
-        THROW_ARROW_NOT_OK(res.status());
-        return std::move(res).ValueOrDie();
-    };
-}
-
-std::shared_ptr<arrow::RecordBatch> ConvertArrowColumns(std::shared_ptr<arrow::RecordBatch> batch, std::vector<TColumnConverter>& columnConverters) {
-    auto columns = batch->columns();
-    for (size_t i = 0; i < columnConverters.size(); ++i) {
-        auto converter = columnConverters[i];
-        if (converter) {
-            columns[i] = converter(columns[i]);
-        }
-    }
-    return arrow::RecordBatch::Make(batch->schema(), batch->num_rows(), columns);
-}
-
-struct TReadBufferCounter {
-    using TPtr = std::shared_ptr<TReadBufferCounter>;
-
-    TReadBufferCounter(ui64 limit,
-        TActorSystem* actorSystem,
-        NMonitoring::TDynamicCounters::TCounterPtr queueDataSize,
-        NMonitoring::TDynamicCounters::TCounterPtr taskQueueDataSize,
-        NMonitoring::TDynamicCounters::TCounterPtr downloadPaused,
-        NMonitoring::TDynamicCounters::TCounterPtr taskDownloadPaused,
-        NMonitoring::TDynamicCounters::TCounterPtr taskChunkDownloadCount,
-        NMonitoring::THistogramPtr decodedChunkSizeHist)
-        : Limit(limit)
-        , ActorSystem(actorSystem)
-        , QueueDataSize(queueDataSize)
-        , TaskQueueDataSize(taskQueueDataSize)
-        , DownloadPaused(downloadPaused)
-        , TaskDownloadPaused(taskDownloadPaused)
-        , TaskChunkDownloadCount(taskChunkDownloadCount)
-        , DecodedChunkSizeHist(decodedChunkSizeHist)
-    {
-    }
-
-    ~TReadBufferCounter() {
-        Notify();
-        if (Value) {
-            if (QueueDataSize) {
-                QueueDataSize->Sub(Value);
-            }
-            if (TaskQueueDataSize) {
-                TaskQueueDataSize->Sub(Value);
-            }
-            Value = 0;
-        }
-    }
-
-    bool IsFull() const {
-        return Value >= Limit;
-    }
-
-    double Ratio() const {
-        return DownloadedBytes ? static_cast<double>(DecodedBytes) / DownloadedBytes : 1.0;
-    }
-
-    ui64 FairShare() {
-        return CoroCount ? Limit / CoroCount : Limit;
-    }
-
-    void IncChunk() {
-        ChunkCount++;
-        if (TaskChunkDownloadCount) {
-            TaskChunkDownloadCount->Inc();
-        }
-    }
-
-    void DecChunk() {
-        ChunkCount--;
-        if (TaskChunkDownloadCount) {
-            TaskChunkDownloadCount->Dec();
-        }
-    }
-
-    bool Add(ui64 delta, NActors::TActorId producer, bool paused = false) {
-        if (DecodedChunkSizeHist) {
-            DecodedChunkSizeHist->Collect(delta);
-        }
-        Value += delta;
-        if (QueueDataSize) {
-            QueueDataSize->Add(delta);
-        }
-        if (TaskQueueDataSize) {
-            TaskQueueDataSize->Add(delta);
-        }
-        if ((Value + delta / 2) >= Limit) {
-            if (!paused) {
-                if (DownloadPaused) {
-                    DownloadPaused->Inc();
                 }
-                if (TaskDownloadPaused) {
-                    TaskDownloadPaused->Inc();
-                }
-                Producers.push_back(producer);
-                paused = true;
-            }
-        }
-        return paused;
-    }
 
-    void Sub(ui64 delta) {
-        Y_ASSERT(Value >= delta);
-        Value -= delta;
-        if (QueueDataSize) {
-            QueueDataSize->Sub(delta);
-        }
-        if (TaskQueueDataSize) {
-            TaskQueueDataSize->Sub(delta);
-        }
-        if (Value * 4 < Limit * 3) { // l.eq.t 75%
-            Notify();
+                value = arrow::RecordBatch::Make(value->schema(), value->num_rows(), columns);
+                return true;
+            }
+
+            CurrentBatchReader = nullptr;
+            CurrentTable = nullptr;
         }
     }
 
-    void Notify() {
-        if (!Producers.empty()) {
-            if (DownloadPaused) {
-                DownloadPaused->Sub(Producers.size());
-            }
-            if (TaskDownloadPaused) {
-                TaskDownloadPaused->Sub(Producers.size());
-            }
-            for (auto producer : Producers) {
-                ActorSystem->Send(new IEventHandle(producer, TActorId{}, new TEvPrivate::TEvContinue()));
-            }
-            Producers.clear();
-        }
-    }
-
-    void UpdateProgress(ui64 deltaDownloadedBytes, ui64 deltaDecodedBytes, ui64 deltaDecodedRows) {
-        DownloadedBytes += deltaDownloadedBytes;
-        DecodedBytes += deltaDecodedBytes;
-        DecodedRows += deltaDecodedRows;
-    }
-
-    ui64 Value = 0;
-    const ui64 Limit;
-    ui64 CoroCount = 0;
-    ui64 ChunkCount = 0;
-    ui64 DownloadedBytes = 0;
-    ui64 DecodedBytes = 0;
-    ui64 DecodedRows = 0;
-    std::vector<NActors::TActorId> Producers;
-    TActorSystem* ActorSystem = nullptr;
-    NMonitoring::TDynamicCounters::TCounterPtr QueueDataSize;
-    NMonitoring::TDynamicCounters::TCounterPtr TaskQueueDataSize;
-    NMonitoring::TDynamicCounters::TCounterPtr DownloadPaused;
-    NMonitoring::TDynamicCounters::TCounterPtr TaskDownloadPaused;
-    NMonitoring::TDynamicCounters::TCounterPtr TaskChunkDownloadCount;
-    NMonitoring::THistogramPtr DecodedChunkSizeHist;
+private:
+    std::unique_ptr<parquet::arrow::FileReader> FileReader;
+    const std::vector<int> ColumnIndices;
+    std::vector<TColumnConverter> ColumnConverters;
+    const int TotalGroups;
+    int CurrentGroup;
+    std::shared_ptr<arrow::Table> CurrentTable;
+    std::unique_ptr<arrow::TableBatchReader> CurrentBatchReader;
 };
 
-struct TParquetFileInfo {
-    ui64 RowCount = 0;
-    ui64 CompressedSize = 0;
-    ui64 UncompressedSize = 0;
-};
+ui64 GetSizeOfData(const arrow::ArrayData& data) {
+    ui64 size = sizeof(data);
+    size += data.buffers.size() * sizeof(void*);
+    size += data.child_data.size() * sizeof(void*);
+    for (const auto& b : data.buffers) {
+        if (b) {
+            size += b->size();
+        }
+    }
+
+    for (const auto& c : data.child_data) {
+        if (c) {
+            size += GetSizeOfData(*c);
+        }
+    }
+
+    return size;
+}
+
+ui64 GetSizeOfBatch(const arrow::RecordBatch& batch) {
+    ui64 size = sizeof(batch);
+    size += batch.num_columns() * sizeof(void*);
+    for (int i = 0; i < batch.num_columns(); ++i) {
+        size += GetSizeOfData(*batch.column_data(i));
+    }
+
+    return size;
+}
 
 class TS3ReadCoroImpl : public TActorCoroImpl {
     friend class TS3StreamReadActor;
-
-public:
-
-    class THttpRandomAccessFile : public arrow::io::RandomAccessFile {
+private:
+    class TReadBufferFromStream : public NDB::ReadBuffer {
     public:
-        THttpRandomAccessFile(TS3ReadCoroImpl* coro, size_t fileSize) : Coro(coro), FileSize(fileSize) {
-        }
-
-        // has no meaning and use
-        arrow::Result<int64_t> GetSize() override { return FileSize; }
-        arrow::Result<int64_t> Tell() const override { return InnerPos; }
-        arrow::Status Seek(int64_t position) override { InnerPos = position; return {}; }
-        arrow::Status Close() override { return {}; }
-        bool closed() const override { return false; }
-        // must not be used currently
-        arrow::Result<int64_t> Read(int64_t, void*) override {
-            Y_ABORT_UNLESS(0);
-            return arrow::Result<int64_t>();
-        }
-        arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t) override {
-            Y_ABORT_UNLESS(0);
-            return arrow::Result<std::shared_ptr<arrow::Buffer>>();
-        }
-        // useful ones
-        arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext&, int64_t position, int64_t nbytes) override {
-            return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(ReadAt(position, nbytes));
-        }
-        arrow::Result<std::shared_ptr<arrow::Buffer>> ReadAt(int64_t position, int64_t nbytes) override {
-            return Coro->ReadAt(position, nbytes);
-        }
-        arrow::Status WillNeed(const std::vector<arrow::io::ReadRange>& readRanges) override {
-            return Coro->WillNeed(readRanges);
-        }
-
-    private:
-        TS3ReadCoroImpl *const Coro;
-        const size_t FileSize;
-        int64_t InnerPos = 0;
-    };
-
-    class TRandomAccessFileTrafficCounter : public arrow::io::RandomAccessFile {
-    public:
-        TRandomAccessFileTrafficCounter(TS3ReadCoroImpl* coro, std::shared_ptr<arrow::io::RandomAccessFile> impl)
-            : Coro(coro), Impl(impl) {
-        }
-        arrow::Result<int64_t> GetSize() override { return Impl->GetSize(); }
-        virtual arrow::Result<int64_t> Tell() const override { return Impl->Tell(); }
-        virtual arrow::Status Seek(int64_t position) override { return Impl->Seek(position); }
-        virtual arrow::Status Close() override { return Impl->Close(); }
-        virtual bool closed() const override { return Impl->closed(); }
-        arrow::Result<int64_t> Read(int64_t nbytes, void* buffer) override {
-            auto result = Impl->Read(nbytes, buffer);
-            Coro->IngressBytes += nbytes;
-            return result;
-        }
-        arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t nbytes) override {
-            auto result = Impl->Read(nbytes);
-            Coro->IngressBytes += nbytes;
-            return result;
-        }
-        arrow::Result<std::shared_ptr<arrow::Buffer>> ReadAt(int64_t position, int64_t nbytes) override {
-            auto result = Impl->ReadAt(position, nbytes);
-            Coro->IngressBytes += nbytes;
-            return result;
-        }
-        arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext& ctx, int64_t position, int64_t nbytes) override {
-            auto result = Impl->ReadAsync(ctx, position, nbytes);
-            Coro->IngressBytes += nbytes;
-            return result;
-        }
-        arrow::Status WillNeed(const std::vector<arrow::io::ReadRange>& ranges) override {
-            return Impl->WillNeed(ranges);
-        }
-
-    private:
-        TS3ReadCoroImpl *const Coro;
-        std::shared_ptr<arrow::io::RandomAccessFile> Impl;
-    };
-
-    class TCoroReadBuffer : public NDB::ReadBuffer {
-    public:
-        TCoroReadBuffer(TS3ReadCoroImpl* coro)
-            : NDB::ReadBuffer(nullptr, 0ULL)
-            , Coro(coro)
-        { }
+        TReadBufferFromStream(TS3ReadCoroImpl* coro)
+            : NDB::ReadBuffer(nullptr, 0ULL), Coro(coro)
+        {}
     private:
         bool nextImpl() final {
-            while (!Coro->InputFinished || !Coro->DeferredDataParts.empty()) {
-                Coro->CpuTime += Coro->GetCpuTimeDelta();
-                Coro->ProcessOneEvent();
-                Coro->StartCycleCount = GetCycleCountFast();
-                if (Coro->InputBuffer) {
-                    RawDataBuffer.swap(Coro->InputBuffer);
-                    Coro->InputBuffer.clear();
-                    auto rawData = const_cast<char*>(RawDataBuffer.data());
-                    working_buffer = NDB::BufferBase::Buffer(rawData, rawData + RawDataBuffer.size());
+            while (Coro->Next(Value)) {
+                if (!Value.empty()) {
+                    working_buffer = NDB::BufferBase::Buffer(const_cast<char*>(Value.data()), const_cast<char*>(Value.data()) + Value.size());
                     return true;
                 }
             }
             return false;
         }
+
         TS3ReadCoroImpl *const Coro;
-        TString RawDataBuffer;
+        TString Value;
     };
 
-    void RunClickHouseParserOverHttp() {
+    static constexpr std::string_view TruncatedSuffix = "... [truncated]"sv;
+public:
+    TS3ReadCoroImpl(ui64 inputIndex, const TTxId& txId, const NActors::TActorId& computeActorId, 
+        const TRetryStuff::TPtr& retryStuff, const TReadSpec::TPtr& readSpec, size_t pathIndex, 
+        const TString& path, const TString& url, const std::size_t maxBlocksInFly, 
+        const TS3ReadActorFactoryConfig& readActorFactoryCfg,
+        const ::NMonitoring::TDynamicCounters::TCounterPtr& deferredQueueSize,
+        const ::NMonitoring::TDynamicCounters::TCounterPtr& httpInflightSize,
+        const ::NMonitoring::TDynamicCounters::TCounterPtr& httpDataRps)
+        : TActorCoroImpl(256_KB), ReadActorFactoryCfg(readActorFactoryCfg), InputIndex(inputIndex), 
+        TxId(txId), RetryStuff(retryStuff), ReadSpec(readSpec), ComputeActorId(computeActorId), 
+        PathIndex(pathIndex), Path(path), Url(url), MaxBlocksInFly(maxBlocksInFly),
+        DeferredQueueSize(deferredQueueSize), HttpInflightSize(httpInflightSize), HttpDataRps(httpDataRps)
+    {}
 
-        LOG_CORO_D("RunClickHouseParserOverHttp");
-
-        std::unique_ptr<NDB::ReadBuffer> coroBuffer = std::make_unique<TCoroReadBuffer>(this);
-        std::unique_ptr<NDB::ReadBuffer> decompressorBuffer;
-        NDB::ReadBuffer* buffer = coroBuffer.get();
-
-        // lz4 decompressor reads signature in ctor, w/o actual data it will be deadlocked
-        DownloadStart(RetryStuff, GetActorSystem(), SelfActorId, ParentActorId, PathIndex, HttpInflightSize);
-
-        if (ReadSpec->Compression) {
-            decompressorBuffer = MakeDecompressor(*buffer, ReadSpec->Compression);
-            YQL_ENSURE(decompressorBuffer, "Unsupported " << ReadSpec->Compression << " compression.");
-            buffer = decompressorBuffer.get();
-        }
-
-        auto stream = std::make_unique<NDB::InputStreamFromInputFormat>(
-            NDB::FormatFactory::instance().getInputFormat(
-                ReadSpec->Format, *buffer, NDB::Block(ReadSpec->CHColumns), nullptr, ReadActorFactoryCfg.RowsInBatch, ReadSpec->Settings
-            )
-        );
-
-        while (NDB::Block batch = stream->read()) {
-            Paused = QueueBufferCounter->Add(batch.bytes(), SelfActorId);
-            const bool isStopped = StopIfConsumedEnough(batch.rows());
-            Send(ParentActorId, new TEvPrivate::TEvNextBlock(batch, PathIndex, TakeIngressDelta(), TakeCpuTimeDelta()));
-            if (Paused) {
-                CpuTime += GetCpuTimeDelta();
-                auto ev = WaitForSpecificEvent<TEvPrivate::TEvContinue>(&TS3ReadCoroImpl::ProcessUnexpectedEvent);
-                HandleEvent(*ev);
-                StartCycleCount = GetCycleCountFast();
-            }
-            if (isStopped) {
-                LOG_CORO_D("RunClickHouseParserOverHttp - STOPPED ON SATURATION");
-                break;
-            }
-        }
-
-        LOG_CORO_D("RunClickHouseParserOverHttp - FINISHED");
-    }
-
-    void RunClickHouseParserOverFile() {
-
-        LOG_CORO_D("RunClickHouseParserOverFile");
-
-        TString fileName = Url.substr(7) + Path;
-
-        std::unique_ptr<NDB::ReadBuffer> coroBuffer = std::make_unique<NDB::ReadBufferFromFile>(fileName);
-        std::unique_ptr<NDB::ReadBuffer> decompressorBuffer;
-        NDB::ReadBuffer* buffer = coroBuffer.get();
-
-        if (ReadSpec->Compression) {
-            decompressorBuffer = MakeDecompressor(*buffer, ReadSpec->Compression);
-            YQL_ENSURE(decompressorBuffer, "Unsupported " << ReadSpec->Compression << " compression.");
-            buffer = decompressorBuffer.get();
-        }
-
-        auto stream = std::make_unique<NDB::InputStreamFromInputFormat>(
-            NDB::FormatFactory::instance().getInputFormat(
-                ReadSpec->Format, *buffer, NDB::Block(ReadSpec->CHColumns), nullptr, ReadActorFactoryCfg.RowsInBatch, ReadSpec->Settings
-            )
-        );
-
-        while (NDB::Block batch = stream->read()) {
-            Paused = QueueBufferCounter->Add(batch.bytes(), SelfActorId);
-            const bool isCancelled = StopIfConsumedEnough(batch.rows());
-            Send(ParentActorId, new TEvPrivate::TEvNextBlock(batch, PathIndex, TakeIngressDelta(), TakeCpuTimeDelta()));
-            if (Paused) {
-                CpuTime += GetCpuTimeDelta();
-                auto ev = WaitForSpecificEvent<TEvPrivate::TEvContinue>(&TS3ReadCoroImpl::ProcessUnexpectedEvent);
-                HandleEvent(*ev);
-                StartCycleCount = GetCycleCountFast();
-            }
-            if (isCancelled) {
-                LOG_CORO_D("RunClickHouseParserOverFile STOPPED ON SATURATION");
-                break;
-            }
-        }
-        IngressBytes += GetFileLength(fileName);
-
-        LOG_CORO_D("RunClickHouseParserOverFile FINISHED");
-    }
-
-    void BuildColumnConverters(std::shared_ptr<arrow::Schema> outputSchema, std::shared_ptr<arrow::Schema> dataSchema,
-        std::vector<int>& columnIndices, std::vector<TColumnConverter>& columnConverters) {
-        columnConverters.reserve(outputSchema->num_fields());
-        for (int i = 0; i < outputSchema->num_fields(); ++i) {
-            const auto& targetField = outputSchema->field(i);
-            auto srcFieldIndex = dataSchema->GetFieldIndex(targetField->name());
-            if (srcFieldIndex == -1) {
-                throw parquet::ParquetException(TStringBuilder() << "Missing field: " << targetField->name());
-            };
-            auto targetType = targetField->type();
-            auto originalType = dataSchema->field(srcFieldIndex)->type();
-            if (originalType->layout().has_dictionary) {
-                throw parquet::ParquetException(TStringBuilder() << "Unsupported dictionary encoding is used for field: "
-                    << targetField->name() << ", type: " << originalType->ToString());
-            }
-            columnIndices.push_back(srcFieldIndex);
-            auto rowSpecColumnIt = ReadSpec->RowSpec.find(targetField->name());
-            if (rowSpecColumnIt == ReadSpec->RowSpec.end()) {
-                throw parquet::ParquetException(TStringBuilder() << "Column " << targetField->name() << " not found in row spec");
-            }
-            columnConverters.emplace_back(BuildColumnConverter(targetField->name(), originalType, targetType, rowSpecColumnIt->second));
+    ~TS3ReadCoroImpl() override {
+        if (DeferredEvents.size() && DeferredQueueSize) {
+            DeferredQueueSize->Sub(DeferredEvents.size());
         }
     }
 
-    struct TReadCache {
-        ui64 Cookie = 0;
-        TString Data;
-        std::optional<ui64> RowGroupIndex;
-        bool Ready = false;
-    };
+    bool Next(TString& value) {
+        if (InputFinished)
+            return false;
 
-    struct TReadRangeCompare
-    {
-        bool operator() (const TEvPrivate::TReadRange& lhs, const TEvPrivate::TReadRange& rhs) const
-        {
-            return (lhs.Offset < rhs.Offset) || (lhs.Offset == rhs.Offset && lhs.Length < rhs.Length);
-        }
-    };
+        if (Paused || DeferredEvents.empty()) {
+            auto ev = WaitForSpecificEvent<TEvPrivate::TEvReadStarted
+                                         , TEvPrivate::TEvDataPart
+                                         , TEvPrivate::TEvReadFinished
+                                         , TEvPrivate::TEvPause
+                                         , TEvPrivate::TEvContinue
+                                         , NActors::TEvents::TEvPoison>();
 
-    ui64 RangeCookie = 0;
-    std::map<TEvPrivate::TReadRange, TReadCache, TReadRangeCompare> RangeCache;
-    std::map<ui64, ui64> ReadInflightSize;
-    std::optional<ui64> CurrentRowGroupIndex;
-    std::map<ui64, ui64> RowGroupRangeInflight;
-    std::priority_queue<ui64, std::vector<ui64>, std::greater<ui64>> ReadyRowGroups;
-    std::map<ui64, ui64> RowGroupReaderIndex;
-
-    static void OnResult(TActorSystem* actorSystem, TActorId selfId, TEvPrivate::TReadRange range, ui64 cookie, IHTTPGateway::TResult&& result) {
-        if (!result.Issues) {
-            actorSystem->Send(new IEventHandle(selfId, TActorId{}, new TEvPrivate::TEvReadResult2(range, std::move(result.Content)), 0, cookie));
-        } else {
-            actorSystem->Send(new IEventHandle(selfId, TActorId{}, new TEvPrivate::TEvReadResult2(range, std::move(result.Issues)), 0, cookie));
-        }
-    }
-
-    ui64 DecreaseRowGroupInflight(ui64 rowGroupIndex) {
-        auto inflight = RowGroupRangeInflight[rowGroupIndex];
-        if (inflight > 1) {
-            RowGroupRangeInflight[rowGroupIndex] = --inflight;
-        } else {
-            inflight = 0;
-            RowGroupRangeInflight.erase(rowGroupIndex);
-        }
-        return inflight;
-    }
-
-
-    TReadCache& GetOrCreate(TEvPrivate::TReadRange range) {
-        auto it = RangeCache.find(range);
-        if (it != RangeCache.end()) {
-            return it->second;
-        }
-        RetryStuff->Gateway->Download(Url + Path, RetryStuff->Headers,
-                            range.Offset,
-                            range.Length,
-                            std::bind(&OnResult, GetActorSystem(), SelfActorId, range, ++RangeCookie, std::placeholders::_1),
-                            {},
-                            RetryStuff->RetryPolicy);
-        LOG_CORO_D("Download STARTED [" << range.Offset << "-" << range.Length << "], cookie: " << RangeCookie);
-        auto& result = RangeCache[range];
-        if (result.Cookie) {
-            // may overwrite old range in case of desync?
-            if (result.RowGroupIndex) {
-                LOG_CORO_W("RangeInfo DISCARDED [" << range.Offset << "-" << range.Length << "], cookie: " << RangeCookie << ", rowGroup " << *result.RowGroupIndex);
-                DecreaseRowGroupInflight(*result.RowGroupIndex);
-            }
-        }
-        result.RowGroupIndex = CurrentRowGroupIndex;
-        result.Cookie = RangeCookie;
-        if (CurrentRowGroupIndex) {
-            RowGroupRangeInflight[*CurrentRowGroupIndex]++;
-        }
-        return result;
-    }
-
-    arrow::Status WillNeed(const std::vector<arrow::io::ReadRange>& readRanges) {
-        if (readRanges.empty()) { // select count(*) case
-            if (CurrentRowGroupIndex) {
-                ReadyRowGroups.push(*CurrentRowGroupIndex);
-            }
-        } else {
-            for (auto& range : readRanges) {
-                GetOrCreate(TEvPrivate::TReadRange{ .Offset = range.offset, .Length = range.length });
-            }
-        }
-        return {};
-    }
-
-    void HandleEvent(TEvPrivate::TEvReadResult2::THandle& event) {
-
-        if (event.Get()->Failure) {
-            throw yexception() << event.Get()->Issues.ToOneLineString();
-        }
-        auto readyRange = event.Get()->ReadRange;
-        LOG_CORO_D("Download FINISHED [" << readyRange.Offset << "-" << readyRange.Length << "], cookie: " << event.Cookie);
-        IngressBytes += readyRange.Length;
-
-        auto it = RangeCache.find(readyRange);
-
-        if (it == RangeCache.end()) {
-            LOG_CORO_W("Download completed for unknown/discarded range [" << readyRange.Offset << "-" << readyRange.Length << "]");
-            return;
-        }
-
-        if (it->second.Cookie != event.Cookie) {
-            LOG_CORO_W("Mistmatched cookie for range [" << readyRange.Offset << "-" << readyRange.Length << "], received " << event.Cookie << ", expected " << it->second.Cookie);
-            return;
-        }
-
-        it->second.Data = event.Get()->Result.Extract();
-        ui64 size = it->second.Data.size();
-        it->second.Ready = true;
-        if (it->second.RowGroupIndex) {
-            if (!DecreaseRowGroupInflight(*it->second.RowGroupIndex)) {
-                LOG_CORO_D("RowGroup #" << *it->second.RowGroupIndex << " is READY");
-                ReadyRowGroups.push(*it->second.RowGroupIndex);
-            }
-            ReadInflightSize[*it->second.RowGroupIndex] += size;
-            if (RawInflightSize) {
-                RawInflightSize->Add(size);
-            }
-        }
-    }
-
-    arrow::Result<std::shared_ptr<arrow::Buffer>> ReadAt(int64_t position, int64_t nbytes) {
-
-        LOG_CORO_D("ReadAt STARTED [" << position << "-" << nbytes << "]");
-        TEvPrivate::TReadRange range { .Offset = position, .Length = nbytes };
-        auto& cache = GetOrCreate(range);
-
-        CpuTime += GetCpuTimeDelta();
-
-        while (!cache.Ready) {
-            auto ev = WaitForSpecificEvent<TEvPrivate::TEvReadResult2>(&TS3ReadCoroImpl::ProcessUnexpectedEvent);
-            HandleEvent(*ev);
-        }
-
-        StartCycleCount = GetCycleCountFast();
-
-        TString data = cache.Data;
-        RangeCache.erase(range);
-
-        LOG_CORO_D("ReadAt FINISHED [" << position << "-" << nbytes << "] #" << data.size());
-
-        return arrow::Buffer::FromString(data);
-    }
-
-    void RunCoroBlockArrowParserOverHttp() {
-
-        LOG_CORO_D("RunCoroBlockArrowParserOverHttp");
-
-        ui64 readerCount = 1;
-
-        std::vector<std::unique_ptr<parquet::arrow::FileReader>> readers;
-
-        parquet::arrow::FileReaderBuilder builder;
-        builder.memory_pool(arrow::default_memory_pool());
-        parquet::ArrowReaderProperties properties;
-        properties.set_cache_options(arrow::io::CacheOptions::LazyDefaults());
-        properties.set_pre_buffer(true);
-        builder.properties(properties);
-
-        // init the 1st reader, get meta/rg count
-        readers.resize(1);
-        THROW_ARROW_NOT_OK(builder.Open(std::make_shared<THttpRandomAccessFile>(this, RetryStuff->SizeLimit)));
-        THROW_ARROW_NOT_OK(builder.Build(&readers[0]));
-        auto fileMetadata = readers[0]->parquet_reader()->metadata();
-        ui64 numGroups = readers[0]->num_row_groups();
-
-        if (numGroups) {
-
-            std::shared_ptr<arrow::Schema> schema;
-            THROW_ARROW_NOT_OK(readers[0]->GetSchema(&schema));
-            std::vector<int> columnIndices;
-            std::vector<TColumnConverter> columnConverters;
-
-            BuildColumnConverters(ReadSpec->ArrowSchema, schema, columnIndices, columnConverters);
-
-            // select count(*) case - single reader is enough
-            if (!columnIndices.empty()) {
-                if (ReadSpec->ParallelRowGroupCount) {
-                    readerCount = ReadSpec->ParallelRowGroupCount;
-                } else {
-                    // we want to read in parallel as much as 1/2 of fair share bytes
-                    // (it's compressed size, after decoding it will grow)
-                    ui64 compressedSize = 0;
-                    for (int i = 0; i < fileMetadata->num_row_groups(); i++) {
-                        auto rowGroup = fileMetadata->RowGroup(i);
-                        for (const auto columIndex : columnIndices) {
-                            compressedSize += rowGroup->ColumnChunk(columIndex)->total_compressed_size();
-                        }
-                    }
-                    // count = (fair_share / 2) / (compressed_size / num_group)
-                    auto desiredReaderCount = (QueueBufferCounter->FairShare() * numGroups) / (compressedSize * 2);
-                    // min is 1
-                    // max is 5 (should be also tuned probably)
-                    if (desiredReaderCount) {
-                        readerCount = std::min(desiredReaderCount, 5ul);
-                    }
-                }
-                if (readerCount > numGroups) {
-                    readerCount = numGroups;
-                }
-            }
-
-            if (readerCount > 1) {
-                // init other readers if any
-                readers.resize(readerCount);
-                for (ui64 i = 1; i < readerCount; i++) {
-                    THROW_ARROW_NOT_OK(builder.Open(std::make_shared<THttpRandomAccessFile>(this, RetryStuff->SizeLimit),
-                                    parquet::default_reader_properties(),
-                                    fileMetadata));
-                    THROW_ARROW_NOT_OK(builder.Build(&readers[i]));
-                }
-            }
-
-            for (ui64 i = 0; i < readerCount; i++) {
-                if (!columnIndices.empty()) {
-                    CurrentRowGroupIndex = i;
-                    THROW_ARROW_NOT_OK(readers[i]->WillNeedRowGroups({ static_cast<int>(i) }, columnIndices));
-                    QueueBufferCounter->IncChunk();
-                }
-                RowGroupReaderIndex[i] = i;
-            }
-
-            ui64 nextGroup = readerCount;
-            ui64 readyGroupCount = 0;
-
-            while (readyGroupCount < numGroups) {
-                if (Paused) {
-                    CpuTime += GetCpuTimeDelta();
-                    auto ev = WaitForSpecificEvent<TEvPrivate::TEvContinue>(&TS3ReadCoroImpl::ProcessUnexpectedEvent);
-                    HandleEvent(*ev);
-                    StartCycleCount = GetCycleCountFast();
-                }
-
-                ui64 readyGroupIndex;
-                if (!columnIndices.empty()) {
-                    CpuTime += GetCpuTimeDelta();
-
-                    // if reordering is not allowed wait for row groups sequentially
-                    while (ReadyRowGroups.empty()
-                            || (!ReadSpec->RowGroupReordering && ReadyRowGroups.top() > readyGroupCount) ) {
-                        ProcessOneEvent();
-                    }
-
-                    StartCycleCount = GetCycleCountFast();
-
-                    readyGroupIndex = ReadyRowGroups.top();
-                    ReadyRowGroups.pop();
-                } else {
-                    // select count(*) case - no columns, no download, just fetch meta info instantly
-                    readyGroupIndex = readyGroupCount;
-                }
-                QueueBufferCounter->DecChunk();
-                auto readyReaderIndex = RowGroupReaderIndex[readyGroupIndex];
-                RowGroupReaderIndex.erase(readyGroupIndex);
-
-                std::shared_ptr<arrow::Table> table;
-
-                LOG_CORO_D("Decode RowGroup " << readyGroupIndex << " of " << numGroups << " from reader " << readyReaderIndex);
-                THROW_ARROW_NOT_OK(readers[readyReaderIndex]->DecodeRowGroups({ static_cast<int>(readyGroupIndex) }, columnIndices, &table));
-                readyGroupCount++;
-
-                auto downloadedBytes = ReadInflightSize[readyGroupIndex];
-                ui64 decodedBytes = 0;
-                ReadInflightSize.erase(readyGroupIndex);
-
-                auto reader = std::make_unique<arrow::TableBatchReader>(*table);
-
-                std::shared_ptr<arrow::RecordBatch> batch;
-                arrow::Status status;
-                bool isCancelled = false;
-                while (status = reader->ReadNext(&batch), status.ok() && batch) {
-                    auto convertedBatch = ConvertArrowColumns(batch, columnConverters);
-                    auto size = NUdf::GetSizeOfArrowBatchInBytes(*convertedBatch);
-                    decodedBytes += size;
-                    Paused = QueueBufferCounter->Add(size, SelfActorId, Paused);
-                    Send(ParentActorId, new TEvPrivate::TEvNextRecordBatch(
-                        convertedBatch, PathIndex, TakeIngressDelta(), TakeCpuTimeDelta()
-                    ));
-                    if (StopIfConsumedEnough(convertedBatch->num_rows())) {
-                        isCancelled = true;
-                        break;
-                    }
-                }
-                if (!status.ok()) {
-                    throw yexception() << status.ToString();
-                }
-                QueueBufferCounter->UpdateProgress(downloadedBytes, decodedBytes, table->num_rows());
-                if (RawInflightSize) {
-                    RawInflightSize->Sub(downloadedBytes);
-                }
-                if (nextGroup < numGroups) {
-                    if (!columnIndices.empty()) {
-                        CurrentRowGroupIndex = nextGroup;
-                        THROW_ARROW_NOT_OK(readers[readyReaderIndex]->WillNeedRowGroups({ static_cast<int>(nextGroup) }, columnIndices));
-                        QueueBufferCounter->IncChunk();
-                    }
-                    RowGroupReaderIndex[nextGroup] = readyReaderIndex;
-                    nextGroup++;
-                } else {
-                    readers[readyReaderIndex].reset();
-                }
-                if (isCancelled) {
-                    LOG_CORO_D("RunCoroBlockArrowParserOverHttp - STOPPED ON SATURATION");
-                    break;        
-                }
-            }
-        }
-
-        LOG_CORO_D("RunCoroBlockArrowParserOverHttp - FINISHED");
-    }
-
-    void RunCoroBlockArrowParserOverFile() {
-
-        LOG_CORO_D("RunCoroBlockArrowParserOverFile");
-
-        std::shared_ptr<arrow::io::RandomAccessFile> arrowFile =
-            std::make_shared<TRandomAccessFileTrafficCounter>(this,
-                arrow::io::ReadableFile::Open((Url + Path).substr(7), arrow::default_memory_pool()).ValueOrDie()
-            );
-        std::unique_ptr<parquet::arrow::FileReader> fileReader;
-        parquet::arrow::FileReaderBuilder builder;
-        builder.memory_pool(arrow::default_memory_pool());
-        parquet::ArrowReaderProperties properties;
-        properties.set_cache_options(arrow::io::CacheOptions::LazyDefaults());
-        properties.set_pre_buffer(true);
-        builder.properties(properties);
-        THROW_ARROW_NOT_OK(builder.Open(arrowFile));
-        THROW_ARROW_NOT_OK(builder.Build(&fileReader));
-
-        std::shared_ptr<arrow::Schema> schema;
-        THROW_ARROW_NOT_OK(fileReader->GetSchema(&schema));
-        std::vector<int> columnIndices;
-        std::vector<TColumnConverter> columnConverters;
-
-        BuildColumnConverters(ReadSpec->ArrowSchema, schema, columnIndices, columnConverters);
-
-        for (int group = 0; group < fileReader->num_row_groups(); group++) {
-
-            if (Paused) {
-                CpuTime += GetCpuTimeDelta();
-                LOG_CORO_D("RunCoroBlockArrowParserOverFile - PAUSED " << QueueBufferCounter->Value);
-                auto ev = WaitForSpecificEvent<TEvPrivate::TEvContinue>(&TS3ReadCoroImpl::ProcessUnexpectedEvent);
-                HandleEvent(*ev);
-                LOG_CORO_D("RunCoroBlockArrowParserOverFile - CONTINUE " << QueueBufferCounter->Value);
-                StartCycleCount = GetCycleCountFast();
-            }
-
-            std::shared_ptr<arrow::Table> table;
-            ui64 ingressBytes = IngressBytes;
-            THROW_ARROW_NOT_OK(fileReader->ReadRowGroup(group, columnIndices, &table));
-            ui64 downloadedBytes = IngressBytes - ingressBytes;
-            auto reader = std::make_unique<arrow::TableBatchReader>(*table);
-
-            ui64 decodedBytes = 0;
-            std::shared_ptr<arrow::RecordBatch> batch;
-            ::arrow::Status status;
-            bool isCancelled = false;
-            while (status = reader->ReadNext(&batch), status.ok() && batch) {
-                auto convertedBatch = ConvertArrowColumns(batch, columnConverters);
-                auto size = NUdf::GetSizeOfArrowBatchInBytes(*convertedBatch);
-                decodedBytes += size;
-                Paused = QueueBufferCounter->Add(size, SelfActorId, Paused);
-                Send(ParentActorId, new TEvPrivate::TEvNextRecordBatch(
-                    convertedBatch, PathIndex, TakeIngressDelta(), TakeCpuTimeDelta()
-                ));
-                if (StopIfConsumedEnough(batch->num_rows())) {
-                    isCancelled = true;
+            switch (const auto etype = ev->GetTypeRewrite()) {
+                case TEvPrivate::TEvPause::EventType:
+                    Paused = true;
                     break;
-                }
-            }
-            if (!status.ok()) {
-                throw yexception() << status.ToString();
-            }
-            QueueBufferCounter->UpdateProgress(downloadedBytes, decodedBytes, table->num_rows());
-            if (isCancelled) {
-                LOG_CORO_D("RunCoroBlockArrowParserOverFile - STOPPED ON SATURATION");
-                break;
+                case TEvPrivate::TEvContinue::EventType:
+                    Paused = false;
+                    break;
+                case NActors::TEvents::TEvPoison::EventType:
+                    RetryStuff->Cancel();
+                    throw TS3ReadAbort();
+                default:
+                    DeferredEvents.push(std::move(ev));
+                    if (DeferredQueueSize) {
+                        DeferredQueueSize->Inc();
+                    }
+                    break;
             }
         }
 
-        LOG_CORO_D("RunCoroBlockArrowParserOverFile - FINISHED");
+        if (Paused || DeferredEvents.empty()) {
+            value.clear();
+            return true;
+        }
+
+        THolder<IEventHandle> ev;
+        ev.Swap(DeferredEvents.front());
+        DeferredEvents.pop();
+        if (DeferredQueueSize) {
+            DeferredQueueSize->Dec();
+        }
+
+        switch (const auto etype = ev->GetTypeRewrite()) {
+            case TEvPrivate::TEvReadStarted::EventType:
+                ErrorText.clear();
+                Issues.Clear();
+                value.clear();
+                RetryStuff->NextRetryDelay = RetryStuff->RetryState->GetNextRetryDelay(HttpResponseCode = ev->Get<TEvPrivate::TEvReadStarted>()->HttpResponseCode);
+                LOG_CORO_D("TS3ReadCoroImpl", "TEvReadStarted, Url: " << RetryStuff->Url << ", Offset: " << RetryStuff->Offset << ", Http code: " << HttpResponseCode << ", retry after: " << RetryStuff->NextRetryDelay << ", request id: [" << RetryStuff->RequestId << "]");
+                return true;
+            case TEvPrivate::TEvReadFinished::EventType:
+                Issues = std::move(ev->Get<TEvPrivate::TEvReadFinished>()->Issues);
+                if (Issues) {
+                    if (RetryStuff->NextRetryDelay = RetryStuff->RetryState->GetNextRetryDelay(0L); !RetryStuff->NextRetryDelay) {
+                        InputFinished = true;
+                        LOG_CORO_W("TS3ReadCoroImpl", "ReadError: " << Issues.ToOneLineString() << ", Url: " << RetryStuff->Url << ", Offset: " << RetryStuff->Offset << ", LastOffset: " << LastOffset << ", LastData: " << GetLastDataAsText() << ", request id: [" << RetryStuff->RequestId << "]");
+                        throw TS3ReadError(); // Don't pass control to data parsing, because it may validate eof and show wrong issues about incorrect data format
+                    }
+                }
+
+                if (!RetryStuff->IsCancelled() && RetryStuff->NextRetryDelay && RetryStuff->SizeLimit > 0ULL) {
+                    LOG_CORO_D("TS3ReadCoroImpl", "Retry Download in " << RetryStuff->NextRetryDelay << ", Url: " << RetryStuff->Url << ", Offset: " << RetryStuff->Offset << ", request id: [" << RetryStuff->RequestId << "], Issues: " << Issues.ToOneLineString());
+                    GetActorSystem()->Schedule(*RetryStuff->NextRetryDelay, new IEventHandle(ParentActorId, SelfActorId, new TEvPrivate::TEvRetryEventFunc(std::bind(&DownloadStart, RetryStuff, GetActorSystem(), SelfActorId, ParentActorId, PathIndex, HttpInflightSize))));
+                    value.clear();
+                } else {
+                    LOG_CORO_D("TS3ReadCoroImpl", "TEvReadFinished, Url: " << RetryStuff->Url << ", Offset: " << RetryStuff->Offset << ", LastOffset: " << LastOffset << ", Error: " << ServerReturnedError << ", LastData: " << GetLastDataAsText() << ", request id: [" << RetryStuff->RequestId << "]");
+                    InputFinished = true;
+                    if (ServerReturnedError) {
+                        throw TS3ReadError(); // Don't pass control to data parsing, because it may validate eof and show wrong issues about incorrect data format
+                    }
+                    return false; // end of data (real data, not an error)
+                }
+                return true;
+            case TEvPrivate::TEvDataPart::EventType:
+                if (HttpDataRps) {
+                    HttpDataRps->Inc();
+                }
+                if (200L == HttpResponseCode || 206L == HttpResponseCode) {
+                    value = ev->Get<TEvPrivate::TEvDataPart>()->Result.Extract();
+                    IngressBytes += value.size();
+                    RetryStuff->Offset += value.size();
+                    RetryStuff->SizeLimit -= value.size();
+                    LastOffset = RetryStuff->Offset;
+                    LastData = value;
+                    LOG_CORO_T("TS3ReadCoroImpl", "TEvDataPart, size: " << value.size() << ", Url: " << RetryStuff->Url << ", Offset (updated): " << RetryStuff->Offset << ", request id: [" << RetryStuff->RequestId << "]");
+                    Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived(InputIndex));
+                } else if (HttpResponseCode && !RetryStuff->IsCancelled() && !RetryStuff->NextRetryDelay) {
+                    ServerReturnedError = true;
+                    if (ErrorText.size() < 256_KB)
+                        ErrorText.append(ev->Get<TEvPrivate::TEvDataPart>()->Result.Extract());
+                    else if (!ErrorText.EndsWith(TruncatedSuffix))
+                        ErrorText.append(TruncatedSuffix);
+                    value.clear();
+                    LOG_CORO_W("TS3ReadCoroImpl", "TEvDataPart, ERROR: " << ErrorText << ", Url: " << RetryStuff->Url << ", Offset: " << RetryStuff->Offset << ", LastOffset: " << LastOffset << ", LastData: " << GetLastDataAsText() << ", request id: [" << RetryStuff->RequestId << "]");
+                }
+                return true;
+            default:
+                return false;
+        }
     }
+private:
+    void WaitFinish() {
+        LOG_CORO_D("TS3ReadCoroImpl", "WaitFinish: " << Path);
+        if (InputFinished)
+            return;
 
-    STRICT_STFUNC(StateFunc,
-        hFunc(TEvPrivate::TEvReadStarted, Handle);
-        hFunc(TEvPrivate::TEvDataPart, Handle);
-        hFunc(TEvPrivate::TEvReadFinished, Handle);
-        hFunc(TEvPrivate::TEvContinue, Handle);
-        hFunc(TEvPrivate::TEvReadResult2, Handle);
-        hFunc(NActors::TEvents::TEvPoison, Handle);
-    )
+        while (true) {
+            const auto ev = WaitForSpecificEvent<TEvPrivate::TEvReadStarted
+                                               , TEvPrivate::TEvDataPart
+                                               , TEvPrivate::TEvReadFinished
+                                               , TEvPrivate::TEvPause
+                                               , TEvPrivate::TEvContinue
+                                               , NActors::TEvents::TEvPoison>();
 
-    void ProcessOneEvent() {
-        if (!Paused && !DeferredDataParts.empty()) {
-            ExtractDataPart(*DeferredDataParts.front(), true);
-            DeferredDataParts.pop();
-            if (DeferredQueueSize) {
-                DeferredQueueSize->Dec();
+            const auto etype = ev->GetTypeRewrite();
+            switch (etype) {
+                case TEvPrivate::TEvReadFinished::EventType:
+                    Issues = std::move(ev->Get<TEvPrivate::TEvReadFinished>()->Issues);
+                    LOG_CORO_D("TS3ReadCoroImpl", "TEvReadFinished: " << Path << " " << Issues.ToOneLineString());
+                    break;
+                case NActors::TEvents::TEvPoison::EventType:
+                    RetryStuff->Cancel();
+                    throw TS3ReadAbort();
+                default:
+                    continue;
             }
+            InputFinished = true;
             return;
         }
-        TAutoPtr<::NActors::IEventHandle> ev(WaitForEvent().Release());
-        StateFunc(ev);
     }
 
-    void ExtractDataPart(TEvPrivate::TEvDataPart& event, bool deferred = false) {
-        InputBuffer = event.Result.Extract();
-        IngressBytes += InputBuffer.size();
-        RetryStuff->Offset += InputBuffer.size();
-        RetryStuff->SizeLimit -= InputBuffer.size();
-        LastOffset = RetryStuff->Offset;
-        LastData = InputBuffer;
-        LOG_CORO_T("TEvDataPart (" << (deferred ? "deferred" : "instant") << "), size: " << InputBuffer.size());
-        Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived(InputIndex));
-    }
+    void Run() final try {
 
-    void Handle(TEvPrivate::TEvReadStarted::TPtr& ev) {
-        HttpResponseCode = ev->Get()->HttpResponseCode;
-        CurlResponseCode = ev->Get()->CurlResponseCode;
-        LOG_CORO_D("TEvReadStarted, Http code: " << HttpResponseCode);
-    }
+        LOG_CORO_D("TS3ReadCoroImpl", "Run" << ", Path: " << Path);
 
-    void Handle(TEvPrivate::TEvDataPart::TPtr& ev) {
-        if (HttpDataRps) {
-            HttpDataRps->Inc();
-        }
-        if (200L == HttpResponseCode || 206L == HttpResponseCode) {
-            if (Paused || !DeferredDataParts.empty()) {
-                DeferredDataParts.push(std::move(ev->Release()));
-                if (DeferredQueueSize) {
-                    DeferredQueueSize->Inc();
-                }
+        NYql::NDqProto::StatusIds::StatusCode fatalCode = NYql::NDqProto::StatusIds::EXTERNAL_ERROR;
+
+        TIssue exceptIssue;
+        bool isLocal = Url.StartsWith("file://");
+        try {
+            std::unique_ptr<NDB::ReadBuffer> buffer;
+            if (isLocal) {
+                buffer = std::make_unique<NDB::ReadBufferFromFile>(Url.substr(7) + Path);
             } else {
-                ExtractDataPart(*ev->Get(), false);
+                buffer = std::make_unique<TReadBufferFromStream>(this);
             }
-        } else if (HttpResponseCode && !RetryStuff->IsCancelled() && !RetryStuff->NextRetryDelay) {
-            ServerReturnedError = true;
-            if (ErrorText.size() < 256_KB)
-                ErrorText.append(ev->Get()->Result.Extract());
-            else if (!ErrorText.EndsWith(TruncatedSuffix))
-                ErrorText.append(TruncatedSuffix);
-            LOG_CORO_W("TEvDataPart, ERROR: " << ErrorText << ", LastOffset: " << LastOffset << ", LastData: " << GetLastDataAsText());
+
+            const auto decompress(MakeDecompressor(*buffer, ReadSpec->Compression));
+            YQL_ENSURE(ReadSpec->Compression.empty() == !decompress, "Unsupported " << ReadSpec->Compression << " compression.");
+            if (ReadSpec->Arrow) {
+                YQL_ENSURE(ReadSpec->Format == "parquet");
+                std::unique_ptr<parquet::arrow::FileReader> fileReader;
+                auto arrowFile = NDB::asArrowFile(decompress ? *decompress : *buffer);
+
+                THROW_ARROW_NOT_OK(parquet::arrow::OpenFile(arrowFile, arrow::default_memory_pool(), &fileReader));
+                std::shared_ptr<arrow::Schema> schema;
+                THROW_ARROW_NOT_OK(fileReader->GetSchema(&schema));
+
+                std::vector<int> columnIndices;
+                std::vector<TColumnConverter> columnConverters;
+                for (int i = 0; i < ReadSpec->ArrowSchema->num_fields(); ++i) {
+                    const auto& targetField = ReadSpec->ArrowSchema->field(i);
+                    auto srcFieldIndex = schema->GetFieldIndex(targetField->name());
+                    YQL_ENSURE(srcFieldIndex != -1, "Missing field: " << targetField->name());
+                    auto targetType = targetField->type();
+                    auto originalType = schema->field(srcFieldIndex)->type();
+                    YQL_ENSURE(!originalType->layout().has_dictionary, "Unsupported dictionary encoding is used for field: "
+                               << targetField->name() << ", type: " << originalType->ToString());
+                    if (targetType->Equals(originalType)) {
+                        columnConverters.emplace_back();
+                    } else {
+                        YQL_ENSURE(arrow::compute::CanCast(*originalType, *targetType), "Mismatch type for field: " << targetField->name() << ", expected: "
+                            << targetType->ToString() << ", got: " << originalType->ToString());
+                        columnConverters.emplace_back([targetType](const std::shared_ptr<arrow::Array>& value) {
+                            auto res = arrow::compute::Cast(*value, targetType);
+                            THROW_ARROW_NOT_OK(res.status());
+                            return std::move(res).ValueOrDie();
+                        });
+                    }
+
+                    columnIndices.push_back(srcFieldIndex);
+                }
+
+                TArrowParquetBatchReader reader(std::move(fileReader), std::move(columnIndices), std::move(columnConverters));
+                ProcessBatches<std::shared_ptr<arrow::RecordBatch>, TEvPrivate::TEvNextRecordBatch>(reader, isLocal);
+            } else {
+                auto stream = std::make_unique<NDB::InputStreamFromInputFormat>(NDB::FormatFactory::instance().getInputFormat(ReadSpec->Format, decompress ? *decompress : *buffer, NDB::Block(ReadSpec->CHColumns), nullptr, ReadActorFactoryCfg.RowsInBatch, ReadSpec->Settings));
+                TBlockReader reader(std::move(stream));
+                ProcessBatches<NDB::Block, TEvPrivate::TEvNextBlock>(reader, isLocal);
+            }
+        } catch (const TS3ReadError&) {
+            // Finish reading. Add error from server to issues
+            LOG_CORO_D("TS3ReadCoroImpl", "S3 read error. Path: " << Path);
+        } catch (const TDtorException&) {
+            throw;
+        } catch (const std::exception& err) {
+            exceptIssue.SetMessage(err.what());
+            fatalCode = NYql::NDqProto::StatusIds::INTERNAL_ERROR;
+            RetryStuff->Cancel();
         }
-    }
 
-    void Handle(TEvPrivate::TEvReadFinished::TPtr& ev) {
-
-        if (CurlResponseCode == CURLE_OK) {
-            CurlResponseCode = ev->Get()->CurlResponseCode;
+        if (!isLocal) {
+            WaitFinish();
         }
 
-        Issues.Clear();
         if (!ErrorText.empty()) {
             TString errorCode;
             TString message;
@@ -2022,197 +848,65 @@ public:
             Issues.AddIssues(BuildIssues(HttpResponseCode, errorCode, message));
         }
 
-        if (ev->Get()->Issues) {
-            Issues.AddIssues(ev->Get()->Issues);
+        if (exceptIssue.GetMessage()) {
+            Issues.AddIssue(exceptIssue);
         }
-
-        if (HttpResponseCode >= 300) {
-            ServerReturnedError = true;
-            Issues.AddIssue(TIssue{TStringBuilder() << "HTTP error code: " << HttpResponseCode});
-        }
-
-        if (Issues) {
-            RetryStuff->NextRetryDelay = RetryStuff->GetRetryState()->GetNextRetryDelay(CurlResponseCode, HttpResponseCode);
-            LOG_CORO_D("TEvReadFinished with Issues (try to retry): " << Issues.ToOneLineString());
-            if (RetryStuff->NextRetryDelay) {
-                // inplace retry: report problem to TransientIssues and repeat
-                Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvAsyncInputError(InputIndex, Issues, NYql::NDqProto::StatusIds::UNSPECIFIED));
-            } else {
-                // can't retry here: fail download
-                RetryStuff->RetryState = nullptr;
-                InputFinished = true;
-                LOG_CORO_W("ReadError: " << Issues.ToOneLineString() << ", LastOffset: " << LastOffset << ", LastData: " << GetLastDataAsText());
-                throw TS3ReadError(); // Don't pass control to data parsing, because it may validate eof and show wrong issues about incorrect data format
-            }
-        }
-
-        if (!RetryStuff->IsCancelled() && RetryStuff->NextRetryDelay && RetryStuff->SizeLimit > 0ULL) {
-            GetActorSystem()->Schedule(*RetryStuff->NextRetryDelay, new IEventHandle(ParentActorId, SelfActorId, new TEvPrivate::TEvRetryEventFunc(std::bind(&DownloadStart, RetryStuff, GetActorSystem(), SelfActorId, ParentActorId, PathIndex, HttpInflightSize))));
-            InputBuffer.clear();
-            if (DeferredDataParts.size()) {
-                if (DeferredQueueSize) {
-                    DeferredQueueSize->Sub(DeferredDataParts.size());
-                }
-                std::queue<THolder<TEvPrivate::TEvDataPart>> tmp;
-                DeferredDataParts.swap(tmp);
-            }
-        } else {
-            LOG_CORO_D("TEvReadFinished, LastOffset: " << LastOffset << ", Error: " << ServerReturnedError);
-            InputFinished = true;
-            if (ServerReturnedError) {
-                throw TS3ReadError(); // Don't pass control to data parsing, because it may validate eof and show wrong issues about incorrect data format
-            }
-        }
-    }
-
-    void HandleEvent(TEvPrivate::TEvContinue::THandle&) {
-        LOG_CORO_D("TEvContinue");
-        Paused = false;
-    }
-
-    void Handle(TEvPrivate::TEvContinue::TPtr& ev) {
-        HandleEvent(*ev);
-    }
-
-    void Handle(TEvPrivate::TEvReadResult2::TPtr& ev) {
-        HandleEvent(*ev);
-    }
-
-    void Handle(NActors::TEvents::TEvPoison::TPtr&) {
-        LOG_CORO_D("TEvPoison");
-        RetryStuff->Cancel();
-        throw TS3ReadAbort();
-    }
-
-private:
-    static constexpr std::string_view TruncatedSuffix = "... [truncated]"sv;
-public:
-    TS3ReadCoroImpl(ui64 inputIndex, const TTxId& txId, const NActors::TActorId& computeActorId,
-        const TRetryStuff::TPtr& retryStuff, const TReadSpec::TPtr& readSpec, size_t pathIndex,
-        const TString& path, const TString& url, std::optional<ui64> maxRows,
-        const TS3ReadActorFactoryConfig& readActorFactoryCfg,
-        TReadBufferCounter::TPtr queueBufferCounter,
-        const ::NMonitoring::TDynamicCounters::TCounterPtr& deferredQueueSize,
-        const ::NMonitoring::TDynamicCounters::TCounterPtr& httpInflightSize,
-        const ::NMonitoring::TDynamicCounters::TCounterPtr& httpDataRps,
-        const ::NMonitoring::TDynamicCounters::TCounterPtr& rawInflightSize)
-        : TActorCoroImpl(256_KB), ReadActorFactoryCfg(readActorFactoryCfg), InputIndex(inputIndex),
-        TxId(txId), RetryStuff(retryStuff), ReadSpec(readSpec), ComputeActorId(computeActorId),
-        PathIndex(pathIndex), Path(path), Url(url), RowsRemained(maxRows),
-        QueueBufferCounter(queueBufferCounter),
-        DeferredQueueSize(deferredQueueSize), HttpInflightSize(httpInflightSize),
-        HttpDataRps(httpDataRps), RawInflightSize(rawInflightSize) {
-    }
-
-    ~TS3ReadCoroImpl() override {
-        if (DeferredDataParts.size() && DeferredQueueSize) {
-            DeferredQueueSize->Sub(DeferredDataParts.size());
-        }
-        auto rawInflightSize = 0;
-        for (auto it : ReadInflightSize) {
-            rawInflightSize += it.second;
-        }
-        if (rawInflightSize && RawInflightSize) {
-            RawInflightSize->Sub(rawInflightSize);
-        }
-        ReadInflightSize.clear();
-    }
-
-private:
-    ui64 TakeIngressDelta() {
-        auto currentIngressBytes = IngressBytes;
-        IngressBytes = 0;
-        return currentIngressBytes;
-    }
-
-    TDuration TakeCpuTimeDelta() {
-        auto currentCpuTime = CpuTime;
-        CpuTime = TDuration::Zero();
-        return currentCpuTime;
-    }
-
-    TDuration GetCpuTimeDelta() {
-        return TDuration::Seconds(NHPTimer::GetSeconds(GetCycleCountFast() - StartCycleCount));
-    }
-
-    bool StopIfConsumedEnough(ui64 consumedRows) {
-        if (!RowsRemained) {
-            return false;
-        }
-
-        *RowsRemained = SubtractSaturating(*RowsRemained, consumedRows);
-        if (*RowsRemained > 0) {
-            return false;
-        }
-
-        RetryStuff->Cancel();
-        return true;
-    }
-
-    void Run() final {
-
-        NYql::NDqProto::StatusIds::StatusCode fatalCode = NYql::NDqProto::StatusIds::EXTERNAL_ERROR;
-
-        StartCycleCount = GetCycleCountFast();
-
-        try {
-            if (ReadSpec->Arrow) {
-                if (ReadSpec->Compression) {
-                    Issues.AddIssue(TIssue("Blocks optimisations are incompatible with external compression"));
-                    fatalCode = NYql::NDqProto::StatusIds::BAD_REQUEST;
-                } else {
-                    try {
-                        if (Url.StartsWith("file://")) {
-                            RunCoroBlockArrowParserOverFile();
-                        } else {
-                            RunCoroBlockArrowParserOverHttp();
-                        }
-                    } catch (const parquet::ParquetException& ex) {
-                        Issues.AddIssue(TIssue(ex.what()));
-                        fatalCode = NYql::NDqProto::StatusIds::BAD_REQUEST;
-                        RetryStuff->Cancel();
-                    }
-                }
-            } else {
-                try {
-                    if (Url.StartsWith("file://")) {
-                        RunClickHouseParserOverFile();
-                    } else {
-                        RunClickHouseParserOverHttp();
-                    }
-                } catch (const TS3ReadError&) {
-                    // Just to avoid parser error after transport failure
-                    LOG_CORO_D("S3 read ERROR");
-                } catch (const NDB::Exception& ex) {
-                    Issues.AddIssue(TIssue(ex.message()));
-                    fatalCode = NYql::NDqProto::StatusIds::BAD_REQUEST;
-                    RetryStuff->Cancel();
-                }
-            }
-        } catch (const TS3ReadAbort&) {
-            // Poison handler actually
-            LOG_CORO_D("S3 read ABORT");
-        } catch (const TDtorException&) {
-            // Stop any activity instantly
-            RetryStuff->Cancel();
-            return;
-        } catch (const std::exception& err) {
-            Issues.AddIssue(TIssue(err.what()));
-            fatalCode = NYql::NDqProto::StatusIds::INTERNAL_ERROR;
-            RetryStuff->Cancel();
-        }
-
-        CpuTime += GetCpuTimeDelta();
 
         auto issues = NS3Util::AddParentIssue(TStringBuilder{} << "Error while reading file " << Path, std::move(Issues));
         if (issues)
             Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvAsyncInputError(InputIndex, std::move(issues), fatalCode));
         else
-            Send(ParentActorId, new TEvPrivate::TEvFileFinished(PathIndex, TakeIngressDelta(), TakeCpuTimeDelta()));
+            Send(ParentActorId, new TEvPrivate::TEvFileFinished(PathIndex, IngressBytes));
+    } catch (const TS3ReadAbort&) {
+        LOG_CORO_D("TS3ReadCoroImpl", "S3 read abort. Path: " << Path);
+    } catch (const TDtorException&) {
+        return RetryStuff->Cancel();
+    } catch (const std::exception& err) {
+        Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvAsyncInputError(InputIndex, TIssues{TIssue(TStringBuilder() << "Error while reading file " << Path << ", details: " << err.what())}, NYql::NDqProto::StatusIds::INTERNAL_ERROR));
+        return;
     }
 
-    void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) {
-        return StateFunc(ev);
+    template <typename T, typename TEv>
+    void ProcessBatches(IBatchReader<T>& reader, bool isLocal) {
+        auto actorSystem = GetActorSystem();
+        auto selfActorId = SelfActorId;
+        size_t cntBlocksInFly = 0;
+        if (isLocal) {
+            for (;;) {
+                T batch;
+                if (!reader.Next(batch)) {
+                    break;
+                }
+                if (++cntBlocksInFly > MaxBlocksInFly) {
+                    WaitForSpecificEvent<TEvPrivate::TEvBlockProcessed>();
+                    --cntBlocksInFly;
+                }
+                Send(ParentActorId, new TEv(batch, PathIndex, [actorSystem, selfActorId]() {
+                    actorSystem->Send(new IEventHandle(selfActorId, selfActorId, new TEvPrivate::TEvBlockProcessed()));
+                }, IngressBytes));
+            }
+            while (cntBlocksInFly--) {
+                WaitForSpecificEvent<TEvPrivate::TEvBlockProcessed>();
+            }
+        } else {
+            for (;;) {
+                T batch;
+                if (!reader.Next(batch)) {
+                    break;
+                }
+                Send(ParentActorId, new TEv(batch, PathIndex));
+            }
+        }
+    }
+
+    void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) final {
+        TStringBuilder message;
+        message << "Error while reading file " << Path << ", details: "
+                << "S3 read. Unexpected message type " << Hex(ev->GetTypeRewrite());
+        if (auto* eventBase = ev->GetBase()) {
+            message << " (" << eventBase->ToStringHeader() << ")";
+        }
+        Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvAsyncInputError(InputIndex, TIssues{TIssue(message)}));
     }
 
     TString GetLastDataAsText() {
@@ -2261,61 +955,62 @@ private:
 
     bool InputFinished = false;
     long HttpResponseCode = 0L;
-    CURLcode CurlResponseCode = CURLE_OK;
     bool ServerReturnedError = false;
     TString ErrorText;
     TIssues Issues;
 
     std::size_t LastOffset = 0;
     TString LastData;
+    std::size_t MaxBlocksInFly = 2;
     ui64 IngressBytes = 0;
-    TDuration CpuTime;
-    ui64 StartCycleCount = 0;
-    TString InputBuffer;
-    std::optional<ui64> RowsRemained;
     bool Paused = false;
-    std::queue<THolder<TEvPrivate::TEvDataPart>> DeferredDataParts;
-    TReadBufferCounter::TPtr QueueBufferCounter;
+    std::queue<THolder<IEventHandle>> DeferredEvents;
     const ::NMonitoring::TDynamicCounters::TCounterPtr DeferredQueueSize;
     const ::NMonitoring::TDynamicCounters::TCounterPtr HttpInflightSize;
     const ::NMonitoring::TDynamicCounters::TCounterPtr HttpDataRps;
-    const ::NMonitoring::TDynamicCounters::TCounterPtr RawInflightSize;
 };
 
 class TS3ReadCoroActor : public TActorCoro {
 public:
-    TS3ReadCoroActor(THolder<TS3ReadCoroImpl> impl)
+    TS3ReadCoroActor(THolder<TS3ReadCoroImpl> impl, TRetryStuff::TPtr retryStuff, size_t pathIndex, const ::NMonitoring::TDynamicCounters::TCounterPtr& httpInflightSize)
         : TActorCoro(THolder<TActorCoroImpl>(impl.Release()))
+        , RetryStuff(std::move(retryStuff))
+        , PathIndex(pathIndex)
+        , HttpInflightSize(httpInflightSize)
     {}
 private:
     void Registered(TActorSystem* actorSystem, const TActorId& parent) override {
         TActorCoro::Registered(actorSystem, parent); // Calls TActorCoro::OnRegister and sends bootstrap event to ourself.
+        if (RetryStuff->Url.substr(0, 6) != "file://") {
+            LOG_DEBUG_S(*actorSystem, NKikimrServices::KQP_COMPUTE, "TS3ReadCoroActor" << ": " << SelfId() << ", TxId: " << RetryStuff->TxId << ". " << "Start Download, Url: " << RetryStuff->Url << ", Offset: " << RetryStuff->Offset << ", request id: [" << RetryStuff->RequestId << "]");
+            DownloadStart(RetryStuff, actorSystem, SelfId(), parent, PathIndex, HttpInflightSize);
+        }
     }
+
+    const TRetryStuff::TPtr RetryStuff;
+    const size_t PathIndex;
+    const ::NMonitoring::TDynamicCounters::TCounterPtr HttpInflightSize;
 };
 
 class TS3StreamReadActor : public TActorBootstrapped<TS3StreamReadActor>, public IDqComputeActorAsyncInput {
 public:
     TS3StreamReadActor(
         ui64 inputIndex,
-        TCollectStatsLevel statsLevel,
         const TTxId& txId,
         IHTTPGateway::TPtr gateway,
         const THolderFactory& holderFactory,
         const TString& url,
-        const TS3Credentials::TAuthInfo& authInfo,
-        const TString& pattern,
-        ES3PatternVariant patternVariant,
+        const TString& token,
         TPathList&& paths,
         bool addPathIndex,
+        ui64 startPathIndex,
         const TReadSpec::TPtr& readSpec,
         const NActors::TActorId& computeActorId,
-        const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy,
+        const IRetryPolicy<long>::TPtr& retryPolicy,
+        const std::size_t maxBlocksInFly,
         const TS3ReadActorFactoryConfig& readActorFactoryCfg,
         ::NMonitoring::TDynamicCounterPtr counters,
-        ::NMonitoring::TDynamicCounterPtr taskCounters,
-        ui64 fileSizeLimit,
-        std::optional<ui64> rowsLimitHint,
-        IMemoryQuotaManager::TPtr memoryQuotaManager
+        ::NMonitoring::TDynamicCounterPtr taskCounters
     )   : ReadActorFactoryCfg(readActorFactoryCfg)
         , Gateway(std::move(gateway))
         , HolderFactory(holderFactory)
@@ -2324,172 +1019,74 @@ public:
         , ComputeActorId(computeActorId)
         , RetryPolicy(retryPolicy)
         , Url(url)
-        , AuthInfo(authInfo)
-        , Pattern(pattern)
-        , PatternVariant(patternVariant)
+        , Token(token)
         , Paths(std::move(paths))
         , AddPathIndex(addPathIndex)
-        , RowsRemained(rowsLimitHint)
+        , StartPathIndex(startPathIndex)
         , ReadSpec(readSpec)
-        , Counters(std::move(counters))
-        , TaskCounters(std::move(taskCounters))
-        , FileSizeLimit(fileSizeLimit)
-        , MemoryQuotaManager(memoryQuotaManager) {
+        , Count(Paths.size())
+        , MaxBlocksInFly(maxBlocksInFly)
+        , Counters(counters)
+        , TaskCounters(taskCounters)
+    {
         if (Counters) {
             QueueDataSize = Counters->GetCounter("QueueDataSize");
             QueueDataLimit = Counters->GetCounter("QueueDataLimit");
             QueueBlockCount = Counters->GetCounter("QueueBlockCount");
-            DownloadCount = Counters->GetCounter("DownloadCount");
             DownloadPaused = Counters->GetCounter("DownloadPaused");
             QueueDataLimit->Add(ReadActorFactoryCfg.DataInflight);
-            DecodedChunkSizeHist = Counters->GetHistogram("ChunkSizeBytes", NMonitoring::ExplicitHistogram({100,1000,10'000,30'000,100'000,300'000,1'000'000,3'000'000,10'000'000,30'000'000,100'000'000}));
         }
         if (TaskCounters) {
             TaskQueueDataSize = TaskCounters->GetCounter("QueueDataSize");
             TaskQueueDataLimit = TaskCounters->GetCounter("QueueDataLimit");
-            TaskDownloadCount = TaskCounters->GetCounter("DownloadCount");
-            TaskChunkDownloadCount = TaskCounters->GetCounter("ChunkDownloadCount");
             TaskDownloadPaused = TaskCounters->GetCounter("DownloadPaused");
             DeferredQueueSize = TaskCounters->GetCounter("DeferredQueueSize");
             HttpInflightSize = TaskCounters->GetCounter("HttpInflightSize");
             HttpInflightLimit = TaskCounters->GetCounter("HttpInflightLimit");
             HttpDataRps = TaskCounters->GetCounter("HttpDataRps", true);
             TaskQueueDataLimit->Add(ReadActorFactoryCfg.DataInflight);
-            RawInflightSize = TaskCounters->GetCounter("RawInflightSize");
         }
-        IngressStats.Level = statsLevel;
     }
 
     void Bootstrap() {
         LOG_D("TS3StreamReadActor", "Bootstrap");
-
-        // Arrow blocks are currently not limited by mem quoter, so we use rough buffer quotation
-        // After exact mem control implementation, this allocation should be deleted
-        if (!MemoryQuotaManager->AllocateQuota(ReadActorFactoryCfg.DataInflight)) {
-            TIssues issues;
-            issues.AddIssue(TIssue{TStringBuilder() << "OutOfMemory - can't allocate read buffer"});
-            Send(ComputeActorId, new TEvAsyncInputError(InputIndex, std::move(issues), NYql::NDqProto::StatusIds::OVERLOADED));
-            return;
-        }
-
-        QueueBufferCounter = std::make_shared<TReadBufferCounter>(
-            ReadActorFactoryCfg.DataInflight,
-            TActivationContext::ActorSystem(),
-            QueueDataSize,
-            TaskQueueDataSize,
-            DownloadPaused,
-            TaskDownloadPaused,
-            TaskChunkDownloadCount,
-            DecodedChunkSizeHist);
-        FileQueueActor = RegisterWithSameMailbox(new TS3FileQueueActor{
-            TxId,
-            std::move(Paths),
-            ReadActorFactoryCfg.MaxInflight * 2,
-            FileSizeLimit,
-            Gateway,
-            Url,
-            AuthInfo,
-            Pattern,
-            PatternVariant,
-            ES3PatternType::Wildcard});
-        SendPathRequest();
         Become(&TS3StreamReadActor::StateFunc);
-        Bootstrapped = true;
+        while (TryRegisterCoro()) {
+
+        }
     }
 
     bool TryRegisterCoro() {
-        if (ObjectPathCache.empty()) {
+        if (CurrentPathIndex >= Paths.size()) {
             // no path is pending
             return false;
         }
-        if (QueueBufferCounter->IsFull()) {
+        if (QueueTotalDataSize > ReadActorFactoryCfg.DataInflight) {
             // too large data inflight
             return false;
         }
-        if (QueueBufferCounter->CoroCount >= ReadActorFactoryCfg.MaxInflight) {
-            // hard limit
+        if (DownloadInflight >= ReadActorFactoryCfg.MaxInflight) {
+            // too large download inflight
             return false;
         }
-        if (ReadSpec->ParallelDownloadCount) {
-            if (QueueBufferCounter->CoroCount >= ReadSpec->ParallelDownloadCount) {
-                // explicit limit
-                return false;
-            }
-        } else {
-            if (QueueBufferCounter->CoroCount && DownloadSize * QueueBufferCounter->Ratio() > ReadActorFactoryCfg.DataInflight * 2) {
-                // dynamic limit
-                return false;
-            }
-        }
-        RegisterCoro();
+        RegisterCoro(CurrentPathIndex++);
         return true;
     }
 
-    void RegisterCoro() {
-        QueueBufferCounter->CoroCount++;
-        if (Counters) {
-            DownloadCount->Inc();
-        }
-        if (TaskCounters) {
-            TaskDownloadCount->Inc();
-        }
-        const auto& objectPath = ReadPathFromCache();
-        DownloadSize += objectPath.Size;
+    void RegisterCoro(size_t index) {
+        DownloadInflight++;
+        const TPath& path = Paths[index];
         const TString requestId = CreateGuidAsString();
-        auto stuff = std::make_shared<TRetryStuff>(
-            Gateway,
-            Url + objectPath.Path,
-            IHTTPGateway::MakeYcHeaders(requestId, AuthInfo.GetToken(), {}, AuthInfo.GetAwsUserPwd(), AuthInfo.GetAwsSigV4()),
-            objectPath.Size,
-            TxId,
-            requestId,
-            RetryPolicy);
-        auto pathIndex = objectPath.PathIndex;
+        ui64 fileSize = std::get<std::size_t>(path);
+        auto stuff = std::make_shared<TRetryStuff>(Gateway, Url + std::get<TString>(path), MakeHeaders(Token, requestId), fileSize, TxId, requestId, RetryPolicy);
+        auto pathIndex = index + StartPathIndex;
+        RetryStuffForFile.emplace(pathIndex, stuff);
         if (TaskCounters) {
             HttpInflightLimit->Add(Gateway->GetBuffersSizePerStream());
         }
-        LOG_D(
-            "TS3StreamReadActor",
-            "RegisterCoro with path " << objectPath.Path << " with pathIndex "
-                                      << pathIndex);
-        auto impl = MakeHolder<TS3ReadCoroImpl>(
-            InputIndex,
-            TxId,
-            ComputeActorId,
-            std::move(stuff),
-            ReadSpec,
-            pathIndex,
-            objectPath.Path,
-            Url,
-            RowsRemained,
-            ReadActorFactoryCfg,
-            QueueBufferCounter,
-            DeferredQueueSize,
-            HttpInflightSize,
-            HttpDataRps,
-            RawInflightSize);
-        auto coroActorId = RegisterWithSameMailbox(new TS3ReadCoroActor(std::move(impl)));
-        CoroActors.insert(coroActorId);
-        RetryStuffForFile.emplace(coroActorId, stuff);
-    }
-
-    TObjectPath ReadPathFromCache() {
-        Y_ENSURE(!ObjectPathCache.empty());
-        auto object = ObjectPathCache.back();
-        ObjectPathCache.pop_back();
-        if (ObjectPathCache.empty() && !IsObjectQueueEmpty) {
-            SendPathRequest();
-        }
-        return object;
-    }
-    void SendPathRequest() {
-        Y_ENSURE(!IsWaitingObjectQueueResponse);
-        LOG_D("TS3StreamReadActor", "SendPathRequest " << ReadActorFactoryCfg.MaxInflight);
-        Send(
-            FileQueueActor,
-            std::make_unique<TS3FileQueueActor::TEvPrivatePrivate::TEvGetNextFile>(
-                ReadActorFactoryCfg.MaxInflight));
-        IsWaitingObjectQueueResponse = true;
+        ::NMonitoring::TDynamicCounters::TCounterPtr inflightCounter;
+        auto impl = MakeHolder<TS3ReadCoroImpl>(InputIndex, TxId, ComputeActorId, stuff, ReadSpec, pathIndex, std::get<TString>(path), Url, MaxBlocksInFly, ReadActorFactoryCfg, DeferredQueueSize, HttpInflightSize, HttpDataRps);
+        CoroActors.insert(RegisterWithSameMailbox(std::make_unique<TS3ReadCoroActor>(std::move(impl), std::move(stuff), pathIndex, impl->HttpInflightSize).release()));
     }
 
     static constexpr char ActorName[] = "S3_STREAM_READ_ACTOR";
@@ -2516,34 +1113,43 @@ private:
 
     class TReadyBlock {
     public:
-        TReadyBlock(TEvPrivate::TEvNextBlock::TPtr& event) : PathInd(event->Get()->PathIndex) { Block.swap(event->Get()->Block); }
-        TReadyBlock(TEvPrivate::TEvNextRecordBatch::TPtr& event) : Batch(event->Get()->Batch), PathInd(event->Get()->PathIndex) {}
+        TReadyBlock(TEvPrivate::TEvNextBlock::TPtr& event) : PathInd(event->Get()->PathIndex), Functor (std::move(event->Get()->Functor)) { Block.swap(event->Get()->Block); }
+        TReadyBlock(TEvPrivate::TEvNextRecordBatch::TPtr& event) : Batch(event->Get()->Batch), PathInd(event->Get()->PathIndex), Functor(std::move(event->Get()->Functor)) {}
         NDB::Block Block;
         std::shared_ptr<arrow::RecordBatch> Batch;
         size_t PathInd;
+        std::function<void()> Functor;
     };
 
     void SaveState(const NDqProto::TCheckpoint&, NDqProto::TSourceState&) final {}
     void LoadState(const NDqProto::TSourceState&) final {}
     void CommitState(const NDqProto::TCheckpoint&) final {}
+    ui64 GetInputIndex() const final { return InputIndex; }
 
-    ui64 GetInputIndex() const final {
-        return InputIndex; 
-    }
-
-    const TDqAsyncStats& GetIngressStats() const final {
-        return IngressStats;
-    }
-
-    TDuration GetCpuTime() override {
-        return CpuTime;
+    ui64 GetIngressBytes() override {
+        return IngressBytes;
     }
 
     ui64 GetBlockSize(const TReadyBlock& block) const {
-        return ReadSpec->Arrow ? NUdf::GetSizeOfArrowBatchInBytes(*block.Batch) : block.Block.bytes();
+        return ReadSpec->Arrow ? GetSizeOfBatch(*block.Batch) : block.Block.bytes();
     }
 
-    i64 GetAsyncInputData(TUnboxedValueBatch& output, TMaybe<TInstant>&, bool& finished, i64 free) final {
+    void ReportMemoryUsage() const {
+        const TInstant now = TInstant::Now();
+        if (now - LastMemoryReport < MEMORY_USAGE_REPORT_PERIOD) {
+            return;
+        }
+        LastMemoryReport = now;
+        size_t blocksTotalSize = 0;
+        for (const auto& block : Blocks) {
+            blocksTotalSize += GetBlockSize(block);
+        }
+        LOG_D("TS3StreamReadActor", "Memory usage. Ready blocks: " << Blocks.size() << ". Ready blocks total size: " << blocksTotalSize);
+    }
+
+    i64 GetAsyncInputData(TUnboxedValueVector& output, TMaybe<TInstant>&, bool& finished, i64 free) final {
+        ReportMemoryUsage();
+
         i64 total = 0LL;
         if (!Blocks.empty()) do {
             const i64 s = GetBlockSize(Blocks.front());
@@ -2564,6 +1170,8 @@ private:
                 value = HolderFactory.Create<TBoxedBlock>(Blocks.front().Block);
             }
 
+            Blocks.front().Functor();
+
             if (AddPathIndex) {
                 NUdf::TUnboxedValue* tupleItems = nullptr;
                 auto tuple = ContainerCache.NewArray(HolderFactory, 2, tupleItems);
@@ -2576,58 +1184,96 @@ private:
             total += s;
             output.emplace_back(std::move(value));
             Blocks.pop_front();
-            QueueBufferCounter->Sub(s);
+            QueueTotalDataSize -= s;
             if (Counters) {
+                QueueDataSize->Sub(s);
                 QueueBlockCount->Dec();
+            }
+            if (TaskCounters) {
+                TaskQueueDataSize->Sub(s);
             }
             TryRegisterCoro();
         } while (!Blocks.empty() && free > 0LL && GetBlockSize(Blocks.front()) <= size_t(free));
 
-        finished = ConsumedEnoughRows() || LastFileWasProcessed();
+        MaybeContinue();
+
+        finished = Blocks.empty() && !Count;
         if (finished) {
             ContainerCache.Clear();
             ArrowTupleContainerCache.Clear();
             ArrowRowContainerCache.Clear();
-        } else if(!total) {
-            IngressStats.TryPause();
         }
         return total;
     }
 
     // IActor & IDqComputeActorAsyncInput
     void PassAway() override { // Is called from Compute Actor
-
-        if (Bootstrapped) {
-            LOG_D("TS3StreamReadActor", "PassAway");
+        LOG_D("TS3StreamReadActor", "PassAway");
+        if (Counters) {
+            QueueDataSize->Sub(QueueTotalDataSize);
+            QueueBlockCount->Sub(Blocks.size());
+            QueueDataLimit->Sub(ReadActorFactoryCfg.DataInflight);
+        }
+        if (TaskCounters) {
+            TaskQueueDataSize->Sub(QueueTotalDataSize);
+            TaskQueueDataLimit->Sub(ReadActorFactoryCfg.DataInflight);
+            HttpInflightLimit->Sub(Gateway->GetBuffersSizePerStream() * CoroActors.size());
+        }
+        if (Paused) {
             if (Counters) {
-                QueueBlockCount->Sub(Blocks.size());
-                QueueDataLimit->Sub(ReadActorFactoryCfg.DataInflight);
-                DownloadCount->Sub(QueueBufferCounter->CoroCount);
+                DownloadPaused->Dec();
             }
             if (TaskCounters) {
-                TaskQueueDataLimit->Sub(ReadActorFactoryCfg.DataInflight);
-                HttpInflightLimit->Sub(Gateway->GetBuffersSizePerStream() * CoroActors.size());
-                TaskDownloadCount->Sub(QueueBufferCounter->CoroCount);
-                TaskChunkDownloadCount->Sub(QueueBufferCounter->ChunkCount);
+                TaskDownloadPaused->Dec();
             }
-            QueueBufferCounter.reset();
+        }
+        QueueTotalDataSize = 0;
 
-            for (const auto actorId : CoroActors) {
-                Send(actorId, new NActors::TEvents::TEvPoison());
-            }
-            Send(FileQueueActor, new NActors::TEvents::TEvPoison());
-
-            ContainerCache.Clear();
-            ArrowTupleContainerCache.Clear();
-            ArrowRowContainerCache.Clear();
-
-            MemoryQuotaManager->FreeQuota(ReadActorFactoryCfg.DataInflight);
-        } else {
-            LOG_W("TS3StreamReadActor", "PassAway w/o Bootstrap");
+        for (const auto actorId : CoroActors) {
+            Send(actorId, new NActors::TEvents::TEvPoison());
         }
 
-        MemoryQuotaManager.reset();
+        ContainerCache.Clear();
         TActorBootstrapped<TS3StreamReadActor>::PassAway();
+    }
+
+    static IHTTPGateway::THeaders MakeHeaders(const TString& token, const TString& requestId) {
+        IHTTPGateway::THeaders headers{TString{"X-Request-ID:"} += requestId};
+        if (token) {
+            headers.emplace_back(TString("X-YaCloud-SubjectToken:") += token);
+        }
+        return headers;
+    }
+
+    void MaybePause() {
+        if (!Paused && QueueTotalDataSize >= ReadActorFactoryCfg.DataInflight) {
+            for (const auto actorId : CoroActors) {
+                Send(actorId, new TEvPrivate::TEvPause());
+            }
+            Paused = true;
+            if (Counters) {
+                DownloadPaused->Inc();
+            }
+            if (TaskCounters) {
+                TaskDownloadPaused->Inc();
+            }
+        }
+    }
+
+    void MaybeContinue() {
+        // resume download on 3/4 == 75% to avoid oscillation (hysteresis)
+        if (Paused && QueueTotalDataSize * 4 < ReadActorFactoryCfg.DataInflight * 3) {
+            for (const auto actorId : CoroActors) {
+                Send(actorId, new TEvPrivate::TEvContinue());
+            }
+            Paused = false;
+            if (Counters) {
+                DownloadPaused->Dec();
+            }
+            if (TaskCounters) {
+                TaskDownloadPaused->Dec();
+            }
+        }
     }
 
     STRICT_STFUNC(StateFunc,
@@ -2635,33 +1281,7 @@ private:
         hFunc(TEvPrivate::TEvNextBlock, HandleNextBlock);
         hFunc(TEvPrivate::TEvNextRecordBatch, HandleNextRecordBatch);
         hFunc(TEvPrivate::TEvFileFinished, HandleFileFinished);
-        hFunc(TEvPrivate::TEvObjectPathBatch, HandleObjectPathBatch);
-        hFunc(TEvPrivate::TEvObjectPathReadError, HandleObjectPathReadError);
     )
-
-    void HandleObjectPathBatch(TEvPrivate::TEvObjectPathBatch::TPtr& objectPathBatch) {
-        Y_ENSURE(IsWaitingObjectQueueResponse);
-        IsWaitingObjectQueueResponse = false;
-        ListedFiles += objectPathBatch->Get()->ObjectPaths.size();
-        IsObjectQueueEmpty = objectPathBatch->Get()->NoMoreFiles;
-
-        ObjectPathCache.insert(
-            ObjectPathCache.end(),
-            std::make_move_iterator(objectPathBatch->Get()->ObjectPaths.begin()),
-            std::make_move_iterator(objectPathBatch->Get()->ObjectPaths.end()));
-        LOG_D(
-            "TS3StreamReadActor",
-            "HandleObjectPathBatch " << ObjectPathCache.size() << " IsObjectQueueEmpty "
-                                     << IsObjectQueueEmpty << " MaxInflight " << ReadActorFactoryCfg.MaxInflight);
-        while (TryRegisterCoro()) {}
-    }
-
-    void HandleObjectPathReadError(TEvPrivate::TEvObjectPathReadError::TPtr& result) {
-        IsObjectQueueEmpty = true;
-        LOG_W("TS3StreamReadActor", "Error while object listing, details: TEvObjectPathReadError: " << result->Get()->Issues.ToOneLineString());
-        auto issues = NS3Util::AddParentIssue(TStringBuilder{} << "Error while object listing", TIssues{result->Get()->Issues});
-        Send(ComputeActorId, new TEvAsyncInputError(InputIndex, std::move(issues), NYql::NDqProto::StatusIds::EXTERNAL_ERROR));
-    }
 
     void HandleRetry(TEvPrivate::TEvRetryEventFunc::TPtr& retry) {
         return retry->Get()->Functor();
@@ -2669,66 +1289,52 @@ private:
 
     void HandleNextBlock(TEvPrivate::TEvNextBlock::TPtr& next) {
         YQL_ENSURE(!ReadSpec->Arrow);
-        IngressStats.Bytes += next->Get()->IngressDelta;
-        IngressStats.Chunks++;
-        IngressStats.Resume();
-        CpuTime += next->Get()->CpuTimeDelta;
+        IngressBytes = next->Get()->IngressBytes;
+        auto size = next->Get()->Block.bytes();
+        QueueTotalDataSize += size;
         if (Counters) {
             QueueBlockCount->Inc();
+            QueueDataSize->Add(size);
         }
-        StopLoadsIfEnough(next->Get()->Block.rows());
+        if (TaskCounters) {
+            TaskQueueDataSize->Add(size);
+        }
+        MaybePause();
         Blocks.emplace_back(next);
         Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived(InputIndex));
+        ReportMemoryUsage();
     }
 
     void HandleNextRecordBatch(TEvPrivate::TEvNextRecordBatch::TPtr& next) {
         YQL_ENSURE(ReadSpec->Arrow);
-        IngressStats.Bytes += next->Get()->IngressDelta;
-        IngressStats.Chunks++;
-        IngressStats.Resume();
-        CpuTime += next->Get()->CpuTimeDelta;
+        IngressBytes = next->Get()->IngressBytes;
+        auto size = GetSizeOfBatch(*next->Get()->Batch);
+        QueueTotalDataSize += size;
         if (Counters) {
             QueueBlockCount->Inc();
+            QueueDataSize->Add(size);
         }
-        StopLoadsIfEnough(next->Get()->Batch->num_rows());
+        if (TaskCounters) {
+            TaskQueueDataSize->Add(size);
+        }
+        MaybePause();
         Blocks.emplace_back(next);
         Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived(InputIndex));
+        ReportMemoryUsage();
     }
 
     void HandleFileFinished(TEvPrivate::TEvFileFinished::TPtr& ev) {
         CoroActors.erase(ev->Sender);
-        if (ev->Get()->IngressDelta) {
-            IngressStats.Bytes += ev->Get()->IngressDelta;
-            IngressStats.Chunks++;
-            IngressStats.Resume();
-        }
-        CpuTime += ev->Get()->CpuTimeDelta;
-
-        auto it = RetryStuffForFile.find(ev->Sender);
-        if (it == RetryStuffForFile.end()) {
-            return;
-        }
-        auto size = it->second->SizeLimit;
-        RetryStuffForFile.erase(it);
-        if (DownloadSize < size) {
-            DownloadSize = 0;
-        } else {
-            DownloadSize -= size;
-        }
+        IngressBytes = ev->Get()->IngressBytes;
+        RetryStuffForFile.erase(ev->Get()->PathIndex);
+        Y_VERIFY(Count);
+        --Count;
 
         if (TaskCounters) {
             HttpInflightLimit->Sub(Gateway->GetBuffersSizePerStream());
         }
-        QueueBufferCounter->CoroCount--;
-        if (Counters) {
-            DownloadCount->Dec();
-        }
-        if (TaskCounters) {
-            TaskDownloadCount->Dec();
-        }
-        CompletedFiles++;
-        IngressStats.Splits++;
-        if (!ObjectPathCache.empty()) {
+        DownloadInflight--;
+        if (CurrentPathIndex < Paths.size()) {
             TryRegisterCoro();
         } else {
             /*
@@ -2736,89 +1342,54 @@ private:
             then we need to pass the information to Compute Actor that
             the download of all data is finished in this place
             */
-            if (LastFileWasProcessed()) {
+            if (Blocks.empty() && Count == 0) {
                 Send(ComputeActorId, new IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived(InputIndex));
             }
         }
     }
 
-    bool LastFileWasProcessed() const {
-        return Blocks.empty() && (ListedFiles == CompletedFiles) && IsObjectQueueEmpty;
-    }
-
-    void StopLoadsIfEnough(ui64 consumedRows) {
-        if (!RowsRemained) {
-            return;
-        }
-
-        *RowsRemained = SubtractSaturating(*RowsRemained, consumedRows);
-        if (*RowsRemained == 0) {
-            LOG_T("TS3StreamReadActor", "StopLoadsIfEnough(consumedRows = " << consumedRows << ") sends poison");
-            for (const auto actorId : CoroActors) {
-                Send(actorId, new NActors::TEvents::TEvPoison());
-            }
-        }
-    }
-
-    bool ConsumedEnoughRows() const noexcept {
-        return RowsRemained && *RowsRemained == 0;
-    }
-
     const TS3ReadActorFactoryConfig ReadActorFactoryCfg;
     const IHTTPGateway::TPtr Gateway;
-    THashMap<NActors::TActorId, TRetryStuff::TPtr> RetryStuffForFile;
+    THashMap<size_t, TRetryStuff::TPtr> RetryStuffForFile;
     const THolderFactory& HolderFactory;
     TPlainContainerCache ContainerCache;
     TPlainContainerCache ArrowTupleContainerCache;
     TPlainContainerCache ArrowRowContainerCache;
 
     const ui64 InputIndex;
-    TDqAsyncStats IngressStats;
     const TTxId TxId;
     const NActors::TActorId ComputeActorId;
-    const IHTTPGateway::TRetryPolicy::TPtr RetryPolicy;
+    const IRetryPolicy<long>::TPtr RetryPolicy;
 
     const TString Url;
-    const TS3Credentials::TAuthInfo AuthInfo;
-    const TString Pattern;
-    const ES3PatternVariant PatternVariant;
-    TPathList Paths;
-    std::vector<TObjectPath> ObjectPathCache;
-    bool IsObjectQueueEmpty = false;
-    bool IsWaitingObjectQueueResponse = false;
+    const TString Token;
+    const TPathList Paths;
     const bool AddPathIndex;
-    size_t ListedFiles = 0;
-    size_t CompletedFiles = 0;
-    std::optional<ui64> RowsRemained;
+    const ui64 StartPathIndex;
     const TReadSpec::TPtr ReadSpec;
     std::deque<TReadyBlock> Blocks;
-    TDuration CpuTime;
+    ui32 Count;
+    const std::size_t MaxBlocksInFly;
+    ui64 IngressBytes = 0;
+    size_t CurrentPathIndex = 0;
     mutable TInstant LastMemoryReport = TInstant::Now();
-    TReadBufferCounter::TPtr QueueBufferCounter;
+    ui64 QueueTotalDataSize = 0;
     ::NMonitoring::TDynamicCounters::TCounterPtr QueueDataSize;
     ::NMonitoring::TDynamicCounters::TCounterPtr QueueDataLimit;
     ::NMonitoring::TDynamicCounters::TCounterPtr QueueBlockCount;
-    ::NMonitoring::TDynamicCounters::TCounterPtr DownloadCount;
     ::NMonitoring::TDynamicCounters::TCounterPtr DownloadPaused;
     ::NMonitoring::TDynamicCounters::TCounterPtr DeferredQueueSize;
-    ::NMonitoring::TDynamicCounters::TCounterPtr TaskDownloadCount;
     ::NMonitoring::TDynamicCounters::TCounterPtr TaskDownloadPaused;
-    ::NMonitoring::TDynamicCounters::TCounterPtr TaskChunkDownloadCount;
     ::NMonitoring::TDynamicCounters::TCounterPtr TaskQueueDataSize;
     ::NMonitoring::TDynamicCounters::TCounterPtr TaskQueueDataLimit;
     ::NMonitoring::TDynamicCounters::TCounterPtr HttpInflightSize;
     ::NMonitoring::TDynamicCounters::TCounterPtr HttpInflightLimit;
     ::NMonitoring::TDynamicCounters::TCounterPtr HttpDataRps;
-    ::NMonitoring::TDynamicCounters::TCounterPtr RawInflightSize;
-    ::NMonitoring::THistogramPtr DecodedChunkSizeHist;
     ::NMonitoring::TDynamicCounterPtr Counters;
     ::NMonitoring::TDynamicCounterPtr TaskCounters;
-    ui64 DownloadSize = 0;
+    ui64 DownloadInflight = 0;
     std::set<NActors::TActorId> CoroActors;
-    NActors::TActorId FileQueueActor;
-    const ui64 FileSizeLimit;
-    bool Bootstrapped = false;
-    IMemoryQuotaManager::TPtr MemoryQuotaManager;
+    bool Paused = false;
 };
 
 using namespace NKikimr::NMiniKQL;
@@ -2915,11 +1486,6 @@ NDB::DataTypePtr MetaToClickHouse(const TType* type, NSerialization::TSerializat
                 return std::make_shared<NDB::DataTypeUUID>();
             case NUdf::EDataSlot::Interval:
                 return NSerialization::GetInterval(unit);
-            case NUdf::EDataSlot::Decimal: {
-                const auto decimalType = static_cast<const TDataDecimalType*>(type);
-                auto [precision, scale] = decimalType->GetParams();
-                return std::make_shared<const NDB::DataTypeDecimal<NDB::Decimal128>>(precision, scale);
-            }
             default:
                 throw yexception() << "Unsupported data slot in MetaToClickHouse: " << slot;
             }
@@ -2955,8 +1521,6 @@ NDB::FormatSettings::TimestampFormat ToTimestampFormat(const TString& formatName
     return NDB::FormatSettings::TimestampFormat::Unspecified;
 }
 
-
-
 } // namespace
 
 using namespace NKikimr::NMiniKQL;
@@ -2967,57 +1531,27 @@ std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateS3ReadActor(
     IHTTPGateway::TPtr gateway,
     NS3::TSource&& params,
     ui64 inputIndex,
-    TCollectStatsLevel statsLevel,
     const TTxId& txId,
     const THashMap<TString, TString>& secureParams,
     const THashMap<TString, TString>& taskParams,
-    const TVector<TString>& readRanges,
     const NActors::TActorId& computeActorId,
     ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory,
-    const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy,
+    const IRetryPolicy<long>::TPtr& retryPolicy,
     const TS3ReadActorFactoryConfig& cfg,
     ::NMonitoring::TDynamicCounterPtr counters,
-    ::NMonitoring::TDynamicCounterPtr taskCounters,
-    IMemoryQuotaManager::TPtr memoryQuotaManager)
+    ::NMonitoring::TDynamicCounterPtr taskCounters)
 {
     const IFunctionRegistry& functionRegistry = *holderFactory.GetFunctionRegistry();
 
     TPathList paths;
-    ReadPathsList(params, taskParams, readRanges, paths);
+    ui64 startPathIndex = 0;
+    ReadPathsList(params, taskParams, paths, startPathIndex);
 
     const auto token = secureParams.Value(params.GetToken(), TString{});
-    const auto authInfo = GetAuthInfo(credentialsFactory, token);
+    const auto credentialsProviderFactory = CreateCredentialsProviderFactoryForStructuredToken(credentialsFactory, token);
+    const auto authToken = credentialsProviderFactory->CreateProvider()->GetAuthInfo();
 
     const auto& settings = params.GetSettings();
-    TString pathPattern = "*";
-    ES3PatternVariant pathPatternVariant = ES3PatternVariant::FilePattern;
-    auto hasDirectories = std::find_if(paths.begin(), paths.end(), [](const TPath& a) {
-                              return a.IsDirectory;
-                          }) != paths.end();
-    if (hasDirectories) {
-        auto pathPatternValue = settings.find("pathpattern");
-        if (pathPatternValue == settings.cend()) {
-            ythrow yexception() << "'pathpattern' must be configured for directory listing";
-        }
-        pathPattern = pathPatternValue->second;
-
-        auto pathPatternVariantValue = settings.find("pathpatternvariant");
-        if (pathPatternVariantValue == settings.cend()) {
-            ythrow yexception()
-                << "'pathpatternvariant' must be configured for directory listing";
-        }
-        if (!TryFromString(pathPatternVariantValue->second, pathPatternVariant)) {
-            ythrow yexception()
-                << "Unknown 'pathpatternvariant': " << pathPatternVariantValue->second;
-        }
-    }
-    ui64 fileSizeLimit = cfg.FileSizeLimit;
-    if (params.HasFormat()) {
-        if (auto it = cfg.FormatSizeLimits.find(params.GetFormat()); it != cfg.FormatSizeLimits.end()) {
-            fileSizeLimit = it->second;
-        }
-    }
-
     bool addPathIndex = false;
     if (auto it = settings.find("addPathIndex"); it != settings.cend()) {
         addPathIndex = FromString<bool>(it->second);
@@ -3028,36 +1562,20 @@ std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateS3ReadActor(
         intervalUnit = NYql::NSerialization::TSerializationInterval::ToUnit(it->second);
     }
 
-    std::optional<ui64> rowsLimitHint;
-    if (params.GetRowsLimitHint() != 0) {
-        rowsLimitHint = params.GetRowsLimitHint();
-    }
-
     if (params.HasFormat() && params.HasRowType()) {
         const auto pb = std::make_unique<TProgramBuilder>(typeEnv, functionRegistry);
         const auto outputItemType = NCommon::ParseTypeFromYson(TStringBuf(params.GetRowType()), *pb, Cerr);
-        YQL_ENSURE(outputItemType->IsStruct(), "Row type is not struct");
         const auto structType = static_cast<TStructType*>(outputItemType);
 
         const auto readSpec = std::make_shared<TReadSpec>();
-        readSpec->Arrow = params.GetFormat() == "parquet";
-        readSpec->ParallelRowGroupCount = params.GetParallelRowGroupCount();
-        readSpec->RowGroupReordering = params.GetRowGroupReordering();
-        readSpec->ParallelDownloadCount = params.GetParallelDownloadCount();
-
-        if (rowsLimitHint && *rowsLimitHint <= 1000) {
-            readSpec->ParallelRowGroupCount = 1;
-            readSpec->ParallelDownloadCount = 1;
-        }
+        readSpec->Arrow = params.GetArrow();
         if (readSpec->Arrow) {
-            fileSizeLimit = cfg.BlockFileSizeLimit;
             arrow::SchemaBuilder builder;
-            auto extraStructType = static_cast<TStructType*>(pb->NewStructType(structType, BlockLengthColumnName,
+            auto extraStructType = static_cast<TStructType*>(pb->NewStructType(structType, "_yql_block_length",
                 pb->NewBlockType(pb->NewDataType(NUdf::EDataSlot::Uint64), TBlockType::EShape::Scalar)));
 
             for (ui32 i = 0U; i < extraStructType->GetMembersCount(); ++i) {
-                TStringBuf memberName = extraStructType->GetMemberName(i);
-                if (memberName == BlockLengthColumnName) {
+                if (extraStructType->GetMemberName(i) == "_yql_block_length") {
                     readSpec->BlockLengthPosition = i;
                     continue;
                 }
@@ -3066,9 +1584,8 @@ std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateS3ReadActor(
                 std::shared_ptr<arrow::DataType> dataType;
 
                 YQL_ENSURE(ConvertArrowType(memberType, dataType), "Unsupported arrow type");
-                THROW_ARROW_NOT_OK(builder.AddField(std::make_shared<arrow::Field>(std::string(memberName), dataType, memberType->IsOptional())));
+                THROW_ARROW_NOT_OK(builder.AddField(std::make_shared<arrow::Field>(std::string(extraStructType->GetMemberName(i)), dataType, memberType->IsOptional())));
                 readSpec->ColumnReorder.push_back(i);
-                readSpec->RowSpec.emplace(memberName, memberType);
             }
 
             auto res = builder.Finish();
@@ -3131,9 +1648,12 @@ std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateS3ReadActor(
 
 #undef SET_FLAG
 #undef SUPPORTED_FLAGS
-        const auto actor = new TS3StreamReadActor(inputIndex, statsLevel, txId, std::move(gateway), holderFactory, params.GetUrl(), authInfo, pathPattern, pathPatternVariant,
-                                                  std::move(paths), addPathIndex, readSpec, computeActorId, retryPolicy,
-                                                  cfg, counters, taskCounters, fileSizeLimit, rowsLimitHint, memoryQuotaManager);
+        std::size_t maxBlocksInFly = 2;
+        if (const auto it = settings.find("fileReadBlocksInFly"); settings.cend() != it)
+            maxBlocksInFly = FromString<ui64>(it->second);
+        const auto actor = new TS3StreamReadActor(inputIndex, txId, std::move(gateway), holderFactory, params.GetUrl(), authToken,
+                                                  std::move(paths), addPathIndex, startPathIndex, readSpec, computeActorId, retryPolicy,
+                                                  maxBlocksInFly, cfg, counters, taskCounters);
 
         return {actor, actor};
     } else {
@@ -3141,9 +1661,8 @@ std::pair<NYql::NDq::IDqComputeActorAsyncInput*, IActor*> CreateS3ReadActor(
         if (const auto it = settings.find("sizeLimit"); settings.cend() != it)
             sizeLimit = FromString<ui64>(it->second);
 
-        const auto actor = new TS3ReadActor(inputIndex, statsLevel, txId, std::move(gateway), holderFactory, params.GetUrl(), authInfo, pathPattern, pathPatternVariant,
-                                            std::move(paths), addPathIndex, computeActorId, sizeLimit, retryPolicy,
-                                            cfg, counters, taskCounters, fileSizeLimit, rowsLimitHint);
+        const auto actor = new TS3ReadActor(inputIndex, txId, std::move(gateway), holderFactory, params.GetUrl(), authToken,
+                                            std::move(paths), addPathIndex, startPathIndex, computeActorId, sizeLimit, retryPolicy);
         return {actor, actor};
     }
 }

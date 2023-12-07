@@ -71,34 +71,26 @@ inline void FormatValue(TStringBuilderBase* builder, TStringBuf value, TStringBu
 
     bool singleQuotes = false;
     bool doubleQuotes = false;
-    bool escape = false;
     while (current < format.end()) {
-        switch (*current++) {
-            case 'q':
-                singleQuotes = true;
-                break;
-            case 'Q':
-                doubleQuotes = true;
-                break;
-            case 'h':
-                escape =  true;
-                break;
+        if (*current == 'q') {
+            singleQuotes = true;
+        } else if (*current == 'Q') {
+            doubleQuotes = true;
         }
+        ++current;
     }
 
     if (padLeft) {
         builder->AppendChar(' ', padding);
     }
 
-    if (singleQuotes || doubleQuotes || escape) {
+    if (singleQuotes || doubleQuotes) {
         for (const char* valueCurrent = value.begin(); valueCurrent < value.end(); ++valueCurrent) {
             char ch = *valueCurrent;
             if (ch == '\n') {
                 builder->AppendString("\\n");
             } else if (ch == '\t') {
                 builder->AppendString("\\t");
-            } else if (ch == '\\') {
-                builder->AppendString("\\\\");
             } else if (ch < PrintableASCIILow || ch > PrintableASCIIHigh) {
                 builder->AppendString("\\x");
                 builder->AppendChar(IntToHexLowercase[static_cast<ui8>(ch) >> 4]);
@@ -598,15 +590,10 @@ void FormatImpl(
                 *argFormatEnd != 'p' &&
                 *argFormatEnd != 'n')
             {
-                switch (*argFormatEnd) {
-                    case 'q':
-                        singleQuotes = true;
-                        break;
-                    case 'Q':
-                        doubleQuotes = true;
-                        break;
-                    case 'h':
-                        break;
+                if (*argFormatEnd == 'q') {
+                    singleQuotes = true;
+                } else if (*argFormatEnd == 'Q') {
+                    doubleQuotes = true;
                 }
                 ++argFormatEnd;
             }
@@ -641,35 +628,6 @@ void FormatImpl(
 }
 
 } // namespace NDetail
-
-////////////////////////////////////////////////////////////////////////////////
-
-template <class... TArgs>
-TLazyMultiValueFormatter<TArgs...>::TLazyMultiValueFormatter(
-    TStringBuf format,
-    TArgs&&... args)
-    : Format_(format)
-    , Args_(std::forward<TArgs>(args)...)
-{ }
-
-template <class... TArgs>
-void FormatValue(
-    TStringBuilderBase* builder,
-    const TLazyMultiValueFormatter<TArgs...>& value,
-    TStringBuf /*format*/)
-{
-    std::apply(
-        [&] <class... TInnerArgs> (TInnerArgs&&... args) {
-            builder->AppendFormat(value.Format_, std::forward<TInnerArgs>(args)...);
-        },
-        value.Args_);
-}
-
-template <class... TArgs>
-auto MakeLazyMultiValueFormatter(TStringBuf format, TArgs&&... args)
-{
-    return TLazyMultiValueFormatter<TArgs...>(format, std::forward<TArgs>(args)...);
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 

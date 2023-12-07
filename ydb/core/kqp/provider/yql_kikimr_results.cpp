@@ -5,6 +5,8 @@
 #include <ydb/library/uuid/uuid.h>
 
 #include <ydb/library/yql/providers/common/codec/yql_codec_results.h>
+#include <ydb/library/yql/providers/common/provider/yql_provider.h>
+#include <ydb/library/yql/providers/common/schema/expr/yql_expr_schema.h>
 #include <ydb/library/yql/public/decimal/yql_decimal.h>
 
 namespace NYql {
@@ -273,28 +275,6 @@ TExprNode::TPtr MakeAtomForDataType(EDataSlot slot, const NKikimrMiniKQL::TValue
     }
 }
 
-template<typename TOut>
-Y_FORCE_INLINE bool ExportTupleTypeToKikimrProto(const TTupleExprType* type, TOut out, TExprContext& ctx) {
-    for (const auto itemType : type->GetItems()) {
-        if (!ExportTypeToKikimrProto(*itemType, *out->AddElement(), ctx)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-template<typename TOut>
-Y_FORCE_INLINE bool ExportStructTypeToKikimrProto(const TStructExprType* type, TOut out, TExprContext& ctx) {
-    for (const auto itemType : type->GetItems()) {
-        auto outMember = out->AddMember();
-        outMember->SetName(TString(itemType->GetName()));
-        if (!ExportTypeToKikimrProto(*itemType->GetItemType(), *outMember->MutableType(), ctx)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 } // namespace
 
 void KikimrResultToYson(const TStringStream& stream, NYson::TYsonWriter& writer, const NKikimrMiniKQL::TResult& result,
@@ -480,10 +460,7 @@ const TTypeAnnotationNode* ParseTypeFromKikimrProto(const NKikimrMiniKQL::TType&
 
             return ctx.MakeType<TDictExprType>(keyType, payloadType);
         }
-        case NKikimrMiniKQL::ETypeKind::Pg: {
-            const NKikimrMiniKQL::TPgType& protoData = type.GetPg();
-            return ctx.MakeType<TPgExprType>(protoData.Getoid());
-        }
+
         default: {
             ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unsupported protobuf type: "
                 << type.ShortDebugString()));
@@ -497,29 +474,6 @@ bool ExportTypeToKikimrProto(const TTypeAnnotationNode& type, NKikimrMiniKQL::TT
         case ETypeAnnotationKind::Void: {
             protoType.SetKind(NKikimrMiniKQL::ETypeKind::Void);
             return true;
-        }
-
-        case ETypeAnnotationKind::Null: {
-            protoType.SetKind(NKikimrMiniKQL::ETypeKind::Null);
-            return true;
-        }
-
-        case ETypeAnnotationKind::EmptyList: {
-            protoType.SetKind(NKikimrMiniKQL::ETypeKind::EmptyList);
-            return true;
-        }
-
-        case ETypeAnnotationKind::EmptyDict: {
-            protoType.SetKind(NKikimrMiniKQL::ETypeKind::EmptyDict);
-            return true;
-        }
-
-        case ETypeAnnotationKind::Tagged: {
-            auto taggedType = type.Cast<TTaggedExprType>();
-            protoType.SetKind(NKikimrMiniKQL::ETypeKind::Tagged);
-            auto target = protoType.MutableTagged();
-            target->SetTag(TString(taggedType->GetTag()));
-            return ExportTypeToKikimrProto(*taggedType->GetBaseType(), *target->MutableItem(), ctx);
         }
 
         case ETypeAnnotationKind::Data: {
@@ -546,29 +500,15 @@ bool ExportTypeToKikimrProto(const TTypeAnnotationNode& type, NKikimrMiniKQL::TT
             return ExportTypeToKikimrProto(*itemType, *protoType.MutableOptional()->MutableItem(), ctx);
         }
 
-        case ETypeAnnotationKind::Variant: {
-            const auto varType = type.Cast<TVariantExprType>();
-            const auto underlyingType = varType->GetUnderlyingType();
-            protoType.SetKind(NKikimrMiniKQL::ETypeKind::Variant);
-            auto variantOut = protoType.MutableVariant();
-            if (underlyingType->GetKind() == ETypeAnnotationKind::Tuple) {
-                const auto tupleType = underlyingType->Cast<TTupleExprType>();
-                return ExportTupleTypeToKikimrProto(tupleType, variantOut->MutableTupleItems(), ctx);
-            } else if (underlyingType->GetKind() == ETypeAnnotationKind::Struct) {
-                const auto structType = underlyingType->Cast<TStructExprType>();
-                return ExportStructTypeToKikimrProto(structType, variantOut->MutableStructItems(), ctx);
-            } else {
-                ctx.AddError(TIssue(TPosition(), TStringBuilder()
-                    << "Unsupported type annotation underlying variant kind: "
-                    << underlyingType->GetKind()));
-                return false;
-            }
-        }
-
         case ETypeAnnotationKind::Tuple: {
             protoType.SetKind(NKikimrMiniKQL::ETypeKind::Tuple);
-            auto protoTuple = protoType.MutableTuple();
-            return ExportTupleTypeToKikimrProto(type.Cast<TTupleExprType>(), protoTuple, ctx);
+            auto& protoTuple = *protoType.MutableTuple();
+            for (auto& itemType : type.Cast<TTupleExprType>()->GetItems()) {
+                if (!ExportTypeToKikimrProto(*itemType, *protoTuple.AddElement(), ctx)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         case ETypeAnnotationKind::List: {
@@ -579,8 +519,16 @@ bool ExportTypeToKikimrProto(const TTypeAnnotationNode& type, NKikimrMiniKQL::TT
 
         case ETypeAnnotationKind::Struct: {
             protoType.SetKind(NKikimrMiniKQL::ETypeKind::Struct);
-            auto protoStruct = protoType.MutableStruct();
-            return ExportStructTypeToKikimrProto(type.Cast<TStructExprType>(), protoStruct, ctx);
+            auto& protoStruct = *protoType.MutableStruct();
+            for (auto& member : type.Cast<TStructExprType>()->GetItems()) {
+                auto& protoMember = *protoStruct.AddMember();
+                protoMember.SetName(TString(member->GetName()));
+                if (!ExportTypeToKikimrProto(*member->GetItemType(), *protoMember.MutableType(), ctx)) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         case ETypeAnnotationKind::Dict: {
@@ -599,15 +547,8 @@ bool ExportTypeToKikimrProto(const TTypeAnnotationNode& type, NKikimrMiniKQL::TT
             return true;
         }
 
-        case ETypeAnnotationKind::Pg: {
-            protoType.SetKind(NKikimrMiniKQL::ETypeKind::Pg);
-            auto pgTypeId = type.Cast<TPgExprType>()->GetId();
-            auto pgTypeName = type.Cast<TPgExprType>()->GetName();
-            protoType.MutablePg()->Setoid(pgTypeId);
-            return true;
-        }
         default: {
-            ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unsupported type annotation node: " << type));
+            ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unsupported protobuf type: " << type));
             return false;
         }
     }
@@ -763,114 +704,5 @@ TExprNode::TPtr ParseKikimrProtoValue(const NKikimrMiniKQL::TType& type, const N
     }
 }
 
-const TTypeAnnotationNode* ParseTypeFromYdbType(const Ydb::Type& type, TExprContext& ctx) {
-    switch (type.type_case()) {
-        case Ydb::Type::kVoidType: {
-            return ctx.MakeType<TVoidExprType>();
-        }
-
-        case Ydb::Type::kTypeId: {
-            auto slot = NKikimr::NUdf::FindDataSlot(type.type_id());
-            if (!slot) {
-                ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unsupported data type: "
-                    << type.ShortDebugString()));
-
-                return nullptr;
-            }
-            return ctx.MakeType<TDataExprType>(*slot);
-        }
-
-        case Ydb::Type::kDecimalType: {
-            auto slot = NKikimr::NUdf::FindDataSlot(NYql::NProto::TypeIds::Decimal);
-            if (!slot) {
-                ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unsupported data type: "
-                    << type.ShortDebugString()));
-
-                return nullptr;
-            }
-
-            return ctx.MakeType<TDataExprParamsType>(*slot, ToString(type.decimal_type().precision()), ToString(type.decimal_type().scale()));
-        }
-
-        case Ydb::Type::kOptionalType: {
-            auto itemType = ParseTypeFromYdbType(type.optional_type().item(), ctx);
-            if (!itemType) {
-                return nullptr;
-            }
-
-            return ctx.MakeType<TOptionalExprType>(itemType);
-        }
-
-        case Ydb::Type::kTupleType: {
-            TTypeAnnotationNode::TListType tupleItems;
-
-            for (auto& element : type.tuple_type().Getelements()) {
-                auto elementType = ParseTypeFromYdbType(element, ctx);
-                if (!elementType) {
-                    return nullptr;
-                }
-
-                tupleItems.push_back(elementType);
-            }
-
-            return ctx.MakeType<TTupleExprType>(tupleItems);
-        }
-
-        case Ydb::Type::kListType: {
-            auto itemType = ParseTypeFromYdbType(type.list_type().item(), ctx);
-            if (!itemType) {
-                return nullptr;
-            }
-
-            return ctx.MakeType<TListExprType>(itemType);
-        }
-
-        case Ydb::Type::kStructType: {
-            TVector<const TItemExprType*> structMembers;
-            for (auto& member : type.struct_type().Getmembers()) {
-                auto memberType = ParseTypeFromYdbType(member.Gettype(), ctx);
-                if (!memberType) {
-                    return nullptr;
-                }
-
-                structMembers.push_back(ctx.MakeType<TItemExprType>(member.Getname(), memberType));
-            }
-
-            return ctx.MakeType<TStructExprType>(structMembers);
-        }
-
-        case Ydb::Type::kDictType: {
-            auto keyType = ParseTypeFromYdbType(type.dict_type().key(), ctx);
-            if (!keyType) {
-                return nullptr;
-            }
-
-            auto payloadType = ParseTypeFromYdbType(type.dict_type().payload(), ctx);
-            if (!payloadType) {
-                return nullptr;
-            }
-
-            return ctx.MakeType<TDictExprType>(keyType, payloadType);
-        }
-
-        case Ydb::Type::kPgType: {
-            if (!type.pg_type().type_name().empty()) {
-                const auto& typeName = type.pg_type().type_name();
-                auto* typeDesc = NKikimr::NPg::TypeDescFromPgTypeName(typeName);
-                NKikimr::NPg::PgTypeIdFromTypeDesc(typeDesc);
-                return ctx.MakeType<TPgExprType>(NKikimr::NPg::PgTypeIdFromTypeDesc(typeDesc));
-            }
-            return ctx.MakeType<TPgExprType>(type.pg_type().Getoid());
-        }
-
-        case Ydb::Type::kNullType:
-            [[fallthrough]];
-        default: {
-            ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unsupported protobuf type: "
-                << type.ShortDebugString()));
-            return nullptr;
-        }
-    }
-}
-
 } // namespace NYql
+

@@ -441,36 +441,6 @@ Y_UNIT_TEST_SUITE(DBase) {
         UNIT_ASSERT(closed->Frozen.at(0)->GetBlobs()->Head == 3);
     }
 
-    Y_UNIT_TEST(AnnexRollbackChanges)
-    {
-        auto alter = MakeAlter(1);
-
-        alter.SetRedo(32).SetFamilyBlobs(1, 0, Max<ui32>(), 24);
-
-        TDbExec me;
-
-        me.To(10).Begin().Apply(*alter.Flush()).Commit();
-
-        const TString large35("0123456789abcdef0123456789abcdef012");
-        const TString large42("0123456789abcdef0123456789abcdef0123456789");
-
-        me.To(12).Begin().PutN(1, "l35", 35_u64, large35);
-        me.To(13).RollbackChanges().PutN(1, "l42", 42_u64, large42).Commit();
-        me.To(14).Iter(1)
-            .Seek({}, ESeek::Lower).IsN("l42", 42_u64, large42)
-            .Next().Is(EReady::Gone);
-
-        UNIT_ASSERT(me.BackLog().Annex.size() == 1);
-        UNIT_ASSERT(me.BackLog().Annex[0].Data.size() == 8 + 42);
-
-        me.To(21).Replay(EPlay::Boot).Iter(1)
-            .Seek({}, ESeek::Lower).IsN("l42", 42_u64, large42)
-            .Next().Is(EReady::Gone);
-        me.To(22).Replay(EPlay::Redo).Iter(1)
-            .Seek({}, ESeek::Lower).IsN("l42", 42_u64, large42)
-            .Next().Is(EReady::Gone);
-    }
-
     Y_UNIT_TEST(Outer)
     {
         auto alter = MakeAlter(1);
@@ -946,35 +916,6 @@ Y_UNIT_TEST_SUITE(DBase) {
         UNIT_ASSERT(!me->HasCommittedTx(table1, 123));
 
         me.To(52).Select(table1).HasN(1_u64, 11_u64, 13_u64);
-    }
-
-    Y_UNIT_TEST(UncommittedChangesCommitWithUpdates) {
-        TDbExec me;
-
-        const ui32 table1 = 1;
-
-        me.To(10).Begin();
-        me.To(11).Apply(*TAlter()
-                .AddTable("me_1", table1)
-                .AddColumn(table1, "key",    1, ETypes::Uint64, false)
-                .AddColumn(table1, "arg1",   4, ETypes::Uint64, false, Cimple(10004_u64))
-                .AddColumn(table1, "arg2",   5, ETypes::Uint64, false, Cimple(10005_u64))
-                .AddColumnToKey(table1, 1));
-        me.To(12).PutN(table1, 1_u64, 11_u64, 12_u64);
-        me.To(13).Commit();
-
-        me.To(20).Begin();
-        me.To(21).WriteTx(123).PutN(table1, 1_u64, ECellOp::Empty, 22_u64);
-        me.To(22).Commit();
-
-        me.To(30).Begin();
-        me.To(31).WriteVer({ 1, 51 });
-        me.To(32).CommitTx(table1, 123);
-        me.To(33).PutN(table1, 1_u64, 21_u64, ECellOp::Empty);
-        me.To(34).Commit();
-
-        me.To(41).ReadVer({ 1, 50 }).Select(table1).HasN(1_u64, 11_u64, 12_u64);
-        me.To(42).ReadVer({ 1, 51 }).Select(table1).HasN(1_u64, 21_u64, 22_u64);
     }
 
     Y_UNIT_TEST(ReplayNewTable) {

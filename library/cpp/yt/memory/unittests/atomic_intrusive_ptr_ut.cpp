@@ -24,16 +24,16 @@ using ::testing::StrictMock;
 struct TIntricateObject
     : private TNonCopyable
 {
-    mutable int Increments = 0;
-    mutable int Decrements = 0;
-    mutable int Zeros = 0;
+    int Increments = 0;
+    int Decrements = 0;
+    int Zeros = 0;
 
-    void Ref(int n) const
+    void Ref(int n)
     {
         Increments += n;
     }
 
-    void Unref(int n) const
+    void Unref(int n)
     {
         Decrements += n;
         if (Increments == Decrements) {
@@ -42,8 +42,7 @@ struct TIntricateObject
     }
 };
 
-using TIntricateObjectPtr = TIntrusivePtr<TIntricateObject>;
-using TConstIntricateObjectPtr = TIntrusivePtr<const TIntricateObject>;
+typedef TIntrusivePtr<TIntricateObject> TIntricateObjectPtr;
 
 void Ref(TIntricateObject* obj, int n = 1)
 {
@@ -51,16 +50,6 @@ void Ref(TIntricateObject* obj, int n = 1)
 }
 
 void Unref(TIntricateObject* obj, int n = 1)
-{
-    obj->Unref(n);
-}
-
-void Ref(const TIntricateObject* obj, int n = 1)
-{
-    obj->Ref(n);
-}
-
-void Unref(const TIntricateObject* obj, int n = 1)
 {
     obj->Unref(n);
 }
@@ -216,76 +205,11 @@ TEST(TAtomicPtrTest, Basic)
     EXPECT_THAT(object, HasRefCounts(2 + RRC, 2 + RRC, 2));
 }
 
-TEST(TAtomicPtrTest, BasicConst)
-{
-    const TIntricateObject object;
-
-    EXPECT_THAT(object, HasRefCounts(0, 0, 0));
-
-    {
-        TConstIntricateObjectPtr owningPointer(&object);
-        EXPECT_THAT(object, HasRefCounts(1, 0, 0));
-        EXPECT_EQ(&object, owningPointer.Get());
-    }
-
-    EXPECT_THAT(object, HasRefCounts(1, 1, 1));
-
-
-    {
-        TConstIntricateObjectPtr owningPointer(&object);
-        TAtomicIntrusivePtr<const TIntricateObject> atomicPointer(owningPointer);
-
-        EXPECT_THAT(object, HasRefCounts(2 + RRC, 1, 1));
-        EXPECT_EQ(&object, owningPointer.Get());
-
-
-        auto p1 = atomicPointer.Acquire();
-
-        EXPECT_THAT(object, HasRefCounts(2 + RRC, 1, 1));
-
-        p1.Reset();
-
-        EXPECT_THAT(object, HasRefCounts(2 + RRC, 2, 1));
-
-        owningPointer.Reset();
-
-        EXPECT_THAT(object, HasRefCounts(2 + RRC, 3, 1));
-    }
-
-    EXPECT_THAT(object, HasRefCounts(2 + RRC, 2 + RRC, 2));
-}
-
 TEST(TAtomicPtrTest, Acquire)
 {
     TIntricateObject object;
     {
         TAtomicIntrusivePtr<TIntricateObject> atomicPtr{TIntricateObjectPtr(&object)};
-        EXPECT_THAT(object, HasRefCounts(RRC, 0, 0));
-
-        for (int i = 0; i < RRC / 2; ++i) {
-            {
-                auto tmp = atomicPtr.Acquire();
-                EXPECT_THAT(object, HasRefCounts(RRC, i, 0));
-            }
-            EXPECT_THAT(object, HasRefCounts(RRC, i + 1, 0));
-        }
-
-        {
-            auto tmp = atomicPtr.Acquire();
-            EXPECT_THAT(object, HasRefCounts( RRC + RRC / 2, RRC - 1, 0));
-        }
-
-        EXPECT_THAT(object, HasRefCounts(RRC + RRC / 2, RRC, 0));
-    }
-
-    EXPECT_THAT(object, HasRefCounts(RRC + RRC / 2, RRC + RRC / 2, 1));
-}
-
-TEST(TAtomicPtrTest, AcquireConst)
-{
-    const TIntricateObject object;
-    {
-        TAtomicIntrusivePtr<const TIntricateObject> atomicPtr{TConstIntricateObjectPtr(&object)};
         EXPECT_THAT(object, HasRefCounts(RRC, 0, 0));
 
         for (int i = 0; i < RRC / 2; ++i) {
@@ -328,36 +252,6 @@ TEST(TAtomicPtrTest, CAS)
 
         rawPtr = nullptr;
         EXPECT_FALSE(atomicPtr.CompareAndSwap(rawPtr, TIntricateObjectPtr(&o1)));
-        EXPECT_EQ(rawPtr, &o2);
-
-        EXPECT_THAT(o1, HasRefCounts(2 * RRC, 2 * RRC, 2));
-        EXPECT_THAT(o2, HasRefCounts(RRC, 0, 0));
-    }
-
-    EXPECT_THAT(o2, HasRefCounts(RRC, RRC, 1));
-}
-
-TEST(TAtomicPtrTest, CASConst)
-{
-    const TIntricateObject o1;
-    const TIntricateObject o2;
-    {
-
-        TAtomicIntrusivePtr<const TIntricateObject> atomicPtr{TConstIntricateObjectPtr(&o1)};
-        EXPECT_THAT(o1, HasRefCounts(RRC, 0, 0));
-
-        TConstIntricateObjectPtr p2(&o2);
-        EXPECT_THAT(o2, HasRefCounts(1, 0, 0));
-
-        const void* rawPtr = &o1;
-        EXPECT_TRUE(atomicPtr.CompareAndSwap(rawPtr, std::move(p2)));
-        EXPECT_EQ(rawPtr, &o1);
-
-        EXPECT_THAT(o1, HasRefCounts(RRC, RRC, 1));
-        EXPECT_THAT(o2, HasRefCounts(RRC, 0, 0));
-
-        rawPtr = nullptr;
-        EXPECT_FALSE(atomicPtr.CompareAndSwap(rawPtr, TConstIntricateObjectPtr(&o1)));
         EXPECT_EQ(rawPtr, &o2);
 
         EXPECT_THAT(o1, HasRefCounts(2 * RRC, 2 * RRC, 2));

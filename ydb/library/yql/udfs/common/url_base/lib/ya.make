@@ -2,7 +2,7 @@ LIBRARY()
 
 YQL_ABI_VERSION(
     2
-    35
+    27
     0
 )
 
@@ -20,8 +20,6 @@ PEERDIR(
     library/cpp/unicode/punycode
     library/cpp/uri
     ydb/library/yql/public/udf
-    ydb/library/yql/public/udf/arrow
-    contrib/libs/apache/arrow
 )
 
 END()

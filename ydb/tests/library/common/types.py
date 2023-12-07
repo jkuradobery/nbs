@@ -4,7 +4,7 @@
 import codecs
 
 from enum import unique, Enum, IntEnum
-from contrib.ydb.tests.library.common.generators import int_between, one_of, float_in, string_with_length, actor_id
+from ydb.tests.library.common.generators import int_between, one_of, float_in, string_with_length, actor_id
 
 
 @unique

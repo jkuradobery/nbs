@@ -20,7 +20,6 @@ class LoadedModule(_pytest.python.Module):
         self.config = parent.config
         self.keywords = {}
         self.own_markers = []
-        self.extra_keyword_matches = set()
         self.fspath = py.path.local()
 
     @classmethod

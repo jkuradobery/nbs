@@ -4,14 +4,15 @@ import abc
 import logging
 import time
 
-from contrib.ydb.tests.library.common.wait_for import wait_for
+from ydb.tests.library.common.wait_for import wait_for
 from .kikimr_client import kikimr_client_factory
-from contrib.ydb.tests.library.common.protobuf_console import (
+from ydb.tests.library.common.protobuf_console import (
     CreateTenantRequest, AlterTenantRequest, GetTenantStatusRequest,
     RemoveTenantRequest, GetOperationRequest)
-import contrib.ydb.public.api.protos.ydb_cms_pb2 as cms_tenants_pb
-from contrib.ydb.public.api.protos.ydb_status_codes_pb2 import StatusIds
-from contrib.ydb.tests.oss.ydb_sdk_import import ydb
+import ydb.public.api.protos.ydb_cms_pb2 as cms_tenants_pb
+from ydb.public.api.protos.ydb_status_codes_pb2 import StatusIds
+from ydb import issues
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -170,7 +171,7 @@ class KiKiMRClusterInterface(object):
         if not operation.ready:
             operation = self.__wait_console_op(operation.id, timeout_seconds=timeout_seconds)
         if operation.status != StatusIds.SUCCESS:
-            raise RuntimeError('create_database failed: %s, %s' % (operation.status, ydb.issues._format_issues(operation.issues)))
+            raise RuntimeError('create_database failed: %s, %s' % (operation.status, issues._format_issues(operation.issues)))
 
         self.__wait_tenant_up(
             database_name,

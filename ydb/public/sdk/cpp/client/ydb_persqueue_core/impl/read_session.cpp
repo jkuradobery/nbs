@@ -2,8 +2,6 @@
 #include "read_session.h"
 #include "common.h"
 
-#include <ydb/public/sdk/cpp/client/ydb_persqueue_core/impl/log_lazy.h>
-
 #define INCLUDE_YDB_INTERNAL_H
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/logger/log.h>
 #undef INCLUDE_YDB_INTERNAL_H
@@ -57,22 +55,8 @@ TReadSession::TReadSession(const TReadSessionSettings& settings,
 }
 
 TReadSession::~TReadSession() {
-    {
-        TDeferredActions<true> deferred;
-        NYql::TIssues issues;
-        issues.AddIssue("Aborted");
-        EventsQueue->Close(TSessionClosedEvent(EStatus::ABORTED, std::move(issues)), deferred);
-    }
-
-    Abort();
+    Abort(EStatus::ABORTED, "Aborted");
     ClearAllEvents();
-
-    for (const auto& ctx : CbContexts) {
-        ctx->Cancel();
-    }
-    if (DumpCountersContext) {
-        DumpCountersContext->Cancel();
-    }
 }
 
 Ydb::PersQueue::ClusterDiscovery::DiscoverClustersRequest TReadSession::MakeClusterDiscoveryRequest() const {
@@ -86,13 +70,14 @@ Ydb::PersQueue::ClusterDiscovery::DiscoverClustersRequest TReadSession::MakeClus
 }
 
 void TReadSession::Start() {
-    EventsQueue = std::make_shared<TReadSessionEventsQueue<true>>(Settings);
+    ErrorHandler = MakeIntrusive<TErrorHandler<true>>(weak_from_this());
+    EventsQueue = std::make_shared<TReadSessionEventsQueue<true>>(Settings, weak_from_this());
 
     if (!ValidateSettings()) {
         return;
     }
 
-    LOG_LAZY(Log, TLOG_INFO, GetLogPrefix() << "Starting read session");
+    Log.Write(TLOG_INFO, GetLogPrefix() << "Starting read session");
     if (Settings.DisableClusterDiscovery_) {
         ProceedWithoutClusterDiscovery();
     } else {
@@ -115,11 +100,7 @@ bool TReadSession::ValidateSettings() {
     }
 
     if (issues) {
-        {
-            TDeferredActions<true> deferred;
-            EventsQueue->Close(TSessionClosedEvent(EStatus::BAD_REQUEST, MakeIssueWithSubIssues("Invalid read session settings", issues)), deferred);
-        }
-        Abort();
+        Abort(EStatus::BAD_REQUEST, MakeIssueWithSubIssues("Invalid read session settings", issues));
         return false;
     } else {
         return true;
@@ -132,11 +113,11 @@ void TReadSession::StartClusterDiscovery() {
             return;
         }
 
-        LOG_LAZY(Log, TLOG_DEBUG, GetLogPrefix() << "Starting cluster discovery");
+        Log.Write(TLOG_DEBUG, GetLogPrefix() << "Starting cluster discovery");
         ClusterDiscoveryDelayContext = nullptr;
     }
 
-    auto extractor = [self = weak_from_this()]
+    auto extractor = [errorHandler = ErrorHandler, self = weak_from_this()]
         (google::protobuf::Any* any, TPlainStatus status) mutable {
         auto selfShared = self.lock();
         if (!selfShared) {
@@ -180,12 +161,10 @@ void TReadSession::ProceedWithoutClusterDiscovery() {
         clusterSessionInfo.Topics = Settings.Topics_;
         CreateClusterSessionsImpl(deferred);
     }
-    SetupCountersLogger();
+    ScheduleDumpCountersToLog();
 }
 
 void TReadSession::CreateClusterSessionsImpl(TDeferredActions<true>& deferred) {
-    Y_ABORT_UNLESS(Lock.IsLocked());
-
     // Create cluster sessions.
     ui64 partitionStreamIdStart = 1;
     const size_t clusterSessionsCount = ClusterSessions.size();
@@ -195,7 +174,7 @@ void TReadSession::CreateClusterSessionsImpl(TDeferredActions<true>& deferred) {
         if (sessionSettings.MaxMemoryUsageBytes_ > clusterSessionsCount && sessionSettings.MaxMemoryUsageBytes_ != std::numeric_limits<size_t>::max()) {
             sessionSettings.MaxMemoryUsageBytes_ /= clusterSessionsCount;
         }
-        LOG_LAZY(Log,
+        Log.Write(
             TLOG_DEBUG,
             GetLogPrefix() << "Starting session to cluster " << clusterName
                 << " (" << clusterSessionInfo.ClusterEndpoint << ")"
@@ -206,21 +185,20 @@ void TReadSession::CreateClusterSessionsImpl(TDeferredActions<true>& deferred) {
             AbortImpl(EStatus::ABORTED, DRIVER_IS_STOPPING_DESCRIPTION, deferred);
             return;
         }
-        CbContexts.push_back(MakeWithCallbackContext<TSingleClusterReadSessionImpl<true>>(
-            sessionSettings,
-            DbDriverState->Database,
-            SessionId,
-            clusterName,
-            Log,
-            subclient->CreateReadSessionConnectionProcessorFactory(),
-            EventsQueue,
-            context,
-            partitionStreamIdStart++,
-            clusterSessionsCount
-        ));
+        clusterSessionInfo.Session =
+            std::make_shared<TSingleClusterReadSessionImpl<true>>(
+                sessionSettings,
+                DbDriverState->Database,
+                SessionId,
+                clusterName,
+                Log,
+                subclient->CreateReadSessionConnectionProcessorFactory(),
+                EventsQueue,
+                ErrorHandler,
+                context,
+                partitionStreamIdStart++, clusterSessionsCount);
 
-        clusterSessionInfo.Session = CbContexts.back()->TryGet();
-        deferred.DeferStartSession(CbContexts.back());
+        deferred.DeferStartSession(clusterSessionInfo.Session);
     }
 }
 
@@ -238,7 +216,7 @@ void TReadSession::OnClusterDiscovery(const TStatus& status, const Ydb::PersQueu
             }
             TMaybe<TDuration> retryDelay = ClusterDiscoveryRetryState->GetNextRetryDelay(status.GetStatus());
             if (retryDelay) {
-                LOG_LAZY(Log,
+                Log.Write(
                     TLOG_INFO,
                     GetLogPrefix() << "Cluster discovery request failed. Status: " << status.GetStatus()
                         << ". Issues: \"" << IssuesSingleLineString(status.GetIssues()) << "\""
@@ -250,7 +228,7 @@ void TReadSession::OnClusterDiscovery(const TStatus& status, const Ydb::PersQueu
             return;
         }
 
-        LOG_LAZY(Log, TLOG_DEBUG, GetLogPrefix() << "Cluster discovery request succeeded");
+        Log.Write(TLOG_DEBUG, GetLogPrefix() << "Cluster discovery request succeeded");
         ClusterDiscoveryRetryState = nullptr;
 
         // Init ClusterSessions.
@@ -322,15 +300,11 @@ void TReadSession::OnClusterDiscovery(const TStatus& status, const Ydb::PersQueu
 
         CreateClusterSessionsImpl(deferred);
     }
-    SetupCountersLogger();
+    ScheduleDumpCountersToLog();
 }
 
 void TReadSession::RestartClusterDiscoveryImpl(TDuration delay, TDeferredActions<true>& deferred) {
-    Y_ABORT_UNLESS(Lock.IsLocked());
-    if (Aborting || Closing) {
-        return;
-    }
-    LOG_LAZY(Log, TLOG_DEBUG, GetLogPrefix() << "Restart cluster discovery in " << delay);
+    Log.Write(TLOG_DEBUG, GetLogPrefix() << "Restart cluster discovery in " << delay);
     auto startCallback = [self = weak_from_this()](bool ok) {
         if (ok) {
             if (auto sharedSelf = self.lock()) {
@@ -350,14 +324,9 @@ void TReadSession::RestartClusterDiscoveryImpl(TDuration delay, TDeferredActions
 }
 
 bool TReadSession::Close(TDuration timeout) {
-    LOG_LAZY(Log, TLOG_INFO, GetLogPrefix() << "Closing read session. Close timeout: " << timeout);
-
-
-    // the program may not have reached SetupCountersLogger
-    if (CountersLogger) {
-        // Log final counters.
-        CountersLogger->Stop();
-    }
+    Log.Write(TLOG_INFO, GetLogPrefix() << "Closing read session. Close timeout: " << timeout);
+    // Log final counters.
+    DumpCountersToLog();
 
     std::vector<TSingleClusterReadSessionImpl<true>::TPtr> sessions;
     NThreading::TPromise<bool> promise = NThreading::NewPromise<bool>();
@@ -433,13 +402,10 @@ bool TReadSession::Close(TDuration timeout) {
     return result;
 }
 
-void TReadSession::AbortImpl(TDeferredActions<true>&) {
-
-    Y_ABORT_UNLESS(Lock.IsLocked());
-
+void TReadSession::AbortImpl(TSessionClosedEvent&& closeEvent, TDeferredActions<true>& deferred) {
     if (!Aborting) {
-        Y_ABORT_UNLESS(EventsQueue->IsClosed());
         Aborting = true;
+        Log.Write(TLOG_NOTICE, GetLogPrefix() << "Aborting read session. Description: " << closeEvent.DebugString());
         if (ClusterDiscoveryDelayContext) {
             ClusterDiscoveryDelayContext->Cancel();
             ClusterDiscoveryDelayContext.reset();
@@ -453,31 +419,34 @@ void TReadSession::AbortImpl(TDeferredActions<true>&) {
                 sessionInfo.Session->Abort();
             }
         }
+        EventsQueue->Close(std::move(closeEvent), deferred);
     }
 }
 
 void TReadSession::AbortImpl(EStatus statusCode, NYql::TIssues&& issues, TDeferredActions<true>& deferred) {
-    Y_ABORT_UNLESS(Lock.IsLocked());
-    auto closeEvent = TSessionClosedEvent(statusCode, std::move(issues));
-    LOG_LAZY(Log, TLOG_NOTICE, GetLogPrefix() << "Aborting read session. Description: " << closeEvent.DebugString());
-
-    EventsQueue->Close(std::move(closeEvent), deferred);
-    AbortImpl(deferred);
+    AbortImpl(TSessionClosedEvent(statusCode, std::move(issues)), deferred);
 }
 
 void TReadSession::AbortImpl(EStatus statusCode, const TString& message, TDeferredActions<true>& deferred) {
-    Y_ABORT_UNLESS(Lock.IsLocked());
-
     NYql::TIssues issues;
     issues.AddIssue(message);
-
     AbortImpl(statusCode, std::move(issues), deferred);
 }
 
-void TReadSession::Abort() {
+void TReadSession::Abort(EStatus statusCode, NYql::TIssues&& issues) {
+    Abort(TSessionClosedEvent(statusCode, std::move(issues)));
+}
+
+void TReadSession::Abort(EStatus statusCode, const TString& message) {
+    NYql::TIssues issues;
+    issues.AddIssue(message);
+    Abort(statusCode, std::move(issues));
+}
+
+void TReadSession::Abort(TSessionClosedEvent&& closeEvent) {
     TDeferredActions<true> deferred;
     with_lock (Lock) {
-        AbortImpl(EStatus::ABORTED, "Aborted", deferred);
+        AbortImpl(std::move(closeEvent), deferred);
     }
 }
 
@@ -490,23 +459,15 @@ NThreading::TFuture<void> TReadSession::WaitEvent() {
 }
 
 TVector<TReadSessionEvent::TEvent> TReadSession::GetEvents(bool block, TMaybe<size_t> maxEventsCount, size_t maxByteSize) {
-    auto res = EventsQueue->GetEvents(block, maxEventsCount, maxByteSize);
-    if (EventsQueue->IsClosed()) {
-        Abort();
-    }
-    return res;
+    return EventsQueue->GetEvents(block, maxEventsCount, maxByteSize);
 }
 
 TMaybe<TReadSessionEvent::TEvent> TReadSession::GetEvent(bool block, size_t maxByteSize) {
-    auto res = EventsQueue->GetEvent(block, maxByteSize);
-    if (EventsQueue->IsClosed()) {
-        Abort();
-    }
-    return res;
+    return EventsQueue->GetEvent(block, maxByteSize);
 }
 
 void TReadSession::StopReadingData() {
-    LOG_LAZY(Log, TLOG_INFO, GetLogPrefix() << "Stop reading data");
+    Log.Write(TLOG_INFO, GetLogPrefix() << "Stop reading data");
     with_lock (Lock) {
         if (!DataReadingSuspended) {
             DataReadingSuspended = true;
@@ -521,7 +482,7 @@ void TReadSession::StopReadingData() {
 }
 
 void TReadSession::ResumeReadingData() {
-    LOG_LAZY(Log, TLOG_INFO, GetLogPrefix() << "Resume reading data");
+    Log.Write(TLOG_INFO, GetLogPrefix() << "Resume reading data");
     with_lock (Lock) {
         if (DataReadingSuspended) {
             DataReadingSuspended = false;
@@ -535,6 +496,15 @@ void TReadSession::ResumeReadingData() {
     }
 }
 
+void TReadSession::OnUserRetrievedEvent(i64 decompressedSize, size_t messagesCount) {
+    Log.Write(TLOG_DEBUG, GetLogPrefix()
+                          << "The application data is transferred to the client. Number of messages "
+                          << messagesCount
+                          << ", size "
+                          << decompressedSize
+                          << " bytes");
+}
+
 void TReadSession::MakeCountersIfNeeded() {
     if (!Settings.Counters_ || HasNullCounters(*Settings.Counters_)) {
         TReaderCounters::TPtr counters = MakeIntrusive<TReaderCounters>();
@@ -546,12 +516,80 @@ void TReadSession::MakeCountersIfNeeded() {
     }
 }
 
-void TReadSession::SetupCountersLogger() {
+void TReadSession::DumpCountersToLog(size_t timeNumber) {
+    const bool logCounters = timeNumber % 60 == 0; // Every 1 minute.
+    const bool dumpSessionsStatistics = timeNumber % 600 == 0; // Every 10 minutes.
+
+    *Settings.Counters_->CurrentSessionLifetimeMs = (TInstant::Now() - StartSessionTime).MilliSeconds();
+    std::vector<TSingleClusterReadSessionImpl<true>::TPtr> sessions;
+    with_lock (Lock) {
+        if (Closing || Aborting) {
+            return;
+        }
+
+        sessions.reserve(ClusterSessions.size());
+        for (auto& [cluster, sessionInfo] : ClusterSessions) {
+            if (sessionInfo.Session) {
+                sessions.emplace_back(sessionInfo.Session);
+            }
+        }
+    }
+
+    {
+        TMaybe<TLogElement> log;
+        if (dumpSessionsStatistics) {
+            log.ConstructInPlace(&Log, TLOG_INFO);
+            (*log) << "Read/commit by partition streams (cluster:topic:partition:stream-id:read-offset:committed-offset):";
+        }
+        for (const auto& session : sessions) {
+            session->UpdateMemoryUsageStatistics();
+            if (dumpSessionsStatistics) {
+                session->DumpStatisticsToLog(*log);
+            }
+        }
+    }
+
+#define C(counter)                                                      \
+    << " " Y_STRINGIZE(counter) ": "                                    \
+    << Settings.Counters_->counter->Val()                               \
+        /**/
+
+    if (logCounters) {
+        Log.Write(TLOG_INFO,
+            GetLogPrefix() << "Counters: {"
+            C(Errors)
+            C(CurrentSessionLifetimeMs)
+            C(BytesRead)
+            C(MessagesRead)
+            C(BytesReadCompressed)
+            C(BytesInflightUncompressed)
+            C(BytesInflightCompressed)
+            C(BytesInflightTotal)
+            C(MessagesInflight)
+            << " }"
+        );
+    }
+
+#undef C
+
+    ScheduleDumpCountersToLog(timeNumber + 1);
+}
+
+void TReadSession::ScheduleDumpCountersToLog(size_t timeNumber) {
     with_lock(Lock) {
-        CountersLogger = std::make_shared<TCountersLogger<true>>(Connections, CbContexts, Settings.Counters_, Log,
-                                                                 GetLogPrefix(), StartSessionTime);
-        DumpCountersContext = CountersLogger->MakeCallbackContext();
-        CountersLogger->Start();
+        DumpCountersContext = Connections->CreateContext();
+    }
+    if (DumpCountersContext) {
+        auto callback = [self = weak_from_this(), timeNumber](bool ok) {
+            if (ok) {
+                if (auto sharedSelf = self.lock()) {
+                    sharedSelf->DumpCountersToLog(timeNumber);
+                }
+            }
+        };
+        Connections->ScheduleCallback(TDuration::Seconds(1),
+                                      std::move(callback),
+                                      DumpCountersContext);
     }
 }
 
@@ -744,7 +782,7 @@ public:
 
     void OnCreatePartitionStream(TReadSessionEvent::TCreatePartitionStreamEvent& event) {
         with_lock (Lock) {
-            Y_ABORT_UNLESS(PartitionStreamToUncommittedOffsets[event.GetPartitionStream()->GetPartitionStreamId()].Empty());
+            Y_VERIFY(PartitionStreamToUncommittedOffsets[event.GetPartitionStream()->GetPartitionStreamId()].Empty());
         }
         event.Confirm();
     }
@@ -752,7 +790,7 @@ public:
     void OnDestroyPartitionStream(TReadSessionEvent::TDestroyPartitionStreamEvent& event) {
         with_lock (Lock) {
             const ui64 partitionStreamId = event.GetPartitionStream()->GetPartitionStreamId();
-            Y_ABORT_UNLESS(UnconfirmedDestroys.find(partitionStreamId) == UnconfirmedDestroys.end());
+            Y_VERIFY(UnconfirmedDestroys.find(partitionStreamId) == UnconfirmedDestroys.end());
             if (PartitionStreamToUncommittedOffsets[partitionStreamId].Empty()) {
                 PartitionStreamToUncommittedOffsets.erase(partitionStreamId);
                 event.Confirm();

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 #include <util/system/type_name.h>
 
 template <typename TType, TType val>
@@ -53,19 +53,6 @@ public:
         (protoThis->*Member)(ev, ctx);
     }
 
-    template <
-        typename TOrigActor,
-        typename TProtocol,
-        void (TProtocol::*Member)(
-            TAutoPtr<IEventHandle>&)>
-    void CallProtocolStateFunc(
-        TAutoPtr<IEventHandle>& ev)
-    {
-        TOrigActor* orig = static_cast<TOrigActor*>(this);
-        TProtocol* protoThis = static_cast<TProtocol*>(orig);
-        (protoThis->*Member)(ev);
-    }
-
     TProtoReadyActor() {
         DerivedActorFunc = this->CurrentStateFunc();
         this->TBaseActor<TDerived>::Become(
@@ -91,16 +78,16 @@ private:
     IActor::TReceiveFunc DerivedActorFunc;
 
     STFUNC(ProtocolDispatcher) {
-        Y_ABORT_UNLESS(ev.Get() != nullptr);
+        Y_VERIFY(ev.Get() != nullptr);
 
         auto funcIter = ProtocolFunctions.find(ev->Type);
 
         if (funcIter == ProtocolFunctions.end()) {
-            return (this->*DerivedActorFunc)(ev);
+            return (this->*DerivedActorFunc)(ev, ctx);
         }
 
         auto func = funcIter->second;
-        return (this->*func)(ev);
+        return (this->*func)(ev, ctx);
     }
 };
 

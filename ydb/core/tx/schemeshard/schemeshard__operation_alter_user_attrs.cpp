@@ -71,7 +71,7 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(!context.SS->FindTx(OperationId));
+        Y_VERIFY(!context.SS->FindTx(OperationId));
         TTxState& txState = context.SS->CreateTx(OperationId, TTxState::TxAlterUserAttributes, path.Base()->PathId);
 
         path.Base()->PathState = NKikimrSchemeOp::EPathStateAlter;
@@ -87,23 +87,22 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TAlterUserAttrs");
+        Y_FAIL("no AbortPropose for TAlterUserAttrs");
     }
 
-    bool ProgressState(TOperationContext& context) override {
+    void ProgressState(TOperationContext& context) override {
         LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                    "TAlterUserAttrs ProgressState"
                        << ", opId: " << OperationId
                        << ", at schemeshard: " << context.SS->TabletID());
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
-        return true;
     }
 
-    bool HandleReply(TEvPrivate::TEvOperationPlan::TPtr& ev, TOperationContext& context) override {
+    void HandleReply(TEvPrivate::TEvOperationPlan::TPtr& ev, TOperationContext& context) override {
         const TStepId step = TStepId(ev->Get()->StepId);
         const TTabletId ssId = context.SS->SelfTabletId();
 
@@ -114,17 +113,17 @@ public:
                        << ", at schemeshard: " << ssId);
 
         TTxState* txState = context.SS->FindTx(OperationId);
-        Y_ABORT_UNLESS(txState);
+        Y_VERIFY(txState);
 
         if (txState->State != TTxState::Propose) {
             LOG_WARN_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                        "Duplicate PlanStep opId#" << OperationId
                            << " at schemeshard: " << ssId
                            << " txState is in state#" << TTxState::StateName(txState->State));
-            return true;
+            return;
         }
 
-        Y_ABORT_UNLESS(txState->TxType == TTxState::TxAlterUserAttributes);
+        Y_VERIFY(txState->TxType == TTxState::TxAlterUserAttributes);
 
         TPathId pathId = txState->TargetPathId;
         TPathElement::TPtr path = context.SS->PathsById.at(pathId);
@@ -132,9 +131,9 @@ public:
 
         NIceDb::TNiceDb db(context.GetDB());
 
-        Y_ABORT_UNLESS(path->UserAttrs);
-        Y_ABORT_UNLESS(path->UserAttrs->AlterData);
-        Y_ABORT_UNLESS(path->UserAttrs->AlterVersion < path->UserAttrs->AlterData->AlterVersion);
+        Y_VERIFY(path->UserAttrs);
+        Y_VERIFY(path->UserAttrs->AlterData);
+        Y_VERIFY(path->UserAttrs->AlterVersion < path->UserAttrs->AlterData->AlterVersion);
         context.SS->ApplyAndPersistUserAttrs(db, path->PathId);
 
         context.SS->ClearDescribePathCaches(path);
@@ -143,7 +142,6 @@ public:
         context.OnComplete.UpdateTenants({pathId});
 
         context.OnComplete.DoneOperation(OperationId);
-        return true;
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -161,12 +159,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateAlterUserAttrs(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateAlterUserAttrs(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TAlterUserAttrs>(id, tx);
 }
 
-ISubOperation::TPtr CreateAlterUserAttrs(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state == TTxState::Invalid || state == TTxState::Propose);
+ISubOperationBase::TPtr CreateAlterUserAttrs(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state == TTxState::Invalid || state == TTxState::Propose);
     return MakeSubOperation<TAlterUserAttrs>(id);
 }
 

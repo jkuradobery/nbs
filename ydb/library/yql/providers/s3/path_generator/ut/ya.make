@@ -1,5 +1,3 @@
-IF (NOT OS_WINDOWS)
-
 UNITTEST_FOR(ydb/library/yql/providers/s3/path_generator)
 
 SRCS(
@@ -16,6 +14,3 @@ PEERDIR(
 YQL_LAST_ABI_VERSION()
 
 END()
-
-ENDIF()
-

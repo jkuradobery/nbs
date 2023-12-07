@@ -47,7 +47,7 @@ struct TDecimalSub {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto& bounds = NDecimal::GenBounds<Precision>(context);
 
         const auto l = GetterForInt128(left, block);
@@ -95,24 +95,51 @@ struct TDecimalSub {
 };
 
 template<typename TLeft, typename TRight, typename TOutput>
-struct TDateTimeSub {
-    static_assert(std::is_same<TOutput, NUdf::TDataType<NUdf::TInterval>>::value, "expected output interval");
+struct TDiffDateTimeSub {
+    static_assert(!std::is_same<TLeft, TRight>::value, "left and right must not be same");
+    static_assert(std::is_same<TOutput, NUdf::TDataType<NUdf::TInterval>::TLayout>::value, "expected output interval");
 
     static NUdf::TUnboxedValuePod Execute(const NUdf::TUnboxedValuePod& left, const NUdf::TUnboxedValuePod& right)
     {
-        const auto lv = left.template Get<typename TLeft::TLayout>();
-        const auto rv = right.template Get<typename TRight::TLayout>();
-        return NUdf::TUnboxedValuePod(ToScaledDate<TLeft>(lv) - ToScaledDate<TRight>(rv));
+        const auto lv = static_cast<std::make_signed_t<TLeft>>(left.template Get<TLeft>());
+        const auto rv = static_cast<std::make_signed_t<TRight>>(right.template Get<TRight>());
+        return NUdf::TUnboxedValuePod(ToScaledDate(lv) - ToScaledDate(rv));
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
-        const auto lhs = GenToScaledDate<TLeft>(GetterFor<typename TLeft::TLayout>(left, context, block), context, block);
-        const auto rhs = GenToScaledDate<TRight>(GetterFor<typename TRight::TLayout>(right, context, block), context, block);
+        auto& context = ctx.Codegen->GetContext();
+        const auto lhs = GenToScaledDate<std::make_signed_t<TLeft>>(GetterFor<TLeft>(left, context, block), context, block);
+        const auto rhs = GenToScaledDate<std::make_signed_t<TRight>>(GetterFor<TRight>(right, context, block), context, block);
         const auto sub = BinaryOperator::CreateSub(lhs, rhs, "sub", block);
-        const auto full = SetterFor<typename TOutput::TLayout>(sub, context, block);
+        const auto full = SetterFor<TOutput>(sub, context, block);
+        return full;
+    }
+#endif
+};
+
+template<typename TLeft, typename TRight, typename TOutput>
+struct TSameDateTimeSub {
+    static_assert(std::is_same<TOutput, NUdf::TDataType<NUdf::TInterval>::TLayout>::value, "expected output interval");
+    static_assert(std::is_same<TLeft, TRight>::value, "left and right must be same");
+    using TSignedArg = std::make_signed_t<TLeft>;
+
+    static NUdf::TUnboxedValuePod Execute(const NUdf::TUnboxedValuePod& left, const NUdf::TUnboxedValuePod& right)
+    {
+        const auto lv = static_cast<TSignedArg>(left.template Get<TLeft>());
+        const auto rv = static_cast<TSignedArg>(right.template Get<TRight>());
+        return NUdf::TUnboxedValuePod(ToScaledDate<TSignedArg>(lv - rv));
+    }
+
+#ifndef MKQL_DISABLE_CODEGEN
+    static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
+    {
+        auto& context = ctx.Codegen->GetContext();
+        const auto lhs = GetterFor<TLeft>(left, context, block);
+        const auto rhs = GetterFor<TRight>(right, context, block);
+        const auto sub = BinaryOperator::CreateSub(lhs, rhs, "sub", block);
+        const auto full = SetterFor<TOutput>(GenToScaledDate<TSignedArg>(sub, context, block), context, block);
         return full;
     }
 #endif
@@ -128,13 +155,13 @@ struct TIntervalSubInterval {
         const auto lv = left.template Get<TLeft>();
         const auto rv = right.template Get<TRight>();
         const auto ret = lv - rv;
-        return IsBadInterval(ret) ? NUdf::TUnboxedValuePod() : NUdf::TUnboxedValuePod(ret);
+        return IsBadInterval(ret) ? NUdf::TUnboxedValuePod() : NUdf::TUnboxedValuePod(FromScaledDate<TOutput>(ret));
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto lhs = GetterFor<TLeft>(left, context, block);
         const auto rhs = GetterFor<TRight>(right, context, block);
         const auto sub = BinaryOperator::CreateSub(lhs, rhs, "sub", block);
@@ -149,13 +176,13 @@ struct TIntervalSubInterval {
 
 template<typename TLeft, typename TRight, typename TOutput, bool Tz>
 struct TAnyDateTimeSubIntervalT {
-    static_assert(std::is_same<TRight, NUdf::TDataType<NUdf::TInterval>>::value, "expected right interval");
+    static_assert(std::is_same<TRight, NUdf::TDataType<NUdf::TInterval>::TLayout>::value, "expected right interval");
     static_assert(std::is_same<TLeft, TOutput>::value, "left and output must be same");
 
     static NUdf::TUnboxedValuePod Execute(const NUdf::TUnboxedValuePod& left, const NUdf::TUnboxedValuePod& right)
     {
-        const auto lv = ToScaledDate<TLeft>(left.template Get<typename TLeft::TLayout>());
-        const auto rv = ToScaledDate<TRight>(right.template Get<typename TRight::TLayout>());
+        const auto lv = ToScaledDate<TLeft>(left.template Get<TLeft>());
+        const auto rv = ToScaledDate<TRight>(right.template Get<TRight>());
         const auto ret = lv - rv;
         if (IsBadDateTime(ret)) {
             return NUdf::TUnboxedValuePod();
@@ -171,11 +198,11 @@ struct TAnyDateTimeSubIntervalT {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
-        const auto lhs = GenToScaledDate<TLeft>(GetterFor<typename TLeft::TLayout>(left, context, block), context, block);
-        const auto rhs = GenToScaledDate<TRight>(GetterFor<typename TRight::TLayout>(right, context, block), context, block);
+        auto& context = ctx.Codegen->GetContext();
+        const auto lhs = GenToScaledDate<TLeft>(GetterFor<TLeft>(left, context, block), context, block);
+        const auto rhs = GenToScaledDate<TRight>(GetterFor<TRight>(right, context, block), context, block);
         const auto sub = BinaryOperator::CreateSub(lhs, rhs, "sub", block);
-        const auto wide = SetterFor<typename TOutput::TLayout>(GenFromScaledDate<TOutput>(sub, context, block), context, block);
+        const auto wide = SetterFor<TOutput>(GenFromScaledDate<TOutput>(sub, context, block), context, block);
         const auto bad = GenIsBadDateTime(sub, context, block);
         const auto type = Type::getInt128Ty(context);
         const auto zero = ConstantInt::get(type, 0);
@@ -213,26 +240,26 @@ void RegisterDateSub(IBuiltinFunctionRegistry& registry) {
     using TDateRight2 = std::conditional_t<RightTz, NUdf::TDataType<NUdf::TTzDatetime>, NUdf::TDataType<NUdf::TDatetime>>;
     using TDateRight3 = std::conditional_t<RightTz, NUdf::TDataType<NUdf::TTzTimestamp>, NUdf::TDataType<NUdf::TTimestamp>>;
 
-    RegisterFunctionBinPolyOpt<TDateLeft1, TDateRight1,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<TDateLeft1, TDateRight2,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<TDateLeft1, TDateRight3,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft1, TDateRight1,
+        NUdf::TDataType<NUdf::TInterval>, TSameDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft1, TDateRight2,
+        NUdf::TDataType<NUdf::TInterval>, TDiffDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft1, TDateRight3,
+        NUdf::TDataType<NUdf::TInterval>, TDiffDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
 
-    RegisterFunctionBinPolyOpt<TDateLeft2, TDateRight1,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<TDateLeft2, TDateRight2,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<TDateLeft2, TDateRight3,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft2, TDateRight1,
+        NUdf::TDataType<NUdf::TInterval>, TDiffDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft2, TDateRight2,
+        NUdf::TDataType<NUdf::TInterval>, TSameDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft2, TDateRight3,
+        NUdf::TDataType<NUdf::TInterval>, TDiffDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
 
-    RegisterFunctionBinPolyOpt<TDateLeft3, TDateRight1,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<TDateLeft3, TDateRight2,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<TDateLeft3, TDateRight3,
-        NUdf::TDataType<NUdf::TInterval>, TDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft3, TDateRight1,
+        NUdf::TDataType<NUdf::TInterval>, TDiffDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft3, TDateRight2,
+        NUdf::TDataType<NUdf::TInterval>, TDiffDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
+    RegisterFunctionBinOpt<TDateLeft3, TDateRight3,
+        NUdf::TDataType<NUdf::TInterval>, TSameDateTimeSub, TBinaryArgsOpt>(registry, "Sub");
 }
 
 void RegisterSub(IBuiltinFunctionRegistry& registry) {
@@ -247,18 +274,18 @@ void RegisterSub(IBuiltinFunctionRegistry& registry) {
     RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TInterval>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TInterval>, TIntervalSubInterval, TBinaryArgsOptWithNullableResult>(registry, "Sub");
 
-    RegisterFunctionBinPolyOpt<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TInterval>,
+    RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TDate>, TAnyDateTimeSubInterval, TBinaryArgsOptWithNullableResult>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TInterval>,
+    RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TDatetime>, TAnyDateTimeSubInterval, TBinaryArgsOptWithNullableResult>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TInterval>,
+    RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TTimestamp>, TAnyDateTimeSubInterval, TBinaryArgsOptWithNullableResult>(registry, "Sub");
 
-    RegisterFunctionBinPolyOpt<NUdf::TDataType<NUdf::TTzDate>, NUdf::TDataType<NUdf::TInterval>,
+    RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TTzDate>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TTzDate>, TAnyDateTimeSubIntervalTz, TBinaryArgsOptWithNullableResult>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<NUdf::TDataType<NUdf::TTzDatetime>, NUdf::TDataType<NUdf::TInterval>,
+    RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TTzDatetime>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TTzDatetime>, TAnyDateTimeSubIntervalTz, TBinaryArgsOptWithNullableResult>(registry, "Sub");
-    RegisterFunctionBinPolyOpt<NUdf::TDataType<NUdf::TTzTimestamp>, NUdf::TDataType<NUdf::TInterval>,
+    RegisterFunctionBinOpt<NUdf::TDataType<NUdf::TTzTimestamp>, NUdf::TDataType<NUdf::TInterval>,
         NUdf::TDataType<NUdf::TTzTimestamp>, TAnyDateTimeSubIntervalTz, TBinaryArgsOptWithNullableResult>(registry, "Sub");
 }
 

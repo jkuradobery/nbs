@@ -44,7 +44,6 @@ public:
     bool Initialize(TExprContext& ctx) override;
     IGraphTransformer& GetConfigurationTransformer() override;
     TExprNode::TPtr GetClusterInfo(const TString& cluster, TExprContext& ctx) override;
-    void AddCluster(const TString& name, const THashMap<TString, TString>& properties) override;
     const THashMap<TString, TString>* GetClusterTokens() override;
     IGraphTransformer& GetIODiscoveryTransformer() override;
     IGraphTransformer& GetEpochsTransformer() override;
@@ -58,14 +57,11 @@ public:
     void PostRewriteIO() override;
     void Reset() override;
     IGraphTransformer& GetRecaptureOptProposalTransformer() override;
-    IGraphTransformer& GetStatisticsProposalTransformer() override;
     IGraphTransformer& GetLogicalOptProposalTransformer() override;
     IGraphTransformer& GetPhysicalOptProposalTransformer() override;
     IGraphTransformer& GetPhysicalFinalizingTransformer() override;
     IGraphTransformer& GetLoadTableMetadataTransformer() override;
     bool IsPersistent(const TExprNode& node) override;
-    bool IsRead(const TExprNode& node) override;
-    bool IsWrite(const TExprNode& node) override;
     bool CanBuildResult(const TExprNode& node, TSyncMap& syncList) override;
     bool CanPullResult(const TExprNode& node, TSyncMap& syncList, bool& canRef) override;
     bool GetExecWorld(const TExprNode::TPtr& node, TExprNode::TPtr& root) override;
@@ -88,14 +84,11 @@ public:
     ITrackableNodeProcessor& GetTrackableNodeProcessor() override;
     IGraphTransformer& GetPlanInfoTransformer() override;
     IDqIntegration* GetDqIntegration() override;
-    IDqOptimization* GetDqOptimization() override;
 
 protected:
     THolder<IGraphTransformer> DefConstraintTransformer_;
     TNullTransformer NullTransformer_;
     TTrackableNodeProcessorBase NullTrackableNodeProcessor_;
 };
-
-TExprNode::TPtr DefaultCleanupWorld(const TExprNode::TPtr& node, TExprContext& ctx);
 
 } // namespace NYql

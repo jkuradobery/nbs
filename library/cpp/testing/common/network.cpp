@@ -25,7 +25,7 @@ namespace {
 #define Y_VERIFY_SYSERROR(expr)                                           \
     do {                                                                  \
         if (!(expr)) {                                                    \
-            Y_ABORT(#expr ", errno=%d", LastSystemError());                \
+            Y_FAIL(#expr ", errno=%d", LastSystemError());                \
         }                                                                 \
     } while (false)
 
@@ -96,32 +96,27 @@ namespace {
         static constexpr size_t Retries = 20;
     public:
         TPortManager()
+            : SyncDir_(GetEnv("PORT_SYNC_PATH"))
+            , Ranges_(GetPortRanges())
+            , TotalCount_(0)
         {
-            InitFromEnv();
-        }
-
-        void InitFromEnv() {
-            SyncDir_ = TFsPath(GetEnv("PORT_SYNC_PATH"));
             if (!SyncDir_.IsDefined()) {
-                SyncDir_ = TFsPath(GetSystemTempDir()) / "testing_port_locks";
+                SyncDir_ = TFsPath(GetSystemTempDir()) / "yandex_port_locks";
             }
-            Y_ABORT_UNLESS(SyncDir_.IsDefined());
+            Y_VERIFY(SyncDir_.IsDefined());
             NFs::MakeDirectoryRecursive(SyncDir_);
 
-            Ranges_ = GetPortRanges();
-            TotalCount_ = 0;
             for (auto [left, right] : Ranges_) {
                 TotalCount_ += right - left;
             }
-            Y_ABORT_UNLESS(0 != TotalCount_);
-
-            DisableRandomPorts_ = !GetEnv("NO_RANDOM_PORTS").empty();
+            Y_VERIFY(0 != TotalCount_);
         }
 
         NTesting::TPortHolder GetFreePort() const {
             ui16 salt = RandomNumber<ui16>();
             for (ui16 attempt = 0; attempt < TotalCount_; ++attempt) {
                 ui16 probe = (salt + attempt) % TotalCount_;
+
                 for (auto [left, right] : Ranges_) {
                     if (probe >= right - left)
                         probe -= right - left;
@@ -137,11 +132,11 @@ namespace {
                 }
             }
 
-            Y_ABORT("Cannot get free port!");
+            Y_FAIL("Cannot get free port!");
         }
 
         TVector<NTesting::TPortHolder> GetFreePortsRange(size_t count) const {
-            Y_ABORT_UNLESS(count > 0);
+            Y_VERIFY(count > 0);
             TVector<NTesting::TPortHolder> ports(Reserve(count));
             for (size_t i = 0; i < Retries; ++i) {
                 for (auto[left, right] : Ranges_) {
@@ -167,18 +162,7 @@ namespace {
                     ports.clear();
                 }
             }
-            Y_ABORT("Cannot get range of %zu ports!", count);
-        }
-
-        NTesting::TPortHolder GetPort(ui16 port) const {
-            if (port && DisableRandomPorts_) {
-                auto ackport = TryAcquirePort(port);
-                if (ackport) {
-                    return NTesting::TPortHolder{std::move(ackport)};
-                }
-                Y_ABORT("Cannot acquire port %hu!", port);
-            }
-            return GetFreePort();
+            Y_FAIL("Cannot get range of %zu ports!", count);
         }
 
     private:
@@ -194,7 +178,7 @@ namespace {
             TSockAddrInet6 addr("::", port);
             if (sock.Bind(&addr) != 0) {
                 lock->Release();
-                Y_ABORT_UNLESS(EADDRINUSE == LastSystemError(), "unexpected error: %d, port: %d", LastSystemError(), port);
+                Y_VERIFY(EADDRINUSE == LastSystemError(), "unexpected error: %d", LastSystemError());
                 return nullptr;
             }
             return MakeHolder<TPortGuard>(port, std::move(lock));
@@ -204,23 +188,15 @@ namespace {
         TFsPath SyncDir_;
         TVector<std::pair<ui16, ui16>> Ranges_;
         size_t TotalCount_;
-        bool DisableRandomPorts_;
     };
 }
 
 namespace NTesting {
-    void InitPortManagerFromEnv() {
-        Singleton<TPortManager>()->InitFromEnv();
-    }
-
     TPortHolder GetFreePort() {
         return Singleton<TPortManager>()->GetFreePort();
     }
 
     namespace NLegacy {
-        TPortHolder GetPort( ui16 port ) {
-            return Singleton<TPortManager>()->GetPort(port);
-        }
         TVector<TPortHolder> GetFreePortsRange(size_t count) {
             return Singleton<TPortManager>()->GetFreePortsRange(count);
         }

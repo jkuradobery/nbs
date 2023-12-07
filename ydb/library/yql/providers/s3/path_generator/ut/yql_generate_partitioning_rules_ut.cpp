@@ -110,7 +110,7 @@ Y_UNIT_TEST_SUITE(TGenerateTests) {
                 "projection.code.values" : "0,1",
                 "storage.location.template" : "/${city}/${code}/"
             }
-        )", {"city", "code"}, {}, 2), yexception, "The limit on the number of paths has been reached: 2 of 2");
+        )", {"city", "code"}, 2), yexception, "The limit on the number of paths has been reached: 2 of 2");
     }
 
     Y_UNIT_TEST(CheckClash) {
@@ -127,7 +127,7 @@ Y_UNIT_TEST_SUITE(TGenerateTests) {
     }
 
     Y_UNIT_TEST(CheckHiveFormat) {
-        auto generator = CreatePathGenerator({}, {"city", "code", "device_id"}, {}, 1);
+        auto generator = CreatePathGenerator({}, {"city", "code", "device_id"}, 1);
         auto rules = generator->GetRules();
         UNIT_ASSERT_VALUES_EQUAL(rules.size(), 1);
         UNIT_ASSERT_VALUES_EQUAL(rules[0].ColumnValues.size(), 0);
@@ -162,8 +162,8 @@ Y_UNIT_TEST_SUITE(TGenerateTests) {
         UNIT_ASSERT_VALUES_EQUAL(rules[3].ColumnValues.size(), 2);
     }
 
-    Y_UNIT_TEST(FailedGenerateDateWithUnixtime) {
-        UNIT_ASSERT_EXCEPTION_CONTAINS(CreatePathGenerator(R"(
+    Y_UNIT_TEST(SuccessGenerateDateWithUnixtime) {
+        auto generator = CreatePathGenerator(R"(
             {
                 "projection.enabled" : true,
                 "projection.city.type" : "enum",
@@ -176,7 +176,14 @@ Y_UNIT_TEST_SUITE(TGenerateTests) {
                 "projection.code.unit" : "DAYS",
                 "storage.location.template" : "//${city}/${code}//"
             }
-        )", {"city", "code"}), yexception, "error in datetime parsing. Input data: 201701");
+        )", {"city", "code"});
+
+        auto rules = generator->GetRules();
+        UNIT_ASSERT_VALUES_EQUAL(rules.size(), 2);
+        UNIT_ASSERT_VALUES_EQUAL(rules[0].Path, "MSK/1970-01-03/");
+        UNIT_ASSERT_VALUES_EQUAL(rules[0].ColumnValues.size(), 2);
+        UNIT_ASSERT_VALUES_EQUAL(rules[1].Path, "SPB/1970-01-03/");
+        UNIT_ASSERT_VALUES_EQUAL(rules[1].ColumnValues.size(), 2);
     }
 
     Y_UNIT_TEST(SuccessGenerateDateWithNow) {
@@ -272,51 +279,6 @@ Y_UNIT_TEST_SUITE(TGenerateTests) {
         auto result = NKikimr::NMiniKQL::ValueFromString(columnValue.Type, TStringBuf{columnValue.Value});
         UNIT_ASSERT(result.HasValue());
         UNIT_ASSERT_VALUES_EQUAL(result.Get<ui32>(), 15340);
-    }
-
-    Y_UNIT_TEST(InvalidDateFrom) {
-        UNIT_ASSERT_EXCEPTION_CONTAINS(CreatePathGenerator(R"(
-            {
-                "projection.enabled" : true,
-                "projection.dt.type" : "date",
-                "projection.dt.min" : "1980-1-1",
-                "projection.dt.max" : "NOW",
-                "projection.dt.interval" : "1",
-                "projection.dt.format" : "%Y-%m-%d",
-                "projection.dt.unit" : "YEARS",
-                "storage.location.template" : "yellow_tripdata_${dt}-01/"
-            }
-        )", {"dt"}), yexception, "error in datetime parsing. Input data: 1980-1-1");
-    }
-
-    Y_UNIT_TEST(EmptyOutput) {
-        UNIT_ASSERT_EXCEPTION_CONTAINS(CreatePathGenerator(R"(
-            {
-                "projection.enabled" : true,
-                "projection.dt.type" : "date",
-                "projection.dt.min" : "2012-01-01",
-                "projection.dt.max" : "2011-02-01",
-                "projection.dt.interval" : "1",
-                "projection.dt.format" : "asdf asdf 444",
-                "projection.dt.unit" : "YEARS",
-                "storage.location.template" : "/yellow_tripdata_${dt}-01/"
-            }
-        )", {"dt"}), yexception, "The projection contains an empty set of paths");
-    }
-
-    Y_UNIT_TEST(LocationPathCollision) {
-        UNIT_ASSERT_EXCEPTION_CONTAINS(CreatePathGenerator(R"(
-            {
-                "projection.enabled" : "true",
-                "storage.location.template" : "${year}",
-                "projection.year.type" : "date",
-                "projection.year.min" : "1971-01-01",
-                "projection.year.max" : "NOW",
-                "projection.year.interval" : "1",
-                "projection.year.format" : "%Y",
-                "projection.year.unit" : "DAYS"
-            }
-        )", {"year"}), yexception, "Location path 1971/ is composed by different projection value sets { ${year} = 1971-01-01 } and { ${year} = 1971-01-02 }");;
     }
 }
 

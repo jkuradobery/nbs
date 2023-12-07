@@ -15,9 +15,6 @@ namespace NKikimr::NBsController {
                 bool Faulty;
                 bool Bad;
                 bool Decommitted;
-                bool IsSelfHealReasonDecommit;
-                bool OnlyPhantomsRemain;
-                bool IsReady;
                 NKikimrBlobStorage::EVDiskStatus VDiskStatus;
             };
             ui32 Generation;
@@ -27,12 +24,8 @@ namespace NKikimr::NBsController {
         };
 
         THashMap<TGroupId, std::optional<TGroupContent>> GroupsToUpdate; // groups with faulty groups that are changed or got faulty PDisks for the first time
-        TVector<std::tuple<TVDiskID, NKikimrBlobStorage::EVDiskStatus, bool>> VDiskStatusUpdate;
-        TVector<std::pair<TVDiskID, bool>> VDiskIsReadyUpdate;
-        std::optional<bool> GroupLayoutSanitizerEnabled;
-        std::optional<bool> AllowMultipleRealmsOccupation;
-
-        ui64 ConfigTxSeqNo = 0;
+        TVector<std::pair<TVDiskID, NKikimrBlobStorage::EVDiskStatus>> VDiskStatusUpdate;
+        std::optional<bool> GroupLayoutSanitizer;
     };
 
 } // NKikimr::NBsController

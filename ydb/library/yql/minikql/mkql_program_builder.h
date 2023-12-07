@@ -4,7 +4,6 @@
 #include "mkql_node.h"
 #include "mkql_node_builder.h"
 #include <ydb/library/yql/public/udf/udf_value.h>
-#include <ydb/library/yql/core/sql_types/match_recognize.h>
 
 #include <functional>
 
@@ -177,13 +176,11 @@ public:
     TRuntimeNode NewStruct(TType* structType, const TArrayRef<const std::pair<std::string_view, TRuntimeNode>>& members);
 
     TType* NewListType(TType* itemType);
-    TRuntimeNode NewEmptyList();
     TRuntimeNode NewEmptyList(TType* itemType);
     TRuntimeNode NewEmptyListOfVoid();
     TRuntimeNode NewList(TType* itemType, const TArrayRef<const TRuntimeNode>& items);
 
     TType* NewDictType(TType* keyType, TType* payloadType, bool multi);
-    TRuntimeNode NewEmptyDict();
     TRuntimeNode NewDict(TType* dictType, const TArrayRef<const std::pair<TRuntimeNode, TRuntimeNode>>& items);
 
     TType* NewStreamType(TType* itemType);
@@ -197,10 +194,6 @@ public:
     TRuntimeNode NewEmptyTuple();
     TRuntimeNode NewTuple(TType* tupleType, const TArrayRef<const TRuntimeNode>& elements);
     TRuntimeNode NewTuple(const TArrayRef<const TRuntimeNode>& elements);
-
-    TType* NewEmptyMultiType();
-    TType* NewMultiType(const TArrayRef<TType* const>& elements);
-
     TType* NewResourceType(const std::string_view& tag);
     TType* NewVariantType(TType* underlyingType);
     TRuntimeNode NewVariant(TRuntimeNode item, ui32 tupleIndex, TType* variantType);
@@ -253,20 +246,10 @@ public:
     TRuntimeNode WideFromBlocks(TRuntimeNode flow);
     TRuntimeNode WideSkipBlocks(TRuntimeNode flow, TRuntimeNode count);
     TRuntimeNode WideTakeBlocks(TRuntimeNode flow, TRuntimeNode count);
-    TRuntimeNode WideTopBlocks(TRuntimeNode flow, TRuntimeNode count, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
-    TRuntimeNode WideTopSortBlocks(TRuntimeNode flow, TRuntimeNode count, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
-    TRuntimeNode WideSortBlocks(TRuntimeNode flow, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
     TRuntimeNode AsScalar(TRuntimeNode value);
-    TRuntimeNode ReplicateScalar(TRuntimeNode value, TRuntimeNode count);
     TRuntimeNode BlockCompress(TRuntimeNode flow, ui32 bitmapIndex);
     TRuntimeNode BlockExpandChunked(TRuntimeNode flow);
     TRuntimeNode BlockCoalesce(TRuntimeNode first, TRuntimeNode second);
-    TRuntimeNode BlockNth(TRuntimeNode tuple, ui32 index);
-    TRuntimeNode BlockAsTuple(const TArrayRef<const TRuntimeNode>& args);
-    TRuntimeNode BlockToPg(TRuntimeNode input, TType* returnType);
-    TRuntimeNode BlockFromPg(TRuntimeNode input, TType* returnType);
-    TRuntimeNode BlockPgResolvedCall(const std::string_view& name, ui32 id,
-        const TArrayRef<const TRuntimeNode>& args, TType* returnType);
 
     //-- logical functions
     TRuntimeNode BlockNot(TRuntimeNode data);
@@ -275,8 +258,6 @@ public:
     TRuntimeNode BlockXor(TRuntimeNode first, TRuntimeNode second);
 
     TRuntimeNode BlockIf(TRuntimeNode condition, TRuntimeNode thenBranch, TRuntimeNode elseBranch);
-    TRuntimeNode BlockJust(TRuntimeNode data);
-
     TRuntimeNode BlockFunc(const std::string_view& funcName, TType* returnType, const TArrayRef<const TRuntimeNode>& args);
     TRuntimeNode BlockBitCast(TRuntimeNode value, TType* targetType);
     TRuntimeNode BlockCombineAll(TRuntimeNode flow, std::optional<ui32> filterColumn,
@@ -342,8 +323,8 @@ public:
     //-- list functions
     TRuntimeNode Append(TRuntimeNode list, TRuntimeNode item);
     TRuntimeNode Prepend(TRuntimeNode item, TRuntimeNode list);
+    TRuntimeNode Extend(TRuntimeNode list1, TRuntimeNode list2);
     TRuntimeNode Extend(const TArrayRef<const TRuntimeNode>& lists);
-    TRuntimeNode OrderedExtend(const TArrayRef<const TRuntimeNode>& lists);
     // returns list of tuples with items, stops at the shortest list
     TRuntimeNode Zip(const TArrayRef<const TRuntimeNode>& lists);
     // returns list of tuples with optional of items, has length of the longest list
@@ -418,13 +399,9 @@ public:
     TRuntimeNode WideTakeWhileInclusive(TRuntimeNode flow, const TNarrowLambda& handler);
     TRuntimeNode WideSkipWhileInclusive(TRuntimeNode flow, const TNarrowLambda& handler);
 
-    TRuntimeNode WideCombiner(TRuntimeNode flow, i64 memLimit, const TWideLambda& keyExtractor, const TBinaryWideLambda& init, const TTernaryWideLambda& update, const TBinaryWideLambda& finish);
+    TRuntimeNode WideCombiner(TRuntimeNode flow, ui64 memLimit, const TWideLambda& keyExtractor, const TBinaryWideLambda& init, const TTernaryWideLambda& update, const TBinaryWideLambda& finish);
     TRuntimeNode WideLastCombiner(TRuntimeNode flow, const TWideLambda& keyExtractor, const TBinaryWideLambda& init, const TTernaryWideLambda& update, const TBinaryWideLambda& finish);
     TRuntimeNode WideCondense1(TRuntimeNode stream, const TWideLambda& init, const TWideSwitchLambda& switcher, const TBinaryWideLambda& handler, bool useCtx = false);
-
-    TRuntimeNode WideTop(TRuntimeNode flow, TRuntimeNode count, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
-    TRuntimeNode WideTopSort(TRuntimeNode flow, TRuntimeNode count, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
-    TRuntimeNode WideSort(TRuntimeNode flow, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
 
     TRuntimeNode Length(TRuntimeNode listOrDict);
     TRuntimeNode Iterator(TRuntimeNode list, const TArrayRef<const TRuntimeNode>& dependentNodes);
@@ -462,9 +439,7 @@ public:
         TType* returnType);
     TRuntimeNode GraceJoin(TRuntimeNode flowLeft, TRuntimeNode flowRight, EJoinKind joinKind,
         const TArrayRef<const ui32>& leftKeyColumns, const TArrayRef<const ui32>& rightKeyColumns,
-        const TArrayRef<const ui32>& leftRenames, const TArrayRef<const ui32>& rightRenames, TType* returnType, EAnyJoinSettings anyJoinSettings = EAnyJoinSettings::None);
-    TRuntimeNode GraceSelfJoin(TRuntimeNode flowLeft,  EJoinKind joinKind, const TArrayRef<const ui32>& leftKeyColumns, const TArrayRef<const ui32>& rightKeyColumns,
-        const TArrayRef<const ui32>& leftRenames, const TArrayRef<const ui32>& rightRenames, TType* returnType, EAnyJoinSettings anyJoinSettings = EAnyJoinSettings::None);
+        const TArrayRef<const ui32>& leftRenames, const TArrayRef<const ui32>& rightRenames, TType* returnType);
     TRuntimeNode CombineCore(TRuntimeNode stream,
         const TUnaryLambda& keyExtractor,
         const TBinaryLambda& init,
@@ -518,7 +493,7 @@ public:
         const TNarrowLambda& payloadSelector, bool isCompact = false, ui64 itemsCountHint = 0);
     TRuntimeNode NarrowSqueezeToHashedDict(TRuntimeNode stream, bool all, const TNarrowLambda& keySelector,
         const TNarrowLambda& payloadSelector, bool isCompact = false, ui64 itemsCountHint = 0);
-    TRuntimeNode SqueezeToList(TRuntimeNode flow, TRuntimeNode limit);
+    TRuntimeNode SqueezeToList(TRuntimeNode flow, TRuntimeNode sizeHint);
 
     // return list of 2-item tuples with key and payload
     TRuntimeNode DictItems(TRuntimeNode dict);
@@ -674,8 +649,6 @@ public:
 
     TRuntimeNode NextValue(TRuntimeNode value);
 
-    TRuntimeNode Nop(TRuntimeNode value, TType* returnType);
-
     typedef TRuntimeNode (TProgramBuilder::*UnaryFunctionMethod)(TRuntimeNode);
     typedef TRuntimeNode (TProgramBuilder::*BinaryFunctionMethod)(TRuntimeNode, TRuntimeNode);
     typedef TRuntimeNode (TProgramBuilder::*TernaryFunctionMethod)(TRuntimeNode, TRuntimeNode, TRuntimeNode);
@@ -685,38 +658,13 @@ public:
 
     TRuntimeNode PgConst(TPgType* pgType, const std::string_view& value, TRuntimeNode typeMod = {});
     TRuntimeNode PgResolvedCall(bool useContext, const std::string_view& name, ui32 id,
-        const TArrayRef<const TRuntimeNode>& args, TType* returnType, bool rangeFunction);
+        const TArrayRef<const TRuntimeNode>& args, TType* returnType);
     TRuntimeNode PgCast(TRuntimeNode input, TType* returnType, TRuntimeNode typeMod = {});
     TRuntimeNode FromPg(TRuntimeNode input, TType* returnType);
     TRuntimeNode ToPg(TRuntimeNode input, TType* returnType);
-    TRuntimeNode PgClone(TRuntimeNode input, const TArrayRef<const TRuntimeNode>& dependentNodes);
     TRuntimeNode WithContext(TRuntimeNode input, const std::string_view& contextType);
     TRuntimeNode PgInternal0(TType* returnType);
     TRuntimeNode PgArray(const TArrayRef<const TRuntimeNode>& args, TType* returnType);
-    TRuntimeNode PgTableContent(
-        const std::string_view& cluster,
-        const std::string_view& table,
-        TType* returnType);
-
-    TRuntimeNode ScalarApply(const TArrayRef<const TRuntimeNode>& args, const TArrayLambda& handler);
-
-    TRuntimeNode MatchRecognizeCore(
-        TRuntimeNode inputStream,
-        const TUnaryLambda& getPartitionKeySelectorNode,
-        const TArrayRef<TStringBuf>& partitionColumns,
-        const TArrayRef<std::pair<TStringBuf, TBinaryLambda>>& getMeasures,
-        const NYql::NMatchRecognize::TRowPattern& pattern,
-        const TArrayRef<std::pair<TStringBuf, TTernaryLambda>>& getDefines,
-        bool streamingMode
-    );
-
-    TRuntimeNode TimeOrderRecover(
-        TRuntimeNode inputStream,
-        const TUnaryLambda& getTimeExtractor,
-        TRuntimeNode delay,
-        TRuntimeNode ahead,
-        TRuntimeNode rowLimit
-    );
 
 protected:
     TRuntimeNode Invoke(const std::string_view& funcName, TType* resultType, const TArrayRef<const TRuntimeNode>& args);
@@ -746,7 +694,7 @@ protected:
     TRuntimeNode BuildMinMax(const std::string_view& callableName, const TRuntimeNode* data, size_t size);
     TRuntimeNode BuildWideSkipTakeBlocks(const std::string_view& callableName, TRuntimeNode flow, TRuntimeNode count);
     TRuntimeNode BuildBlockLogical(const std::string_view& callableName, TRuntimeNode first, TRuntimeNode second);
-    TRuntimeNode BuildExtend(const std::string_view& callableName, const TArrayRef<const TRuntimeNode>& lists);
+
 private:
     TRuntimeNode BuildWideFilter(const std::string_view& callableName, TRuntimeNode flow, const TNarrowLambda& handler);
 
@@ -769,8 +717,6 @@ private:
     template<bool OnStruct>
     TRuntimeNode BuildFilterNulls(TRuntimeNode list, const TArrayRef<std::conditional_t<OnStruct, const std::string_view, const ui32>>& members,
         const std::conditional_t<OnStruct, std::vector<std::pair<std::string_view, TType*>>, std::vector<TType*>>& filteredItems);
-
-    TRuntimeNode BuildWideTopOrSort(const std::string_view& callableName, TRuntimeNode flow, TMaybe<TRuntimeNode> count, const std::vector<std::pair<ui32, TRuntimeNode>>& keys);
 
     TRuntimeNode InvokeBinary(const std::string_view& callableName, TType* type, TRuntimeNode data1, TRuntimeNode data2);
     TRuntimeNode AggrCompare(const std::string_view& callableName, TRuntimeNode data1, TRuntimeNode data2);

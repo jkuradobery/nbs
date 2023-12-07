@@ -6,15 +6,11 @@ SRCS(
     kqp_tx.cpp
     kqp_worker_actor.cpp
     kqp_worker_common.cpp
-    kqp_query_state.cpp
-    kqp_temp_tables_manager.cpp
 )
 
 PEERDIR(
     ydb/core/docapi
     ydb/core/kqp/common
-    ydb/core/kqp/federated_query
-    ydb/public/lib/operation_id
 )
 
 YQL_LAST_ABI_VERSION()

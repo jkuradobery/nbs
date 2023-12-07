@@ -15,7 +15,6 @@ ELSE()
 ENDIF()
 
 PEERDIR(
-    ydb/core/tx/datashard/ut_common
     library/cpp/getopt
     library/cpp/regex/pcre
     library/cpp/svnversion

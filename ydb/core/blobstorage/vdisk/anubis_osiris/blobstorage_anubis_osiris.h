@@ -2,7 +2,6 @@
 
 #include "defs.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
-#include <ydb/core/blobstorage/vdisk/hulldb/base/blobstorage_hulldefs.h>
 
 namespace NKikimr {
 
@@ -58,14 +57,14 @@ namespace NKikimr {
         THullDbInsert PrepareInsert(const TBlobStorageGroupInfo::TTopology *top,
                                     const TVDiskIdShort &vd) const {
             if (IsAnubis()) {
-                Y_ABORT_UNLESS(!LogoBlobId.PartId());
+                Y_VERIFY(!LogoBlobId.PartId());
                 TIngress ingressDontKeep;
                 ingressDontKeep.SetKeep(TIngress::IngressMode(top->GType), CollectModeDoNotKeep);
                 return {LogoBlobId, ingressDontKeep};
             } else {
-                Y_ABORT_UNLESS(LogoBlobId.PartId());
+                Y_VERIFY(LogoBlobId.PartId());
                 auto ingressOpt = TIngress::CreateIngressWOLocal(top, vd, LogoBlobId);
-                Y_ABORT_UNLESS(ingressOpt);
+                Y_VERIFY(ingressOpt);
                 TLogoBlobID genId(LogoBlobId, 0);
                 return {genId, *ingressOpt};
             }

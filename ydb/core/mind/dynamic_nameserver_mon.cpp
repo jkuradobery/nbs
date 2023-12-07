@@ -1,8 +1,6 @@
 #include "dynamic_nameserver_impl.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/core/base/nameservice.h>
 #include <ydb/core/base/location.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -173,10 +171,6 @@ void TDynamicNameserver::Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext
                 << "    <tr>" << Endl
                 << "      <td class='right-align'>Max static node ID:</td>" << Endl
                 << "      <td>" << config->MaxStaticNodeId << "</td>" << Endl
-                << "    </tr>" << Endl
-                << "    <tr>" << Endl
-                << "      <td class='right-align'>Min dynamic node ID:</td>" << Endl
-                << "      <td>" << config->MinDynamicNodeId << "</td>" << Endl
                 << "    </tr>" << Endl
                 << "    <tr>" << Endl
                 << "      <td class='right-align'>Max dynamic node ID:</td>" << Endl

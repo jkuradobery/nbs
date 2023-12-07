@@ -7,7 +7,6 @@
 #include <ydb/library/yql/minikql/mkql_type_ops.h>
 #include <ydb/library/yql/parser/pg_catalog/catalog.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/codec.h>
-#include <ydb/library/yql/parser/pg_wrapper/interface/type_desc.h>
 #include <ydb/library/yql/public/decimal/yql_decimal.h>
 #include <ydb/library/yql/minikql/dom/json.h>
 #include <ydb/library/yql/utils/utf8.h>
@@ -178,11 +177,6 @@ void ExportTypeToProtoImpl(TType* type, NKikimrMiniKQL::TType& res, const TVecto
             break;
         }
 
-        case TType::EKind::EmptyList: {
-            res.SetKind(NKikimrMiniKQL::ETypeKind::EmptyList);
-            break;
-        }
-
         case TType::EKind::List: {
             auto listType = static_cast<TListType *>(type);
             res.SetKind(NKikimrMiniKQL::ETypeKind::List);
@@ -205,11 +199,6 @@ void ExportTypeToProtoImpl(TType* type, NKikimrMiniKQL::TType& res, const TVecto
             if (tupleType->GetElementsCount()) {
                 ExportTupleTypeToProto(tupleType, *res.MutableTuple());
             }
-            break;
-        }
-
-        case TType::EKind::EmptyDict: {
-            res.SetKind(NKikimrMiniKQL::ETypeKind::EmptyDict);
             break;
         }
 
@@ -289,17 +278,12 @@ void ExportTypeToProtoImpl(TType* type, Ydb::Type& res, const TVector<ui32>* col
         }
 
         case TType::EKind::Pg: {
-            auto* pgType = static_cast<TPgType*>(type);
-            auto typeId = pgType->GetTypeId();
-            auto* typeDesc = NKikimr::NPg::TypeDescFromPgTypeId(typeId);
-            MKQL_ENSURE(typeDesc, TStringBuilder() << "Unknown PG type id: " << typeId);
-
-            auto* pg = res.mutable_pg_type();
-            pg->set_type_name(NKikimr::NPg::PgTypeNameFromTypeDesc(typeDesc));
-            pg->set_oid(typeId);
-            pg->set_typmod(-1);
+            auto pgType = static_cast<TPgType*>(type);
+            auto t = res.mutable_pg_type();
+            t->set_oid(pgType->GetTypeId());
+            t->set_typmod(-1);
             const i32 typlen = NYql::NPg::LookupType(pgType->GetTypeId()).TypeLen;
-            pg->set_typlen(typlen);
+            t->set_typlen(typlen);
             break;
         }
 
@@ -1044,9 +1028,6 @@ TType* TProtoImporter::ImportTypeFromProto(const NKikimrMiniKQL::TType& type) {
             TType* child = ImportTypeFromProto(protoTaggedType.GetItem());
             return TTaggedType::Create(child, protoTaggedType.GetTag(), env);
         }
-        case NKikimrMiniKQL::ETypeKind::EmptyList: {
-            return env.GetTypeOfEmptyList();
-        }
         case NKikimrMiniKQL::ETypeKind::List: {
             const NKikimrMiniKQL::TListType& protoListType = type.GetList();
             const NKikimrMiniKQL::TType& protoItemType = protoListType.GetItem();
@@ -1061,9 +1042,6 @@ TType* TProtoImporter::ImportTypeFromProto(const NKikimrMiniKQL::TType& type) {
         case NKikimrMiniKQL::ETypeKind::Struct: {
             const NKikimrMiniKQL::TStructType& protoStructType = type.GetStruct();
             return ImportStructTypeFromProto(protoStructType);
-        }
-        case NKikimrMiniKQL::ETypeKind::EmptyDict: {
-            return env.GetTypeOfEmptyDict();
         }
         case NKikimrMiniKQL::ETypeKind::Dict: {
             const NKikimrMiniKQL::TDictType& protoDictType = type.GetDict();
@@ -1345,16 +1323,8 @@ TType* TProtoImporter::ImportTypeFromProto(const Ydb::Type& input) {
             return env.GetTypeOfEmptyList();
         case Ydb::Type::kEmptyDictType:
             return env.GetTypeOfEmptyDict();
-        case Ydb::Type::kPgType: {
-            if (const auto& typeName = input.pg_type().type_name()) {
-                auto* typeDesc = NKikimr::NPg::TypeDescFromPgTypeName(typeName);
-                MKQL_ENSURE(typeDesc, TStringBuilder() << "Unknown PG type name: " << typeName);
-                return TPgType::Create(NKikimr::NPg::PgTypeIdFromTypeDesc(typeDesc), env);
-            } else {
-                const auto& typeId = input.pg_type().oid();
-                return TPgType::Create(typeId, env);
-            }
-        }
+        case Ydb::Type::kPgType:
+            return TPgType::Create(input.pg_type().oid(), env);
         case Ydb::Type::kTypeId: {
             MKQL_ENSURE(NUdf::FindDataSlot(input.type_id()), TStringBuilder() << "unknown type id: " << ui32(input.type_id()));
             return TDataType::Create(input.type_id(), env);
@@ -1697,18 +1667,9 @@ NUdf::TUnboxedValue TProtoImporter::ImportValueFromProto(const TType* type, cons
         return unboxedValue;
     }
 
-    case TType::EKind::Pg: {
-        const TPgType* pgType = static_cast<const TPgType*>(type);
-        NYql::NUdf::TUnboxedValue unboxedValue;
-        if (value.Hastext_value()) {
-            unboxedValue = NYql::NCommon::PgValueFromNativeText(value.Gettext_value(), pgType->GetTypeId());
-        } else if (value.Hasbytes_value()) {
-            unboxedValue = NYql::NCommon::PgValueFromNativeBinary(value.Getbytes_value(), pgType->GetTypeId());
-        } else {
-            MKQL_ENSURE(false, "empty pg value proto");
-        }
-        return unboxedValue;
-    }
+    case TType::EKind::Pg:
+        // TODO: support pg types
+        MKQL_ENSURE(false, "pg types are not supported");
 
     default:
         MKQL_ENSURE(false, TStringBuilder() << "Unknown kind: " << type->GetKindAsStr());

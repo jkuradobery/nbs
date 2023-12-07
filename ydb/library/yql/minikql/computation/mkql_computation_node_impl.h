@@ -221,13 +221,12 @@ protected:
     }
 };
 
-template <typename TDerived, typename IFlowInterface>
-class TFlowSourceBaseComputationNode: public TStatefulComputationNode<IFlowInterface>
+template <typename TDerived>
+class TFlowSourceComputationNode: public TStatefulComputationNode<IComputationNode>
 {
-    using TBase = TStatefulComputationNode<IFlowInterface>;
 protected:
-    TFlowSourceBaseComputationNode(TComputationMutables& mutables, EValueRepresentation stateKind)
-        : TBase(mutables, stateKind)
+    TFlowSourceComputationNode(TComputationMutables& mutables, EValueRepresentation kind, EValueRepresentation stateKind)
+        : TStatefulComputationNode<IComputationNode>(mutables, stateKind), RepresentationKind(kind)
     {}
 
     TString DebugString() const override {
@@ -260,7 +259,7 @@ private:
         if (this == owner)
             return;
 
-        if (dependencies.emplace(TBase::ValueIndex, TBase::RepresentationKind).second) {
+        if (dependencies.emplace(TStatefulComputationNode<IComputationNode>::ValueIndex, TStatefulComputationNode<IComputationNode>::RepresentationKind).second) {
             std::for_each(this->Dependencies.cbegin(), this->Dependencies.cend(), std::bind(&IComputationNode::CollectDependentIndexes, std::placeholders::_1, owner, std::ref(dependencies)));
         }
     }
@@ -268,21 +267,6 @@ private:
     void PrepareStageOne() final {}
     void PrepareStageTwo() final {}
 
-    const IComputationNode* GetSource() const final { return this; }
-
-    mutable std::unordered_set<const IComputationNode*> Sources; // TODO: remove const and mutable.
-};
-
-template <typename TDerived>
-class TFlowSourceComputationNode: public TFlowSourceBaseComputationNode<TDerived, IComputationNode>
-{
-    using TBase = TFlowSourceBaseComputationNode<TDerived, IComputationNode>;
-protected:
-    TFlowSourceComputationNode(TComputationMutables& mutables, EValueRepresentation kind, EValueRepresentation stateKind)
-        : TBase(mutables, stateKind), RepresentationKind(kind)
-    {}
-
-private:
     EValueRepresentation GetRepresentation() const final {
         return RepresentationKind;
     }
@@ -290,30 +274,11 @@ private:
     NUdf::TUnboxedValue GetValue(TComputationContext& compCtx) const final {
         return static_cast<const TDerived*>(this)->DoCalculate(this->ValueRef(compCtx), compCtx);
     }
-private:
+
+    const IComputationNode* GetSource() const final { return this; }
+
     const EValueRepresentation RepresentationKind;
-};
-
-template <typename TDerived>
-class TWideFlowSourceComputationNode: public TFlowSourceBaseComputationNode<TDerived, IComputationWideFlowNode>
-{
-    using TBase = TFlowSourceBaseComputationNode<TDerived, IComputationWideFlowNode>;
-protected:
-    TWideFlowSourceComputationNode(TComputationMutables& mutables, EValueRepresentation stateKind)
-        : TBase(mutables, stateKind)
-    {}
-private:
-    EValueRepresentation GetRepresentation() const final {
-        THROW yexception() << "Failed to get representation kind.";
-    }
-
-    NUdf::TUnboxedValue GetValue(TComputationContext&) const final {
-        THROW yexception() << "Failed to get value from wide flow node.";
-    }
-
-    EFetchResult FetchValues(TComputationContext& compCtx, NUdf::TUnboxedValue*const* values) const final {
-        return static_cast<const TDerived*>(this)->DoCalculate(this->ValueRef(compCtx), compCtx, values);
-    }
+    mutable std::unordered_set<const IComputationNode*> Sources; // TODO: remove const and mutable.
 };
 
 template <typename TDerived, typename IFlowInterface>
@@ -470,7 +435,7 @@ template <typename TDerived, bool SerializableState = false>
 class TStatefulFlowComputationNode: public TBaseFlowBaseComputationNode<TDerived>
 {
 protected:
-    TStatefulFlowComputationNode(TComputationMutables& mutables, const IComputationNode* source, EValueRepresentation kind, EValueRepresentation stateKind = EValueRepresentation::Any)
+    TStatefulFlowComputationNode(TComputationMutables& mutables, const IComputationNode* source, EValueRepresentation kind, EValueRepresentation stateKind)
         : TBaseFlowBaseComputationNode<TDerived>(source, kind), StateIndex(mutables.CurValueIndex++), StateKind(stateKind)
     {
         if constexpr (SerializableState) {
@@ -543,10 +508,11 @@ private:
 
 class TWideFlowProxyComputationNode: public TRefCountedComputationNode<IComputationWideFlowProxyNode>
 {
-public:
-    TWideFlowProxyComputationNode() = default;
 protected:
+    TWideFlowProxyComputationNode() = default;
+
     TString DebugString() const final;
+
 private:
     void InitNode(TComputationContext&) const override {}
 
@@ -1047,13 +1013,6 @@ private:
         ThrowNotSupported(__func__);
     }
 
-    NUdf::EFetchStatus WideFetch(NUdf::TUnboxedValue* result, ui32 width) override {
-        Y_UNUSED(result);
-        Y_UNUSED(width);
-        ThrowNotSupported(__func__);
-        return NUdf::EFetchStatus::Finish;
-    }
-
 public:
     TString DebugString() const {
         return TypeName<TDerived>();
@@ -1072,11 +1031,7 @@ private:
     using TBase = TComputationValueBase<TDerived, TBaseExt>;
 protected:
     inline TMemoryUsageInfo* GetMemInfo() const {
-#ifndef NDEBUG
         return static_cast<TMemoryUsageInfo*>(M_.MemInfo);
-#else
-        return nullptr;
-#endif
     }
     using TWithMiniKQLAlloc<MemoryPool>::AllocWithSize;
     using TWithMiniKQLAlloc<MemoryPool>::FreeWithSize;
@@ -1084,25 +1039,17 @@ public:
     template <typename... Args>
     TComputationValueImpl(TMemoryUsageInfo* memInfo, Args&&... args)
         : TBase(std::forward<Args>(args)...) {
-#ifndef NDEBUG
         M_.MemInfo = memInfo;
         MKQL_MEM_TAKE(memInfo, this, sizeof(TDerived), __MKQL_LOCATION__);
-#else
-        Y_UNUSED(memInfo);
-#endif
     }
 
     ~TComputationValueImpl() {
-#ifndef NDEBUG
         MKQL_MEM_RETURN(GetMemInfo(), this, sizeof(TDerived));
-#endif
     }
 private:
-#ifndef NDEBUG
     struct {
         void* MemInfo; // used for tracking memory usage during execution
     } M_;
-#endif
 };
 
 template <typename TDerived, typename TBaseExt = NUdf::IBoxedValue>
@@ -1158,11 +1105,8 @@ IComputationExternalNode* LocateExternalNode(const TNodeLocator& nodeLocator, TC
 
 using TPasstroughtMap = std::vector<std::optional<size_t>>;
 
-template<class TContainerOne, class TContainerTwo>
-TPasstroughtMap GetPasstroughtMap(const TContainerOne& from, const TContainerTwo& to);
-
-template<class TContainerOne, class TContainerTwo>
-TPasstroughtMap GetPasstroughtMapOneToOne(const TContainerOne& from, const TContainerTwo& to);
+TPasstroughtMap GetPasstroughtMap(const TComputationExternalNodePtrVector& args, const TComputationNodePtrVector& roots);
+TPasstroughtMap GetPasstroughtMap(const TComputationNodePtrVector& roots, const TComputationExternalNodePtrVector& args);
 
 std::optional<size_t> IsPasstrought(const IComputationNode* root, const TComputationExternalNodePtrVector& args);
 

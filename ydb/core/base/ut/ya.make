@@ -10,7 +10,6 @@ PEERDIR(
 )
 
 SRCS(
-    path_ut.cpp
     blobstorage_grouptype_ut.cpp
     localdb_ut.cpp
     logoblob_ut.cpp

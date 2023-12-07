@@ -25,9 +25,6 @@ struct TBootQueue {
             case TTabletTypes::BlobDepot:
                 priority = 2;
                 break;
-            case TTabletTypes::ColumnShard:
-                priority = 0;
-                break;
             default:
                 if (tablet.IsLeader()) {
                     priority = 1;
@@ -35,9 +32,6 @@ struct TBootQueue {
                 break;
             }
             priority += tablet.Weight;
-            if (tablet.RestartsOften()) {
-               priority -= 5;
-            }
             return priority;
         }
 

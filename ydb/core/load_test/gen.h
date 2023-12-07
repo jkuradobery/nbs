@@ -2,7 +2,6 @@
 
 #include "defs.h"
 #include <ydb/core/base/appdata.h>
-#include <library/cpp/random_provider/random_provider.h>
 
 namespace NKikimr {
 
@@ -21,7 +20,7 @@ namespace NKikimr {
         template<typename T>
         TGenerator(const google::protobuf::RepeatedPtrField<T>& setting) {
             for (const auto& item : setting) {
-                Y_ABORT_UNLESS(item.HasWeight());
+                Y_VERIFY(item.HasWeight());
                 AccumWeight += item.GetWeight();
                 Items.emplace(AccumWeight, item);
             }

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import logging
 
-from contrib.ydb.tests.library.wardens.base import LivenessWarden
+from ydb.tests.library.wardens.base import LivenessWarden
 
 logger = logging.getLogger(__name__)
 

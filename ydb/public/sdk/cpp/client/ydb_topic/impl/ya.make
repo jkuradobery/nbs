@@ -11,15 +11,13 @@ SRCS(
     read_session.cpp
     write_session.h
     write_session.cpp
-    write_session_impl.h
-    write_session_impl.cpp
     topic_impl.h
     topic_impl.cpp
     topic.cpp
 )
 
 PEERDIR(
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/monlib/dynamic_counters
     library/cpp/monlib/metrics
     library/cpp/string_utils/url

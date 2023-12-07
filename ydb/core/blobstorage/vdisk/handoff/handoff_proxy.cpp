@@ -1,7 +1,6 @@
 #include "handoff_proxy.h"
 #include "handoff_delegate.h"
 #include <ydb/core/blobstorage/vdisk/common/vdisk_events.h>
-#include <ydb/core/blobstorage/vdisk/common/vdisk_log.h>
 
 using namespace NKikimrServices;
 using namespace NKikimr::NHandoff;
@@ -37,7 +36,7 @@ namespace NKikimr {
 
         bool WaitQueueIsEmpty() const {
             bool empty = WaitQueue.Empty();
-            Y_DEBUG_ABORT_UNLESS(empty && State.WaitQueueSize == 0 || !empty && State.WaitQueueSize != 0);
+            Y_VERIFY_DEBUG(empty && State.WaitQueueSize == 0 || !empty && State.WaitQueueSize != 0);
             return empty;
         }
 
@@ -51,7 +50,7 @@ namespace NKikimr {
 
         bool InFlightQueueIsEmpty() const {
             bool empty = InFlightQueue.Empty();
-            Y_DEBUG_ABORT_UNLESS(empty && State.InFlightQueueSize == 0 || !empty && State.InFlightQueueSize != 0);
+            Y_VERIFY_DEBUG(empty && State.InFlightQueueSize == 0 || !empty && State.InFlightQueueSize != 0);
             return empty;
         }
 
@@ -125,7 +124,7 @@ namespace NKikimr {
             SendQueuedMessagesUntilAllowed(ctx);
 
             if (!InFlightQueueIsFull(byteSize)) {
-                //Y_DEBUG_ABORT_UNLESS(WaitQueueIsEmpty()); // FIXME: it seems that assert is invalid
+                //Y_VERIFY_DEBUG(WaitQueueIsEmpty()); // FIXME: it seems that assert is invalid
                 item->Cookie = GenerateCookie();
                 SendItem(ctx, std::move(item));
                 Counters.LocalHandoffSendRightAway++;
@@ -214,7 +213,7 @@ namespace NKikimr {
             if (record.GetStatus() == NKikimrProto::OK) {
                 if (State.InFlightQueueSize == 0) {
                     // in flight queue is empty (we have restarted?)
-                    Y_DEBUG_ABORT_UNLESS(InFlightQueue.Empty());
+                    Y_VERIFY_DEBUG(InFlightQueue.Empty());
                     // just ignore this message (update counters and log)
                     LOG_ERROR(ctx, BS_HANDOFF,
                               VDISKP(VDiskLogPrefix,
@@ -248,7 +247,7 @@ namespace NKikimr {
                 return;
             }
 
-            Y_ABORT("Unexpected case");
+            Y_FAIL("Unexpected case");
         }
 
         void Handle(TEvents::TEvUndelivered::TPtr& ev, const TActorContext& ctx) {
@@ -261,7 +260,7 @@ namespace NKikimr {
                 Counters.ReplyUndelivered++;
                 SwitchToBadState(ctx);
             } else
-                Y_ABORT("Unknown undelivered");
+                Y_FAIL("Unknown undelivered");
         }
 
         void HandleWakeup(const TActorContext &ctx) {

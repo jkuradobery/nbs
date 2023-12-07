@@ -59,9 +59,6 @@ enum MimeTypes {
     MIME_TTF = 45,
     MIME_WEBMANIFEST = 46,
     MIME_CBOR = 47,
-    MIME_CSV = 48,
-    MIME_VIDEO_MP4 = 49,
-    MIME_VIDEO_AVI = 50,
     MIME_MAX
 };
 

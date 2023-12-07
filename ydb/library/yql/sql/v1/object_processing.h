@@ -51,17 +51,6 @@ public:
     }
 };
 
-class TUpsertObject final: public TCreateObject {
-private:
-    using TBase = TCreateObject;
-protected:
-    virtual INode::TPtr BuildOptions() const override {
-        return Y(Q(Y(Q("mode"), Q("upsertObject"))));
-    }
-public:
-    using TBase::TBase;
-};
-
 class TAlterObject final: public TCreateObject {
 private:
     using TBase = TCreateObject;

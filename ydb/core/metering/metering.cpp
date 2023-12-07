@@ -1,10 +1,8 @@
 #include "metering.h"
 
-#include <ydb/library/services/services.pb.h>
-
 #include <library/cpp/logger/record.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/string/builder.h>
 
@@ -76,7 +74,7 @@ STFUNC(TMeteringWriteActor::StateWork)
         HFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
         HFunc(TEvMetering::TEvWriteMeteringJson, HandleWriteMeteringJson);
     default:
-        HandleUnexpectedEvent(ev);
+        HandleUnexpectedEvent(ev, ctx);
         break;
     }
 }
@@ -102,9 +100,11 @@ void TMeteringWriteActor::HandleWriteMeteringJson(
 
 void TMeteringWriteActor::HandleUnexpectedEvent(STFUNC_SIG)
 {
+    Y_UNUSED(ctx);
+
     LOG_W("TMeteringWriteActor:"
           << " unhandled event type: " << ev->GetTypeRewrite()
-          << " event: " << ev->ToString());
+          << " event: " << (ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?"));
 }
 
 }   // namespace

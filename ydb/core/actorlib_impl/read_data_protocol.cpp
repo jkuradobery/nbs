@@ -7,7 +7,8 @@
 namespace NActors {
 
 void TReadDataProtocolImpl::ProtocolFunc(
-        TAutoPtr<NActors::IEventHandle>& ev) noexcept
+        TAutoPtr<NActors::IEventHandle>& ev,
+        const TActorContext& ctx) noexcept
 {
     if (Cancelled) {
         return;
@@ -15,11 +16,11 @@ void TReadDataProtocolImpl::ProtocolFunc(
 
     switch (ev->GetTypeRewrite()) {
     case TEvSocketReadyRead::EventType:
-        TryAgain(TlsActivationContext->AsActorContext());
+        TryAgain(ctx);
         break;
 
     default:
-        Y_ABORT("Unknown message type dispatched");
+        Y_FAIL("Unknown message type dispatched");
     }
 }
 
@@ -39,7 +40,7 @@ void TReadDataProtocolImpl::TryAgain(const TActorContext& ctx) noexcept {
         recvResult = Socket->Recv(Data, Len);
 
         if (recvResult > 0) {
-            Y_ABORT_UNLESS(Len >= (size_t)recvResult);
+            Y_VERIFY(Len >= (size_t)recvResult);
             Data += recvResult;
             Len -= recvResult;
             Filled += recvResult;
@@ -112,7 +113,7 @@ void TReadDataProtocolImpl::TryAgain(const TActorContext& ctx) noexcept {
     case ENOTSOCK:
     case EOPNOTSUPP:
         {
-            Y_ABORT("Very bad socket error");
+            Y_FAIL("Very bad socket error");
         }
     }
 }

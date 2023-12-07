@@ -4,7 +4,6 @@
 #include "blobstorage_hullstorageratio.h"
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 #include <ydb/core/blobstorage/vdisk/common/disk_part.h>
-#include <ydb/core/blobstorage/vdisk/common/vdisk_context.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_mongroups.h>
 #include <util/generic/vector.h>
 #include <util/generic/buffer.h>
@@ -20,9 +19,6 @@ namespace NKikimr {
 
     template <class TKey>
     TLogSignature PDiskSignatureForHullDbKey();
-
-    class TVDiskContext;
-    using TVDiskContextPtr = TIntrusivePtr<TVDiskContext>;
 
     ///////////////////////////////////////////////////////////////////////////////////////
     // TDiskDataExtractor
@@ -56,7 +52,7 @@ namespace NKikimr {
         }
 
         const TDiskPart &SwearOne() const {
-            Y_DEBUG_ABORT_UNLESS(Begin + 1 == End);
+            Y_VERIFY_DEBUG(Begin + 1 == End);
             return *Begin;
         }
 
@@ -157,7 +153,27 @@ namespace NKikimr {
                 ui32 hullCompMaxInFlightReads,
                 double hullCompReadBatchEfficiencyThreshold,
                 TDuration hullCompStorageRatioCalcPeriod,
-                TDuration hullCompStorageRatioMaxCalcDuration);
+                TDuration hullCompStorageRatioMaxCalcDuration)
+            : VCtx(std::move(vctx))
+            , IngressCache(TIngressCache::Create(VCtx->Top, VCtx->ShortSelfVDisk))
+            , ChunkSize(chunkSize)
+            , CompWorthReadSize(compWorthReadSize)
+            , FreshCompaction(freshCompaction)
+            , GCOnlySynced(gcOnlySynced)
+            , AllowKeepFlags(allowKeepFlags)
+            , BarrierValidation(barrierValidation)
+            , HullSstSizeInChunksFresh(hullSstSizeInChunksFresh)
+            , HullSstSizeInChunksLevel(hullSstSizeInChunksLevel)
+            , HullCompFreeSpaceThreshold(hullCompFreeSpaceThreshold)
+            , FreshCompMaxInFlightWrites(freshCompMaxInFlightWrites)
+            , HullCompMaxInFlightWrites(hullCompMaxInFlightWrites)
+            , HullCompMaxInFlightReads(hullCompMaxInFlightReads)
+            , HullCompReadBatchEfficiencyThreshold(hullCompReadBatchEfficiencyThreshold)
+            , HullCompStorageRatioCalcPeriod(hullCompStorageRatioCalcPeriod)
+            , HullCompStorageRatioMaxCalcDuration(hullCompStorageRatioMaxCalcDuration)
+            , LsmHullGroup(VCtx->VDiskCounters, "subsystem", "lsmhull")
+            , LsmHullSpaceGroup(VCtx->VDiskCounters, "subsystem", "outofspace")
+        {}
 
         void UpdateSpaceCounters(const NHullComp::TSstRatio& prev, const NHullComp::TSstRatio& current);
     };

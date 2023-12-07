@@ -31,7 +31,7 @@ config: b
 )";
             UNIT_ASSERT_EXCEPTION_CONTAINS(
                 NFyaml::TDocument::Parse(yaml),
-                NFyaml::TFyamlEx,
+                yexception,
                 "3:1 duplicate key");
         }
 
@@ -42,22 +42,8 @@ anchor: *does_not_exists
             auto doc = NFyaml::TDocument::Parse(yaml);
             UNIT_ASSERT_EXCEPTION_CONTAINS(
                 doc.Resolve(),
-                NFyaml::TFyamlEx,
+                yexception,
                 "2:10 invalid alias");
-        }
-        {
-            const char *yaml = R"(
-a: 1
-a: 2
-a: 3
-)";
-            try {
-                NFyaml::TDocument::Parse(yaml);
-                UNIT_FAIL("exception must've happend");
-            } catch (NFyaml::TFyamlEx e) {
-                UNIT_ASSERT(TString(e.what()).Contains("3:1 duplicate key"));
-                UNIT_ASSERT(e.Errors().ysize() == 1);
-            }
         }
     }
 
@@ -162,16 +148,14 @@ x: b
                 auto docNodeRef = doc->Root().Map().at("test");
                 auto node1 = item1NodeRef.Copy(*doc);
                 auto node2 = item2NodeRef.Copy(*doc);
-                docNodeRef.Sequence().Append(node1);
-                docNodeRef.Sequence().Append(node2);
+                docNodeRef.Sequence().Append(node1.Ref());
+                docNodeRef.Sequence().Append(node2.Ref());
                 item1.reset();
                 item2.reset();
             }
         }
 
         auto seq = doc->Root().Map().at("test").Sequence();
-        UNIT_ASSERT(seq[0].Map().Has("x"));
-        UNIT_ASSERT(!seq[0].Map().Has("xx"));
         UNIT_ASSERT_VALUES_EQUAL(seq[0].Map().at("x").Scalar(), "1");
         UNIT_ASSERT_VALUES_EQUAL(seq[0].Map().at("y").Scalar(), "2");
         UNIT_ASSERT_VALUES_EQUAL(seq[1].Map().at("a").Scalar(), "noop");

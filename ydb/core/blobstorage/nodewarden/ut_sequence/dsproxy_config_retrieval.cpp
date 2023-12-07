@@ -71,7 +71,7 @@ void SetupServices(TTestBasicRuntime& runtime) {
         SetupStateStorage(runtime, i);
         auto config = MakeIntrusive<TNodeWardenConfig>(new TStrandedPDiskServiceFactory(runtime));
         config->SectorMaps[path] = sectorMap;
-        config->BlobStorageConfig.MutableServiceSet()->CopyFrom(configs[i]);
+        config->ServiceSet = configs[i];
         SetupBSNodeWarden(runtime, i, config);
         SetupTabletResolver(runtime, i);
         SetupNodeWhiteboard(runtime, i);
@@ -90,7 +90,7 @@ void SetupServices(TTestBasicRuntime& runtime) {
         auto nodesInfo = runtime.GrabEdgeEventRethrow<TEvInterconnect::TEvNodesInfo>(handleNodesInfo);
 
         ui32 nodeId = runtime.GetNodeId(0);
-        Y_ABORT_UNLESS(nodesInfo->Nodes[0].NodeId == nodeId);
+        Y_VERIFY(nodesInfo->Nodes[0].NodeId == nodeId);
         auto& nodeInfo = nodesInfo->Nodes[0];
 
         auto ev = std::make_unique<TEvBlobStorage::TEvControllerConfigRequest>();
@@ -151,7 +151,7 @@ Y_UNIT_TEST_SUITE(NodeWardenDsProxyConfigRetrieval) {
 
         TActorId clientId;
         TTestActorRuntimeBase::TEventObserver prev = runtime.SetObserverFunc(
-                [&](TAutoPtr<IEventHandle>& ev) {
+                [&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& ev) {
             if (auto *msg = ev->CastAsLocal<TEvBlobStorage::TEvControllerNodeServiceSetUpdate>()) {
                 for (const auto& group : msg->Record.GetServiceSet().GetGroups()) {
                     if (group.GetGroupID() == groupId && !allowConfiguring) {
@@ -171,7 +171,7 @@ Y_UNIT_TEST_SUITE(NodeWardenDsProxyConfigRetrieval) {
                     clientId = {};
                 }
             }
-            return prev(ev);
+            return prev(runtime, ev);
         });
 
         Setup(runtime);

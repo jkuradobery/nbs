@@ -1,9 +1,9 @@
 #pragma once
 
 #include <variant>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/mailbox.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/mailbox.h>
 #include <ydb/core/util/simple_cache.h>
 
 namespace NCloud {
@@ -136,13 +136,13 @@ public:
         ErrorLifeTime = grpcCacheErrorLifeTime;
     }
 
-    void StateWork(TAutoPtr<NActors::IEventHandle>& ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEventRequestType, Handle);
             hFunc(TEventResponseType, Handle);
             cFunc(TEvents::TSystem::Poison, PassAway);
             default:
-                this->Forward(ev, GetUnderlyingActor());
+                ctx.Send(ev->Forward(GetUnderlyingActor()));
                 break;
         }
     }

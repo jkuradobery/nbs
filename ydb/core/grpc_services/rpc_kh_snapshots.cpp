@@ -4,12 +4,12 @@
 #include "rpc_kh_snapshots.h"
 #include "resolve_local_db_table.h"
 
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_deferrable.h"
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/string/vector.h>
 #include <util/generic/hash.h>
@@ -133,7 +133,7 @@ private:
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, Handle);
             default:
-                return StateFuncBase(ev);
+                return StateFuncBase(ev, ctx);
         }
     }
 
@@ -270,7 +270,7 @@ private:
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, Handle);
             default:
-                return StateFuncBase(ev);
+                return StateFuncBase(ev, ctx);
         }
     }
 
@@ -411,7 +411,7 @@ private:
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, Handle);
             default:
-                return StateFuncBase(ev);
+                return StateFuncBase(ev, ctx);
         }
     }
 
@@ -474,16 +474,16 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void DoKikhouseCreateSnapshotRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TKikhouseCreateSnapshotRPC(p.release()));
+void DoKikhouseCreateSnapshotRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TKikhouseCreateSnapshotRPC(p.release()));
 }
 
-void DoKikhouseRefreshSnapshotRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TKikhouseRefreshSnapshotRPC(p.release()));
+void DoKikhouseRefreshSnapshotRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TKikhouseRefreshSnapshotRPC(p.release()));
 }
 
-void DoKikhouseDiscardSnapshotRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TKikhouseDiscardSnapshotRPC(p.release()));
+void DoKikhouseDiscardSnapshotRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TKikhouseDiscardSnapshotRPC(p.release()));
 }
 
 } // namespace NKikimr

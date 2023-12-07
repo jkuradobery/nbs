@@ -9,7 +9,8 @@
 #include <ydb/public/lib/ydb_cli/common/format.h>
 #include <ydb/public/lib/ydb_cli/common/parseable_struct.h>
 
-namespace NYdb::NConsoleClient {
+namespace NYdb {
+namespace NConsoleClient {
 
 class TCommandImport : public TClientCommandTree {
 public:
@@ -50,18 +51,14 @@ class TCommandImportFileBase : public TYdbCommand,
 public:
     TCommandImportFileBase(const TString& cmd, const TString& cmdDescription)
       : TYdbCommand(cmd, {}, cmdDescription)
-    {
-        Args[0] = "<input files...>";
-    }
+    {}
     void Config(TConfig& config) override;
     void Parse(TConfig& config) override;
 
 protected:
-    TVector<TString> FilePaths;
+    TString FilePath; // Read from stdin if the file path is empty
     TString BytesPerRequest;
     ui64 MaxInFlightRequests = 1;
-    ui64 Threads = 0;
-    TDuration OperationTimeout;
 };
 
 class TCommandImportFromCsv : public TCommandImportFileBase {
@@ -76,12 +73,10 @@ public:
     int Run(TConfig& config) override;
 
 protected:
-    TString HeaderRow;
     TString Delimiter;
     TString NullValue;
     ui32 SkipRows = 0;
     bool Header = false;
-    bool NewlineDelimited = true;
 };
 
 class TCommandImportFromTsv : public TCommandImportFromCsv {
@@ -109,12 +104,12 @@ public:
 class TCommandImportFromParquet : public TCommandImportFileBase {
 public:
     TCommandImportFromParquet(const TString& cmd = "parquet", const TString& cmdDescription = "Import data from Parquet file")
-        : TCommandImportFileBase(cmd, cmdDescription)
+        : TCommandImportFileBase(cmd, cmdDescription) 
         {
             InputFormat = EOutputFormat::Parquet;
         }
     void Config(TConfig& config) override;
     int Run(TConfig& config) override;
 };
-
+}
 }

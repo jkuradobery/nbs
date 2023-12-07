@@ -159,28 +159,6 @@ public:                                                                         
         };
 
         ///////////////////////////////////////////////////////////////////////////////////
-        // TCostGroup
-        ///////////////////////////////////////////////////////////////////////////////////
-        class TCostGroup : public TBase {
-        public:
-            GROUP_CONSTRUCTOR(TCostGroup)
-            {
-                COUNTER_INIT(DiskTimeAvailableNs, false);
-                COUNTER_INIT(SkeletonFrontUserCostNs, true);
-                COUNTER_INIT(SkeletonFrontInternalCostNs, true);
-                COUNTER_INIT(DefragCostNs, true);
-                COUNTER_INIT(CompactionCostNs, true);
-                COUNTER_INIT(ScrubCostNs, true);
-            }
-            COUNTER_DEF(DiskTimeAvailableNs);
-            COUNTER_DEF(SkeletonFrontUserCostNs);
-            COUNTER_DEF(SkeletonFrontInternalCostNs);
-            COUNTER_DEF(DefragCostNs);
-            COUNTER_DEF(CompactionCostNs);
-            COUNTER_DEF(ScrubCostNs);
-        };
-
-        ///////////////////////////////////////////////////////////////////////////////////
         // TSyncerGroup
         ///////////////////////////////////////////////////////////////////////////////////
         class TSyncerGroup : public TBase {
@@ -235,8 +213,6 @@ public:                                                                         
                 COUNTER_INIT(ReplUnreplicatedPhantoms, false);
                 COUNTER_INIT(ReplUnreplicatedNonPhantoms, false);
                 COUNTER_INIT(ReplSecondsRemaining, false);
-                COUNTER_INIT(ReplTotalBlobsWithProblems, false);
-                COUNTER_INIT(ReplPhantomBlobsWithProblems, false);
             }
 
             COUNTER_DEF(SyncerVSyncMessagesSent);
@@ -259,8 +235,6 @@ public:                                                                         
             COUNTER_DEF(ReplUnreplicatedPhantoms);
             COUNTER_DEF(ReplUnreplicatedNonPhantoms);
             COUNTER_DEF(ReplSecondsRemaining);
-            COUNTER_DEF(ReplTotalBlobsWithProblems);
-            COUNTER_DEF(ReplPhantomBlobsWithProblems);
         };
 
         ///////////////////////////////////////////////////////////////////////////////////

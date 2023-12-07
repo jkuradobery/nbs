@@ -1,7 +1,6 @@
 #include "topic_parser.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
 
 #include <util/folder/path.h>
 
@@ -156,10 +155,10 @@ TDiscoveryConverter::TDiscoveryConverter(bool firstClass,
     auto name = pqTabletConfig.GetTopicName();
     auto path = pqTabletConfig.GetTopicPath();
     if (name.empty()) {
-        Y_ABORT_UNLESS(!path.empty());
+        Y_VERIFY(!path.empty());
         TStringBuf pathBuf(path), fst, snd;
         auto res = pathBuf.TryRSplit("/", fst, snd);
-        Y_ABORT_UNLESS(res);
+        Y_VERIFY(res);
         name = snd;
     } else if (path.empty()) {
         path = name;
@@ -578,8 +577,8 @@ const TMaybe<TString>& TDiscoveryConverter::GetSecondaryPath(const TString& data
     if (!database.empty()) {
         SetDatabase(database);
     }
-    Y_ABORT_UNLESS(!PendingDatabase);
-    Y_ABORT_UNLESS(SecondaryPath.Defined());
+    Y_VERIFY(!PendingDatabase);
+    Y_VERIFY(SecondaryPath.Defined());
     return SecondaryPath;
 }
 
@@ -594,7 +593,7 @@ void TDiscoveryConverter::SetDatabase(const TString& database) {
     if (!Database.Defined()) {
         Database = NormalizeFullPath(database);
     }
-    Y_ABORT_UNLESS(!FullModernName.empty());
+    Y_VERIFY(!FullModernName.empty());
     if (!SecondaryPath.Defined()) {
         SecondaryPath = NKikimr::JoinPath({*Database, FullModernName});
         NormalizeAsFullPath(SecondaryPath.GetRef());
@@ -656,6 +655,11 @@ TTopicConverterPtr TTopicNameConverter::ForFederation(
             res->Reason = TStringBuilder() << "Topic '" << schemeName << "' created as non-local in local cluster";
         }
     } else {
+        if (schemeName.Contains("rt3.")) {
+            res->Valid = false;
+            res->Reason = "Legacy style topic should not be created outside of PQ root";
+            return res;
+        }
         if (federationAccount.empty()) {
             res->Valid = false;
             res->Reason = "Should specify federation account for modern-style topics";
@@ -670,7 +674,7 @@ TTopicConverterPtr TTopicNameConverter::ForFederation(
             return res;
         }
         if (parsed) {
-            Y_ABORT_UNLESS(!res->Dc.empty());
+            Y_VERIFY(!res->Dc.empty());
             if (!localDc.empty() && localDc == res->Dc) {
                 res->Valid = false;
                 res->Reason = TStringBuilder() << "Topic in modern mirrored-like style: " << schemeName
@@ -714,11 +718,11 @@ TTopicConverterPtr TTopicNameConverter::ForFederation(
         NormalizeAsFullPath(res->PrimaryPath);
     }
     if (res->IsValid()) {
-        Y_ABORT_UNLESS(res->Account_.Defined());
-        Y_ABORT_UNLESS(!res->LegacyProducer.empty());
-        Y_ABORT_UNLESS(!res->LegacyLogtype.empty());
-        Y_ABORT_UNLESS(!res->Dc.empty());
-        Y_ABORT_UNLESS(!res->FullLegacyName.empty());
+        Y_VERIFY(res->Account_.Defined());
+        Y_VERIFY(!res->LegacyProducer.empty());
+        Y_VERIFY(!res->LegacyLogtype.empty());
+        Y_VERIFY(!res->Dc.empty());
+        Y_VERIFY(!res->FullLegacyName.empty());
         res->Account = *res->Account_;
         res->InternalName = res->FullLegacyName;
     }
@@ -766,7 +770,7 @@ void TTopicNameConverter::BuildInternals(const NKikimrPQ::TPQTabletConfig& confi
     db.ChopSuffix("/");
     Database = db;
     if (FstClass) {
-        Y_ABORT_UNLESS(!path.empty());
+        Y_VERIFY(!path.empty());
         path.SkipPrefix(db);
         path.SkipPrefix("/");
         ClientsideName = path;
@@ -775,7 +779,7 @@ void TTopicNameConverter::BuildInternals(const NKikimrPQ::TPQTabletConfig& confi
         InternalName = PrimaryPath;
     } else {
         SetDatabase(*Database);
-        Y_ABORT_UNLESS(!FullLegacyName.empty());
+        Y_VERIFY(!FullLegacyName.empty());
         ClientsideName = FullLegacyName;
         ShortClientsideName = ShortLegacyName;
         auto& producer = config.GetProducer();
@@ -786,7 +790,7 @@ void TTopicNameConverter::BuildInternals(const NKikimrPQ::TPQTabletConfig& confi
         if (LegacyProducer.empty()) {
             LegacyProducer = Account;
         }
-        Y_ABORT_UNLESS(!FullModernName.empty());
+        Y_VERIFY(!FullModernName.empty());
         InternalName = FullLegacyName;
     }
 }
@@ -809,12 +813,12 @@ TString TTopicNameConverter::GetInternalName() const {
 
 const TString& TTopicNameConverter::GetClientsideName() const {
     Y_VERIFY_S(Valid, Reason.c_str());
-    Y_ABORT_UNLESS(!ClientsideName.empty());
+    Y_VERIFY(!ClientsideName.empty());
     return ClientsideName;
 }
 
 const TString& TTopicNameConverter::GetShortClientsideName() const {
-    Y_ABORT_UNLESS(!ShortClientsideName.empty());
+    Y_VERIFY(!ShortClientsideName.empty());
     return ShortClientsideName;
 }
 
@@ -872,7 +876,7 @@ TString TTopicNameConverter::GetTopicForSrcIdHash() const {
 TString TTopicNameConverter::GetSecondaryPath() const {
     Y_VERIFY_S(Valid, Reason.c_str());
     if (!FstClass) {
-        Y_ABORT_UNLESS(SecondaryPath.Defined());
+        Y_VERIFY(SecondaryPath.Defined());
         return *SecondaryPath;
     } else {
         return TString();

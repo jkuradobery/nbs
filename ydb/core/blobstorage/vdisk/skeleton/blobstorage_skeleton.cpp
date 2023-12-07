@@ -16,7 +16,6 @@
 #include "skeleton_capturevdisklayout.h"
 #include "skeleton_compactionstate.h"
 #include "skeleton_block_and_get.h"
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo_iter.h>
 #include <ydb/core/blobstorage/vdisk/localrecovery/localrecovery_public.h>
 #include <ydb/core/blobstorage/vdisk/hullop/blobstorage_hull.h>
@@ -115,7 +114,7 @@ namespace NKikimr {
 
                 case NKikimrBlobStorage::TGroupDecommitStatus_E_TGroupDecommitStatus_E_INT_MIN_SENTINEL_DO_NOT_USE_:
                 case NKikimrBlobStorage::TGroupDecommitStatus_E_TGroupDecommitStatus_E_INT_MAX_SENTINEL_DO_NOT_USE_:
-                    Y_DEBUG_ABORT_UNLESS(false);
+                    Y_VERIFY_DEBUG(false);
                     return true;
             }
         }
@@ -128,8 +127,6 @@ namespace NKikimr {
                 ReplyError(NKikimrProto::ERROR, "disk is in donor mode", ev, ctx, TAppData::TimeProvider->Now());
             } else if (BlockWrites(GInfo->DecommitStatus)) {
                 ReplyError(NKikimrProto::ERROR, "group is being decommitted", ev, ctx, TAppData::TimeProvider->Now());
-            } else if (Config->BaseInfo.ReadOnly) {
-                ReplyError(NKikimrProto::ERROR, "disk is in readonly mode", ev, ctx, TAppData::TimeProvider->Now());
             } else {
                 return true;
             }
@@ -363,7 +360,7 @@ namespace NKikimr {
                 ui64 cookie, NLWTrace::TOrbit &&orbit, TVPutInfo &info,
                 std::unique_ptr<TEvResult> result)
         {
-            Y_DEBUG_ABORT_UNLESS(info.HullStatus.Status == NKikimrProto::OK);
+            Y_VERIFY_DEBUG(info.HullStatus.Status == NKikimrProto::OK);
             const TLogoBlobID &id = info.BlobId;
             TRope &buffer = info.Buffer;
             const TLsnSeg &seg = info.Lsn;
@@ -407,7 +404,7 @@ namespace NKikimr {
                 ui64 cookie, bool ignoreBlock, NKikimrBlobStorage::EPutHandleClass handleClass, TVPutInfo &info,
                 std::unique_ptr<TEvBlobStorage::TEvVPutResult> res)
         {
-            Y_DEBUG_ABORT_UNLESS(info.HullStatus.Status == NKikimrProto::OK);
+            Y_VERIFY_DEBUG(info.HullStatus.Status == NKikimrProto::OK);
             info.Buffer = TDiskBlob::Create(info.BlobId.BlobSize(), info.BlobId.PartId(), Db->GType.TotalPartCount(),
                 std::move(info.Buffer), *Arena);
             UpdatePDiskWriteBytes(info.Buffer.GetSize());
@@ -457,6 +454,20 @@ namespace NKikimr {
             return status;
         }
 
+        TString GetHugeBlobsForErrorMsg(const TBatchedVec<TVPutInfo> &putsInfo) {
+            TStringBuilder hugeBlobs;
+            bool hasHugeBlob = false;
+            for (auto &item : putsInfo) {
+                if (item.IsHugeBlob) {
+                    hugeBlobs << (hasHugeBlob ? " " : "") << "{"
+                        << "BlobId# " << item.BlobId
+                        << " BufferSize# " << item.Buffer.GetSize() << "}";
+                    hasHugeBlob = true;
+                }
+            }
+            return hugeBlobs;
+        }
+
         void PrivateHandle(TEvBlobStorage::TEvVMultiPut::TPtr &ev, const TActorContext &ctx) {
             IFaceMonGroup->MultiPutMsgs()++;
             IFaceMonGroup->PutTotalBytes() += ev->GetSize();
@@ -491,6 +502,7 @@ namespace NKikimr {
             }
 
             bool hasPostponed = false;
+            bool hasHugeBlob = false;
             bool ignoreBlock = record.GetIgnoreBlock();
 
             TBatchedVec<TVPutInfo> putsInfo;
@@ -504,14 +516,9 @@ namespace NKikimr {
 
                 try {
                     info.IsHugeBlob = HugeBlobCtx->IsHugeBlob(VCtx->Top->GType, blobId.FullID());
-                    if (info.IsHugeBlob) {
-                        LOG_CRIT_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << "TEvVMultiPut: TEvVMultiPut has huge blob# "
-                            << blobId << " Marker# BSVS08");
-                        info.HullStatus = THullCheckStatus(NKikimrProto::ERROR, "TEvVMultiPut with huge blob");
-                    }
-                } catch (const std::exception& ex) {
+                } catch (yexception ex) {
                     LOG_ERROR_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix << ex.what() << " Marker# BSVS39");
-                    info.HullStatus = THullCheckStatus(NKikimrProto::ERROR, TStringBuilder() << "exception# " << ex.what());
+                    info.HullStatus = {NKikimrProto::ERROR, 0, false};
                 }
 
                 if (info.HullStatus.Status == NKikimrProto::UNKNOWN) {
@@ -532,7 +539,17 @@ namespace NKikimr {
                 }
                 hasPostponed |= info.HullStatus.Postponed;
 
-                lsnCount += info.HullStatus.Status == NKikimrProto::OK;
+                if (info.IsHugeBlob) {
+                    hasHugeBlob = true;
+                } else {
+                    lsnCount += (info.HullStatus.Status == NKikimrProto::OK);
+                }
+            }
+
+            if (hasHugeBlob) {
+                LOG_CRIT_S(ctx, BS_VDISK_PUT, VCtx->VDiskLogPrefix
+                        << "TEvVMultiPut: TEvVMultiPut has huge blobs# " << GetHugeBlobsForErrorMsg(putsInfo)
+                        << " Marker# BSVS08");
             }
 
             TBatchedVec<NKikimrProto::EReplyStatus> statuses;
@@ -543,7 +560,7 @@ namespace NKikimr {
                     statuses.push_back(info.HullStatus.Status);
                 }
             }
-            if (!lsnCount && !hasPostponed) {
+            if (!hasHugeBlob && !lsnCount && !hasPostponed) {
                 LOG_INFO_S(ctx, BS_VDISK_PUT, Db->VCtx->VDiskLogPrefix << "TEvVMultiPut: all items have errors"
                         << " Marker# BSVS09");
                 ReplyError(NKikimrProto::OK, TString(), ev, ctx, now, statuses);
@@ -552,6 +569,8 @@ namespace NKikimr {
 
             TOutOfSpaceStatus oosStatus = VCtx->GetOutOfSpaceState().GetGlobalStatusFlags();
             NLWTrace::TOrbit orbit = std::move(ev->Get()->Orbit);
+            NKikimrBlobStorage::EPutHandleClass handleClass = ev->Get()->Record.GetHandleClass();
+            TVDiskID vdisk = VDiskIDFromVDiskID(ev->Get()->Record.GetVDiskID());
 
             std::unique_ptr<NPDisk::TEvMultiLog> evLogs = std::make_unique<NPDisk::TEvMultiLog>();
             ui64 cookie = ev->Cookie;
@@ -559,7 +578,6 @@ namespace NKikimr {
             IActor* vMultiPutActor = CreateSkeletonVMultiPutActor(SelfId(), statuses, oosStatus, ev,
                     SkeletonFrontIDPtr, IFaceMonGroup->MultiPutResMsgsPtr(), Db->GetVDiskIncarnationGuid());
             NActors::TActorId vMultiPutActorId = ctx.Register(vMultiPutActor);
-            ActiveActors.Insert(vMultiPutActorId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
 
             TLsnSeg lsnBatch;
             if (lsnCount) {
@@ -573,11 +591,11 @@ namespace NKikimr {
             for (ui64 itemIdx = 0; itemIdx < record.ItemsSize(); ++itemIdx) {
                 TVPutInfo &info = putsInfo[itemIdx];
                 NKikimrProto::EReplyStatus status = info.HullStatus.Status;
-
-                auto result = std::make_unique<TEvVMultiPutItemResult>(info.BlobId, itemIdx, status,
-                    info.HullStatus.ErrorReason, info.WrittenBeyondBarrier);
+                const TString& errorReason = info.HullStatus.ErrorReason;
 
                 if (info.HullStatus.Postponed) {
+                    auto result = std::make_unique<TEvVMultiPutItemResult>(info.BlobId, itemIdx, status, errorReason,
+                        info.WrittenBeyondBarrier);
                     Hull->PostponeReplyUntilCommitted(result.release(), vMultiPutActorId, itemIdx, std::move(info.TraceId),
                         info.HullStatus.Lsn);
                     continue;
@@ -587,13 +605,38 @@ namespace NKikimr {
                     continue;
                 }
 
-                Y_ABORT_UNLESS(lsnBatch.First <= lsnBatch.Last);
+                if (info.IsHugeBlob) {
+                    // pass the work to huge blob writer
+                    TInstant deadline = (record.HasMsgQoS() && record.GetMsgQoS().HasDeadlineSeconds()) ?
+                            TInstant::Seconds(record.GetMsgQoS().GetDeadlineSeconds()) :
+                            TInstant::Max();
+                    TEvBlobStorage::TEvVPut vPut(info.BlobId, TRope(), vdisk, ignoreBlock,
+                            &itemIdx, deadline, handleClass);
+                    std::unique_ptr<TEvBlobStorage::TEvVPutResult> result(
+                        new TEvBlobStorage::TEvVPutResult(status, info.BlobId, SelfVDiskId, &itemIdx, oosStatus, now,
+                            vPut.GetCachedByteSize(), &vPut.Record, SkeletonFrontIDPtr, nullptr,
+                            VCtx->Histograms.GetHistogram(handleClass), info.Buffer.GetSize(),
+                            Db->GetVDiskIncarnationGuid(), errorReason));
+                    if (info.Buffer) {
+                        auto hugeWrite = CreateHullWriteHugeBlob(vMultiPutActorId, cookie, ignoreBlock, handleClass,
+                            info, std::move(result));
+                        ctx.Send(Db->HugeKeeperID, hugeWrite.release(), 0, 0, std::move(info.TraceId));
+                    } else {
+                        ctx.Send(SelfId(), new TEvHullLogHugeBlob(0, info.BlobId, info.Ingress, TDiskPart(),
+                            ignoreBlock, vMultiPutActorId, cookie, std::move(result), &info.ExtraBlockChecks), 0, 0,
+                            std::move(info.TraceId));
+                    }
+                } else {
+                    Y_VERIFY(lsnBatch.First <= lsnBatch.Last);
 
-                info.Lsn = TLsnSeg(lsnBatch.First, lsnBatch.First);
-                lsnBatch.First++;
-                auto logMsg = CreatePutLogEvent(ctx, "TEvVMultiPut", vMultiPutActorId, cookie, std::move(orbit),
-                    info, std::move(result));
-                evLogs->AddLog(THolder<NPDisk::TEvLog>(logMsg.release()));
+                    info.Lsn = TLsnSeg(lsnBatch.First, lsnBatch.First);
+                    lsnBatch.First++;
+                    auto evItemResult = std::make_unique<TEvVMultiPutItemResult>(info.BlobId, itemIdx, status, errorReason,
+                        info.WrittenBeyondBarrier);
+                    auto logMsg = CreatePutLogEvent(ctx, "TEvVMultiPut", vMultiPutActorId, cookie, std::move(orbit),
+                        info, std::move(evItemResult));
+                    evLogs->AddLog(THolder<NPDisk::TEvLog>(logMsg.release()));
+                }
             }
 
             // Manage PDisk scheduler weights
@@ -620,7 +663,7 @@ namespace NKikimr {
         }
 
         void HandlePutSyncGuidRecovery(TEvBlobStorage::TEvVPut::TPtr& ev, const TActorContext& ctx) {
-            Y_ABORT_UNLESS(ev->Get()->RewriteBlob);
+            Y_VERIFY(ev->Get()->RewriteBlob);
             Handle(ev, ctx);
         }
 
@@ -720,7 +763,6 @@ namespace NKikimr {
                 NKikimrBlobStorage::EPutHandleClass handleClass = record.GetHandleClass();
                 auto hugeWrite = CreateHullWriteHugeBlob(ev->Sender, ev->Cookie, ignoreBlock, handleClass, info,
                     std::move(result));
-                hugeWrite->Orbit = std::move(ev->Get()->Orbit);
                 ctx.Send(Db->HugeKeeperID, hugeWrite.release(), 0, 0, std::move(info.TraceId));
             } else {
                 ctx.Send(SelfId(), new TEvHullLogHugeBlob(0, info.BlobId, info.Ingress, TDiskPart(), ignoreBlock,
@@ -825,7 +867,7 @@ namespace NKikimr {
         // Add already constructed ssts
         ////////////////////////////////////////////////////////////////////////
         void Handle(TEvAddBulkSst::TPtr &ev, const TActorContext &ctx) {
-            Y_ABORT("not implemented yet");
+            Y_FAIL("not implemented yet");
 
             const TLsnSeg seg = Db->LsnMngr->AllocLsnForHull(ev->Get()->Essence.GetLsnRange());
             NPDisk::TCommitRecord commitRecord;
@@ -905,7 +947,7 @@ namespace NKikimr {
                 if (record.HasCookie())
                     cookie = record.GetCookie();
                 auto handleClass = ev->Get()->Record.GetHandleClass();
-
+                
                 std::unique_ptr<TEvBlobStorage::TEvVGetResult> result;
                 if (ev->Get()->IsInternal) {
                     result.reset(new TEvBlobStorage::TEvVGetResult(NKikimrProto::OK, SelfVDiskId, now,
@@ -937,7 +979,7 @@ namespace NKikimr {
 
                 if (actor) {
                     auto aid = ctx.Register(actor);
-                    ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                    ActiveActors.Insert(aid);
                 } else {
                     auto res = std::make_unique<TEvBlobStorage::TEvVGetResult>();
                     res->MakeError(NKikimrProto::ERROR, "incorrect query", record);
@@ -1162,7 +1204,7 @@ namespace NKikimr {
                 IActor *actor = CreateLevelIndexBarrierQueryActor(HullCtx, ctx.SelfID, std::move(fullSnap.BarriersSnap),
                     ev, std::move(result));
                 auto aid = ctx.Register(actor);
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
                 // ReadBarrier is responsible for sending result to the recipient
             }
         }
@@ -1176,7 +1218,7 @@ namespace NKikimr {
             LOG_DEBUG_S(ctx, BS_VDISK_OTHER, VCtx->VDiskLogPrefix << "TEvVStatus Marker# BSVS20");
             auto aid = ctx.Register(CreateStatusRequestHandler(VCtx, Db->SkeletonID, Db->SyncerID, Db->SyncLogID,
                 IFaceMonGroup, SelfVDiskId, Db->GetVDiskIncarnationGuid(), GInfo, ev, ctx.SelfID, now, ReplDone));
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
         void Handle(TEvLocalStatus::TPtr &ev, const TActorContext &ctx) {
@@ -1218,7 +1260,7 @@ namespace NKikimr {
                         ctx.SelfID, ev, std::move(result));
                 if (actor) {
                     auto aid = ctx.Register(actor);
-                    ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                    ActiveActors.Insert(aid);
                 }
                 // CreateDbStatActor is responsible for sending result to the recipient
             }
@@ -1235,7 +1277,7 @@ namespace NKikimr {
                     ctx.SelfID, ev, std::move(result));
             if (actor) {
                 auto aid = ctx.Register(actor);
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
             }
         }
 
@@ -1249,15 +1291,15 @@ namespace NKikimr {
             TActorId& actorId = MonStreamActors[ev->Get()->StreamId];
             if (actorId == TActorId()) {
                 actorId = RunInBatchPool(ctx, CreateMonStreamActor(Hull->GetIndexSnapshot(), ev));
-                ActiveActors.Insert(actorId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.insert(actorId);
             }
             ctx.ExecutorThread.ActorSystem->Send(ev->Forward(actorId));
         }
 
         void Handle(TEvBlobStorage::TEvMonStreamActorDeathNote::TPtr& ev, const TActorContext& /*ctx*/) {
             auto it = MonStreamActors.find(ev->Get()->StreamId);
-            Y_ABORT_UNLESS(it != MonStreamActors.end());
-            ActiveActors.Erase(it->second);
+            Y_VERIFY(it != MonStreamActors.end());
+            ActiveActors.erase(it->second);
             MonStreamActors.erase(it);
         }
 
@@ -1280,7 +1322,7 @@ namespace NKikimr {
                 ReplyError(NKikimrProto::ERROR, "decommission didn't start yet", ev, ctx, TAppData::TimeProvider->Now());
             } else {
                 const TActorId actorId = RunInBatchPool(ctx, CreateAssimilationActor(Hull->GetIndexSnapshot(), ev, SelfVDiskId));
-                ActiveActors.Insert(actorId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.insert(actorId);
             }
         }
 
@@ -1314,7 +1356,7 @@ namespace NKikimr {
                 switch (opType) {
                     case NKikimrBlobStorage::TEvVCompact::ASYNC:
                     {
-                        Y_ABORT_UNLESS(Db->LoggerID);
+                        Y_VERIFY(Db->LoggerID);
                         // forward this message to logger, because it knows correct lsn
                         ctx.Send(ev->Forward(Db->LoggerID));
                         // reply back
@@ -1347,7 +1389,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvHullCompactResult::TPtr &ev, const TActorContext &ctx) {
-            Y_ABORT_UNLESS(VDiskCompactionState);
+            Y_VERIFY(VDiskCompactionState);
             VDiskCompactionState->Compacted(ctx, ev->Get()->RequestId, ev->Get()->Type);
         }
 
@@ -1374,7 +1416,7 @@ namespace NKikimr {
             if (!SelfVDiskId.SameDisk(record.GetVDiskID())) {
                 ReplyError(NKikimrProto::RACE, "group generation mismatch", ev, ctx, now);
             } else {
-                Y_ABORT_UNLESS(Db->SyncLogID);
+                Y_VERIFY(Db->SyncLogID);
                 // forward this message to SyncLog
                 ctx.Send(ev->Forward(Db->SyncLogID));
                 // reply back
@@ -1461,7 +1503,7 @@ namespace NKikimr {
             }
 
 #ifdef UNPACK_LOCALSYNCDATA
-            Y_ABORT_UNLESS(ev->Get()->Extracted.IsReady());
+            Y_VERIFY(ev->Get()->Extracted.IsReady());
             TLsnSeg seg = Hull->AllocateLsnForSyncDataCmd(ev->Get()->Extracted);
 #else
             TLsnSeg seg = Hull->AllocateLsnForSyncDataCmd(ev->Get()->Data);
@@ -1496,7 +1538,7 @@ namespace NKikimr {
             IActor *actor = CreateHullOsiris(ev->Sender, ctx.SelfID, ctx.SelfID, std::move(fullSnap), confirmedLsn,
                     Config->AnubisOsirisMaxInFly);
             auto aid = ctx.Register(actor);
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
         void Handle(TEvAnubisOsirisPut::TPtr &ev, const TActorContext &ctx) {
@@ -1580,7 +1622,7 @@ namespace NKikimr {
             dbBirthLsn = *DbBirthLsn;
             auto aid = ctx.RegisterWithSameMailbox(CreateHullSyncFullHandler(Db, HullCtx, SelfVDiskId, ctx.SelfID, Hull,
                 IFaceMonGroup, ev, now, dbBirthLsn, confirmedLsn));
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
         ////////////////////////////////////////////////////////////////////////
@@ -1616,7 +1658,7 @@ namespace NKikimr {
 
             TRope buf = std::move(msg->Data);
             const ui64 bufSize = buf.GetSize();
-            Y_ABORT_UNLESS(bufSize <= Config->MaxLogoBlobDataSize && HugeBlobCtx->IsHugeBlob(VCtx->Top->GType, id.FullID()),
+            Y_VERIFY(bufSize <= Config->MaxLogoBlobDataSize && HugeBlobCtx->IsHugeBlob(VCtx->Top->GType, id.FullID()),
                     "TEvRecoveredHugeBlob: blob is too small/huge bufSize# %zu", bufSize);
             UpdatePDiskWriteBytes(bufSize);
 
@@ -1657,7 +1699,7 @@ namespace NKikimr {
             }
             TString data;
             bool res = record.SerializeToString(&data);
-            Y_ABORT_UNLESS(res);
+            Y_VERIFY(res);
 
             intptr_t loggedRecId = LoggedRecsVault.Put(new TLoggedRecPhantoms(seg, true, ev));
             void *loggedRecCookie = reinterpret_cast<void *>(loggedRecId);
@@ -1684,7 +1726,7 @@ namespace NKikimr {
             // dump db
             TStringStream dump;
             typename TDumper::EDumpRes status = dumper.Dump(dump);
-            Y_ABORT_UNLESS(status == TDumper::EDumpRes::OK);
+            Y_VERIFY(status == TDumper::EDumpRes::OK);
 
             str << "========= " << VCtx->VDiskLogPrefix << " ==========\n";
             str << dump.Str() << "\n";
@@ -1705,12 +1747,11 @@ namespace NKikimr {
                                                           HugeBlobCtx,
                                                           Db->GetVDiskIncarnationGuid());
             ctx.Send(*SkeletonFrontIDPtr, msg.release());
-            Hull->PermitGarbageCollection(ctx);
             // propagate status to Node Warden unless replication is on -- in that case it sets the status itself
             if (!runRepl) {
                 ReplDone = true;
             }
-            UpdateReplState();
+            UpdateReplState(ctx);
         }
 
         void SkeletonErrorState(const TActorContext &ctx,
@@ -1727,33 +1768,7 @@ namespace NKikimr {
                                                           Db->GetVDiskIncarnationGuid());
             ctx.Send(*SkeletonFrontIDPtr, msg.release());
             // push the status
-            UpdateVDiskStatus(NKikimrBlobStorage::ERROR);
-        }
-
-        void StartDefrag(const TActorContext &ctx) {
-            auto defragCtx = std::make_shared<TDefragCtx>(VCtx, HugeBlobCtx, PDiskCtx, ctx.SelfID,
-                Db->HugeKeeperID, true);
-            DefragId = ctx.Register(CreateDefragActor(defragCtx, GInfo));
-            ActiveActors.Insert(DefragId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
-        }
-
-        void StartScrubberActor(const TActorContext &ctx, NKikimrVDiskData::TScrubEntrypoint scrubEntrypoint, ui64 scrubEntrypointLsn) {
-            auto scrubCtx = MakeIntrusive<TScrubContext>(
-                VCtx,
-                PDiskCtx,
-                GInfo,
-                SelfId(),
-                Hull->GetHullDs()->LogoBlobs->LIActor,
-                SelfId().NodeId(),
-                Config->BaseInfo.PDiskId,
-                Config->BaseInfo.VDiskSlotId,
-                Config->BaseInfo.ScrubCookie,
-                Db->GetVDiskIncarnationGuid(),
-                Db->LsnMngr,
-                Db->LoggerID,
-                Db->LogCutterID);
-            ScrubId = ctx.Register(CreateScrubActor(std::move(scrubCtx), std::move(scrubEntrypoint), scrubEntrypointLsn));
-            ActiveActors.Insert(ScrubId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            UpdateVDiskStatus(NKikimrBlobStorage::ERROR, ctx);
         }
 
         void Handle(TEvBlobStorage::TEvLocalRecoveryDone::TPtr &ev, const TActorContext &ctx) {
@@ -1803,36 +1818,37 @@ namespace NKikimr {
                         PDiskCtx->Dsk->Owner, PDiskCtx->Dsk->OwnerRound, Db->LsnMngr->GetStartLsn(),
                         VCtx->VDiskCounters);
                 Db->LoggerID.Set(ctx.Register(logWriter));
-                ActiveActors.Insert(Db->LoggerID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                ActiveActors.Insert(Db->LoggerID); // keep forever
 
                 // run out of disk space tracker
                 Db->DskSpaceTrackerID.Set(ctx.Register(CreateDskSpaceTracker(VCtx, PDiskCtx,
                     Config->DskTrackerInterval)));
-                ActiveActors.Insert(Db->DskSpaceTrackerID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                ActiveActors.Insert(Db->DskSpaceTrackerID); // keep forever
 
                 // start handoff proxies right now, because they are required for Hull compactions
                 if (Config->RunHandoff && !Config->BaseInfo.DonorMode) {
-                    ActiveActors.Insert(Db->Handoff->RunProxies(ctx), ctx, NKikimrServices::BLOBSTORAGE);
+                    auto moreActors = Db->Handoff->RunProxies(ctx);
+                    ActiveActors.Insert(moreActors);
                 }
 
                 // run LogCutter in the same mailbox
                 TLogCutterCtx logCutterCtx = {VCtx, PDiskCtx, Db->LsnMngr, Config,
                         (TActorId)(Db->LoggerID)};
                 Db->LogCutterID.Set(ctx.RegisterWithSameMailbox(CreateRecoveryLogCutter(std::move(logCutterCtx))));
-                ActiveActors.Insert(Db->LogCutterID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                ActiveActors.Insert(Db->LogCutterID); // keep forever
 
                 // run HugeBlobKeeper
                 TString localRecovInfoStr = Db->LocalRecoveryInfo ? Db->LocalRecoveryInfo->ToString() : TString("{}");
                 auto hugeKeeperCtx = std::make_shared<THugeKeeperCtx>(VCtx, PDiskCtx, Db->LsnMngr,
                         ctx.SelfID, (TActorId)(Db->LoggerID), (TActorId)(Db->LogCutterID),
-                        localRecovInfoStr, Config->BaseInfo.ReadOnly);
+                        localRecovInfoStr);
                 auto hugeKeeper = CreateHullHugeBlobKeeper(hugeKeeperCtx, ev->Get()->RepairedHuge);
                 Db->HugeKeeperID.Set(ctx.Register(hugeKeeper));
-                ActiveActors.Insert(Db->HugeKeeperID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                ActiveActors.Insert(Db->HugeKeeperID); // keep forever
 
                 // run SyncLogActor
                 std::unique_ptr<NSyncLog::TSyncLogRepaired> repairedSyncLog = std::move(ev->Get()->RepairedSyncLog);
-                Y_ABORT_UNLESS(SelfVDiskId == GInfo->GetVDiskId(VCtx->ShortSelfVDisk));
+                Y_VERIFY(SelfVDiskId == GInfo->GetVDiskId(VCtx->ShortSelfVDisk));
                 auto slCtx = MakeIntrusive<NSyncLog::TSyncLogCtx>(
                         VCtx,
                         Db->LsnMngr,
@@ -1843,10 +1859,9 @@ namespace NKikimr {
                         Config->SyncLogMaxEntryPointSize,
                         Config->SyncLogMaxMemAmount,
                         Config->MaxResponseSize,
-                        Db->SyncLogFirstLsnToKeep,
-                        Config->BaseInfo.ReadOnly);
+                        Db->SyncLogFirstLsnToKeep);
                 Db->SyncLogID.Set(ctx.Register(CreateSyncLogActor(slCtx, GInfo, SelfVDiskId, std::move(repairedSyncLog))));
-                ActiveActors.Insert(Db->SyncLogID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                ActiveActors.Insert(Db->SyncLogID); // keep forever
 
                 // create HullLogCtx
                 HullLogCtx = std::make_shared<THullLogCtx>(VCtx, PDiskCtx, Db->SkeletonID, Db->SyncLogID,
@@ -1856,8 +1871,9 @@ namespace NKikimr {
                 Hull = std::make_shared<THull>(Db->LsnMngr, PDiskCtx, Db->Handoff, Db->SkeletonID,
                         Config->RunHandoff, std::move(*ev->Get()->Uncond),
                         ctx.ExecutorThread.ActorSystem, Config->BarrierValidation);
-                ActiveActors.Insert(Hull->RunHullServices(Config, HullLogCtx, Db->SyncLogFirstLsnToKeep,
-                        Db->LoggerID, Db->LogCutterID, ctx), ctx, NKikimrServices::BLOBSTORAGE);
+                auto moreActors = Hull->RunHullServices(Config, HullLogCtx, Db->SyncLogFirstLsnToKeep,
+                        Db->LoggerID, Db->LogCutterID, ctx);
+                ActiveActors.Insert(moreActors);
 
                 // create VDiskCompactionState
                 VDiskCompactionState = std::make_unique<TVDiskCompactionState>(Hull->GetHullDs()->LogoBlobs->LIActor,
@@ -1905,15 +1921,31 @@ namespace NKikimr {
                 }
 
                 if (Config->RunDefrag && AppData()->FeatureFlags.GetAllowVDiskDefrag()) {
-                    StartDefrag(ctx);
+                    auto defragCtx = std::make_shared<TDefragCtx>(VCtx, HugeBlobCtx, PDiskCtx, ctx.SelfID,
+                            Db->HugeKeeperID, true);
+                    DefragId = ctx.Register(CreateDefragActor(defragCtx, GInfo));
+                    ActiveActors.Insert(DefragId); // keep forever
                 }
 
                 // create scrubber actor
-                if (Config->RunScrubber) {
-                    StartScrubberActor(ctx, std::move(ev->Get()->ScrubEntrypoint), ev->Get()->ScrubEntrypointLsn);
-                }
+                auto scrubCtx = MakeIntrusive<TScrubContext>(
+                    VCtx,
+                    PDiskCtx,
+                    GInfo,
+                    SelfId(),
+                    Hull->GetHullDs()->LogoBlobs->LIActor,
+                    SelfId().NodeId(),
+                    Config->BaseInfo.PDiskId,
+                    Config->BaseInfo.VDiskSlotId,
+                    Config->BaseInfo.ScrubCookie,
+                    Db->GetVDiskIncarnationGuid(),
+                    Db->LsnMngr,
+                    Db->LoggerID,
+                    Db->LogCutterID);
+                ScrubId = ctx.Register(CreateScrubActor(std::move(scrubCtx), std::move(ev->Get()->ScrubEntrypoint),
+                        ev->Get()->ScrubEntrypointLsn));
+                ActiveActors.Insert(ScrubId);
 
-                // create syncer actor
                 if (Config->RunSyncer && !Config->BaseInfo.DonorMode) {
                     // switch to syncronization step
                     Become(&TThis::StateSyncGuidRecovery);
@@ -1930,7 +1962,7 @@ namespace NKikimr {
                         Config);
                     // syncer performes sync recovery
                     Db->SyncerID.Set(ctx.Register(CreateSyncerActor(sc, GInfo, ev->Get()->SyncerData)));
-                    ActiveActors.Insert(Db->SyncerID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                    ActiveActors.Insert(Db->SyncerID); // keep forever
                 } else {
                     // continue without sync
                     SkeletonIsUpAndRunning(ctx);
@@ -1957,7 +1989,7 @@ namespace NKikimr {
                     auto replCtx = std::make_shared<TReplCtx>(VCtx, PDiskCtx, HugeBlobCtx, Hull->GetHullDs(), GInfo,
                         SelfId(), Config, PDiskWriteBytes, Config->ReplPausedAtStart);
                     Db->ReplID.Set(ctx.Register(CreateReplActor(replCtx)));
-                    ActiveActors.Insert(Db->ReplID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE); // keep forever
+                    ActiveActors.Insert(Db->ReplID); // keep forever
                     if (CommenceRepl) {
                         TActivationContext::Send(new IEventHandle(TEvBlobStorage::EvCommenceRepl, 0, Db->ReplID, SelfId(),
                             nullptr, 0));
@@ -1981,7 +2013,7 @@ namespace NKikimr {
                     // calculate id for the actor who'll tell us about local recovery
                     TActorId locRecovActor = LocalDbRecoveryID ? LocalDbRecoveryID : ctx.SelfID;
                     auto aid = ctx.Register(CreateSkeletonMonRequestHandler(Db, ev, ctx.SelfID, locRecovActor));
-                    ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                    ActiveActors.Insert(aid);
                     break;
                 }
                 case TDbMon::SkeletonStateId: {
@@ -2168,14 +2200,11 @@ namespace NKikimr {
         // CUT LOG FORWARDER SECTOR
         ////////////////////////////////////////////////////////////////////////
         void Handle(NPDisk::TEvCutLog::TPtr &ev, const TActorContext &ctx) {
-            if (Config->BaseInfo.ReadOnly) {
-                return;
-            }
             std::unique_ptr<NPDisk::TEvCutLog> msg(ev->Release().Release());
 
             if (LocalDbInitialized) {
-                Y_DEBUG_ABORT_UNLESS(msg->Owner == PDiskCtx->Dsk->Owner);
-                Y_ABORT_UNLESS(!CutLogDelayedMsg);
+                Y_VERIFY_DEBUG(msg->Owner == PDiskCtx->Dsk->Owner);
+                Y_VERIFY(!CutLogDelayedMsg);
                 LOG_DEBUG_S(ctx, BS_LOGCUTTER, VCtx->VDiskLogPrefix
                         << "Handle " << msg->ToString()
                         << " actorid# " << ctx.SelfID.ToString()
@@ -2191,7 +2220,7 @@ namespace NKikimr {
         }
 
         void SpreadCutLog(std::unique_ptr<NPDisk::TEvCutLog> msg, const TActorContext &ctx) {
-            Y_DEBUG_ABORT_UNLESS(msg->Owner == PDiskCtx->Dsk->Owner);
+            Y_VERIFY_DEBUG(msg->Owner == PDiskCtx->Dsk->Owner);
 
             ui32 counter = 0;
             // setup FreeUpToLsn for Hull Database
@@ -2240,9 +2269,9 @@ namespace NKikimr {
 
             LocalDbInitialized = true;
             if (CutLogDelayedMsg) {
-                Y_DEBUG_ABORT_UNLESS(CutLogDelayedMsg->Owner == PDiskCtx->Dsk->Owner);
+                Y_VERIFY_DEBUG(CutLogDelayedMsg->Owner == PDiskCtx->Dsk->Owner);
                 SpreadCutLog(std::exchange(CutLogDelayedMsg, nullptr), ctx);
-                Y_ABORT_UNLESS(!CutLogDelayedMsg);
+                Y_VERIFY(!CutLogDelayedMsg);
             }
         }
 
@@ -2277,22 +2306,17 @@ namespace NKikimr {
             // FIXME: reconfigure handoff
         }
 
-        void HandleReplDone(STFUNC_SIG) {
-            if (ev->Cookie) { // semi-finished replication, only phantom blobs
-                ReplOnlyPhantomsRemain = true;
-            } else {
-                ReplDone = true;
-            }
-            UpdateReplState();
+        void HandleReplDone(const TActorContext& ctx) {
+            ReplDone = true;
+            UpdateReplState(ctx);
         }
 
         void Ignore(const TActorContext&)
         {}
 
-        void UpdateVDiskStatus(NKikimrBlobStorage::EVDiskStatus status) {
+        void UpdateVDiskStatus(NKikimrBlobStorage::EVDiskStatus status, const TActorContext& ctx) {
             const auto& base = Db->Config->BaseInfo;
-            Send(NodeWardenServiceId, new TEvStatusUpdate(SelfId().NodeId(), base.PDiskId, base.VDiskSlotId, status,
-                ReplOnlyPhantomsRemain));
+            Send(NodeWardenServiceId, new TEvStatusUpdate(ctx.SelfID.NodeId(), base.PDiskId, base.VDiskSlotId, status));
         }
 
         ////////////////////////////////////////////////////////////////////////
@@ -2310,7 +2334,7 @@ namespace NKikimr {
             genIndSelfVDiskId.GroupGeneration = -1;
             LocalDbRecoveryID = ctx.Register(CreateDatabaseLocalRecoveryActor(VCtx, Config, genIndSelfVDiskId, SelfId(),
                 *SkeletonFrontIDPtr, Arena));
-            ActiveActors.Insert(LocalDbRecoveryID, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(LocalDbRecoveryID);
             UpdateWhiteboard(ctx);
         }
 
@@ -2333,22 +2357,22 @@ namespace NKikimr {
         }
 
         void ForwardToScrubActor(STFUNC_SIG) {
-            Forward(ev, ScrubId);
+            ctx.Send(ev->Forward(ScrubId));
         }
 
         void ForwardToDefragActor(STFUNC_SIG) {
-            Forward(ev, DefragId);
+            ctx.Send(ev->Forward(DefragId));
         }
 
         void Handle(TEvReportScrubStatus::TPtr ev, const TActorContext& ctx) {
             HasUnreadableBlobs = ev->Get()->HasUnreadableBlobs;
-            UpdateReplState();
+            UpdateReplState(ctx);
             ctx.Send(ev->Forward(*SkeletonFrontIDPtr));
         }
 
-        void UpdateReplState() {
+        void UpdateReplState(const TActorContext& ctx) {
             const bool ready = ReplDone && !HasUnreadableBlobs;
-            UpdateVDiskStatus(ready ? NKikimrBlobStorage::READY : NKikimrBlobStorage::REPLICATING);
+            UpdateVDiskStatus(ready ? NKikimrBlobStorage::READY : NKikimrBlobStorage::REPLICATING, ctx);
         }
 
         void Handle(TEvRestoreCorruptedBlob::TPtr ev, const TActorContext& ctx) {
@@ -2360,7 +2384,7 @@ namespace NKikimr {
         }
 
         void ForwardToLogoBlobsLevelIndexActor(STFUNC_SIG) {
-            Forward(ev, Hull->GetHullDs()->LogoBlobs->LIActor);
+            ctx.Send(ev->Forward(Hull->GetHullDs()->LogoBlobs->LIActor));
         }
 
         void Handle(NPDisk::TEvChunkForgetResult::TPtr ev) {
@@ -2424,7 +2448,7 @@ namespace NKikimr {
         void CheckSnapshotExpiration(TAutoPtr<IEventHandle> ev, const TActorContext& ctx) {
             auto schedIt = std::find(SnapshotExpirationCheckSchedule.begin(), SnapshotExpirationCheckSchedule.end(),
                 TMonotonic::FromValue(ev->Cookie));
-            Y_ABORT_UNLESS(schedIt != SnapshotExpirationCheckSchedule.end());
+            Y_VERIFY(schedIt != SnapshotExpirationCheckSchedule.end());
             SnapshotExpirationCheckSchedule.erase(schedIt);
 
             const TMonotonic now = ctx.Monotonic();
@@ -2435,18 +2459,6 @@ namespace NKikimr {
             SnapshotExpirationMap.erase(SnapshotExpirationMap.begin(), it);
 
             RescheduleSnapshotExpirationCheck();
-        }
-
-        void Handle(TEvReplInvoke::TPtr ev) {
-            if (Db->ReplID) {
-                TActivationContext::Send(ev->Forward(Db->ReplID));
-            } else {
-                HandleReplNotInProgress(ev);
-            }
-        }
-
-        void HandleReplNotInProgress(TEvReplInvoke::TPtr ev) {
-            ev->Get()->Callback({}, "replication is not in progress");
         }
 
         // NOTES: we have 4 state functions, one of which is an error state (StateDatabaseError) and
@@ -2495,13 +2507,12 @@ namespace NKikimr {
             HFunc(TEvents::TEvPoisonPill, HandlePoison)
             HFunc(TEvents::TEvActorDied, Handle)
             CFunc(TEvBlobStorage::EvCommenceRepl, HandleCommenceRepl)
-            fFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
             HFunc(TEvProxyQueueState, Handle)
             hFunc(NPDisk::TEvChunkForgetResult, Handle)
             FFunc(TEvPrivate::EvCheckSnapshotExpiration, CheckSnapshotExpiration)
-            hFunc(TEvReplInvoke, HandleReplNotInProgress)
         )
 
         STRICT_STFUNC(StateSyncGuidRecovery,
@@ -2525,7 +2536,7 @@ namespace NKikimr {
             // TEvBlobStorage::TEvVStatus
             // TEvBlobStorage::TEvVDbStat
             HFunc(TEvBlobStorage::TEvVCompact, Handle)
-            fFunc(TEvBlobStorage::EvVDefrag, ForwardToDefragActor)
+            FFunc(TEvBlobStorage::EvVDefrag, ForwardToDefragActor)
             HFunc(TEvCompactVDisk, Handle)
             HFunc(TEvHullCompactResult, Handle)
             HFunc(TEvBlobStorage::TEvVBaldSyncLog, Handle)
@@ -2544,17 +2555,16 @@ namespace NKikimr {
             HFunc(TEvents::TEvPoisonPill, HandlePoison)
             HFunc(TEvents::TEvActorDied, Handle)
             CFunc(TEvBlobStorage::EvCommenceRepl, HandleCommenceRepl)
-            fFunc(TEvBlobStorage::EvControllerScrubStartQuantum, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvControllerScrubStartQuantum, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
             HFunc(TEvReportScrubStatus, Handle)
             HFunc(TEvRestoreCorruptedBlob, Handle)
             HFunc(TEvBlobStorage::TEvCaptureVDiskLayout, Handle)
             HFunc(TEvProxyQueueState, Handle)
             hFunc(NPDisk::TEvChunkForgetResult, Handle)
             FFunc(TEvPrivate::EvCheckSnapshotExpiration, CheckSnapshotExpiration)
-            hFunc(TEvReplInvoke, HandleReplNotInProgress)
         )
 
         STRICT_STFUNC(StateNormal,
@@ -2593,7 +2603,7 @@ namespace NKikimr {
             HFunc(TEvBlobStorage::TEvMonStreamQuery, Handle)
             HFunc(TEvBlobStorage::TEvMonStreamActorDeathNote, Handle)
             HFunc(TEvBlobStorage::TEvVCompact, Handle)
-            fFunc(TEvBlobStorage::EvVDefrag, ForwardToDefragActor)
+            FFunc(TEvBlobStorage::EvVDefrag, ForwardToDefragActor)
             HFunc(TEvCompactVDisk, Handle)
             HFunc(TEvHullCompactResult, Handle)
             HFunc(TEvBlobStorage::TEvVBaldSyncLog, Handle)
@@ -2609,19 +2619,18 @@ namespace NKikimr {
             HFunc(TEvVGenerationChange, Handle)
             HFunc(TEvents::TEvPoisonPill, HandlePoison)
             HFunc(TEvents::TEvActorDied, Handle)
-            fFunc(TEvBlobStorage::EvReplDone, HandleReplDone)
+            CFunc(TEvBlobStorage::EvReplDone, HandleReplDone)
             CFunc(TEvBlobStorage::EvCommenceRepl, HandleCommenceRepl)
-            fFunc(TEvBlobStorage::EvControllerScrubStartQuantum, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvControllerScrubStartQuantum, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
             HFunc(TEvReportScrubStatus, Handle)
             HFunc(TEvRestoreCorruptedBlob, Handle)
             HFunc(TEvBlobStorage::TEvCaptureVDiskLayout, Handle)
             HFunc(TEvProxyQueueState, Handle)
             hFunc(NPDisk::TEvChunkForgetResult, Handle)
             FFunc(TEvPrivate::EvCheckSnapshotExpiration, CheckSnapshotExpiration)
-            hFunc(TEvReplInvoke, Handle)
         )
 
         STRICT_STFUNC(StateDatabaseError,
@@ -2636,10 +2645,10 @@ namespace NKikimr {
             HFunc(TEvVGenerationChange, Handle)
             CFunc(TEvBlobStorage::EvReplDone, Ignore)
             CFunc(TEvBlobStorage::EvCommenceRepl, HandleCommenceRepl)
-            fFunc(TEvBlobStorage::EvControllerScrubStartQuantum, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
-            fFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvControllerScrubStartQuantum, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvScrubAwait, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvRecoverBlob, ForwardToScrubActor)
+            FFunc(TEvBlobStorage::EvNonrestoredCorruptedBlobNotify, ForwardToScrubActor)
             IgnoreFunc(TEvBlobStorage::TEvVDefrag);
             HFunc(TEvReportScrubStatus, Handle)
             HFunc(TEvRestoreCorruptedBlob, Handle)
@@ -2648,7 +2657,6 @@ namespace NKikimr {
             hFunc(TEvVPatchDyingRequest, Handle)
             hFunc(NPDisk::TEvChunkForgetResult, Handle)
             FFunc(TEvPrivate::EvCheckSnapshotExpiration, CheckSnapshotExpiration)
-            hFunc(TEvReplInvoke, HandleReplNotInProgress)
         )
 
         PDISK_TERMINATE_STATE_FUNC_DEF;
@@ -2723,7 +2731,6 @@ namespace NKikimr {
         NMonGroup::TSyncLogIFaceGroup SyncLogIFaceGroup;
         std::shared_ptr<NMonGroup::TVDiskIFaceGroup> IFaceMonGroup;
         bool ReplDone = false;
-        bool ReplOnlyPhantomsRemain = false;
         TInstant WhiteboardUpdateTimestamp = TInstant::Zero();
         std::shared_ptr<std::atomic_uint64_t> PDiskWriteBytes = std::make_shared<std::atomic_uint64_t>();
         TLoggedRecsVault LoggedRecsVault;

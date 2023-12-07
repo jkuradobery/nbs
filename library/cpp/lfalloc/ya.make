@@ -1,15 +1,18 @@
 LIBRARY()
 
-BUILD_ONLY_IF(WARNING FATAL_ERROR ARCH_TYPE_64)
-
-ALLOCATOR_IMPL()
 NO_UTIL()
 
 NO_COMPILER_WARNINGS()
 
-SRCS(
-    lf_allocX64.cpp
-)
+IF (ARCH_AARCH64)
+    PEERDIR(
+        library/cpp/malloc/jemalloc
+    )
+ELSE()
+    SRCS(
+        lf_allocX64.cpp
+    )
+ENDIF()
 
 PEERDIR(
     library/cpp/malloc/api

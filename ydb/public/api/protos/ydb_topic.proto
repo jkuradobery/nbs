@@ -3,6 +3,7 @@ import "ydb/public/api/protos/ydb_operation.proto";
 import "ydb/public/api/protos/ydb_scheme.proto";
 import "ydb/public/api/protos/ydb_status_codes.proto";
 import "ydb/public/api/protos/ydb_issue_message.proto";
+import "ydb/public/api/protos/ydb_table.proto";
 import "ydb/public/api/protos/annotations/validation.proto";
 
 import "google/protobuf/duration.proto";
@@ -49,18 +50,6 @@ message UpdateTokenRequest {
 message UpdateTokenResponse {
 }
 
-message PartitionWithGeneration {
-    // Partition identifier.
-    int64 partition_id = 1;
-
-    // Partition generation.
-    int64 generation = 2;
-};
-
-message MetadataItem {
-    string key = 1;
-    bytes value = 2;
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // StreamWrite
@@ -104,7 +93,7 @@ message StreamWriteMessage {
         string path = 1;
         // Producer identifier of client data stream.
         // Used for message deduplication by sequence numbers.
-        string producer_id = 2 [(Ydb.length).le = 2048];
+        string producer_id = 2;
         // User metadata attached to this write session.
         // Reader will get this session meta data with each message read.
         map<string, string> write_session_meta = 3;
@@ -112,17 +101,13 @@ message StreamWriteMessage {
         // If neither is set, no guarantees on ordering or partitions to write to.
         oneof partitioning {
             // All messages with given pair (producer_id, message_group_id) go to single partition in order of writes.
-            string message_group_id = 4 [(Ydb.length).le = 2048];
+            string message_group_id = 4;
             // Explicit partition id to write to.
             int64 partition_id = 5;
-            // Explicit partition location to write to.
-            PartitionWithGeneration partition_with_generation = 7;
         }
         // Explicitly request for last sequential number
         // It may be expensive, if producer wrote to many partitions before.
         bool get_last_seq_no = 6;
-
-
     }
 
     // Response for handshake.
@@ -148,8 +133,6 @@ message StreamWriteMessage {
         // See enum Codec above for values.
         int32 codec = 2;
 
-        optional TransactionIdentity tx = 3;
-
         message MessageData {
             // Message sequence number, provided by client for deduplication.
             // Starts at 1
@@ -163,14 +146,10 @@ message StreamWriteMessage {
             // Per-message override for respective write session settings.
             oneof partitioning {
                 // All messages with given pair (producer_id, message_group_id) go to single partition in order of writes.
-                string message_group_id = 5 [(Ydb.length).le = 2048];
+                string message_group_id = 5;
                 // Explicit partition id to write to.
                 int64 partition_id = 6;
-                // Explicit partition location to write to.
-                PartitionWithGeneration partition_with_generation = 8;                
             }
-            // Message metadata. Overall size is limited to 4096 symbols (all keys and values combined).
-            repeated MetadataItem metadata_items = 7 [(Ydb.size).le = 1000];
         }
     }
 
@@ -377,9 +356,7 @@ message StreamReadMessage {
             int64 uncompressed_size = 6;
 
             // Filled if message_group_id was set on message write.
-            string message_group_id = 7 [(Ydb.length).le = 2048];
-            repeated MetadataItem metadata_items = 8;
-
+            string message_group_id = 7;
         }
 
         // Representation of sequence of client messages from one write session.
@@ -388,7 +365,7 @@ message StreamReadMessage {
             repeated MessageData message_data = 1;
 
             // Producer identifier provided by client for this batch of client messages.
-            string producer_id = 2 [(Ydb.length).le = 2048];
+            string producer_id = 2;
             // Client metadata attached to write session, the same for all messages in batch.
             map<string, string> write_session_meta = 3;
 
@@ -521,24 +498,20 @@ message StreamReadMessage {
     }
 }
 
-message TransactionIdentity {
-    // Transaction identifier from TableService.
-    string id = 1;
-
-    // Session identifier from TableService.
-    string session = 2;
-}
-
 // Add offsets to transaction request sent from client to server.
-message UpdateOffsetsInTransactionRequest {
+message AddOffsetsToTransactionRequest {
     Ydb.Operations.OperationParams operation_params = 1;
 
-    TransactionIdentity tx = 2;
+    // Session identifier from TableService.
+    string session_id = 2;
+
+    // Transaction identifier from TableService.
+    Ydb.Table.TransactionControl tx_control = 3;
 
     // Ranges of offsets by topics.
-    repeated TopicOffsets topics = 3;
+    repeated TopicOffsets topics = 4;
 
-    string consumer = 4;
+    string consumer = 5;
 
     message TopicOffsets {
         // Topic path.
@@ -558,13 +531,13 @@ message UpdateOffsetsInTransactionRequest {
 }
 
 // Add offsets to transaction response sent from server to client.
-message UpdateOffsetsInTransactionResponse {
+message AddOffsetsToTransactionResponse {
     // Result of request will be inside operation.
     Ydb.Operations.Operation operation = 1;
 }
 
-// Add offsets to transaction result message that will be inside UpdateOffsetsInTransactionResponse.operation.
-message UpdateOffsetsInTransactionResult {
+// Add offsets to transaction result message that will be inside AddOffsetsToTransactionResponse.operation.
+message AddOffsetsToTransactionResult {
 }
 
 
@@ -620,10 +593,8 @@ message Consumer {
     // All messages with smaller server written_at timestamp will be skipped.
     google.protobuf.Timestamp read_from = 3;
     reserved 4; // supported_format
-
     // List of supported codecs by this consumer.
     // supported_codecs on topic must be contained inside this list.
-    // If empty, codec compatibility check for the consumer is disabled.
     SupportedCodecs supported_codecs = 5;
 
     // Attributes of consumer
@@ -655,10 +626,8 @@ message AlterConsumer {
     // All messages with smaller server written_at timestamp will be skipped.
     google.protobuf.Timestamp set_read_from = 3;
     reserved 4; // supported_format
-
     // List of supported codecs by this consumer.
     // supported_codecs on topic must be contained inside this list.
-    // If empty, codec compatibility check for the consumer is disabled.
     SupportedCodecs set_supported_codecs = 5;
 
     // User and server attributes of consumer. Server attributes starts from "_" and will be validated by server.
@@ -700,7 +669,6 @@ enum MeteringMode {
 // Create topic request sent from client to server.
 message CreateTopicRequest {
     Ydb.Operations.OperationParams operation_params = 1;
-
     // Topic path.
     string path = 2;
 
@@ -713,22 +681,17 @@ message CreateTopicRequest {
     // How long data in partition should be stored. Must be greater than 0 and less than limit for this database.
     // Default limit - 36 hours.
     google.protobuf.Duration retention_period = 4;
-    
     // How much data in partition should be stored. Must be greater than 0 and less than limit for this database.
     // Zero value means infinite limit.
     int64 retention_storage_mb = 5 [(Ydb.value) = ">= 0"];
 
     reserved 6; // supported_format.
-
     // List of allowed codecs for writers.
     // Writes with codec not from this list are forbidden.
-    // If empty, codec compatibility check for the topic is disabled.
     SupportedCodecs supported_codecs = 7;
-
     // Partition write speed in bytes per second. Must be less than database limit.
     // Zero value means default limit: 1 MB per second.
     int64 partition_write_speed_bytes_per_second = 8 [(Ydb.value) = ">= 0"];
-
     // Burst size for write in partition, in bytes. Must be less than database limit.
     // Zero value means default limit: 1 MB.
     int64 partition_write_burst_bytes = 9 [(Ydb.value) = ">= 0"];
@@ -754,14 +717,6 @@ message CreateTopicResponse {
 message CreateTopicResult {
 }
 
-// Topic partition location
-message PartitionLocation {
-    // Node identificator.
-    int32 node_id = 1;
-
-    // Partition generation.
-    int64 generation = 2;
-}
 
 // Describe topic request sent from client to server.
 message DescribeTopicRequest {
@@ -772,9 +727,6 @@ message DescribeTopicRequest {
 
     // Include topic statistics.
     bool include_stats = 3;
-
-    // Include partition location.
-    bool include_location = 4;
 }
 
 // Describe topic response sent from server to client.
@@ -793,7 +745,6 @@ message DescribeTopicResult {
 
     // Settings for partitioning
     PartitioningSettings partitioning_settings = 2;
-    
     // Partitions description.
     repeated PartitionInfo partitions = 3;
 
@@ -802,25 +753,17 @@ message DescribeTopicResult {
     //
     // How long data in partition should be stored.
     google.protobuf.Duration retention_period = 4;
-    
     // How much data in partition should be stored.
     // Zero value means infinite limit.
     int64 retention_storage_mb = 5;
 
     reserved 6; // supported_format.
-
     // List of allowed codecs for writers.
     // Writes with codec not from this list are forbidden.
-    // If empty, codec compatibility check for the topic is disabled.
     SupportedCodecs supported_codecs = 7;
-    
     // Partition write speed in bytes per second.
     // Zero value means default limit: 1 MB per second.
     int64 partition_write_speed_bytes_per_second = 8;
-
-    int64 partition_total_read_speed_bytes_per_second = 14;
-    int64 partition_consumer_read_speed_bytes_per_second = 15;
-
     // Burst size for write in partition, in bytes.
     // Zero value means default limit: 1 MB.
     int64 partition_write_burst_bytes = 9;
@@ -849,9 +792,6 @@ message DescribeTopicResult {
 
         // Stats for partition, filled only when include_stats in request is true.
         PartitionStats partition_stats = 5;
-
-        // Partition location, filled only when include_location in request is true.
-        PartitionLocation partition_location = 6;
     }
 
     message TopicStats {
@@ -867,35 +807,6 @@ message DescribeTopicResult {
     }
 }
 
-// Describe partition request sent from client to server.
-message DescribePartitionRequest {
-    Ydb.Operations.OperationParams operation_params = 1;
-
-    // Topic path.
-    string path = 2;
-
-    // Partition identifier.
-    int64 partition_id = 3;
-
-    // Include partition statistics.
-    bool include_stats = 4;
-
-    // Include partition location.
-    bool include_location = 5;
-}
-
-// Describe partition response sent from server to client.
-// If topic is not existed then response status will be "SCHEME_ERROR".
-message DescribePartitionResponse {
-    // Result of request will be inside operation.
-    Ydb.Operations.Operation operation = 1;
-}
-
-// Describe partition result message that will be inside DescribeTopicResponse.operation.
-message DescribePartitionResult {
-    // Partitions description.
-    DescribeTopicResult.PartitionInfo partition = 1;
-}
 
 // Describe topic's consumer request sent from client to server.
 message DescribeConsumerRequest {
@@ -907,8 +818,6 @@ message DescribeConsumerRequest {
     string consumer = 3;
     // Include consumer statistics.
     bool include_stats = 4;
-    // Include partition location.
-    bool include_location = 5;
 }
 
 // Describe topic's consumer response sent from server to client.
@@ -941,9 +850,6 @@ message DescribeConsumerResult {
         PartitionStats partition_stats = 5;
         // Stats for consumer of this partition, filled only when include_stats in request is true.
         PartitionConsumerStats partition_consumer_stats = 6;
-
-        // Partition location, filled only when include_location in request is true.
-        PartitionLocation partition_location = 7;
     }
 
     message PartitionConsumerStats {
@@ -986,8 +892,8 @@ message PartitionStats {
     // How much bytes were written during several windows in this partition.
     MultipleWindowsStat bytes_written = 5;
 
-    // Partition host. Useful for debugging purposes.
-    int32 partition_node_id = 8 [deprecated=true]; //Use PartitionLocation
+    // Host where tablet for this partition works. Useful for debugging purposes.
+    int32 partition_node_id = 8;
 }
 
 
@@ -1005,20 +911,16 @@ message AlterTopicRequest {
     // How long data in partition should be stored. Must be greater than 0 and less than limit for this database.
     // Default limit - 36 hours.
     google.protobuf.Duration set_retention_period = 4;
-    
     // How much data in partition should be stored. Must be greater than 0 and less than limit for this database.
     optional int64 set_retention_storage_mb = 5 [(Ydb.value) = ">= 0"];
 
     reserved 6; // supported_format.
-
     // List of allowed codecs for writers.
     // Writes with codec not from this list are forbidden.
-    // If empty, codec compatibility check for the topic is disabled.
     SupportedCodecs set_supported_codecs = 7;
 
     // Partition write speed in bytes per second. Must be less than database limit. Default limit - 1 MB/s.
     optional int64 set_partition_write_speed_bytes_per_second = 8 [(Ydb.value) = ">= 0"];
-    
     // Burst size for write in partition, in bytes. Must be less than database limit. Default limit - 1 MB.
     optional int64 set_partition_write_burst_bytes = 9 [(Ydb.value) = ">= 0"];
 

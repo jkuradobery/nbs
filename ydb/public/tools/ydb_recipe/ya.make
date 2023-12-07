@@ -12,10 +12,4 @@ PEERDIR(
     ydb/public/tools/lib/cmds
 )
 
-FILES(
-    start.sh
-    stop.sh
-    ../../../epilogue.cmake
-)
-
 END()

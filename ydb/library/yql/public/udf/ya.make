@@ -17,7 +17,6 @@ SRCS(
     udf_static_registry.h
     udf_string.cpp
     udf_string.h
-    udf_type_builder.cpp
     udf_type_builder.h
     udf_type_inspection.cpp
     udf_type_inspection.h
@@ -32,7 +31,6 @@ SRCS(
     udf_validate.h
     udf_value.cpp
     udf_value.h
-    udf_value_builder.cpp
     udf_value_builder.h
     udf_value_inl.h
     udf_version.cpp
@@ -49,16 +47,7 @@ PEERDIR(
 
 YQL_LAST_ABI_VERSION()
 
-PROVIDES(YqlUdfSdk)
-
 END()
-
-RECURSE(
-    arrow
-    service
-    support
-    tz
-)
 
 RECURSE_FOR_TESTS(
     ut

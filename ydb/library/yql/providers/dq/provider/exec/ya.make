@@ -6,13 +6,11 @@ SRCS(
 )
 
 PEERDIR(
-    library/cpp/yson/node
-    library/cpp/svnversion
-    library/cpp/digest/md5
+    library/cpp/grpc/client
+    library/cpp/threading/task_scheduler
     ydb/public/lib/yson_value
     ydb/public/sdk/cpp/client/ydb_driver
     ydb/library/yql/core
-    ydb/library/yql/dq/integration
     ydb/library/yql/dq/runtime
     ydb/library/yql/dq/tasks
     ydb/library/yql/dq/type_ann
@@ -26,6 +24,7 @@ PEERDIR(
     ydb/library/yql/providers/dq/common
     ydb/library/yql/providers/dq/counters
     ydb/library/yql/providers/dq/expr_nodes
+    ydb/library/yql/providers/dq/interface
     ydb/library/yql/providers/dq/opt
     ydb/library/yql/providers/dq/planner
     ydb/library/yql/providers/dq/runtime

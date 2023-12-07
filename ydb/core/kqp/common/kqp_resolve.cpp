@@ -1,12 +1,13 @@
 #include "kqp_resolve.h"
 
+#include <ydb/core/kqp/provider/yql_kikimr_gateway.h>
+
 // #define DBG_TRACE
 
 #ifdef DBG_TRACE
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/tx/datashard/range_ops.h>
 #endif
-#include <ydb/core/kqp/provider/yql_kikimr_gateway.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -78,7 +79,7 @@ TVector<TPartitionWithRange> GetKeyRangePartitions(const TTableRange& range,
         if (range.Point) {
             TPartitionWithRange ret(it);
             if (!it->Range->IsPoint) {
-                ret.PointOrRange = TSerializedCellVec(range.From);
+                ret.PointOrRange = TSerializedCellVec(TSerializedCellVec::Serialize(range.From));
             } else {
                 ret.FullRange.emplace(TSerializedTableRange(range));
             }
@@ -147,7 +148,7 @@ TVector<TPartitionWithRange> GetKeyRangePartitions(const TTableRange& range,
                 rangePartitions.back().FullRange.emplace(TSerializedTableRange(fromValues, true, fromValues, true));
                 rangePartitions.back().FullRange->Point = true;
             } else {
-                rangePartitions.back().PointOrRange = TSerializedCellVec(fromValues);
+                rangePartitions.back().PointOrRange = TSerializedCellVec(TSerializedCellVec::Serialize(fromValues));
             }
         } else {
             auto r = TTableRange(fromValues, inclusiveFrom, toValues, inclusiveTo);

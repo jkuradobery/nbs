@@ -1,21 +1,19 @@
 #pragma once
 
-#include <ydb/public/api/grpc/draft/ydb_persqueue_v1.grpc.pb.h>
-#include <ydb/public/api/protos/ydb_coordination.pb.h>
-#include <ydb/public/api/protos/ydb_export.pb.h>
-#include <ydb/public/api/protos/ydb_import.pb.h>
+#include <ydb/public/api/protos/ydb_value.pb.h>
 #include <ydb/public/api/protos/ydb_query_stats.pb.h>
 #include <ydb/public/api/protos/ydb_table.pb.h>
+#include <ydb/public/api/protos/ydb_export.pb.h>
+#include <ydb/public/api/protos/ydb_import.pb.h>
+#include <ydb/public/api/grpc/draft/ydb_persqueue_v1.grpc.pb.h>
 #include <ydb/public/api/protos/ydb_topic.pb.h>
-#include <ydb/public/api/protos/ydb_value.pb.h>
 
-#include <ydb/public/sdk/cpp/client/ydb_coordination/coordination.h>
 #include <ydb/public/sdk/cpp/client/ydb_export/export.h>
 #include <ydb/public/sdk/cpp/client/ydb_import/import.h>
-#include <ydb/public/sdk/cpp/client/ydb_monitoring/monitoring.h>
-#include <ydb/public/sdk/cpp/client/ydb_persqueue_public/persqueue.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
+#include <ydb/public/sdk/cpp/client/ydb_persqueue_public/persqueue.h>
 #include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
+#include <ydb/public/sdk/cpp/client/ydb_monitoring/monitoring.h>
 
 namespace NYdb {
 
@@ -25,6 +23,7 @@ class TType;
 class TParams;
 
 namespace NTable {
+class TQueryStats;
 class TTableDescription;
 class TIndexDescription;
 }
@@ -38,13 +37,11 @@ public:
     static const Ydb::Value& GetProto(const TValue& value);
     static const Ydb::ResultSet& GetProto(const TResultSet& resultSet);
     static const ::google::protobuf::Map<TString, Ydb::TypedValue>& GetProtoMap(const TParams& params);
-    static ::google::protobuf::Map<TString, Ydb::TypedValue>* GetProtoMapPtr(TParams& params);
     static const Ydb::TableStats::QueryStats& GetProto(const NTable::TQueryStats& queryStats);
     static const Ydb::Table::DescribeTableResult& GetProto(const NTable::TTableDescription& tableDescription);
     static const Ydb::Topic::DescribeTopicResult& GetProto(const NYdb::NTopic::TTopicDescription& topicDescription);
     static const Ydb::Topic::DescribeConsumerResult& GetProto(const NYdb::NTopic::TConsumerDescription& consumerDescription);
     static const Ydb::Monitoring::SelfCheckResult& GetProto(const NYdb::NMonitoring::TSelfCheckResult& selfCheckResult);
-    static const Ydb::Coordination::DescribeNodeResult& GetProto(const NYdb::NCoordination::TNodeDescription &describeNodeResult);
 
     static NTable::TQueryStats FromProto(const Ydb::TableStats::QueryStats& queryStats);
     static NTable::TTableDescription FromProto(const Ydb::Table::CreateTableRequest& request);

@@ -21,7 +21,7 @@ namespace NKikimr {
             , Result(std::move(msg.Result))
             , Donors(std::move(donors))
         {
-            Y_ABORT_UNLESS(!Query->Record.HasRangeQuery());
+            Y_VERIFY(!Query->Record.HasRangeQuery());
         }
 
         void Bootstrap(const TActorId& parentId) {
@@ -80,17 +80,13 @@ namespace NKikimr {
             auto& result = Result->Record;
             for (const auto& item : ev->Get()->Record.GetResult()) {
                 const ui64 index = item.GetCookie();
-                Y_DEBUG_ABORT_UNLESS(UnresolvedItems[index]);
+                Y_VERIFY_DEBUG(UnresolvedItems[index]);
 
                 if (item.GetStatus() == NKikimrProto::OK /* || item.GetStatus() == NKikimrProto::ERROR */) {
                     auto *res = result.MutableResult(index);
 
                     std::optional<ui64> cookie = res->HasCookie() ? std::make_optional(res->GetCookie()) : std::nullopt;
                     res->CopyFrom(item);
-                    res->ClearPayload();
-                    if (ev->Get()->HasBlob(item)) {
-                        Result->SetBlobData(*res, ev->Get()->GetBlobData(item));
-                    }
                     if (cookie) { // retain original cookie
                         res->SetCookie(*cookie);
                     } else {

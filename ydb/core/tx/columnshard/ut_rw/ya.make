@@ -19,8 +19,6 @@ PEERDIR(
     library/cpp/regex/pcre
     library/cpp/svnversion
     ydb/core/testlib/default
-    ydb/core/tx/columnshard/hooks/abstract
-    ydb/core/tx/columnshard/hooks/testing
     ydb/services/metadata
     ydb/core/tx
     ydb/public/lib/yson_value
@@ -31,7 +29,6 @@ YQL_LAST_ABI_VERSION()
 SRCS(
     columnshard_ut_common.cpp
     ut_columnshard_read_write.cpp
-    ut_normalizer.cpp
 )
 
 END()

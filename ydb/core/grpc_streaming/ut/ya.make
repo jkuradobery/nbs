@@ -11,7 +11,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     ydb/core/grpc_streaming/ut/grpc
     ydb/core/testlib/default
 )

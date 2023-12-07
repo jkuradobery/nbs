@@ -106,30 +106,6 @@ TBlockType::EShape GetResultShape(const TVector<TType*>& types) {
     return result;
 }
 
-TTupleLiteralBuilder::TTupleLiteralBuilder(const TTypeEnvironment& env) : Env(env)
-{}
-
-void TTupleLiteralBuilder::Reserve(ui32 size) {
-    Types.reserve(size);
-    Values.reserve(size);
-}
-
-TTupleLiteralBuilder& TTupleLiteralBuilder::Add(TRuntimeNode value) {
-    Types.push_back(value.GetRuntimeType());
-    Values.push_back(value);
-    return *this;
-}
-
-TTupleLiteral* TTupleLiteralBuilder::Build() {
-    const auto& type = TTupleType::Create(Types.size(), Types.data(), Env);
-    return TTupleLiteral::Create(Values.size(), Values.data(), type, Env);
-}
-
-void TTupleLiteralBuilder::Clear() {
-    Values.clear();
-    Types.clear();
-}
-
 TStructTypeBuilder::TStructTypeBuilder(const TTypeEnvironment& env)
     : Env(&env)
 {
@@ -183,7 +159,7 @@ TStructLiteralBuilder& TStructLiteralBuilder::Add(const TStringBuf& name, TRunti
 }
 
 TStructLiteral* TStructLiteralBuilder::Build() {
-    Y_DEBUG_ABORT_UNLESS(Members.size() == Values.size());
+    Y_VERIFY_DEBUG(Members.size() == Values.size());
     if (Members.empty())
         return Env->GetEmptyStruct();
 

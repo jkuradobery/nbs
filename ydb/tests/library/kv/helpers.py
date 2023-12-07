@@ -2,11 +2,11 @@
 from hamcrest import assert_that, contains, has_properties, any_of
 import six.moves
 
-from contrib.ydb.tests.library.common.delayed import wait_tablets_state_by_id
-from contrib.ydb.tests.library.common.msgbus_types import MessageBusStatus, EReplyStatus
-from contrib.ydb.tests.library.common.protobuf import TCmdCreateTablet
-from contrib.ydb.tests.library.common.types import TabletTypes, TabletStates
-from contrib.ydb.tests.library.matchers.response_matchers import DynamicFieldsProtobufMatcher
+from ydb.tests.library.common.delayed import wait_tablets_state_by_id
+from ydb.tests.library.common.msgbus_types import MessageBusStatus, EReplyStatus
+from ydb.tests.library.common.protobuf import TCmdCreateTablet
+from ydb.tests.library.common.types import TabletTypes, TabletStates
+from ydb.tests.library.matchers.response_matchers import DynamicFieldsProtobufMatcher
 
 
 def create_tablets_and_wait_for_start(

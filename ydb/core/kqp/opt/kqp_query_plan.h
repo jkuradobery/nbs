@@ -34,14 +34,15 @@ enum class EPlanTableWriteType {
  */
 void PhyQuerySetTxPlans(NKqpProto::TKqpPhyQuery& queryProto, const NYql::NNodes::TKqpPhysicalQuery& query,
     TVector<TVector<NKikimrMiniKQL::TResult>> pureTxResults, NYql::TExprContext& ctx, const TString& cluster,
-    const TIntrusivePtr<NYql::TKikimrTablesData> tablesData, NYql::TKikimrConfiguration::TPtr config,
-    NYql::TTypeAnnotationContext& typeCtx);
+    const TIntrusivePtr<NYql::TKikimrTablesData> tablesData, NYql::TKikimrConfiguration::TPtr config);
 
 /*
  * Fill stages in given txPlan with ExecutionStats fields. Each plan stage stores StageGuid which is
  * used to find corresponding TKqpStatsExecution object.
  */
 TString AddExecStatsToTxPlan(const TString& txPlan, const NYql::NDqProto::TDqExecutionStats& stats);
+
+TString SerializeExplainPlan(const NKqpProto::TKqpPhyQuery& phyQuery);
 
 TString SerializeAnalyzePlan(const NKqpProto::TKqpStatsQuery& queryStats);
 

@@ -58,14 +58,14 @@ public:
 
         switch (endpoint.ServerType) {
         case TCommandConfig::EServerType::GRpc:
-            CommandConfig.ClientConfig = NYdbGrpc::TGRpcClientConfig(endpoint.Address);
+            CommandConfig.ClientConfig = NGrpc::TGRpcClientConfig(endpoint.Address);
             if (config.EnableSsl) {
                 CommandConfig.ClientConfig.EnableSsl = config.EnableSsl;
                 CommandConfig.ClientConfig.SslCredentials.pem_root_certs = config.CaCerts;
             }
             break;
         case TCommandConfig::EServerType::MessageBus:
-            Y_ABORT("MessageBus is no longer supported");
+            Y_FAIL("MessageBus is no longer supported");
             break;
         }
     }

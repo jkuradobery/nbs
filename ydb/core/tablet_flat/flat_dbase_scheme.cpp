@@ -29,8 +29,7 @@ TAutoPtr<TSchemeChanges> TScheme::GetSnapshot() const {
             const auto &col = it.second;
 
             delta.AddPgColumn(table, col.Name, it.first, col.PType.GetTypeId(),
-                NPg::PgTypeIdFromTypeDesc(col.PType.GetTypeDesc()),
-                col.PTypeMod, col.NotNull, col.Null);
+                NPg::PgTypeIdFromTypeDesc(col.PType.GetTypeDesc()), col.NotNull, col.Null);
             delta.AddColumnToFamily(table, it.first, col.Family);
         }
 
@@ -63,7 +62,7 @@ TAutoPtr<TSchemeChanges> TScheme::GetSnapshot() const {
 
 TAlter& TAlter::Merge(const TSchemeChanges &log)
 {
-    Y_ABORT_UNLESS(&Log != &log, "Cannot merge changes onto itself");
+    Y_VERIFY(&Log != &log, "Cannot merge changes onto itself");
 
     int added = log.DeltaSize();
     if (added > 0) {
@@ -99,11 +98,11 @@ TAlter& TAlter::DropTable(ui32 id)
 
 TAlter& TAlter::AddColumn(ui32 table, const TString& name, ui32 id, ui32 type, bool notNull, TCell null)
 {
-    Y_ABORT_UNLESS(type != (ui32)NScheme::NTypeIds::Pg, "No pg type data");
-    return AddPgColumn(table, name, id, type, 0, "", notNull, null);
+    Y_VERIFY(type != (ui32)NScheme::NTypeIds::Pg, "No pg type data");
+    return AddPgColumn(table, name, id, type, 0, notNull, null);
 }
 
-TAlter& TAlter::AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type, ui32 pgType, const TString& pgTypeMod, bool notNull, TCell null)
+TAlter& TAlter::AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type, ui32 pgType, bool notNull, TCell null)
 {
     TAlterRecord& delta = *Log.AddDelta();
     delta.SetDeltaType(TAlterRecord::AddColumn);
@@ -113,9 +112,6 @@ TAlter& TAlter::AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type,
     delta.SetColumnType(type);
     if (pgType != 0) {
         delta.MutableColumnTypeInfo()->SetPgTypeId(pgType);
-        if (!pgTypeMod.empty()) {
-            delta.MutableColumnTypeInfo()->SetPgTypeMod(pgTypeMod);
-        }
     }
     delta.SetNotNull(notNull);
 
@@ -330,7 +326,7 @@ TAlter& TAlter::ApplyLastRecord()
 {
     if (Sink) {
         int deltasCount = Log.DeltaSize();
-        Y_ABORT_UNLESS(deltasCount > 0);
+        Y_VERIFY(deltasCount > 0);
 
         if (!Sink->ApplyAlterRecord(Log.GetDelta(deltasCount - 1))) {
             Log.MutableDelta()->RemoveLast();

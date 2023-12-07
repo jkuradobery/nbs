@@ -41,7 +41,7 @@ public:
 
     TStatus HandleClusterConfig(TExprBase input, TExprContext& ctx) {
         const auto config = input.Cast<NNodes::TYdbClusterConfig>();
-        if (!EnsureTupleOfAtoms(config.Locators().MutableRef(), ctx)) {
+        if (!EnsureTupleOfAtoms(config.Locators().Ref(), ctx)) {
             return TStatus::Error;
         }
 

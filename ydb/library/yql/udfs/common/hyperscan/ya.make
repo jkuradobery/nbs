@@ -1,6 +1,6 @@
 IF (OS_LINUX AND CLANG)
 
-YQL_UDF_CONTRIB(hyperscan_udf)
+    YQL_UDF(hyperscan_udf)
 
     YQL_ABI_VERSION(
         2
@@ -23,7 +23,3 @@ ELSE()
     LIBRARY()
     END()
 ENDIF()
-
-RECURSE_FOR_TESTS(
-    test
-)

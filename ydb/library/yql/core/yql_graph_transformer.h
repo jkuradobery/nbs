@@ -110,71 +110,71 @@ private:
     class TTransformScope {
     public:
         TTransformScope(TStatistics& statistics, const TExprContext* exprCtx)
-            : Statistics_(statistics)
-            , ExprCtx_(exprCtx)
-            , TransformStart_(TInstant::Now())
-            , ExprNodesSize_(exprCtx ? exprCtx->ExprNodes.size() : 0)
-            , TypeNodesSize_(exprCtx ? exprCtx->TypeNodes.size() : 0)
-            , ConstraintNodesSize_(exprCtx ? exprCtx->ConstraintNodes.size() : 0)
+            : Statistics(statistics)
+            , ExprCtx(exprCtx)
+            , TransformStart(TInstant::Now())
+            , ExprNodesSize(exprCtx ? exprCtx->ExprNodes.size() : 0)
+            , TypeNodesSize(exprCtx ? exprCtx->TypeNodes.size() : 0)
+            , ConstraintNodesSize(exprCtx ? exprCtx->ConstraintNodes.size() : 0)
         {
         }
 
         ~TTransformScope() {
-            Statistics_.TransformDuration += TInstant::Now() - TransformStart_;
-            if (ExprCtx_) {
-                Statistics_.NewExprNodes += ExprCtx_->ExprNodes.size() - ExprNodesSize_;
-                Statistics_.NewTypeNodes += ExprCtx_->TypeNodes.size() - TypeNodesSize_;
-                Statistics_.NewConstraintNodes += ExprCtx_->ConstraintNodes.size() - ConstraintNodesSize_;
+            Statistics.TransformDuration += TInstant::Now() - TransformStart;
+            if (ExprCtx) {
+                Statistics.NewExprNodes += ExprCtx->ExprNodes.size() - ExprNodesSize;
+                Statistics.NewTypeNodes += ExprCtx->TypeNodes.size() - TypeNodesSize;
+                Statistics.NewConstraintNodes += ExprCtx->ConstraintNodes.size() - ConstraintNodesSize;
             }
         }
 
         TStatus HandleStatus(const TStatus& status) {
             if (status == TStatus::Repeat) {
-                Statistics_.Repeats++;
+                Statistics.Repeats++;
             }
 
             if (status.HasRestart) {
-                Statistics_.Restarts++;
+                Statistics.Restarts++;
             }
 
             return status;
         }
 
     private:
-        TStatistics& Statistics_;
-        const TExprContext* ExprCtx_;
-        TInstant TransformStart_;
-        i64 ExprNodesSize_;
-        i64 TypeNodesSize_;
-        i64 ConstraintNodesSize_;
+        TStatistics& Statistics;
+        const TExprContext* ExprCtx;
+        TInstant TransformStart;
+        i64 ExprNodesSize;
+        i64 TypeNodesSize;
+        i64 ConstraintNodesSize;
     };
 
 public:
     TGraphTransformerBase()
-        : Statistics_(TStatistics::Zero())
-        , AsyncStart_() {}
+        : Statistics(TStatistics::Zero())
+        , AsyncStart() {}
 
     TStatus Transform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
-        TTransformScope scope(Statistics_, &ctx);
+        TTransformScope scope(Statistics, &ctx);
 
         return scope.HandleStatus(DoTransform(input, output, ctx));
     }
 
     NThreading::TFuture<void> GetAsyncFuture(const TExprNode& input) final {
-        TTransformScope scope(Statistics_, nullptr);
-        AsyncStart_ = TInstant::Now();
+        TTransformScope scope(Statistics, nullptr);
+        AsyncStart = TInstant::Now();
 
         return DoGetAsyncFuture(input);
     }
 
     TStatus ApplyAsyncChanges(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
-        TTransformScope scope(Statistics_, &ctx);
-        Statistics_.WaitDuration += TInstant::Now() - AsyncStart_;
+        TTransformScope scope(Statistics, &ctx);
+        Statistics.WaitDuration += TInstant::Now() - AsyncStart;
 
         return scope.HandleStatus(DoApplyAsyncChanges(input, output, ctx));
     }
 
-    virtual TStatistics GetStatistics() const override { return Statistics_; }
+    virtual TStatistics GetStatistics() const override { return Statistics; }
 
 public:
     virtual TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) = 0;
@@ -182,10 +182,10 @@ public:
     virtual TStatus DoApplyAsyncChanges(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) = 0;
 
 protected:
-    mutable TStatistics Statistics_;
+    mutable TStatistics Statistics;
 
 private:
-    TInstant AsyncStart_;
+    TInstant AsyncStart;
 };
 
 struct TTransformStage {
@@ -197,24 +197,24 @@ struct TTransformStage {
         : Name(name)
         , IssueCode(issueCode)
         , IssueMessage(issueMessage)
-        , RawTransformer_(transformer.Get())
-        , Transformer_(transformer)
+        , RawTransformer(transformer.Get())
+        , Transformer(transformer)
     {}
 
     TTransformStage(IGraphTransformer& transformer, const TString& name, EYqlIssueCode issueCode, const TString& issueMessage = {})
         : Name(name)
         , IssueCode(issueCode)
         , IssueMessage(issueMessage)
-        , RawTransformer_(&transformer)
+        , RawTransformer(&transformer)
     {}
 
     IGraphTransformer& GetTransformer() const
     {
-        return *RawTransformer_;
+        return *RawTransformer;
     }
 private:
-    IGraphTransformer* const RawTransformer_;
-    const TAutoPtr<IGraphTransformer> Transformer_;
+    IGraphTransformer* const RawTransformer;
+    const TAutoPtr<IGraphTransformer> Transformer;
 };
 
 TAutoPtr<IGraphTransformer> CreateCompositeGraphTransformer(const TVector<TTransformStage>& stages, bool useIssueScopes);
@@ -232,9 +232,6 @@ NThreading::TFuture<IGraphTransformer::TStatus> AsyncTransform(IGraphTransformer
 
 void AsyncTransform(IGraphTransformer& transformer, TExprNode::TPtr& root, TExprContext& ctx, bool applyAsyncChanges,
                     std::function<void(const IGraphTransformer::TStatus&)> asyncCallback);
-
-IGraphTransformer::TStatus AsyncTransformStep(IGraphTransformer& transformer, TExprNode::TPtr& root,
-                                            TExprContext& ctx, bool applyAsyncChanges);
 
 class TSyncTransformerBase : public TGraphTransformerBase {
 public:
@@ -267,10 +264,10 @@ template <typename TFunctor>
 class TFunctorTransformer final: public TSyncTransformerBase {
 public:
     TFunctorTransformer(TFunctor functor)
-        : Functor_(std::move(functor)) {}
+        : Functor(std::move(functor)) {}
 
     TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
-        TStatus status = Functor_(input, output, ctx);
+        TStatus status = Functor(input, output, ctx);
         YQL_ENSURE(status.Level != IGraphTransformer::TStatus::Async);
 
         return status;
@@ -280,7 +277,7 @@ public:
     }
 
 private:
-    TFunctor Functor_;
+    TFunctor Functor;
 };
 
 template <typename TFunctor>
@@ -298,34 +295,34 @@ public:
     TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
         auto pair = static_cast<TDerived*>(this)->CallbackTransform(input, output, ctx);
         if (pair.first == TStatus::Async) {
-            YQL_ENSURE(Callbacks_.emplace(input.Get(), pair.second).second);
+            YQL_ENSURE(Callbacks.emplace(input.Get(), pair.second).second);
         }
 
         return pair.first;
     }
 
     NThreading::TFuture<void> DoGetAsyncFuture(const TExprNode& input) final {
-        const auto it = Callbacks_.find(&input);
-        YQL_ENSURE(it != Callbacks_.cend());
+        const auto it = Callbacks.find(&input);
+        YQL_ENSURE(it != Callbacks.cend());
         return it->second.IgnoreResult();
     }
 
     TStatus DoApplyAsyncChanges(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final {
-        const auto it = Callbacks_.find(input.Get());
-        YQL_ENSURE(it != Callbacks_.cend());
+        const auto it = Callbacks.find(input.Get());
+        YQL_ENSURE(it != Callbacks.cend());
         auto& future = it->second;
         YQL_ENSURE(future.HasValue());
         const auto status = future.GetValue()(input, output, ctx);
-        Callbacks_.erase(it);
+        Callbacks.erase(it);
         return status;
     }
 
     void Rewind() override {
-        Callbacks_.clear();
+        Callbacks.clear();
     }
 
 private:
-    TNodeMap<TAsyncTransformCallbackFuture> Callbacks_;
+    TNodeMap<TAsyncTransformCallbackFuture> Callbacks;
 };
 
 template <bool AlwaysRaiseIssues = true, typename TFuture, typename TCallback>

@@ -26,12 +26,12 @@ public:
             , State(std::move(state))
             , Switch(outSwitch)
             , UpdateState(std::move(updateState))
+            , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
+            , TempStateIndex(std::exchange(mutables.CurValueIndex, mutables.CurValueIndex + State.size()))
             , SwitchItem(IsPasstrought(Switch, Items))
             , ItemsOnInit(GetPasstroughtMap(Items, InitState))
             , ItemsOnUpdate(GetPasstroughtMap(Items, UpdateState))
             , UpdateOnItems(GetPasstroughtMap(UpdateState, Items))
-            , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
-            , TempStateIndex(std::exchange(mutables.CurValueIndex, mutables.CurValueIndex + State.size()))
     {}
 
     EFetchResult DoCalculate(NUdf::TUnboxedValue& state, TComputationContext& ctx, NUdf::TUnboxedValue*const* output) const {
@@ -106,7 +106,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto next = BasicBlock::Create(context, "next", ctx.Func);
@@ -115,8 +115,7 @@ public:
         const auto stop = BasicBlock::Create(context, "stop", ctx.Func);
         const auto exit = BasicBlock::Create(context, "exit", ctx.Func);
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto resultType = Type::getInt32Ty(context);
         const auto result = PHINode::Create(resultType, 4U, "result", exit);
         result->addIncoming(ConstantInt::get(resultType, i32(EFetchResult::Finish)), block);
@@ -135,7 +134,7 @@ public:
             const auto cleanup = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&CleanupCurrentContext));
             const auto cleanupType = FunctionType::get(Type::getVoidTy(context), {}, false);
             const auto cleanupPtr = CastInst::Create(Instruction::IntToPtr, cleanup, PointerType::getUnqual(cleanupType), "cleanup_ctx", block);
-            CallInst::Create(cleanupType, cleanupPtr, {}, "", block);
+            CallInst::Create(cleanupPtr, {}, "", block);
         }
 
         new StoreInst(GetFalse(context), statePtr, block);
@@ -254,8 +253,8 @@ private:
 IComputationNode* WrapWideCondense1(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
     MKQL_ENSURE(callable.GetInputsCount() >= 2U, "Expected at least two args.");
 
-    const auto inputWidth = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType()));
-    const auto outputWidth = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType()));
+    const auto inputWidth = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType())->GetItemType())->GetElementsCount();
+    const auto outputWidth = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType())->GetElementsCount();
 
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
 

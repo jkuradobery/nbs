@@ -160,7 +160,7 @@ ui64 TDriveEstimator::EstimateTrimSpeed() {
 }
 
 ui64 TDriveEstimator::MeasureOperationDuration(const ui32 type, const ui64 size) {
-    constexpr ui32 eventsToSkip = Repeats / 8;
+    constexpr ui32 eventsToSkip = Repeats / 4;
 
     TStackVec<TLoadCompl*, Repeats> completions;
     for (ui32 repeat = 0; repeat < Repeats; ++repeat) {
@@ -181,7 +181,7 @@ ui64 TDriveEstimator::MeasureOperationDuration(const ui32 type, const ui64 size)
                         TReqId(TReqId::EstimatorDurationWrite, 0), nullptr);
                 break;
             default:
-                Y_ABORT();
+                Y_FAIL();
         }
         if (repeat == eventsToSkip) {
             start = HPNow();
@@ -236,14 +236,14 @@ TDriveEstimator::TDriveEstimator(const TString filename)
     , ActorSystemCreator(new TActorSystemCreator)
     , ActorSystem(ActorSystemCreator->GetActorSystem())
     , QueueDepth(4)
-    , Device(CreateRealBlockDevice(filename, 0, PDiskMon, 50, 0, QueueDepth, TDeviceMode::LockFile, 128, nullptr, nullptr))
+    , Device(CreateRealBlockDevice(filename, 0, PDiskMon, 50, 0, QueueDepth, TDeviceMode::LockFile, 128, nullptr))
     , BufferPool(CreateBufferPool(BufferSize, 1, false, {}))
     , Buffer(BufferPool->Pop())
 {
     memset(Buffer->Data(), 7, Buffer->Size()); // Initialize the buffer so that Valgrind does not complain
     bool isBlockDevice = false;
     ActorSystem->AppData<TAppData>()->IoContextFactory->DetectFileParameters(filename, DriveSize, isBlockDevice);
-    Y_ABORT_UNLESS(Buffer->Size() * Repeats < DriveSize);
+    Y_VERIFY(Buffer->Size() * Repeats < DriveSize);
     Device->Initialize(ActorSystem, {});
     Y_VERIFY_S(Device->IsGood(), "Cannot Initialize TBlockDevice");
 }

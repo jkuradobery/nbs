@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defs.h"
+
 #include "config.h"
 #include "downtime.h"
 #include "node_checkers.h"
@@ -12,11 +13,10 @@
 #include <ydb/core/mind/tenant_pool.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 #include <ydb/core/protos/cms.pb.h>
-#include <ydb/core/protos/config.pb.h>
 #include <ydb/core/protos/console.pb.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/hash.h>
@@ -31,7 +31,6 @@ namespace NKikimr::NCms {
 // Forward declarations.
 class TClusterInfo;
 using TClusterInfoPtr = TIntrusivePtr<TClusterInfo>;
-
 struct TCmsState;
 using TCmsStatePtr = TIntrusivePtr<TCmsState>;
 
@@ -66,7 +65,8 @@ struct TPermissionInfo {
     TPermissionInfo &operator=(const TPermissionInfo &other) = default;
     TPermissionInfo &operator=(TPermissionInfo &&other) = default;
 
-    void CopyTo(NKikimrCms::TPermission &permission) const {
+    void CopyTo(NKikimrCms::TPermission &permission) const
+    {
         permission.SetId(PermissionId);
         permission.MutableAction()->CopyFrom(Action);
         permission.SetDeadline(Deadline.GetValue());
@@ -90,13 +90,13 @@ struct TRequestInfo {
     TRequestInfo &operator=(const TRequestInfo &other) = default;
     TRequestInfo &operator=(TRequestInfo &&other) = default;
 
-    void CopyTo(NKikimrCms::TManageRequestResponse::TScheduledRequest &request) const {
+    void CopyTo(NKikimrCms::TManageRequestResponse::TScheduledRequest &request) const
+    {
         request.SetRequestId(RequestId);
         request.SetOwner(Owner);
         request.MutableActions()->CopyFrom(Request.GetActions());
         request.SetPartialPermissionAllowed(Request.GetPartialPermissionAllowed());
         request.SetReason(Request.GetReason());
-        request.SetAvailabilityMode(Request.GetAvailabilityMode());
     }
 
     TString RequestId;
@@ -116,7 +116,8 @@ struct TNotificationInfo {
     TNotificationInfo &operator=(const TNotificationInfo &other) = default;
     TNotificationInfo &operator=(TNotificationInfo &&other) = default;
 
-    void CopyTo(NKikimrCms::TManageNotificationResponse::TStoredNotification &notification) const {
+    void CopyTo(NKikimrCms::TManageNotificationResponse::TStoredNotification &notification) const
+    {
         notification.SetNotificationId(NotificationId);
         notification.SetOwner(Owner);
         notification.MutableActions()->CopyFrom(Notification.GetActions());
@@ -148,13 +149,13 @@ struct TNotificationInfo {
  */
 class TLockableItem : public TThrRefBase {
 public:
-    struct TBaseLock {
+    struct TBaseLock
+    {
         TBaseLock(const TString &owner, const NKikimrCms::TAction &action)
             : Owner(owner)
             , Action(action)
         {
         }
-
         TBaseLock(const TBaseLock &other) = default;
         TBaseLock(TBaseLock &&other) = default;
 
@@ -173,7 +174,6 @@ public:
             LockDeadline = permission.Deadline;
             ActionDeadline = LockDeadline + TDuration::MicroSeconds(Action.GetDuration());
         }
-
         TLock(const TLock &other) = default;
         TLock(TLock &&other) = default;
 
@@ -226,7 +226,6 @@ public:
             , RollbackPoint(point)
         {
         }
-
         TTemporaryLock(const TTemporaryLock &other) = default;
         TTemporaryLock(TTemporaryLock &&other) = default;
 
@@ -247,17 +246,19 @@ public:
     }
 
     virtual TString ItemName() const = 0;
-    virtual TString PrettyItemName() const {
+    virtual TString PrettyItemName() const
+    {
         return ItemName();
     }
 
-    void AddLock(const TPermissionInfo &permission) {
-        Y_ABORT_UNLESS(Lock.Empty());
+    void AddLock(const TPermissionInfo &permission)
+    {
+        Y_VERIFY(Lock.Empty());
         Lock.ConstructInPlace(permission);
     }
 
     void AddExternalLock(const TNotificationInfo &notification,
-            const NKikimrCms::TAction &action)
+                         const NKikimrCms::TAction &action)
     {
         TExternalLock lock(notification, action);
         auto pos = LowerBound(ExternalLocks.begin(), ExternalLocks.end(), lock, [](auto &l, auto &r) {
@@ -266,10 +267,11 @@ public:
         ExternalLocks.insert(pos, std::move(lock));
     }
 
-    void ScheduleLock(TScheduledLock &&lock) {
+    void ScheduleLock(TScheduledLock &&lock)
+    {
         auto pos = LowerBound(ScheduledLocks.begin(), ScheduledLocks.end(), lock, [](auto &l, auto &r) {
-            return l.Order < r.Order;
-        });
+                return l.Order < r.Order;
+            });
         ScheduledLocks.insert(pos, lock);
     }
 
@@ -298,7 +300,6 @@ public:
     TVector<TTemporaryLock> TempLocks;
     ui64 DeactivatedLocksOrder = Max<ui64>();
 };
-
 using TLockableItemPtr = TIntrusivePtr<TLockableItem>;
 
 /**
@@ -315,19 +316,9 @@ public:
     TNodeInfo &operator=(const TNodeInfo &other) = default;
     TNodeInfo &operator=(TNodeInfo &&other) = default;
 
-    TString ItemName() const override {
+    TString ItemName() const override
+    {
         return Sprintf("Host %s:%" PRIu16 " (%" PRIu32 ")", Host.data(), IcPort, NodeId);
-    }
-
-    void AddNodeGroup(TSimpleSharedPtr<INodesChecker> group) {
-        NodeGroups.push_back(group);
-        group->UpdateNode(NodeId, State);
-    }
-
-    void UpdateNodeState() {
-        for (auto &group : NodeGroups) {
-            group->UpdateNode(NodeId, State);
-        }
     }
 
     void MigrateOldInfo(const TLockableItem &old) override;
@@ -346,10 +337,7 @@ public:
     TString PreviousTenant;
     TServices Services;
     TInstant StartTime;
-
-    TVector<TSimpleSharedPtr<INodesChecker>> NodeGroups;
 };
-
 using TNodeInfoPtr = TIntrusivePtr<TNodeInfo>;
 
 /**
@@ -412,7 +400,6 @@ public:
 private:
     static bool NameToId(const TString &name, TPDiskID &id);
 };
-
 using TPDiskInfoPtr = TIntrusivePtr<TPDiskInfo>;
 
 /**
@@ -455,7 +442,6 @@ public:
 private:
     static bool NameToId(const TString &name, TVDiskID &id);
 };
-
 using TVDiskInfoPtr = TIntrusivePtr<TVDiskInfo>;
 
 /**
@@ -481,6 +467,7 @@ struct TBSGroupInfo {
  */
 class TStateStorageRingInfo : public TThrRefBase {
 public:
+
     /**
      * Ok:          we can allow to restart nodes;
      *
@@ -538,7 +525,9 @@ public:
         IsDisabled = true;
     }
 
-    RingState CountState(TInstant now, TDuration retryTime, TDuration duration) const;
+    RingState CountState(TInstant now,
+                         TDuration retryTime,
+                         TDuration duration) const;
 
     ui32 RingId = 0;
     bool IsDisabled = false;
@@ -546,8 +535,9 @@ public:
 
     TVector<TNodeInfoPtr> Replicas;
 };
-
 using TStateStorageRingInfoPtr = TIntrusivePtr<TStateStorageRingInfo>;
+
+
 
 enum EOperationType {
     OPERATION_TYPE_UNKNOWN = 0,
@@ -564,7 +554,6 @@ public:
         : Type(type)
     {
     }
-
     virtual ~TOperationBase() = default;
 
     virtual void Do() = 0;
@@ -576,16 +565,17 @@ public:
     const ui32 NodeId;
 
 private:
-    TSimpleSharedPtr<INodesChecker> NodesState;
+
+    TSimpleSharedPtr<TNodesStateBase> NodesState;
 
 public:
-    TLockNodeOperation(ui32 nodeId, TSimpleSharedPtr<INodesChecker> nodesState)
+
+    TLockNodeOperation(ui32 nodeId, TSimpleSharedPtr<TNodesStateBase> nodesState)
         : TOperationBase(OPERATION_TYPE_LOCK_NODE)
         , NodeId(nodeId)
         , NodesState(nodesState)
     {
     }
-
     ~TLockNodeOperation() = default;
 
     void Do() override final {
@@ -595,6 +585,7 @@ public:
     void Undo() override final {
         NodesState->UnlockNode(NodeId);
     }
+
 };
 
 class TLogRollbackPoint : public TOperationBase {
@@ -610,6 +601,7 @@ public:
     void Undo() override final {
         return;
     }
+
 };
 
 class TOperationLogManager {
@@ -618,11 +610,12 @@ private:
 
 public:
     void PushRollbackPoint() {
-        Log.emplace_back(new TLogRollbackPoint());
+        Log.push_back(TSimpleSharedPtr<TOperationBase>(new TLogRollbackPoint()));
     }
 
-    void AddNodeLockOperation(ui32 nodeId, TSimpleSharedPtr<INodesChecker> nodesState) {
-        Log.emplace_back(new TLockNodeOperation(nodeId, nodesState))->Do();
+    void AddNodeLockOperation(ui32 nodeId, TSimpleSharedPtr<TNodesStateBase> nodesState) {
+        Log.push_back(TSimpleSharedPtr<TOperationBase>(new TLockNodeOperation(nodeId, nodesState)));
+        Log[Log.size() - 1]->Do();
     }
 
     void RollbackOperations() {
@@ -636,7 +629,8 @@ public:
         }
     }
 
-    void ApplyAction(const NKikimrCms::TAction &action, TClusterInfoPtr clusterState);
+    void ApplyAction(const NKikimrCms::TAction &action,
+                     TClusterInfoPtr clusterState);
 };
 
 /**
@@ -656,12 +650,12 @@ public:
     using TVDisks = THashMap<TVDiskID, TVDiskInfoPtr>;
     using TBSGroups = THashMap<ui32, TBSGroupInfo>;
 
-    using TenantNodesCheckers = THashMap<TString, TSimpleSharedPtr<TNodesLimitsCounterBase>>;
+    using TenantNodesCheckers = THashMap<TString, TSimpleSharedPtr<TNodesStateBase>>;
 
     friend TOperationLogManager;
 
     TenantNodesCheckers TenantNodesChecker;
-    TSimpleSharedPtr<TClusterLimitsCounter> ClusterNodes = MakeSimpleShared<TClusterLimitsCounter>(0u, 0u);
+    TSimpleSharedPtr<TClusterNodesState> ClusterNodes = TSimpleSharedPtr<TClusterNodesState>(new TClusterNodesState(0, 0));
 
     TOperationLogManager LogManager;
     TOperationLogManager ScheduledLogManager;
@@ -680,7 +674,6 @@ public:
     void ApplyStateStorageInfo(TIntrusiveConstPtr<TStateStorageInfo> info);
 
     void GenerateTenantNodesCheckers();
-    void GenerateSysTabletsNodesCheckers();
 
     bool IsStateStorageReplicaNode(ui32 nodeId) {
         return StateStorageReplicas.contains(nodeId);
@@ -691,187 +684,202 @@ public:
     }
 
     ui32 GetRingId(ui32 nodeId) {
-        Y_ABORT_UNLESS(IsStateStorageReplicaNode(nodeId));
+        Y_VERIFY(IsStateStorageReplicaNode(nodeId));
         return StateStorageNodeToRingId[nodeId];
     }
 
-    void CheckNodeExistenceWithVerify(ui32 nodeId) const {
-      Y_ABORT_UNLESS(HasNode(nodeId), "%s",
-               (TStringBuilder()
-                << "Node " << nodeId
-                << " does not exist in cluster, but exists in configuration.")
-                   .c_str());
-    }
-
-    bool HasNode(ui32 nodeId) const {
+    bool HasNode(ui32 nodeId) const
+    {
         return Nodes.contains(nodeId);
     }
 
-    bool HasNode(const TString &hostName) const {
+    bool HasNode(const TString &hostName) const
+    {
         ui32 nodeId;
-        if (TryFromString(hostName, nodeId)) {
+        if (TryFromString(hostName, nodeId))
             return HasNode(nodeId);
-        }
         return HostNameToNodeId.contains(hostName);
     }
 
-    const TNodeInfo &Node(ui32 nodeId) const {
-        CheckNodeExistenceWithVerify(nodeId);
+    const TNodeInfo &Node(ui32 nodeId) const
+    {
+        Y_VERIFY(HasNode(nodeId));
         return *Nodes.find(nodeId)->second;
     }
 
-    TVector<const TNodeInfo *> HostNodes(const TString &hostName) const {
+    TVector<const TNodeInfo *> HostNodes(const TString &hostName) const
+    {
         TVector<const TNodeInfo *> nodes;
 
         ui32 nodeId;
         if (TryFromString(hostName, nodeId)) {
-            if (HasNode(nodeId)) {
+            if (HasNode(nodeId))
                 nodes.push_back(&NodeRef(nodeId));
-            }
             return nodes;
         }
 
         auto pr = HostNameToNodeId.equal_range(hostName);
         for (auto it = pr.first; it != pr.second; ++it) {
             nodeId = it->second;
-            CheckNodeExistenceWithVerify(nodeId);
+            Y_VERIFY(HasNode(nodeId));
             nodes.push_back(Nodes.find(nodeId)->second.Get());
         }
 
         return nodes;
     }
 
-    TVector<const TNodeInfo *> TenantNodes(const TString &tenant) const {
+    TVector<const TNodeInfo *> TenantNodes(const TString &tenant) const
+    {
         TVector<const TNodeInfo *> nodes;
 
         auto pr = TenantToNodeId.equal_range(tenant);
         for (auto it = pr.first; it != pr.second; ++it) {
             const ui32 nodeId = it->second;
-            CheckNodeExistenceWithVerify(nodeId);
+            Y_VERIFY(HasNode(nodeId));
             nodes.push_back(Nodes.find(nodeId)->second.Get());
         }
 
         return nodes;
     }
 
-    size_t NodesCount() const {
+    size_t NodesCount() const
+    {
         return Nodes.size();
     }
 
-    size_t NodesCount(const TString &hostName) const {
+    size_t NodesCount(const TString &hostName) const
+    {
         ui32 nodeId;
-        if (TryFromString(hostName, nodeId)) {
+        if (TryFromString(hostName, nodeId))
             return HasNode(nodeId) ? 1 : 0;
-        }
 
         return HostNameToNodeId.count(hostName);
     }
 
-    const TNodes &AllNodes() const {
+    const TNodes &AllNodes() const
+    {
         return Nodes;
     }
 
-    bool HasTablet(ui64 id) const {
+    bool HasTablet(ui64 id) const
+    {
         return Tablets.contains(id);
     }
 
-    const TTabletInfo &Tablet(ui64 id) const {
-        Y_ABORT_UNLESS(HasTablet(id));
+    const TTabletInfo &Tablet(ui64 id) const
+    {
+        Y_VERIFY(HasTablet(id));
         return Tablets.find(id)->second;
     }
 
-    const TTablets &AllTablets() const {
+    const TTablets &AllTablets() const
+    {
         return Tablets;
     }
 
-    bool HasPDisk(TPDiskID pdId) const {
+    bool HasPDisk(TPDiskID pdId) const
+    {
         return PDisks.contains(pdId);
     }
 
-    bool HasPDisk(const TString &name) const {
-        if (!TPDiskInfo::IsDeviceName(name)) {
+    bool HasPDisk(const TString &name) const
+    {
+        if (!TPDiskInfo::IsDeviceName(name))
             return false;
-        }
-
         auto id = TPDiskInfo::NameToId(name);
         return PDisks.contains(id);
     }
 
-    bool HasPDisk(const TString &hostName, const TString &path) const {
+    bool HasPDisk(const TString &hostName, const TString &path) const
+    {
         return !!HostNamePathToPDiskId(hostName, path);
     }
 
-    const TPDiskInfo &PDisk(TPDiskID pdId) const {
-        Y_ABORT_UNLESS(HasPDisk(pdId));
+    const TPDiskInfo &PDisk(TPDiskID pdId) const
+    {
+        Y_VERIFY(HasPDisk(pdId));
         return *PDisks.find(pdId)->second;
     }
 
-    const TPDiskInfo &PDisk(const TString &name) const {
+    const TPDiskInfo &PDisk(const TString &name) const
+    {
         auto id = TPDiskInfo::NameToId(name);
         return PDisk(id);
     }
 
-    const TPDiskInfo &PDisk(const TString &hostName, const TString &path) const {
+    const TPDiskInfo &PDisk(const TString &hostName, const TString &path) const
+    {
         return PDisk(HostNamePathToPDiskId(hostName, path));
     }
 
-    size_t PDisksCount() const {
+    size_t PDisksCount() const
+    {
         return PDisks.size();
     }
 
-    const TPDisks &AllPDisks() const {
+    const TPDisks &AllPDisks() const
+    {
         return PDisks;
     }
 
-    bool HasVDisk(const TVDiskID &vdId) const {
+    bool HasVDisk(const TVDiskID &vdId) const
+    {
         return VDisks.contains(vdId);
     }
 
-    bool HasVDisk(const TString &name) const {
-        if (!TVDiskInfo::IsDeviceName(name)) {
+    bool HasVDisk(const TString &name) const
+    {
+        if (!TVDiskInfo::IsDeviceName(name))
             return false;
-        }
-
         auto id = TVDiskInfo::NameToId(name);
         return VDisks.contains(id);
     }
 
-    const TVDiskInfo &VDisk(const TVDiskID &vdId) const {
-        Y_ABORT_UNLESS(HasVDisk(vdId));
+    const TVDiskInfo &VDisk(const TVDiskID &vdId) const
+    {
+        Y_VERIFY(HasVDisk(vdId));
         return *VDisks.find(vdId)->second;
     }
 
-    const TVDiskInfo &VDisk(const TString &name) const {
+    const TVDiskInfo &VDisk(const TString &name) const
+    {
         auto id = TVDiskInfo::NameToId(name);
         return VDisk(id);
     }
 
-    size_t VDisksCount() const {
+    size_t VDisksCount() const
+    {
         return VDisks.size();
     }
 
-    const TVDisks &AllVDisks() const {
+    const TVDisks &AllVDisks() const
+    {
         return VDisks;
     }
 
-    bool HasBSGroup(ui32 groupId) const {
+    bool HasBSGroup(ui32 groupId) const
+    {
         return BSGroups.contains(groupId);
     }
 
-    const TBSGroupInfo &BSGroup(ui32 groupId) const {
-        Y_ABORT_UNLESS(HasBSGroup(groupId));
+    const TBSGroupInfo &BSGroup(ui32 groupId) const
+    {
+        Y_VERIFY(HasBSGroup(groupId));
         return BSGroups.find(groupId)->second;
     }
 
-    size_t BSGroupsCount() const {
+    size_t BSGroupsCount() const
+    {
         return BSGroups.size();
     }
 
-    const TBSGroups &AllBSGroups() const {
+    const TBSGroups &AllBSGroups() const
+    {
         return BSGroups;
     }
 
-    TInstant GetTimestamp() const {
+    TInstant GetTimestamp() const
+    {
         return Timestamp;
     }
 
@@ -895,7 +903,7 @@ public:
     ui64 AddLocks(const TPermissionInfo &permission, const TActorContext *ctx);
 
     ui64 AddLocks(const NKikimrCms::TPermission &permission, const TString &requestId,
-            const TString &owner, const TActorContext *ctx)
+                  const TString &owner, const TActorContext *ctx)
     {
         return AddLocks({permission, requestId, owner}, ctx);
     }
@@ -912,7 +920,8 @@ public:
     void ReactivateScheduledLocks();
 
     void RollbackLocks(ui64 point);
-    ui64 PushRollbackPoint() {
+    ui64 PushRollbackPoint()
+    {
         LogManager.PushRollbackPoint();
         return ++RollbackPoint;
     }
@@ -927,6 +936,8 @@ public:
     bool IsOutdated() const { return Outdated; }
     void SetOutdated(bool val) { Outdated = val; }
 
+    void ApplySysTabletsInfo(const NKikimrConfig::TBootstrap& config);
+
     static EGroupConfigurationType VDiskConfigurationType(const TVDiskID &vdId) {
         return TGroupID(vdId.GroupID).ConfigurationType();
     }
@@ -935,19 +946,20 @@ public:
     static bool IsDynamicGroupVDisk(const TVDiskID &vdId) { return EGroupConfigurationType::Dynamic == VDiskConfigurationType(vdId); }
 
 private:
-    TNodeInfo &NodeRef(ui32 nodeId) const {
-        CheckNodeExistenceWithVerify(nodeId);
+    TNodeInfo &NodeRef(ui32 nodeId) const
+    {
+        Y_VERIFY(HasNode(nodeId));
         return *Nodes.find(nodeId)->second;
     }
 
-    TVector<TNodeInfo *> NodePtrs(const TString &hostName, const TServices &filterByServices = {}) {
+    TVector<TNodeInfo *> NodePtrs(const TString &hostName, const TServices &filterByServices = {})
+    {
         TVector<TNodeInfo *> nodes;
 
         ui32 nodeId;
         if (TryFromString(hostName, nodeId)) {
-            if (HasNode(nodeId)) {
+            if (HasNode(nodeId))
                 nodes.push_back(&NodeRef(nodeId));
-            }
             return nodes;
         }
 
@@ -955,7 +967,7 @@ private:
         for (auto it = range.first; it != range.second; ++it) {
             nodeId = it->second;
 
-            CheckNodeExistenceWithVerify(nodeId);
+            Y_VERIFY(HasNode(nodeId));
             auto &node = NodeRef(nodeId);
 
             if (filterByServices && !(node.Services & filterByServices)) {
@@ -968,28 +980,33 @@ private:
         return nodes;
     }
 
-    TPDiskInfo &PDiskRef(TPDiskID pdId) {
-        Y_ABORT_UNLESS(HasPDisk(pdId));
+    TPDiskInfo &PDiskRef(TPDiskID pdId)
+    {
+        Y_VERIFY(HasPDisk(pdId));
         return *PDisks.find(pdId)->second;
     }
 
-    TPDiskInfo &PDiskRef(const TString &name) {
+    TPDiskInfo &PDiskRef(const TString &name)
+    {
         TPDiskID id = TPDiskInfo::NameToId(name);
         return PDiskRef(id);
     }
 
-    TVDiskInfo &VDiskRef(const TVDiskID &vdId) {
-        Y_ABORT_UNLESS(HasVDisk(vdId));
+    TVDiskInfo &VDiskRef(const TVDiskID &vdId)
+    {
+        Y_VERIFY(HasVDisk(vdId));
         return *VDisks.find(vdId)->second;
     }
 
-    TVDiskInfo &VDiskRef(const TString &name) {
+    TVDiskInfo &VDiskRef(const TString &name)
+    {
         TVDiskID id = TVDiskInfo::NameToId(name);
         return VDiskRef(id);
     }
 
-    TBSGroupInfo &BSGroupRef(ui32 groupId) {
-        Y_ABORT_UNLESS(HasBSGroup(groupId));
+    TBSGroupInfo &BSGroupRef(ui32 groupId)
+    {
+        Y_VERIFY(HasBSGroup(groupId));
         return BSGroups.find(groupId)->second;
     }
 
@@ -997,10 +1014,10 @@ private:
         auto pr = HostNameToNodeId.equal_range(hostName);
         for (auto it = pr.first; it != pr.second; ++it) {
             const ui32 nodeId = it->second;
-            CheckNodeExistenceWithVerify(nodeId);
+            Y_VERIFY(HasNode(nodeId));
             const auto &node = Node(nodeId);
             for (const auto &id : node.PDisks) {
-                Y_ABORT_UNLESS(HasPDisk(id));
+                Y_VERIFY(HasPDisk(id));
                 if (PDisk(id).Path == path) {
                     return id;
                 }
@@ -1028,27 +1045,28 @@ private:
     THashMap<TString, TLockableItemPtr> LockableItems;
     THashSet<ui32> StateStorageReplicas;
     THashMap<ui32, ui32> StateStorageNodeToRingId;
-
 public:
-    bool IsLocalBootConfDiffersFromConsole = false;
-    NKikimrConfig::TBootstrap BootstrapConfig;
-    THashMap<ui32, TVector<NKikimrConfig::TBootstrap::ETabletType>> NodeToTabletTypes;
 
-    THashMap<NKikimrConfig::TBootstrap::ETabletType, TSimpleSharedPtr<TSysTabletsNodesCounter>> SysNodesCheckers;
+    bool IsLocalBootConfDiffersFromConsole = false;
+    THashMap<NKikimrConfig::TBootstrap::ETabletType, TVector<ui32>> TabletTypeToNodes;
+    THashMap<ui32, TVector<NKikimrConfig::TBootstrap::ETabletType>> NodeToTabletTypes;
 
     TIntrusiveConstPtr<TStateStorageInfo> StateStorageInfo;
     TVector<TStateStorageRingInfoPtr> StateStorageRings;
 };
 
-inline bool ActionRequiresHost(NKikimrCms::TAction::EType type) {
+inline bool ActionRequiresHost(NKikimrCms::TAction::EType type)
+{
     return type != NKikimrCms::TAction::ADD_HOST
         && type != NKikimrCms::TAction::ADD_DEVICES
         && type != NKikimrCms::TAction::REPLACE_DEVICES
         && type != NKikimrCms::TAction::REMOVE_DEVICES;
 }
 
-inline bool ActionRequiresHost(const NKikimrCms::TAction &action) {
+inline bool ActionRequiresHost(const NKikimrCms::TAction &action)
+{
     return ActionRequiresHost(action.GetType());
 }
+
 
 } // namespace NKikimr::NCms

@@ -7,8 +7,6 @@ SRCS(
     yql_formatcode.cpp
     yql_formattype.cpp
     yql_formattype.h
-    yql_formattypediff.cpp
-    yql_formattypediff.h
     yql_makecode.h
     yql_makecode.cpp
     yql_maketype.h
@@ -34,7 +32,8 @@ SRCS(
 PEERDIR(
     ydb/library/yql/ast
     ydb/library/yql/ast/serialize
-    ydb/library/yql/minikql/computation/llvm
+    ydb/library/yql/minikql
+    ydb/library/yql/minikql/computation
     ydb/library/yql/core
     ydb/library/yql/core/type_ann
     ydb/library/yql/providers/common/codec

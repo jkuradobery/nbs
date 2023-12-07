@@ -4,7 +4,7 @@
 import logging
 
 # noinspection PyUnresolvedReferences
-from contrib.ydb.tests.library.nemesis.remote_execution import execute_command_with_output_single_host
+from ydb.tests.library.nemesis.remote_execution import execute_command_with_output_single_host
 
 logger = logging.getLogger()
 

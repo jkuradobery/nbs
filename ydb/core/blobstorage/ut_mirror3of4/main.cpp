@@ -1,5 +1,5 @@
 #include <library/cpp/testing/unittest/registar.h>
-#include <ydb/library/actors/core/actor_coroutine.h>
+#include <library/cpp/actors/core/actor_coroutine.h>
 #include <ydb/core/util/testactorsys.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/blobstorage/backpressure/queue_backpressure_client.h>
@@ -115,7 +115,7 @@ public:
             Send(Edge, new TEvTestFinished(exception));
         }
 
-        void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> /*ev*/) {
+        void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> /*ev*/) override {
             UNIT_ASSERT(false);
         }
 
@@ -148,7 +148,7 @@ public:
             }
             auto vdisks = GetVDiskSet();
             while (!vdisks.empty()) {
-                auto ev = WaitForSpecificEvent<TEvProxyQueueState>(&TCoro::ProcessUnexpectedEvent);
+                auto ev = WaitForSpecificEvent<TEvProxyQueueState>();
                 auto& msg = *ev->Get();
                 UNIT_ASSERT(msg.IsConnected);
                 const bool erased = vdisks.erase(msg.VDiskId);
@@ -163,7 +163,7 @@ public:
                     Send(Info->GetActorId(Info->GetOrderNumber(vdiskId)), new TEvBlobStorage::TEvVStatus(vdiskId));
                 }
                 for (size_t num = vdisks.size(); num; --num) {
-                    auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvVStatusResult>(&TCoro::ProcessUnexpectedEvent);
+                    auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvVStatusResult>();
                     auto& record = ev->Get()->Record;
                     if (record.GetStatus() == NKikimrProto::OK && record.GetReplicated()) {
                         const bool erased = vdisks.erase(VDiskIDFromVDiskID(record.GetVDiskID()));
@@ -178,7 +178,7 @@ public:
 
         void Sleep(TDuration timeout) {
             Schedule(timeout, new TEvents::TEvWakeup);
-            WaitForSpecificEvent<TEvents::TEvWakeup>(&TCoro::ProcessUnexpectedEvent);
+            WaitForSpecificEvent<TEvents::TEvWakeup>();
         }
 
         NKikimrProto::EReplyStatus Put(const TVDiskID& vdiskId, const TLogoBlobID& blobId, const TString& data) {
@@ -186,7 +186,7 @@ public:
             std::memcpy(dataWithHeadroom.UnsafeGetDataMut(), data.data(), data.size());
             Send(GetBackpressureFor(Info->GetOrderNumber(vdiskId)), new TEvBlobStorage::TEvVPut(blobId, TRope(dataWithHeadroom), vdiskId,
                 false, nullptr, TInstant::Max(), NKikimrBlobStorage::EPutHandleClass::TabletLog));
-            auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvVPutResult>(&TCoro::ProcessUnexpectedEvent);
+            auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvVPutResult>();
             auto& record = ev->Get()->Record;
             UNIT_ASSERT_VALUES_EQUAL(vdiskId, VDiskIDFromVDiskID(record.GetVDiskID()));
             return record.GetStatus();
@@ -197,10 +197,10 @@ public:
             std::optional<TIngress> Ingress;
             std::optional<TString> Data;
 
-            TGotItem(const NKikimrBlobStorage::TQueryResult& pb, TEvBlobStorage::TEvVGetResult& ev)
+            TGotItem(const NKikimrBlobStorage::TQueryResult& pb)
                 : Status(pb.GetStatus())
                 , Ingress(pb.HasIngress() ? std::make_optional(TIngress(pb.GetIngress())) : std::nullopt)
-                , Data(ev.HasBlob(pb) ? std::make_optional(ev.GetBlobData(pb).ConvertToString()) : std::nullopt)
+                , Data(pb.HasBuffer() ? std::make_optional(pb.GetBuffer()) : std::nullopt)
             {
                 UNIT_ASSERT(pb.HasStatus());
             }
@@ -221,11 +221,11 @@ public:
 
         TGetResult Get(const TVDiskID& vdiskId, std::unique_ptr<TEvBlobStorage::TEvVGet>&& query) {
             Send(GetBackpressureFor(Info->GetOrderNumber(vdiskId)), query.release());
-            auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvVGetResult>(&TCoro::ProcessUnexpectedEvent);
+            auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvVGetResult>();
             auto& record = ev->Get()->Record;
             TGetResult res;
             for (const auto& item : record.GetResult()) {
-                const bool inserted = res.try_emplace(LogoBlobIDFromLogoBlobID(item.GetBlobID()), item, *ev->Get()).second;
+                const bool inserted = res.emplace(LogoBlobIDFromLogoBlobID(item.GetBlobID()), TGotItem(item)).second;
                 UNIT_ASSERT(inserted); // blob ids should not repeat
             }
             return res;

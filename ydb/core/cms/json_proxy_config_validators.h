@@ -7,8 +7,9 @@
 namespace NKikimr::NCms {
 
 class TJsonProxyConfigValidators : public TJsonProxyConsole<NConsole::TEvConsole::TEvListConfigValidatorsRequest,
-                                                             NConsole::TEvConsole::TEvListConfigValidatorsResponse>
-{
+                                                             NConsole::TEvConsole::TEvListConfigValidatorsResponse> {
+private:
+
 public:
     TJsonProxyConfigValidators(NMon::TEvHttpInfo::TPtr &event)
         : TJsonProxyConsole<NConsole::TEvConsole::TEvListConfigValidatorsRequest,
@@ -16,7 +17,8 @@ public:
     {
     }
 
-    TAutoPtr<TRequest> PrepareRequest(const TActorContext &) override {
+    TAutoPtr<TRequest> PrepareRequest(const TActorContext &) override
+    {
         TAutoPtr<TRequest> request = new TRequest;
         return request;
     }

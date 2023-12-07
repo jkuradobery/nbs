@@ -1,7 +1,7 @@
 #include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
 #include "local_rate_limiter.h"
@@ -145,8 +145,6 @@ public:
             InactiveServerTimerPending_ = true;
         }
 
-        MessageSizeLimit = cfg.GetMessageSizeLimit();
-
         SendProposeRequest(ctx);
 
         auto actorId = SelfId();
@@ -155,7 +153,7 @@ public:
             LOG_WARN(*as, NKikimrServices::READ_TABLE_API, "ForgetAction occurred, send TEvPoisonPill");
             as->Send(actorId, new TEvents::TEvPoisonPill());
         };
-        Request_->SetFinishAction(std::move(clientLostCb));
+        Request_->SetClientLostAction(std::move(clientLostCb));
     }
 
     void PassAway() override {
@@ -175,7 +173,7 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, HandleResponseData);
             HFunc(TRpcServices::TEvGrpcNextReply, Handle);
@@ -186,7 +184,7 @@ private:
             HFunc(TEvents::TEvWakeup, Handle);
             HFunc(TEvDataShard::TEvGetReadTableStreamStateRequest, Handle);
             default:
-                Y_ABORT("TRequestHandler: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
+                Y_FAIL("TRequestHandler: unexpected event 0x%08" PRIx32, ev->GetTypeRewrite());
         }
     }
 
@@ -483,9 +481,6 @@ private:
             return ReplyFinishStream(StatusIds::BAD_REQUEST, message, ctx);
         }
 
-        MessageSizeLimit = std::min(MessageSizeLimit, req->batch_limit_bytes() ? req->batch_limit_bytes() : Max<ui64>());
-        MessageRowsLimit = req->batch_limit_rows();
-
         // Snapshots are always enabled and cannot be disabled
         switch (req->use_snapshot()) {
             case Ydb::FeatureFlag::STATUS_UNSPECIFIED:
@@ -544,9 +539,11 @@ private:
             NullSerializeReadTableResponse(message, status, &out);
             Request_->SendSerializedResult(std::move(out), status);
         }
-        Request_->FinishStream(status);
+        Request_->FinishStream();
         LOG_NOTICE_S(ctx, NKikimrServices::READ_TABLE_API,
             SelfId() << " Finish grpc stream, status: " << (int)status);
+
+        auto &cfg = AppData(ctx)->StreamingConfig.GetOutputStreamConfig();
 
         // Answer all pending quota requests.
         while (!QuotaRequestQueue_.empty()) {
@@ -557,8 +554,7 @@ private:
             TAutoPtr<TEvTxProcessing::TEvStreamQuotaResponse> response
                 = new TEvTxProcessing::TEvStreamQuotaResponse;
             response->Record.SetTxId(rec.GetTxId());
-            response->Record.SetMessageSizeLimit(MessageSizeLimit);
-            response->Record.SetMessageRowsLimit(MessageRowsLimit);
+            response->Record.SetMessageSizeLimit(cfg.GetMessageSizeLimit());
             response->Record.SetReservedMessages(0);
 
             LOG_DEBUG_S(ctx, NKikimrServices::READ_TABLE_API,
@@ -636,8 +632,7 @@ private:
         TAutoPtr<TEvTxProcessing::TEvStreamQuotaResponse> response
             = new TEvTxProcessing::TEvStreamQuotaResponse;
         response->Record.SetTxId(rec.GetTxId());
-        response->Record.SetMessageSizeLimit(MessageSizeLimit);
-        response->Record.SetMessageRowsLimit(MessageRowsLimit);
+        response->Record.SetMessageSizeLimit(cfg.GetMessageSizeLimit());
         response->Record.SetReservedMessages(quotaSize);
 
         LOG_DEBUG_S(*TlsActivationContext, NKikimrServices::READ_TABLE_API,
@@ -759,9 +754,6 @@ private:
     bool InactiveClientTimerPending_ = false;
     bool InactiveServerTimerPending_ = false;
 
-    ui64 MessageSizeLimit = 0;
-    ui64 MessageRowsLimit = 0;
-
     struct TBuffEntry
     {
         TString Buf;
@@ -773,8 +765,8 @@ private:
     bool HasPendingSuccess = false;
 };
 
-void DoReadTableRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TReadTableRPC(p.release()));
+void DoReadTableRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TReadTableRPC(p.release()));
 }
 
 } // namespace NGRpcService

@@ -14,13 +14,12 @@ type BuildInfo struct {
 	//
 	//     Other info:
 	//         Build by: prime
-	//         Top src dir: /home/prime/Code/go/src/github.com/ydb-platform/nbs
+	//         Top src dir: /home/prime/Code/go/src/github.com/ydb-platform/ydb
 	//         Top build dir: /home/prime/.ya/build/build_root/qbh0/000002
 	//         Hostname: 77.88.18.146-red.dhcp.yndx.net
 	//         Host information:
 	//             Linux 77.88.18.146-red.dhcp.yndx.net 4.19.10-300.fc29.x86_64 #1 SMP Mon Dec 17 15:34:44 UTC 2018 x86_64 x86_64 x86_64 GNU/Linux
 	ProgramVersion string
-	CustomVersion  string
 
 	User string
 	Host string
@@ -52,7 +51,6 @@ var Info BuildInfo
 // This function is called from the main package by the code generated in build/scripts/vcs_info.py
 func InitBuildInfo(buildinfo map[string]string) {
 	Info.ProgramVersion = strings.TrimRight(buildinfo["PROGRAM_VERSION"], " ")
-	Info.CustomVersion = strings.TrimRight(buildinfo["CUSTOM_VERSION"], " ")
 	Info.User = buildinfo["BUILD_USER"]
 	Info.Host = buildinfo["BUILD_HOST"]
 	Info.Date = buildinfo["BUILD_DATE"]

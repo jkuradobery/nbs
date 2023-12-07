@@ -44,7 +44,7 @@ namespace NKikimr::NBlobDepot {
 
         bool Execute(TTransactionContext& txc, const TActorContext&) override {
             if (Status == NKikimrProto::OK) {
-                Y_ABORT_UNLESS(!Self->Data->CanBeCollected(BlobSeqId));
+                Y_VERIFY(!Self->Data->CanBeCollected(BlobSeqId));
                 Self->Data->BindToBlob(Key, BlobSeqId, Keep, DoNotKeep, txc, this);
             } else if (Status == NKikimrProto::NODATA) {
                 if (const TData::TValue *value = Self->Data->FindKey(Key); value && value->GoingToAssimilate) {
@@ -60,7 +60,7 @@ namespace NKikimr::NBlobDepot {
                 const ui32 generation = Self->Executor()->Generation();
                 const TBlobSeqId leastExpectedBlobIdBefore = channel.GetLeastExpectedBlobId(generation);
                 const size_t numErased = channel.AssimilatedBlobsInFlight.erase(BlobSeqId.ToSequentialNumber());
-                Y_ABORT_UNLESS(numErased == 1);
+                Y_VERIFY(numErased == 1);
                 if (leastExpectedBlobIdBefore != channel.GetLeastExpectedBlobId(generation)) {
                     Self->Data->OnLeastExpectedBlobIdChange(channel.Index); // allow garbage collection
                 }
@@ -120,14 +120,14 @@ namespace NKikimr::NBlobDepot {
             cFunc(TEvents::TSystem::Poison, PassAway);
 
             default:
-                Y_DEBUG_ABORT_UNLESS(false, "unexpected event Type# %08" PRIx32, type);
+                Y_VERIFY_DEBUG(false, "unexpected event Type# %08" PRIx32, type);
                 STLOG(PRI_CRIT, BLOB_DEPOT, BDT00, "unexpected event", (Id, Self->GetLogId()), (Type, type));
                 break;
         }
     }
 
     void TAssimilator::Action() {
-        Y_ABORT_UNLESS(!ActionInProgress);
+        Y_VERIFY(!ActionInProgress);
         ActionInProgress = true;
 
         if (Self->DecommitState < EDecommitState::BlobsFinished) {
@@ -135,7 +135,7 @@ namespace NKikimr::NBlobDepot {
         } else if (Self->DecommitState < EDecommitState::BlobsCopied) {
             ScanDataForCopying();
         } else if (Self->DecommitState == EDecommitState::BlobsCopied) {
-            Y_ABORT_UNLESS(!PipeId);
+            Y_VERIFY(!PipeId);
             CreatePipe();
         } else if (Self->DecommitState != EDecommitState::Done) {
             Y_UNREACHABLE();
@@ -147,7 +147,7 @@ namespace NKikimr::NBlobDepot {
     void TAssimilator::SendAssimilateRequest() {
         STLOG(PRI_DEBUG, BLOB_DEPOT, BDT53, "TAssimilator::SendAssimilateRequest", (Id, Self->GetLogId()),
             (SelfId, SelfId()));
-        Y_ABORT_UNLESS(Self->Config.GetIsDecommittingGroup());
+        Y_VERIFY(Self->Config.GetIsDecommittingGroup());
         SendToBSProxy(SelfId(), Self->Config.GetVirtualGroupId(), new TEvBlobStorage::TEvAssimilate(SkipBlocksUpTo,
             SkipBarriersUpTo, SkipBlobsUpTo));
     }
@@ -198,7 +198,7 @@ namespace NKikimr::NBlobDepot {
                     auto& barrier = barriers.front();
                     STLOG(PRI_DEBUG, BLOB_DEPOT, BDT32, "assimilated barrier", (Id, Self->Self->GetLogId()), (Barrier, barrier));
                     if (!Self->Self->BarrierServer->AddBarrierOnDecommit(barrier, maxItems, txc, this)) {
-                        Y_ABORT_UNLESS(!maxItems);
+                        Y_VERIFY(!maxItems);
                         break;
                     }
                     Self->SkipBarriersUpTo.emplace(barrier.TabletId, barrier.Channel);
@@ -356,7 +356,7 @@ namespace NKikimr::NBlobDepot {
     }
 
     void TAssimilator::HandleResumeScanDataForCopying() {
-        Y_ABORT_UNLESS(ResumeScanDataForCopyingInFlight);
+        Y_VERIFY(ResumeScanDataForCopyingInFlight);
         ResumeScanDataForCopyingInFlight = false;
         ScanDataForCopying();
     }
@@ -364,7 +364,7 @@ namespace NKikimr::NBlobDepot {
     void TAssimilator::Handle(TEvBlobStorage::TEvGetResult::TPtr ev) {
         auto& msg = *ev->Get();
         const auto it = GetIdToUnprocessedPuts.find(ev->Cookie);
-        Y_ABORT_UNLESS(it != GetIdToUnprocessedPuts.end());
+        Y_VERIFY(it != GetIdToUnprocessedPuts.end());
         ui32 getBytes = 0;
         for (ui32 i = 0; i < msg.ResponseSz; ++i) {
             auto& resp = msg.Responses[i];
@@ -378,11 +378,11 @@ namespace NKikimr::NBlobDepot {
                     const auto blobSeqId = TBlobSeqId::FromSequentalNumber(channel.Index, Self->Executor()->Generation(), value);
                     const TLogoBlobID id = blobSeqId.MakeBlobId(Self->TabletID(), EBlobType::VG_DATA_BLOB, 0, resp.Id.BlobSize());
                     const ui64 putId = NextPutId++;
-                    SendToBSProxy(SelfId(), channel.GroupId, new TEvBlobStorage::TEvPut(id, TRcBuf(resp.Buffer), TInstant::Max()), putId);
+                    SendToBSProxy(SelfId(), channel.GroupId, new TEvBlobStorage::TEvPut(id, resp.Buffer, TInstant::Max()), putId);
                     const bool inserted = channel.AssimilatedBlobsInFlight.insert(value).second; // prevent from barrier advancing
-                    Y_ABORT_UNLESS(inserted);
+                    Y_VERIFY(inserted);
                     const bool inserted1 = PutIdToKey.try_emplace(putId, TData::TKey(resp.Id), it->first).second;
-                    Y_ABORT_UNLESS(inserted1);
+                    Y_VERIFY(inserted1);
                     ++it->second;
                 }
                 getBytes += resp.Id.BlobSize();
@@ -405,7 +405,7 @@ namespace NKikimr::NBlobDepot {
 
     void TAssimilator::HandleTxComplete(TAutoPtr<IEventHandle> ev) {
         const auto it = GetIdToUnprocessedPuts.find(ev->Cookie);
-        Y_ABORT_UNLESS(it != GetIdToUnprocessedPuts.end());
+        Y_VERIFY(it != GetIdToUnprocessedPuts.end());
         if (!--it->second) {
             GetIdToUnprocessedPuts.erase(it);
             if (!ResumeScanDataForCopyingInFlight) {
@@ -420,7 +420,7 @@ namespace NKikimr::NBlobDepot {
             Self->TabletCounters->Cumulative()[NKikimrBlobDepot::COUNTER_DECOMMIT_PUT_OK_BYTES] += msg.Id.BlobSize();
         }
         const auto it = PutIdToKey.find(ev->Cookie);
-        Y_ABORT_UNLESS(it != PutIdToKey.end());
+        Y_VERIFY(it != PutIdToKey.end());
         const auto& [key, getId] = it->second;
         STLOG(PRI_DEBUG, BLOB_DEPOT, BDT37, "got TEvPutResult", (Id, Self->GetLogId()), (Msg, msg),
             (NumGetsUnprocessed, GetIdToUnprocessedPuts.size()), (Key, key));
@@ -431,7 +431,7 @@ namespace NKikimr::NBlobDepot {
 
     void TAssimilator::OnCopyDone() {
         STLOG(PRI_DEBUG, BLOB_DEPOT, BDT38, "data copying is done", (Id, Self->GetLogId()));
-        Y_ABORT_UNLESS(GetIdToUnprocessedPuts.empty());
+        Y_VERIFY(GetIdToUnprocessedPuts.empty());
 
         class TTxFinishCopying : public NTabletFlatExecutor::TTransactionBase<TBlobDepot> {
             TAssimilator* const Self;
@@ -459,7 +459,7 @@ namespace NKikimr::NBlobDepot {
             }
         };
 
-        Y_ABORT_UNLESS(ActionInProgress);
+        Y_VERIFY(ActionInProgress);
         Self->Execute(std::make_unique<TTxFinishCopying>(this));
     }
 
@@ -548,8 +548,8 @@ namespace NKikimr::NBlobDepot {
 
     void TBlobDepot::StartGroupAssimilator() {
         if (Config.GetIsDecommittingGroup() && DecommitState != EDecommitState::Done) {
-           Y_ABORT_UNLESS(!GroupAssimilatorId);
-           Y_ABORT_UNLESS(Data->IsLoaded());
+           Y_VERIFY(!GroupAssimilatorId);
+           Y_VERIFY(Data->IsLoaded());
            GroupAssimilatorId = RegisterWithSameMailbox(new TGroupAssimilator(this));
         }
     }

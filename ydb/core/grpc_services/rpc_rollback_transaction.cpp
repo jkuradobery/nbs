@@ -3,9 +3,8 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
@@ -34,10 +33,10 @@ public:
         Become(&TRollbackTransactionRPC::StateWork);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -51,10 +50,11 @@ private:
         SetAuthToken(ev, *Request_);
         SetDatabase(ev, *Request_);
 
-        if (CheckSession(req->session_id(), Request_.get())) {
+        NYql::TIssues issues;
+        if (CheckSession(req->session_id(), issues)) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         if (traceId) {
@@ -81,9 +81,6 @@ private:
             const auto& kqpResponse = record.GetResponse();
             const auto& issueMessage = kqpResponse.GetQueryIssues();
 
-            // RollbackTransaction does not have specific Result, use RollbackTransactionResponse as no-op type substitute
-            AuditContextAppend(Request_.get(), *GetProtoRequest(), Ydb::Table::RollbackTransactionResponse());
-
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, ctx);
         } else {
             return OnGenericQueryResponseError(record, ctx);
@@ -98,13 +95,8 @@ private:
     }
 };
 
-void DoRollbackTransactionRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TRollbackTransactionRPC(p.release()));
-}
-
-template<>
-IActor* TEvRollbackTransactionRequest::CreateRpcActor(IRequestOpCtx* msg) {
-    return new TRollbackTransactionRPC(msg);
+void DoRollbackTransactionRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TRollbackTransactionRPC(p.release()));
 }
 
 } // namespace NGRpcService

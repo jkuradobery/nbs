@@ -1,26 +1,24 @@
 #pragma once
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 #include <library/cpp/digest/crc32c/crc32c.h>
-#include <ydb/library/grpc/client/grpc_client_low.h>
-#include <ydb/library/services/services.pb.h>
-#include <util/string/ascii.h>
 #include "grpc_service_settings.h"
 
 #define BLOG_GRPC_D(stream) LOG_DEBUG_S(*NActors::TlsActivationContext, NKikimrServices::GRPC_CLIENT, stream)
 #define BLOG_GRPC_DC(context, stream) LOG_DEBUG_S(context, NKikimrServices::GRPC_CLIENT, stream)
 
-inline IOutputStream& operator <<(IOutputStream& out, const NYdbGrpc::TGrpcStatus& status) {
+inline IOutputStream& operator <<(IOutputStream& out, const NGrpc::TGrpcStatus& status) {
     return out << status.GRpcStatusCode << " " << status.Msg;
 }
 
 template <typename TGrpcService>
 class TGrpcServiceClient  {
-    using TServiceConnection = NYdbGrpc::TServiceConnection<TGrpcService>;
+    using TServiceConnection = NGrpc::TServiceConnection<TGrpcService>;
 
-    NYdbGrpc::TGRpcClientConfig Config;
-    NYdbGrpc::TGRpcClientLow Client;
+    NGrpc::TGRpcClientConfig Config;
+    NGrpc::TGRpcClientLow Client;
     std::unique_ptr<TServiceConnection> Connection;
 
     TString Prefix(const TString& requestId = {}) const {
@@ -82,40 +80,35 @@ public:
         }
 
         const TRequestType& request = ev->Get()->Request;
-        NYdbGrpc::TCallMeta meta;
+        NGrpc::TCallMeta meta;
         meta.Timeout = Config.Timeout;
-        if (auto token = ev->Get()->Token) {
-            if (!AsciiHasPrefixIgnoreCase(token, "Bearer "sv)) {
-                token = "Bearer " + token;
-            }
-            meta.Aux.push_back({"authorization", token});
+        if (const auto& token = ev->Get()->Token) {
+            meta.Aux.push_back({"authorization", "Bearer " + token});
         }
         if (requestId) {
             meta.Aux.push_back({"x-request-id", requestId});
         }
 
-        NYdbGrpc::TResponseCallback<TResponseType> callback =
-            [actorSystem = NActors::TActivationContext::ActorSystem(), prefix = Prefix(requestId), request = ev](NYdbGrpc::TGrpcStatus&& status, TResponseType&& response) -> void {
+        NGrpc::TResponseCallback<TResponseType> callback =
+            [actorSystem = NActors::TActivationContext::ActorSystem(), prefix = Prefix(requestId), request = ev](NGrpc::TGrpcStatus&& status, TResponseType&& response) -> void {
                 if (status.Ok()) {
                     BLOG_GRPC_DC(*actorSystem, prefix << "Response " << Trim(TCallType::Obfuscate(response)));
                 } else {
                     BLOG_GRPC_DC(*actorSystem, prefix << "Status " << status);
                 }
                 auto respEv = MakeHolder<typename TCallType::TResponseEventType>();
-                const auto sender = request->Sender;
-                const auto cookie = request->Cookie;
                 respEv->Request = request;
                 respEv->Status = status;
                 respEv->Response = response;
-                actorSystem->Send(sender, respEv.Release(), 0, cookie);
+                actorSystem->Send(respEv->Request->Sender, respEv.Release());
             };
 
         BLOG_GRPC_D(Prefix(requestId) << "Request " << Trim(TCallType::Obfuscate(request)));
         Connection->DoRequest(request, std::move(callback), TCallType::Request, meta);
     }
 
-    static NYdbGrpc::TGRpcClientConfig InitGrpcConfig(const NCloud::TGrpcClientSettings& settings) {
-        NYdbGrpc::TGRpcClientConfig config(settings.Endpoint, DEFAULT_TIMEOUT, NYdbGrpc::DEFAULT_GRPC_MESSAGE_SIZE_LIMIT, 0, settings.CertificateRootCA);
+    static NGrpc::TGRpcClientConfig InitGrpcConfig(const NCloud::TGrpcClientSettings& settings) {
+        NGrpc::TGRpcClientConfig config(settings.Endpoint, DEFAULT_TIMEOUT, DEFAULT_GRPC_MESSAGE_SIZE_LIMIT, 0, settings.CertificateRootCA);
         config.EnableSsl = settings.EnableSsl;
         config.IntChannelParams[GRPC_ARG_KEEPALIVE_TIME_MS] = settings.GrpcKeepAliveTimeMs;
         config.IntChannelParams[GRPC_ARG_KEEPALIVE_TIMEOUT_MS] = settings.GrpcKeepAliveTimeoutMs;

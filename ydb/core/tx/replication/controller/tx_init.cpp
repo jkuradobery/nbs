@@ -1,6 +1,8 @@
 #include "controller_impl.h"
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 class TController::TTxInit: public TTxBase {
     template <typename TRowset>
@@ -88,7 +90,7 @@ class TController::TTxInit: public TTxBase {
             Y_VERIFY_S(replication, "Unknown replication: " << rid);
 
             auto* target = replication->AddTarget(tid, kind, srcPath, dstPath);
-            Y_ABORT_UNLESS(target);
+            Y_VERIFY(target);
 
             target->SetDstState(dstState);
             target->SetDstPathId(dstPathId);
@@ -172,4 +174,6 @@ void TController::RunTxInit(const TActorContext& ctx) {
     Execute(new TTxInit(this), ctx);
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

@@ -1,8 +1,6 @@
 #include "change_sender_monitoring.h"
 
-#include <util/string/builder.h>
 #include <util/string/cast.h>
-#include <util/string/printf.h>
 #include <util/string/split.h>
 
 namespace NKikimr::NDataShard {
@@ -84,8 +82,13 @@ TPathId ParsePathId(TStringBuf str) {
     return TPathId(ownerId, localPathId);
 }
 
-TString TabletPath(ui64 tabletId) {
-    return Sprintf("app?TabletID=%" PRIu64, tabletId);
+template <typename T>
+static void Link(IOutputStream& str, const TStringBuf path, const T& title) {
+    HTML(str) {
+        HREF(path) {
+            str << title;
+        }
+    }
 }
 
 void PathLink(IOutputStream& str, const TPathId& pathId) {

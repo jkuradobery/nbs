@@ -2,10 +2,11 @@ LIBRARY()
 
 SRCS(
     pq_schema_actor.cpp
+    pq_rl_helpers.cpp
 )
 
 PEERDIR(
-    ydb/library/grpc/server
+    library/cpp/grpc/server
     library/cpp/digest/md5
     ydb/core/grpc_services
     ydb/core/grpc_services/base

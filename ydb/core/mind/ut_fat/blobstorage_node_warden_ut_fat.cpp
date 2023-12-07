@@ -83,7 +83,7 @@ void FormatPDisk(TString path, ui64 diskSize, ui32 chunkSize, ui64 guid, bool is
     }
 
     NKikimr::FormatPDisk(path, diskSize, 4 << 10, chunkSize, guid,
-        chunkKey, logKey, sysLogKey, NPDisk::YdbDefaultPDiskSequence, "Test",
+        chunkKey, logKey, sysLogKey, NPDisk::YdbDefaultPDiskSequence, "Test", 
         false, false, nullptr, false);
 }
 
@@ -191,7 +191,7 @@ void SetupServices(TTestActorRuntime &runtime) {
             static_cast<IPDiskServiceFactory*>(new TStrandedPDiskServiceFactory(runtime)) :
             static_cast<IPDiskServiceFactory*>(new TRealPDiskServiceFactory())));
 //            nodeWardenConfig->Monitoring = monitoring;
-        google::protobuf::TextFormat::ParseFromString(staticConfig, nodeWardenConfig->BlobStorageConfig.MutableServiceSet());
+        google::protobuf::TextFormat::ParseFromString(staticConfig, &nodeWardenConfig->ServiceSet);
 
         app.SetKeyForNode(keyfile, nodeIndex);
         ObtainTenantKey(&nodeWardenConfig->TenantKey, app.Keys[nodeIndex]);
@@ -200,7 +200,7 @@ void SetupServices(TTestActorRuntime &runtime) {
         if (nodeIndex == 0) {
             static TTempDir tempDir;
             TString pDiskPath = tempDir() + "/pdisk0.dat";
-            nodeWardenConfig->BlobStorageConfig.MutableServiceSet()->MutablePDisks(0)->SetPath(pDiskPath);
+            nodeWardenConfig->ServiceSet.MutablePDisks(0)->SetPath(pDiskPath);
 
             ui64 pDiskGuid = 1;
             static ui64 iteration = 0;
@@ -349,7 +349,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
         UNIT_ASSERT(getResult->ResponseSz == 1);
         UNIT_ASSERT(getResult->Responses.Get());
         UNIT_ASSERT_EQUAL((getResult->Responses)[0].Buffer.size(), data.size());
-        UNIT_ASSERT_EQUAL((getResult->Responses)[0].Buffer.ConvertToString(), data);
+        UNIT_ASSERT_EQUAL((getResult->Responses)[0].Buffer, data);
     }
 
     void VGet(TTestActorRuntime &runtime, TActorId &sender, ui32 groupId, ui32 nodeId, TLogoBlobID logoBlobId,
@@ -376,7 +376,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
                 "Status# " << NKikimrProto::EReplyStatus_Name(vgetResult->Record.GetStatus()));
         UNIT_ASSERT_EQUAL(vgetResult->Record.GetCookie(), cookie);
         UNIT_ASSERT(vgetResult->Record.ResultSize() == 1);
-        TString resBuffer = vgetResult->GetBlobData(vgetResult->Record.GetResult(0)).ConvertToString();
+        TString resBuffer = vgetResult->Record.GetResult(0).GetBuffer();
         UNIT_ASSERT_EQUAL(resBuffer.size(), data.size());
         if (expected == EExpectedEqualData) {
             UNIT_ASSERT_EQUAL(resBuffer, data);

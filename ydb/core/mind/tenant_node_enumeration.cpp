@@ -3,9 +3,8 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/path.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <util/generic/algorithm.h>
 
 namespace NKikimr {
@@ -100,7 +99,7 @@ public:
             return ReportErrorAndDie();
 
         const TString path = MakeTenantNodeEnumerationPath(TenantName);
-        LookupActor = Register(CreateBoardLookupActor(path, SelfId(), statestorageGroupId, EBoardLookupMode::Majority));
+        LookupActor = Register(CreateBoardLookupActor(path, SelfId(), statestorageGroupId, EBoardLookupMode::Majority, false, false));
 
         Become(&TThis::StateWait);
     }

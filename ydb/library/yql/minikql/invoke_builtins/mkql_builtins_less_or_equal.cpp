@@ -36,9 +36,8 @@ Y_FORCE_INLINE bool LessOrEqual(T1 x, T2 y) {
     using FT = std::conditional_t<(sizeof(F1) > sizeof(F2)), F1, F2>;
     const auto l = static_cast<FT>(x);
     const auto r = static_cast<FT>(y);
-    if constexpr (Aggr) {
-        if (std::isunordered(l, r))
-            return std::isnan(r);
+    if (Aggr && std::isunordered(l, r)) {
+        return std::isnan(l) || !std::isnan(r);
     }
     return l <= r;
 }
@@ -63,7 +62,7 @@ Value* GenLessOrEqualFloats<false>(Value* lhs, Value* rhs, BasicBlock* block) {
 template <>
 Value* GenLessOrEqualFloats<true>(Value* lhs, Value* rhs, BasicBlock* block) {
     const auto ole = CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_OLE, lhs, rhs, "less_or_equal", block);
-    const auto uno = CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_UNO, ConstantFP::get(rhs->getType(), 0.0), rhs, "unordered", block);
+    const auto uno = CmpInst::Create(Instruction::FCmp, FCmpInst::FCMP_UNO, ConstantFP::get(lhs->getType(), 0.0), lhs, "unordered", block);
     return BinaryOperator::CreateOr(ole, uno, "or", block);
 }
 
@@ -145,7 +144,7 @@ struct TLessOrEqual : public TCompareArithmeticBinary<TLeft, TRight, TLessOrEqua
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenLessOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenLessOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -159,20 +158,20 @@ struct TLessOrEqualOp<TLeft, TRight, bool> : public TLessOrEqual<TLeft, TRight, 
 };
 
 template<typename TLeft, typename TRight, bool Aggr>
-struct TDiffDateLessOrEqual : public TCompareArithmeticBinary<typename TLeft::TLayout, typename TRight::TLayout, TDiffDateLessOrEqual<TLeft, TRight, Aggr>>, public TAggrLessOrEqual {
-    static bool Do(typename TLeft::TLayout left, typename TRight::TLayout right)
+struct TDiffDateLessOrEqual : public TCompareArithmeticBinary<TLeft, TRight, TDiffDateLessOrEqual<TLeft, TRight, Aggr>>, public TAggrLessOrEqual {
+    static bool Do(TLeft left, TRight right)
     {
         return std::is_same<TLeft, TRight>::value ?
-            LessOrEqual<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right):
+            LessOrEqual<TLeft, TRight, Aggr>(left, right):
             LessOrEqual<TScaledDate, TScaledDate, Aggr>(ToScaledDate<TLeft>(left), ToScaledDate<TRight>(right));
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         return std::is_same<TLeft, TRight>::value ?
-            GenLessOrEqual<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right, context, block):
+            GenLessOrEqual<TLeft, TRight, Aggr>(left, right, context, block):
             GenLessOrEqual<TScaledDate, TScaledDate, Aggr>(GenToScaledDate<TLeft>(left, context, block), GenToScaledDate<TRight>(right, context, block), context, block);
     }
 #endif
@@ -182,7 +181,7 @@ template<typename TLeft, typename TRight, typename TOutput>
 struct TDiffDateLessOrEqualOp;
 
 template<typename TLeft, typename TRight>
-struct TDiffDateLessOrEqualOp<TLeft, TRight, NUdf::TDataType<bool>> : public TDiffDateLessOrEqual<TLeft, TRight, false> {
+struct TDiffDateLessOrEqualOp<TLeft, TRight, bool> : public TDiffDateLessOrEqual<TLeft, TRight, false> {
     static constexpr bool DefaultNulls = true;
 };
 
@@ -200,12 +199,12 @@ struct TAggrTzDateLessOrEqual : public TCompareArithmeticBinaryWithTimezone<TLef
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenLessOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenLessOrEqual<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 
     static Value* GenTz(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenLessOrEqual<ui16, ui16, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenLessOrEqual<ui16, ui16, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -219,7 +218,7 @@ struct TCustomLessOrEqual : public TAggrLessOrEqual {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto res = CallBinaryUnboxedValueFunction(&CompareCustoms<Slot>, Type::getInt32Ty(context), left, right, ctx.Codegen, block);
         const auto comp = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_SLE, res, ConstantInt::get(res->getType(), 0), "less_or_equal", block);
         ValueCleanup(EValueRepresentation::String, left, ctx, block);
@@ -239,7 +238,7 @@ struct TDecimalLessOrEqual {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto lok = NDecimal::GenIsComparable(l, context, block);
@@ -262,7 +261,7 @@ struct TDecimalAggrLessOrEqual : public TAggrLessOrEqual {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto le = GenLessOrEqualSigned(l, r, block);
@@ -278,7 +277,6 @@ void RegisterLessOrEqual(IBuiltinFunctionRegistry& registry) {
 
     RegisterComparePrimitive<TLessOrEqual, TCompareArgsOpt>(registry, name);
     RegisterCompareDatetime<TDiffDateLessOrEqual, TCompareArgsOpt>(registry, name);
-    RegisterCompareBigDatetime<TDiffDateLessOrEqual, TCompareArgsOpt>(registry, name);
 
     RegisterCompareStrings<TCustomLessOrEqual, TCompareArgsOpt>(registry, name);
     RegisterCompareCustomOpt<NUdf::TDataType<NUdf::TDecimal>, NUdf::TDataType<NUdf::TDecimal>, TDecimalLessOrEqual, TCompareArgsOpt>(registry, name);

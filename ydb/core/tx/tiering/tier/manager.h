@@ -9,10 +9,10 @@ class TTiersManager: public NMetadata::NModifications::TGenericOperationsManager
 protected:
     virtual void DoPrepareObjectsBeforeModification(std::vector<TTierConfig>&& patchedObjects,
         NMetadata::NModifications::IAlterPreparationController<TTierConfig>::TPtr controller,
-        const TInternalModificationContext& context) const override;
+        const NMetadata::NModifications::IOperationsManager::TModificationContext& context) const override;
 
     virtual NMetadata::NModifications::TOperationParsingResult DoBuildPatchFromSettings(const NYql::TObjectSettingsImpl& settings,
-        TInternalModificationContext& context) const override;
+        const NMetadata::NModifications::IOperationsManager::TModificationContext& /*context*/) const override;
 public:
 };
 

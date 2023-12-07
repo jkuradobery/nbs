@@ -2,7 +2,7 @@ UNITTEST_FOR(ydb/public/lib/ydb_cli/topic)
 
 FORK_SUBTESTS()
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(1800)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -11,6 +11,8 @@ ELSE()
     TIMEOUT(600)
     SIZE(MEDIUM)
 ENDIF()
+
+# ENV(PERSQUEUE_NEW_SCHEMECACHE="true")
 
 SRCS(
     topic_write.h
@@ -22,11 +24,12 @@ SRCS(
 PEERDIR(
     library/cpp/histogram/hdr
     library/cpp/threading/local_executor
-    ydb/core/fq/libs/private_client
+    ydb/core/yq/libs/private_client
     ydb/public/sdk/cpp/client/ydb_persqueue_public
     ydb/public/lib/experimental
     ydb/public/lib/ydb_cli/commands
     ydb/public/lib/ydb_cli/common
+    ydb/public/lib/yq
     ydb/public/lib/yson_value
     ydb/public/sdk/cpp/client/ydb_proto
     ydb/public/sdk/cpp/client/ydb_persqueue_core/ut/ut_utils

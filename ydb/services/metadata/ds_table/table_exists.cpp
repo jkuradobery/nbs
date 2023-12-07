@@ -2,7 +2,7 @@
 
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
 
 namespace NKikimr::NMetadata::NProvider {
@@ -38,25 +38,22 @@ void TTableExistsActor::Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::T
     }
 }
 
+NKikimrServices::TActivity::EType TTableExistsActor::ActorActivityType() {
+    return NKikimrServices::TActivity::METADATA_SCHEME_DESCRIPTION_ACTOR;
+}
+
 void TTableExistsActor::OnBootstrap() {
     Become(&TTableExistsActor::StateMain);
 
     auto request = MakeHolder<NSchemeCache::TSchemeCacheNavigate>();
     request->DatabaseName = NKikimr::CanonizePath(AppData()->TenantName);
     auto& entry = request->ResultSet.emplace_back();
-    entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpPath;
+    entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpTable;
     entry.Path = NKikimr::SplitPath(Path);
-    AFL_DEBUG(NKikimrServices::METADATA_PROVIDER)("self_id", SelfId())("send_to", MakeSchemeCacheID());
-    Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()), IEventHandle::FlagTrackDelivery);
-}
-
-void TTableExistsActor::Handle(NActors::TEvents::TEvUndelivered::TPtr& /*ev*/) {
-    AFL_WARN(NKikimrServices::METADATA_PROVIDER)("actor", "TTableExistsActor")("event", "undelivered")("self_id", SelfId())("send_to", MakeSchemeCacheID());
-    OutputController->OnPathExistsCheckFailed("scheme_cache_undelivered_message", Path);
+    Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(request.Release()));
 }
 
 void TTableExistsActor::OnTimeout() {
-    AFL_ERROR(NKikimrServices::METADATA_PROVIDER)("actor", "TTableExistsActor")("event", "timeout")("self_id", SelfId())("send_to", MakeSchemeCacheID());
     OutputController->OnPathExistsCheckFailed("timeout", Path);
 }
 

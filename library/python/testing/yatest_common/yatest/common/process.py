@@ -1,6 +1,5 @@
 # coding: utf-8
 
-import io
 import os
 import re
 import time
@@ -26,7 +25,7 @@ from . import path
 from . import environment
 
 
-MAX_OUT_LEN = 64 * 1024  # 64K
+MAX_OUT_LEN = 1000 * 1000  # 1 mb
 MAX_MESSAGE_LEN = 1500
 SANITIZER_ERROR_PATTERN = br": ([A-Z][\w]+Sanitizer)"
 GLIBC_PATTERN = re.compile(r"\S+@GLIBC_([0-9.]+)")
@@ -107,6 +106,7 @@ class _Execution(object):
         user_stderr=False,
         core_pattern=None,
     ):
+
         self._command = command
         self._process = process
         self._out_file = out_file
@@ -208,7 +208,6 @@ class _Execution(object):
         """
         Deprecated, use stderr
         """
-        # TODO: Fix bytes/str, maybe need to change a lot of tests
         if self._std_err is not None:
             return self._std_err
         if self._process.stderr and not self._user_stderr:
@@ -231,7 +230,6 @@ class _Execution(object):
         if self._process_progress_listener:
             self._process_progress_listener()
             self._process_progress_listener.close()
-
         if not self._user_stdout:
             if self._out_file is None:
                 pass
@@ -239,10 +237,8 @@ class _Execution(object):
                 self._out_file.flush()
                 self._out_file.seek(0, os.SEEK_SET)
                 self._std_out = self._out_file.read()
-                self._out_file.close()
             else:
                 self._std_out = self._process.stdout.read()
-
         if not self._user_stderr:
             if self._err_file is None:
                 pass
@@ -250,7 +246,6 @@ class _Execution(object):
                 self._err_file.flush()
                 self._err_file.seek(0, os.SEEK_SET)
                 self._std_err = self._err_file.read()
-                self._err_file.close()
             else:
                 self._std_err = self._process.stderr.read()
 
@@ -356,6 +351,7 @@ class _Execution(object):
                             if hasattr(rusage, field):
                                 self._metrics[field.replace("ru_", "")] = getattr(rusage, field)
                     except OSError as exc:
+
                         if exc.errno == errno.ECHILD:
                             yatest_logger.debug(
                                 "Process resource usage is not available as process finished before wait4 was called"
@@ -375,10 +371,7 @@ class _Execution(object):
 
         try:
             if timeout:
-
-                def process_is_finished():
-                    return not self.running
-
+                process_is_finished = lambda: not self.running
                 fail_message = "Command '%s' stopped by %d seconds timeout" % (self._command, timeout)
                 try:
                     wait_for(
@@ -444,7 +437,7 @@ class _Execution(object):
         if self._std_err and self._check_sanitizer and runtime._get_ya_config().sanitizer_extra_checks:
             build_path = runtime.build_path()
             if self.command[0].startswith(build_path):
-                match = re.search(SANITIZER_ERROR_PATTERN, six.ensure_binary(self._std_err))
+                match = re.search(SANITIZER_ERROR_PATTERN, self._std_err)
                 if match:
                     yatest_logger.error(
                         "%s sanitizer found errors:\n\tstd_err:%s\n",
@@ -468,7 +461,6 @@ def on_timeout_gen_coredump(exec_obj, _):
     """
     try:
         os.kill(exec_obj.process.pid, signal.SIGQUIT)
-        exec_obj.process.wait()
     except OSError:
         # process might be already terminated
         pass
@@ -484,7 +476,6 @@ def execute(
     stdin=None,
     stdout=None,
     stderr=None,
-    text=False,
     creationflags=0,
     wait=True,
     process_progress_listener=None,
@@ -508,8 +499,6 @@ def execute(
     :param stdin: command stdin
     :param stdout: command stdout
     :param stderr: command stderr
-    :param text: 'subprocess.Popen'-specific argument, specifies the type of returned data https://docs.python.org/3/library/subprocess.html#subprocess.run
-    :type text: bool
     :param creationflags: command creation flags
     :param wait: should wait until the command finishes
     :param process_progress_listener=object that is polled while execution is in progress
@@ -548,19 +537,13 @@ def execute(
     #     raise ValueError("Don't use pipe to obtain stream data - it may leads to the deadlock")
 
     def get_out_stream(stream, default_name):
-        mode = 'w+t' if text else 'w+b'
-        open_kwargs = {'errors': 'ignore', 'encoding': 'utf-8'} if text else {'buffering': 0}
         if stream is None:
             # No stream is supplied: open new temp file
-            return _get_command_output_file(command, default_name, mode, open_kwargs), False
+            return _get_command_output_file(command, default_name), False
 
         if isinstance(stream, six.string_types):
-            is_block = stream.startswith('/dev/')
-            if is_block:
-                mode = 'w+b'
-                open_kwargs = {'buffering': 0}
             # User filename is supplied: open file for writing
-            return io.open(stream, mode, **open_kwargs), is_block
+            return open(stream, 'wb+'), stream.startswith('/dev/')
 
         # Open file or PIPE sentinel is supplied
         is_pipe = stream == subprocess.PIPE
@@ -603,18 +586,16 @@ def execute(
 
     if stdin:
         name = "PIPE" if stdin == subprocess.PIPE else stdin.name
-        yatest_logger.debug(
-            "Executing '%s' with input '%s' in '%s' (%s)", command, name, cwd, 'waiting' if wait else 'no wait'
-        )
+        yatest_logger.debug("Executing '%s' with input '%s' in '%s'", command, name, cwd)
     else:
-        yatest_logger.debug("Executing '%s' in '%s' (%s)", command, cwd, 'waiting' if wait else 'no wait')
+        yatest_logger.debug("Executing '%s' in '%s'", command, cwd)
     # XXX
 
     started = time.time()
     process = subprocess.Popen(
         command,
         shell=shell,
-        universal_newlines=text,
+        universal_newlines=True,
         stdout=out_file,
         stderr=err_file,
         stdin=in_file,
@@ -657,9 +638,7 @@ def execute(
     return res
 
 
-def _get_command_output_file(cmd, ext, mode, open_kwargs=None):
-    if open_kwargs is None:
-        open_kwargs = {}
+def _get_command_output_file(cmd, ext):
     parts = [get_command_name(cmd)]
     if 'YA_RETRY_INDEX' in os.environ:
         parts.append('retry{}'.format(os.environ.get('YA_RETRY_INDEX')))
@@ -676,9 +655,9 @@ def _get_command_output_file(cmd, ext, mode, open_kwargs=None):
             raise ImportError("not in test")
         filename = path.get_unique_file_path(yatest.common.output_path(), filename)
         yatest_logger.debug("Command %s will be placed to %s", ext, os.path.basename(filename))
-        return io.open(filename, mode, **open_kwargs)
+        return open(filename, "wb+")
     except ImportError:
-        return tempfile.NamedTemporaryFile(mode=mode, delete=False, suffix=filename, **(open_kwargs if six.PY3 else {}))
+        return tempfile.NamedTemporaryFile(delete=False, suffix=filename)
 
 
 def _get_proc_tree_info(pids):
@@ -705,7 +684,6 @@ def py_execute(
     wait=True,
     process_progress_listener=None,
     close_fds=False,
-    text=False,
 ):
     """
     Executes a command with the arcadia python
@@ -721,7 +699,6 @@ def py_execute(
     :param creationflags: command creation flags
     :param wait: should wait until the command finishes
     :param process_progress_listener=object that is polled while execution is in progress
-    :param text: Return original str
     :return _Execution: Execution object
     """
     if isinstance(command, six.string_types):
@@ -842,8 +819,8 @@ def _run_readelf(binary_path):
 def check_glibc_version(binary_path):
     lucid_glibc_version = packaging.version.parse("2.11")
 
-    for line in _run_readelf(binary_path).split('\n'):
-        match = GLIBC_PATTERN.search(line)
+    for l in _run_readelf(binary_path).split('\n'):
+        match = GLIBC_PATTERN.search(l)
         if not match:
             continue
         assert packaging.version.parse(match.group(1)) <= lucid_glibc_version, match.group(0)
@@ -852,9 +829,6 @@ def check_glibc_version(binary_path):
 def backtrace_to_html(bt_filename, output):
     try:
         from library.python import coredump_filter
-
-        # XXX reduce noise from core_dumpfilter
-        logging.getLogger("sandbox.sdk2.helpers.coredump_filter").setLevel(logging.ERROR)
 
         with open(output, "w") as afile:
             coredump_filter.filter_stackdump(bt_filename, stream=afile)

@@ -5,9 +5,9 @@ import string
 from datetime import timedelta
 from os.path import basename, dirname, join
 
-from contrib.ydb.core.protos import msgbus_pb2
-from contrib.ydb.core.protos import flat_scheme_op_pb2
-from contrib.ydb.tests.library.common.protobuf import AbstractProtobufBuilder, build_protobuf_if_necessary
+from ydb.core.protos import msgbus_pb2
+from ydb.core.protos import flat_scheme_op_pb2
+from ydb.tests.library.common.protobuf import AbstractProtobufBuilder, build_protobuf_if_necessary
 
 
 DEFAULT_SIZE_TO_SPLIT = 10 ** 6

@@ -20,7 +20,7 @@ void TIndexMonPage::Output(IMonHttpRequest& request) {
         return;
     }
 
-    Y_ABORT_UNLESS(pathInfo.StartsWith('/'));
+    Y_VERIFY(pathInfo.StartsWith('/'));
 
     TMonPagePtr found;
     // analogous to CGI PATH_INFO
@@ -31,11 +31,11 @@ void TIndexMonPage::Output(IMonHttpRequest& request) {
             if (TPagesByPath::iterator i = PagesByPath.find(pathTmp); i != PagesByPath.end()) {
                 found = *i->second;
                 pathInfo = request.GetPathInfo().substr(pathTmp.size());
-                Y_ABORT_UNLESS(pathInfo.empty() || pathInfo.StartsWith('/'));
+                Y_VERIFY(pathInfo.empty() || pathInfo.StartsWith('/'));
                 break;
             }
             size_t slash = pathTmp.find_last_of('/');
-            Y_ABORT_UNLESS(slash != TString::npos);
+            Y_VERIFY(slash != TString::npos);
             pathTmp = pathTmp.substr(0, slash);
             if (!pathTmp) {
                 break;
@@ -136,9 +136,9 @@ TIndexMonPage* TIndexMonPage::FindIndexPage(const TString& relativePath) {
 }
 
 void TIndexMonPage::OutputCommonJsCss(IOutputStream& out) {
-    out << "<link rel='stylesheet' href='/static/css/bootstrap.min.css'>\n";
-    out << "<script language='javascript' type='text/javascript' src='/static/js/jquery.min.js'></script>\n";
-    out << "<script language='javascript' type='text/javascript' src='/static/js/bootstrap.min.js'></script>\n";
+    out << "<link rel='stylesheet' href='https://yastatic.net/bootstrap/3.3.1/css/bootstrap.min.css'>\n";
+    out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/jquery/2.1.3/jquery.min.js'></script>\n";
+    out << "<script language='javascript' type='text/javascript' src='https://yastatic.net/bootstrap/3.3.1/js/bootstrap.min.js'></script>\n";
 }
 
 void TIndexMonPage::OutputHead(IOutputStream& out) {

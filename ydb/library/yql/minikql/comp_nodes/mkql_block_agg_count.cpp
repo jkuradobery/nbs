@@ -2,7 +2,7 @@
 
 #include <ydb/library/yql/minikql/arrow/arrow_defs.h>
 
-#include <ydb/library/yql/minikql/computation/mkql_block_builder.h>
+#include <arrow/array/builder_primitive.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
@@ -16,22 +16,25 @@ struct TState {
 class TColumnBuilder : public IAggColumnBuilder {
 public:
     TColumnBuilder(ui64 size, TComputationContext& ctx)
-        : Builder_(TTypeInfoHelper(), arrow::uint64(), ctx.ArrowMemoryPool, size)
+        : Builder_(arrow::uint64(), &ctx.ArrowMemoryPool)
         , Ctx_(ctx)
     {
+        ARROW_OK(Builder_.Reserve(size));
     }
 
     void Add(const void* state) final {
         auto typedState = static_cast<const TState*>(state);
-        Builder_.Add(TBlockItem(typedState->Count_));
+        Builder_.UnsafeAppend(typedState->Count_);
     }
 
     NUdf::TUnboxedValue Build() final {
-        return Ctx_.HolderFactory.CreateArrowBlock(Builder_.Build(true));
+        std::shared_ptr<arrow::ArrayData> result;
+        ARROW_OK(Builder_.FinishInternal(&result));
+        return Ctx_.HolderFactory.CreateArrowBlock(result);
     }
 
 private:
-    NYql::NUdf::TFixedSizeArrayBuilder<ui64, false> Builder_;
+    arrow::UInt64Builder Builder_;
     TComputationContext& Ctx_;
 };
 
@@ -54,11 +57,6 @@ public:
 
     void InitState(void* state) final {
         new(state) TState();
-    }
-
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TState>::value);
-        Y_UNUSED(state);
     }
 
     void AddMany(void* state, const NUdf::TUnboxedValue* columns, ui64 batchLength, std::optional<ui64> filtered) final {
@@ -89,18 +87,12 @@ public:
         Y_UNUSED(argColumn);
     }
 
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TState();
-        UpdateKey(state, batchNum, columns, row);
+        UpdateKey(state, columns, row);
     }
 
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TState>::value);
-        Y_UNUSED(state);
-    }
-
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         Y_UNUSED(columns);
         Y_UNUSED(row);
         auto typedState = static_cast<TState*>(state);
@@ -123,18 +115,12 @@ public:
     {
     }
 
-    void LoadState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void LoadState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TState();
-        UpdateState(state, batchNum, columns, row);
+        UpdateState(state, columns, row);
     }
 
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TState>::value);
-        Y_UNUSED(state);
-    }
-
-    void UpdateState(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateState(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         auto typedState = static_cast<TState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         if (datum.is_scalar()) {
@@ -169,11 +155,6 @@ public:
 
     void InitState(void* state) final {
         new(state) TState();
-    }
-
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TState>::value);
-        Y_UNUSED(state);
     }
 
     void AddMany(void* state, const NUdf::TUnboxedValue* columns, ui64 batchLength, std::optional<ui64> filtered) final {
@@ -233,18 +214,12 @@ public:
     {
     }
 
-    void InitKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
+    void InitKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         new(state) TState();
-        UpdateKey(state, batchNum, columns, row);
+        UpdateKey(state, columns, row);
     }
 
-    void DestroyState(void* state) noexcept final {
-        static_assert(std::is_trivially_destructible<TState>::value);
-        Y_UNUSED(state);
-    }
-
-    void UpdateKey(void* state, ui64 batchNum, const NUdf::TUnboxedValue* columns, ui64 row) final {
-        Y_UNUSED(batchNum);
+    void UpdateKey(void* state, const NUdf::TUnboxedValue* columns, ui64 row) final {
         auto typedState = static_cast<TState*>(state);
         const auto& datum = TArrowBlock::From(columns[ArgColumn_]).GetDatum();
         if (datum.is_scalar()) {
@@ -348,23 +323,22 @@ public:
 
     std::unique_ptr<TCombineKeysTag::TPreparedAggregator> PrepareCombineKeys(
         TTupleType* tupleType,
+        std::optional<ui32> filterColumn,
         const std::vector<ui32>& argsColumns,
         const TTypeEnvironment& env) const final {
         Y_UNUSED(tupleType);
         Y_UNUSED(argsColumns);
         Y_UNUSED(env);
-        return PrepareCountAll<TCombineKeysTag>(std::optional<ui32>(), 0);
+        return PrepareCountAll<TCombineKeysTag>(filterColumn, 0);
     }
 
     std::unique_ptr<TFinalizeKeysTag::TPreparedAggregator> PrepareFinalizeKeys(
         TTupleType* tupleType,
         const std::vector<ui32>& argsColumns,
-        const TTypeEnvironment& env,
-        TType* returnType) const final {
+        const TTypeEnvironment& env) const final {
         Y_UNUSED(tupleType);
         Y_UNUSED(argsColumns);
         Y_UNUSED(env);
-        Y_UNUSED(returnType);
         return PrepareCountAll<TFinalizeKeysTag>(std::optional<ui32>(), argsColumns[0]);
     }
 };
@@ -383,23 +357,22 @@ public:
 
     std::unique_ptr<TCombineKeysTag::TPreparedAggregator> PrepareCombineKeys(
         TTupleType* tupleType,
+        std::optional<ui32> filterColumn,
         const std::vector<ui32>& argsColumns,
         const TTypeEnvironment& env) const final {
         Y_UNUSED(tupleType);
         Y_UNUSED(argsColumns);
         Y_UNUSED(env);
-        return PrepareCount<TCombineKeysTag>(std::optional<ui32>(), argsColumns[0]);
+        return PrepareCount<TCombineKeysTag>(filterColumn, argsColumns[0]);
     }
 
     std::unique_ptr<TFinalizeKeysTag::TPreparedAggregator> PrepareFinalizeKeys(
         TTupleType* tupleType,
         const std::vector<ui32>& argsColumns,
-        const TTypeEnvironment& env,
-        TType* returnType) const final {
+        const TTypeEnvironment& env) const final {
         Y_UNUSED(tupleType);
         Y_UNUSED(argsColumns);
         Y_UNUSED(env);
-        Y_UNUSED(returnType);
         return PrepareCount<TFinalizeKeysTag>(std::optional<ui32>(), argsColumns[0]);
     }
 };

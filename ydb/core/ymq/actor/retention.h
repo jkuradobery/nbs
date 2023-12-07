@@ -1,17 +1,15 @@
 #pragma once
 #include "defs.h"
 #include <ydb/core/ymq/actor/events.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 namespace NKikimr::NSQS {
-    
-TDuration RandomRetentionPeriod();
 
 class TRetentionActor : public TActorBootstrapped<TRetentionActor> {
 public:
-    TRetentionActor(const TQueuePath& queuePath, ui32 tablesFormat, const TActorId& queueLeader, bool useCPUOptimization);
+    TRetentionActor(const TQueuePath& queuePath, ui32 tablesFormat, const TActorId& queueLeader);
 
     void Bootstrap();
 
@@ -20,6 +18,8 @@ public:
     }
 
 private:
+    TDuration RandomRetentionPeriod() const;
+
     void SetRetentionBoundary();
 
     void HandleExecuted(TSqsEvents::TEvExecuted::TPtr& ev);
@@ -34,7 +34,6 @@ private:
     const ui32 TablesFormat_;
     const TString RequestId_;
     const TActorId QueueLeader_;
-    const bool UseCPUOptimization_;
 };
 
 } // namespace NKikimr::NSQS

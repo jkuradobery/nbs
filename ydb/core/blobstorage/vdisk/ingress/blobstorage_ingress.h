@@ -221,8 +221,22 @@ namespace NKikimr {
     };
 
     struct TFakeFilter {
-        template<typename... T>
-        bool Check(T&&...) const { return true; }
+        template <class T>
+        bool Check(const T &) const {
+            return true;
+        }
+        template <class T1, class T2>
+        bool Check(const T1&, const T2&) const {
+            return true;
+        }
+        template <class T1, class T2>
+        bool Check(const T1&, const T2&, bool) const {
+            return true;
+        }
+        template <class T1, class T2, class T3>
+        bool Check(const T1&, const T2&, const T3&, bool) const {
+            return true;
+        }
     };
 
 } // NKikimr

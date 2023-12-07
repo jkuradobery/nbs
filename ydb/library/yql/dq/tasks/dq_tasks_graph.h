@@ -1,11 +1,10 @@
 #pragma once
 
-#include <ydb/library/accessor/accessor.h>
 #include <ydb/library/yql/dq/expr_nodes/dq_expr_nodes.h>
 #include <ydb/library/yql/dq/proto/dq_tasks.pb.h>
 #include <ydb/library/yql/ast/yql_expr.h>
 
-#include <ydb/library/actors/core/actorid.h>
+#include <library/cpp/actors/core/actorid.h>
 
 #include <variant>
 
@@ -15,7 +14,6 @@ struct TStageId {
     ui64 TxId = 0;
     ui64 StageId = 0;
 
-    TStageId() = default;
     TStageId(ui64 txId, ui64 stageId)
         : TxId(txId)
         , StageId(stageId) {}
@@ -66,31 +64,17 @@ struct TStageInfo : private TMoveOnly {
 
     TVector<ui64> Tasks;
     TStageInfoMeta Meta;
-
-    TString DebugString() const {
-        // TODO: Print stage details, including input types and program.
-        TStringBuilder result;
-        result << "StageInfo: StageId #" << Id
-            << ", InputsCount: " << InputsCount
-            << ", OutputsCount: " << OutputsCount;
-        return result;
-    }
-
 };
 
 struct TChannel {
     ui64 Id = 0;
-    TStageId SrcStageId;
     ui64 SrcTask = 0;
     ui32 SrcOutputIndex = 0;
-    TStageId DstStageId;
     ui64 DstTask = 0;
     ui32 DstInputIndex = 0;
     bool InMemory = true;
     NDqProto::ECheckpointingMode CheckpointingMode = NDqProto::CHECKPOINTING_MODE_DEFAULT;
     NDqProto::EWatermarksMode WatermarksMode = NDqProto::WATERMARKS_MODE_DISABLED;
-
-    TChannel() = default;
 };
 
 using TChannelList = TVector<ui64>;
@@ -172,10 +156,6 @@ struct TTaskOutput {
 
 template <class TStageInfoMeta, class TTaskMeta, class TInputMeta, class TOutputMeta>
 struct TTask {
-private:
-    YDB_OPT(ui32, MetaId);
-    YDB_ACCESSOR(bool, UseLlvm, false);
-public:
     using TInputType = TTaskInput<TInputMeta>;
     using TOutputType = TTaskOutput<TOutputMeta>;
 
@@ -195,7 +175,7 @@ public:
     NDqProto::EWatermarksMode WatermarksMode = NDqProto::WATERMARKS_MODE_DISABLED;
 };
 
-template <class TGraphMeta, class TStageInfoMeta, class TTaskMeta, class TInputMeta, class TOutputMeta>
+template <class TStageInfoMeta, class TTaskMeta, class TInputMeta, class TOutputMeta>
 class TDqTasksGraph : private TMoveOnly {
 public:
     using TStageInfoType = TStageInfo<TStageInfoMeta>;
@@ -203,14 +183,6 @@ public:
 
 public:
     TDqTasksGraph() = default;
-
-    const TGraphMeta& GetMeta() const {
-        return Meta;
-    }
-
-    TGraphMeta& GetMeta() {
-        return Meta;
-    }
 
     const TChannel& GetChannel(ui64 id) const {
         YQL_ENSURE(id <= Channels.size());
@@ -285,8 +257,7 @@ public:
     }
 
     TChannel& AddChannel() {
-        TChannel channel;
-        channel.Id = Channels.size() + 1;
+        TChannel channel{Channels.size() + 1};
         return Channels.emplace_back(channel);
     }
 
@@ -311,7 +282,6 @@ private:
     THashMap<TStageId, TStageInfoType> StagesInfo;
     TVector<TTaskType> Tasks;
     TVector<TChannel> Channels;
-    TGraphMeta Meta;
 };
 
 } // namespace NYql::NDq

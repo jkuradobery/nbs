@@ -4,10 +4,10 @@
 #include "grpc_request_proxy.h"
 #include "cancelation/cancelation.h"
 #include "cancelation/cancelation_event.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 #include <ydb/core/tx/tx_proxy/proxy.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
@@ -16,7 +16,7 @@
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -26,18 +26,6 @@ class TRpcRequestWithOperationParamsActor : public TActorBootstrapped<TDerived> 
 private:
     typedef TActorBootstrapped<TDerived> TBase;
     typedef typename std::conditional<IsOperation, IRequestOpCtx, IRequestNoOpCtx>::type TRequestBase;
-
-    template<typename TIn, typename TOut>
-    void Fill(const TIn* in, TOut* out) {
-        auto& operationParams = in->operation_params();
-        out->OperationTimeout_ = GetDuration(operationParams.operation_timeout());
-        out->CancelAfter_ = GetDuration(operationParams.cancel_after());
-        out->ReportCostInfo_ = operationParams.report_cost_info() == Ydb::FeatureFlag::ENABLED;
-    }
-
-    template<typename TOut>
-    void Fill(const NProtoBuf::Message*, TOut*) {
-    }
 
 public:
     enum EWakeupTag {
@@ -51,11 +39,10 @@ public:
     TRpcRequestWithOperationParamsActor(TRequestBase* request)
         : Request_(request)
     {
-        Fill(GetProtoRequest(), this);
-        //auto& operationParams = GetProtoRequest()->operation_params();
-        //OperationTimeout_ = GetDuration(operationParams.operation_timeout());
-        //CancelAfter_ = GetDuration(operationParams.cancel_after());
-        //ReportCostInfo_ = operationParams.report_cost_info() == Ydb::FeatureFlag::ENABLED;
+        auto& operationParams = GetProtoRequest()->operation_params();
+        OperationTimeout_ = GetDuration(operationParams.operation_timeout());
+        CancelAfter_ = GetDuration(operationParams.cancel_after());
+        ReportCostInfo_ = operationParams.report_cost_info() == Ydb::FeatureFlag::ENABLED;
     }
 
     const typename TRequest::TRequest* GetProtoRequest() const {
@@ -91,7 +78,7 @@ public:
             actorSystem->Send(selfId, new TRpcServices::TEvForgetOperation());
         };
 
-        Request_->SetFinishAction(std::move(clientLostCb));
+        Request_->SetClientLostAction(std::move(clientLostCb));
     }
 
     bool HasCancelOperation() {
@@ -177,7 +164,7 @@ public:
     }
 
 protected:
-    void StateFuncBase(TAutoPtr<IEventHandle>& ev) {
+    void StateFuncBase(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvents::TEvWakeup, HandleWakeup);
             HFunc(TRpcServices::TEvForgetOperation, HandleForget);
@@ -187,7 +174,7 @@ protected:
                 issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
                     TStringBuilder() << "Unexpected event received in TRpcOperationRequestActor::StateWork: "
                         << ev->GetTypeRewrite()));
-                return this->Reply(Ydb::StatusIds::INTERNAL_ERROR, issues, TActivationContext::AsActorContext());
+                return this->Reply(Ydb::StatusIds::INTERNAL_ERROR, issues, ctx);
             }
         }
     }

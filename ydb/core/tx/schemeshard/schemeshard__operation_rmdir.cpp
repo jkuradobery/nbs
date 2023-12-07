@@ -91,10 +91,10 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TRmDir");
+        Y_FAIL("no AbortPropose for TRmDir");
     }
 
-    bool ProgressState(TOperationContext& context) override {
+    void ProgressState(TOperationContext& context) override {
         LOG_INFO_S(context.Ctx, NKikimrServices::FLAT_TX_SCHEMESHARD,
                    "TRmDir ProgressState"
                        << ", opId: " << OperationId
@@ -103,10 +103,9 @@ public:
         TTxState* txState = context.SS->FindTx(OperationId);
 
         context.OnComplete.ProposeToCoordinator(OperationId, txState->TargetPathId, TStepId(0));
-        return true;
     }
 
-    bool HandleReply(TEvPrivate::TEvOperationPlan::TPtr& ev, TOperationContext& context) override {
+    void HandleReply(TEvPrivate::TEvOperationPlan::TPtr& ev, TOperationContext& context) override {
         const TStepId step = TStepId(ev->Get()->StepId);
         const TTabletId ssId = context.SS->SelfTabletId();
 
@@ -124,7 +123,7 @@ public:
                        "txState is nullptr, considered as duplicate PlanStep"
                            << ", opId: " << OperationId
                            << ", at schemeshard: " << ssId);
-            return true;
+            return;
         }
 
         if (txState->State != TTxState::Propose) {
@@ -133,7 +132,7 @@ public:
                            << ", opId: " << OperationId
                            << ", state: " << TTxState::StateName(txState->State)
                            << ", at schemeshard: " << ssId);
-            return true;
+            return;
         }
 
         NIceDb::TNiceDb db(context.GetDB());
@@ -142,7 +141,7 @@ public:
         auto path = context.SS->PathsById.at(pathId);
         auto parentDir = context.SS->PathsById.at(path->ParentPathId);
 
-        Y_ABORT_UNLESS(!path->Dropped());
+        Y_VERIFY(!path->Dropped());
         path->SetDropped(step, OperationId.GetTxId());
         context.SS->PersistDropStep(db, pathId, step, OperationId);
         auto domainInfo = context.SS->ResolveDomainInfo(pathId);
@@ -168,7 +167,6 @@ public:
                         << ", at schemeshard: " << ssId);
 
         context.OnComplete.DoneOperation(OperationId);
-        return true;
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -186,12 +184,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateRmDir(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateRmDir(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TRmDir>(id, tx);
 }
 
-ISubOperation::TPtr CreateRmDir(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state == TTxState::Invalid || state == TTxState::Propose);
+ISubOperationBase::TPtr CreateRmDir(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state == TTxState::Invalid || state == TTxState::Propose);
     return MakeSubOperation<TRmDir>(id);
 }
 

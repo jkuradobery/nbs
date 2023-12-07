@@ -3,7 +3,7 @@
 #include "events.h"
 
 #include <ydb/core/protos/base.pb.h>
-#include <ydb/library/actors/core/event_local.h>
+#include <library/cpp/actors/core/event_local.h>
 #include <util/stream/str.h>
 #include <util/string/builder.h>
 
@@ -119,7 +119,7 @@ struct TEvTabletResolver {
         TString ToString() const {
             TStringStream str;
             str << "{EvForward TabletID: " << TabletID;
-            str << " Ev: " << (Ev ? Ev->ToString() : "nullptr");
+            str << " Ev: " << (Ev ? Ev->GetBase()->ToString().data() : "nullptr");
             str << " Flags: " << ResolveFlags.ToString();
             str << "}";
             return str.Str();

@@ -13,8 +13,8 @@ ELSE()
 ENDIF()
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect
+    library/cpp/actors/core
+    library/cpp/actors/interconnect
     library/cpp/getopt
     library/cpp/svnversion
     ydb/core/testlib/actors

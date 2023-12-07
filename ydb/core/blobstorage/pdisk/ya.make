@@ -2,10 +2,10 @@ LIBRARY()
 
 PEERDIR(
     contrib/libs/lz4
-    ydb/library/actors/core
-    ydb/library/actors/protos
-    ydb/library/actors/util
-    ydb/library/actors/wilson
+    library/cpp/actors/core
+    library/cpp/actors/protos
+    library/cpp/actors/util
+    library/cpp/actors/wilson
     library/cpp/containers/stack_vector
     library/cpp/deprecated/atomic
     library/cpp/lwtrace
@@ -19,7 +19,6 @@ PEERDIR(
     ydb/core/blobstorage/groupinfo
     ydb/core/blobstorage/lwtrace_probes
     ydb/core/control
-    ydb/core/driver_lib/version
     ydb/core/protos
     ydb/core/util
     ydb/library/pdisk_io
@@ -42,7 +41,6 @@ SRCS(
     blobstorage_pdisk_impl_http.cpp
     blobstorage_pdisk_impl_log.cpp
     blobstorage_pdisk_internal_interface.cpp
-    blobstorage_pdisk_log_cache.cpp
     blobstorage_pdisk_logreader.cpp
     blobstorage_pdisk_mon.cpp
     blobstorage_pdisk_params.cpp

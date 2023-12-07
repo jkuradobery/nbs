@@ -47,8 +47,8 @@ NKikimrSchemeOp::TModifyScheme CreateIndexTask(NKikimr::NSchemeShard::TTableInde
 
 namespace NKikimr::NSchemeShard {
 
-TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context) {
-    Y_ABORT_UNLESS(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCreateConsistentCopyTables);
+TVector<ISubOperationBase::TPtr> CreateConsistentCopyTables(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context) {
+    Y_VERIFY(tx.GetOperationType() == NKikimrSchemeOp::EOperationType::ESchemeOpCreateConsistentCopyTables);
 
     const auto& op = tx.GetCreateConsistentCopyTables();
 
@@ -92,7 +92,7 @@ TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, con
         return {CreateReject(nextId, NKikimrScheme::EStatus::StatusPreconditionFailed, errStr)};
     }
 
-    TVector<ISubOperation::TPtr> result;
+    TVector<ISubOperationBase::TPtr> result;
 
     for (const auto& descr: op.GetCopyTableDescriptions()) {
         const auto& srcStr = descr.GetSrcPath();
@@ -137,7 +137,7 @@ TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, con
                 continue;
             }
 
-            Y_ABORT_UNLESS(srcIndexPath.Base()->PathId == pathId);
+            Y_VERIFY(srcIndexPath.Base()->PathId == pathId);
             Y_VERIFY_S(srcIndexPath.Base()->GetChildren().size() == 1, srcIndexPath.PathString() << " has children " << srcIndexPath.Base()->GetChildren().size() << " but 1 expected");
 
             TTableIndexInfo::TPtr indexInfo = context.SS->Indexes.at(pathId);
@@ -145,7 +145,7 @@ TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, con
 
             TString srcImplTableName = srcIndexPath.Base()->GetChildren().begin()->first;
             TPath srcImplTable = srcIndexPath.Child(srcImplTableName);
-            Y_ABORT_UNLESS(srcImplTable.Base()->PathId == srcIndexPath.Base()->GetChildren().begin()->second);
+            Y_VERIFY(srcImplTable.Base()->PathId == srcIndexPath.Base()->GetChildren().begin()->second);
             TPath dstImplTable = dstIndexPath.Child(srcImplTableName);
 
             result.push_back(CreateCopyTable(NextPartId(nextId, result),

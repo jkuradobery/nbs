@@ -31,11 +31,11 @@ void TTierPreparationActor::StartChecker() {
                 return;
             }
         }
-        if (!Secrets->CheckSecretAccess(tier.GetAccessKey(), Context.GetExternalData().GetUserToken())) {
-            Controller->OnPreparationProblem("no access for secret: " + tier.GetAccessKey().DebugString());
+        if (!Secrets->CheckSecretAccess(tier.GetProtoConfig().GetObjectStorage().GetAccessKey(), Context.GetUserToken())) {
+            Controller->OnPreparationProblem("no access for secret: " + tier.GetProtoConfig().GetObjectStorage().GetAccessKey());
             return;
-        } else if (!Secrets->CheckSecretAccess(tier.GetSecretKey(), Context.GetExternalData().GetUserToken())) {
-            Controller->OnPreparationProblem("no access for secret: " + tier.GetSecretKey().DebugString());
+        } else if (!Secrets->CheckSecretAccess(tier.GetProtoConfig().GetObjectStorage().GetSecretKey(), Context.GetUserToken())) {
+            Controller->OnPreparationProblem("no access for secret: " + tier.GetProtoConfig().GetObjectStorage().GetSecretKey());
             return;
         }
     }
@@ -56,7 +56,7 @@ void TTierPreparationActor::Handle(NSchemeShard::TEvSchemeShard::TEvProcessingRe
             StartChecker();
         }
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
 }
 
@@ -80,13 +80,13 @@ void TTierPreparationActor::Handle(NMetadata::NProvider::TEvRefreshSubscriberDat
         }
         {
             SSFetcher = std::make_shared<TFetcherCheckUserTieringPermissions>();
-            SSFetcher->SetUserToken(Context.GetExternalData().GetUserToken());
+            SSFetcher->SetUserToken(Context.GetUserToken());
             SSFetcher->SetActivityType(Context.GetActivityType());
             SSFetcher->MutableTieringRuleIds() = tieringIds;
             Register(new TSSFetchingActor(SSFetcher, std::make_shared<TSSFetchingController>(SelfId()), TDuration::Seconds(10)));
         }
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
     StartChecker();
 }
@@ -101,7 +101,7 @@ void TTierPreparationActor::Bootstrap() {
 
 TTierPreparationActor::TTierPreparationActor(std::vector<TTierConfig>&& objects,
     NMetadata::NModifications::IAlterPreparationController<TTierConfig>::TPtr controller,
-    const NMetadata::NModifications::IOperationsManager::TInternalModificationContext& context)
+    const NMetadata::NModifications::IOperationsManager::TModificationContext& context)
     : Objects(std::move(objects))
     , Controller(controller)
     , Context(context)

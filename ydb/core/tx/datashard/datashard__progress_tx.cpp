@@ -18,7 +18,7 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
             Self->IncCounter(COUNTER_TX_PROGRESS_SHARD_INACTIVE);
             LOG_INFO_S(ctx, NKikimrServices::TX_DATASHARD,
                 "Progress tx at non-ready tablet " << Self->TabletID() << " state " << Self->State);
-            Y_ABORT_UNLESS(!ActiveOp, "Unexpected ActiveOp at inactive shard %" PRIu64, Self->TabletID());
+            Y_VERIFY(!ActiveOp, "Unexpected ActiveOp at inactive shard %" PRIu64, Self->TabletID());
             Self->PlanQueue.Reset(ctx);
             return true;
         }
@@ -58,7 +58,7 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
             ActiveOp->IncrementInProgress();
         }
 
-        Y_ABORT_UNLESS(ActiveOp && ActiveOp->IsInProgress());
+        Y_VERIFY(ActiveOp && ActiveOp->IsInProgress());
         auto status = Self->Pipeline.RunExecutionPlan(ActiveOp, CompleteList, txc, ctx);
 
         if (Self->Pipeline.CanRunAnotherOp())
@@ -77,16 +77,12 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
                     Self->ExecuteProgressTx(ActiveOp, ctx);
                     Rescheduled = true;
                 }
-                ActiveOp->DecrementInProgress();
                 break;
 
             case EExecutionStatus::Executed:
             case EExecutionStatus::Continue:
-                ActiveOp->DecrementInProgress();
-                break;
-
             case EExecutionStatus::WaitComplete:
-                WaitComplete = true;
+                // No special handling
                 break;
 
             default:
@@ -94,18 +90,19 @@ bool TDataShard::TTxProgressTransaction::Execute(TTransactionContext &txc, const
                         << *ActiveOp << " " << ActiveOp->GetKind() << " at " << Self->TabletID());
         }
 
-        if (WaitComplete || !CompleteList.empty()) {
+        if (!CompleteList.empty()) {
             // Keep operation active until we run the complete list
             CommitStart = AppData()->TimeProvider->Now();
         } else {
             // Release operation as it's no longer needed
+            ActiveOp->DecrementInProgress();
             ActiveOp = nullptr;
         }
 
         // Commit all side effects
         return true;
     } catch (...) {
-        Y_ABORT("there must be no leaked exceptions");
+        Y_FAIL("there must be no leaked exceptions");
     }
 }
 
@@ -114,7 +111,7 @@ void TDataShard::TTxProgressTransaction::Complete(const TActorContext &ctx) {
                 "TTxProgressTransaction::Complete at " << Self->TabletID());
 
     if (ActiveOp) {
-        Y_ABORT_UNLESS(!ActiveOp->GetExecutionPlan().empty());
+        Y_VERIFY(!ActiveOp->GetExecutionPlan().empty());
         if (!CompleteList.empty()) {
             auto commitTime = AppData()->TimeProvider->Now() - CommitStart;
             ActiveOp->SetCommitTime(CompleteList.front(), commitTime);
@@ -125,18 +122,13 @@ void TDataShard::TTxProgressTransaction::Complete(const TActorContext &ctx) {
 
             Self->Pipeline.RunCompleteList(ActiveOp, CompleteList, ctx);
         }
+        ActiveOp->DecrementInProgress();
 
-        if (WaitComplete) {
-            ActiveOp->DecrementInProgress();
+        if (!ActiveOp->IsInProgress() && !ActiveOp->IsExecutionPlanFinished())
+            Self->Pipeline.AddCandidateOp(ActiveOp);
 
-            if (!ActiveOp->IsInProgress() && !ActiveOp->IsExecutionPlanFinished()) {
-                Self->Pipeline.AddCandidateOp(ActiveOp);
-
-                if (Self->Pipeline.CanRunAnotherOp()) {
-                    Self->PlanQueue.Progress(ctx);
-                }
-            }
-        }
+        if (Self->Pipeline.CanRunAnotherOp())
+            Self->PlanQueue.Progress(ctx);
     }
 
     Self->CheckSplitCanStart(ctx);

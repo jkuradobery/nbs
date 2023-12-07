@@ -7,7 +7,6 @@
 #include <ydb/library/yql/parser/pg_wrapper/interface/utils.h>
 #include <library/cpp/yson/node/node_io.h>
 
-#include <arrow/chunked_array.h>
 #include <arrow/array/array_base.h>
 #include <arrow/array/util.h>
 #include <arrow/c/bridge.h>
@@ -209,14 +208,12 @@ NUdf::TUnboxedValue TDefaultValueBuilder::Run(const NUdf::TSourcePosition& calle
     return ret;
 }
 
-void TDefaultValueBuilder::ExportArrowBlock(NUdf::TUnboxedValuePod value, ui32 chunk, ArrowArray* out) const {
-    const auto& datum = TArrowBlock::From(value).GetDatum();
+
+void TDefaultValueBuilder::ExportArrowBlock(NUdf::TUnboxedValuePod value, bool& isScalar, ArrowArray* out) const {
+    const auto datum = TArrowBlock::From(value).GetDatum();
     std::shared_ptr<arrow::Array> arr;
     if (datum.is_scalar()) {
-        if (chunk != 0) {
-            UdfTerminate("Bad chunk index");
-        }
-
+        isScalar = true;
         auto arrRes = arrow::MakeArrayFromScalar(*datum.scalar(), 1);
         if (!arrRes.status().ok()) {
             UdfTerminate(arrRes.status().ToString().c_str());
@@ -224,18 +221,8 @@ void TDefaultValueBuilder::ExportArrowBlock(NUdf::TUnboxedValuePod value, ui32 c
 
         arr = std::move(arrRes).ValueOrDie();
     } else if (datum.is_array()) {
-        if (chunk != 0) {
-            UdfTerminate("Bad chunk index");
-        }
-
+        isScalar = false;
         arr = datum.make_array();
-    } else if (datum.is_arraylike()) {
-        const auto& chunks = datum.chunks();
-        if (chunk >= chunks.size()) {
-            UdfTerminate("Bad chunk index");
-        }
-
-        arr = chunks[chunk];
     } else {
         UdfTerminate("Unexpected kind of arrow::Datum");
     }
@@ -246,15 +233,15 @@ void TDefaultValueBuilder::ExportArrowBlock(NUdf::TUnboxedValuePod value, ui32 c
     }
 }
 
-NUdf::TUnboxedValue TDefaultValueBuilder::ImportArrowBlock(ArrowArray* arrays, ui32 chunkCount, bool isScalar, const NUdf::IArrowType& type) const {
-    const auto dataType = static_cast<const TArrowType&>(type).GetType();   
-    if (isScalar) {
-        if (chunkCount != 1) {
-            UdfTerminate("Bad chunkCount value");
-        }
+NUdf::TUnboxedValue TDefaultValueBuilder::ImportArrowBlock(ArrowArray* array, const NUdf::IArrowType& type, bool isScalar) const {
+    const auto dataType = static_cast<const TArrowType&>(type).GetType();
+    auto arrRes = arrow::ImportArray(array, dataType);
+    if (!arrRes.status().ok()) {
+        UdfTerminate(arrRes.status().ToString().c_str());
+    }
 
-        auto arrRes = arrow::ImportArray(arrays, dataType);
-        auto arr = std::move(arrRes).ValueOrDie();
+    auto arr = std::move(arrRes).ValueOrDie();
+    if (isScalar) {
         if (arr->length() != 1) {
             UdfTerminate("Expected array with one element");
         }
@@ -267,42 +254,12 @@ NUdf::TUnboxedValue TDefaultValueBuilder::ImportArrowBlock(ArrowArray* arrays, u
         auto scalar = std::move(scalarRes).ValueOrDie();
         return HolderFactory_.CreateArrowBlock(std::move(scalar));
     } else {
-        if (chunkCount < 1) {
-            UdfTerminate("Bad chunkCount value");
-        }
-
-        TVector<std::shared_ptr<arrow::Array>> imported(chunkCount);
-        for (ui32 i = 0; i < chunkCount; ++i) {
-            auto arrRes = arrow::ImportArray(arrays + i, dataType);
-            if (!arrRes.status().ok()) {
-                UdfTerminate(arrRes.status().ToString().c_str());
-            }
-
-            imported[i] = std::move(arrRes).ValueOrDie();
-        }
-
-        if (chunkCount == 1) {
-            return HolderFactory_.CreateArrowBlock(imported.front());
-        } else {
-            return HolderFactory_.CreateArrowBlock(arrow::ChunkedArray::Make(std::move(imported), dataType).ValueOrDie());
-        }
+        return HolderFactory_.CreateArrowBlock(std::move(arr));
     }
 }
 
-ui32 TDefaultValueBuilder::GetArrowBlockChunks(NUdf::TUnboxedValuePod value, bool& isScalar, ui64& length) const {
-    const auto& datum = TArrowBlock::From(value).GetDatum();
-    isScalar = false;
-    length = datum.length();
-    if (datum.is_scalar()) {
-        isScalar = true;
-        return 1;
-    } else if (datum.is_array()) {
-        return 1;
-    } else if (datum.is_arraylike()) {
-        return datum.chunks().size();
-    } else {
-        UdfTerminate("Unexpected kind of arrow::Datum");
-    }
+void TDefaultValueBuilder::Unused3() const {
+    Y_FAIL("Not implemented");
 }
 
 bool TDefaultValueBuilder::FindTimezoneName(ui32 id, NUdf::TStringRef& name) const {

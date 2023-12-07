@@ -8,7 +8,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/dnsresolver
+    library/cpp/actors/dnsresolver
     library/cpp/regex/pcre
     library/cpp/testing/unittest
     ydb/core/base
@@ -26,7 +26,7 @@ PEERDIR(
     ydb/core/tx/columnshard
     ydb/core/tx/scheme_board
     ydb/core/util
-    ydb/library/yql/minikql/invoke_builtins/llvm
+    ydb/library/yql/minikql/invoke_builtins
     ydb/library/yql/public/udf/service/exception_policy
 )
 

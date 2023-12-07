@@ -2,7 +2,7 @@ UNITTEST_FOR(ydb/services/persqueue_v1)
 
 FORK_SUBTESTS()
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(1800)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -17,7 +17,6 @@ SRCS(
     persqueue_common_ut.cpp
     persqueue_compat_ut.cpp
     first_class_src_ids_ut.cpp
-    topic_yql_ut.cpp
 
     test_utils.h
     pq_data_writer.h
@@ -27,13 +26,7 @@ SRCS(
     functions_executor_wrapper.h
     functions_executor_wrapper.cpp
     topic_service_ut.cpp
-    demo_tx.cpp
-
-    partition_writer_cache_actor_ut.cpp
-
-    pqtablet_mock.cpp
-    kqp_mock.cpp
-    partition_writer_cache_actor_fixture.cpp
+    demo_immediate_tx.cpp
 )
 
 PEERDIR(
@@ -42,7 +35,6 @@ PEERDIR(
     library/cpp/digest/md5
     ydb/core/testlib/default
     ydb/library/aclib
-    ydb/library/persqueue/tests
     ydb/library/persqueue/topic_parser
     ydb/public/api/grpc
     ydb/public/sdk/cpp/client/ydb_persqueue_core/ut/ut_utils

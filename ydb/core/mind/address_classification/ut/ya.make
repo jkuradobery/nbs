@@ -2,7 +2,7 @@ UNITTEST_FOR(ydb/core/mind/address_classification)
 
 FORK_SUBTESTS()
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(1200)
     SIZE(LARGE)
     SPLIT_FACTOR(20)
@@ -15,7 +15,7 @@ ELSE()
 ENDIF()
 
 PEERDIR(
-    ydb/library/actors/http
+    library/cpp/actors/http
     ydb/core/mind/address_classification
     ydb/core/testlib/default
 )

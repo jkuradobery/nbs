@@ -18,15 +18,12 @@ SRCS(
     yql_kikimr_settings.cpp
     yql_kikimr_settings.h
     yql_kikimr_type_ann.cpp
-    yql_kikimr_type_ann_pg.h
-    yql_kikimr_type_ann_pg.cpp
 )
 
 PEERDIR(
     ydb/core/base
     ydb/core/protos
     ydb/core/docapi
-    ydb/core/kqp/query_data
     ydb/library/aclib
     ydb/library/aclib/protos
     ydb/library/binary_json
@@ -35,9 +32,7 @@ PEERDIR(
     ydb/library/yql/minikql
     ydb/library/yql/public/decimal
     ydb/public/lib/scheme_types
-    ydb/public/sdk/cpp/client/ydb_topic
     ydb/library/yql/core/expr_nodes
-    ydb/library/yql/core/peephole_opt
     ydb/library/yql/parser/pg_wrapper/interface
     ydb/library/yql/providers/common/codec
     ydb/library/yql/providers/common/config
@@ -45,12 +40,8 @@ PEERDIR(
     ydb/library/yql/providers/common/proto
     ydb/library/yql/providers/common/provider
     ydb/library/yql/providers/common/schema/expr
-    ydb/library/yql/providers/dq/expr_nodes
     ydb/library/yql/providers/result/expr_nodes
     ydb/library/yql/providers/result/provider
-    ydb/library/yql/sql/settings
-    ydb/library/ydb_issue/proto
-    ydb/library/yql/public/issue
 )
 
 YQL_LAST_ABI_VERSION()

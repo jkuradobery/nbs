@@ -6,9 +6,9 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/mon.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/map.h>
@@ -87,35 +87,13 @@ class TBaseChangeSender: public IChangeSender {
         TActorId ActorId;
         bool Ready = false;
         TVector<TEnqueuedRecord> Pending;
-        TVector<TChangeRecord> Prepared;
-        TVector<ui64> Broadcasting;
     };
 
-    struct TBroadcast {
-        const TEnqueuedRecord Record;
-        THashSet<ui64> Partitions;
-        THashSet<ui64> PendingPartitions;
-        THashSet<ui64> CompletedPartitions;
-    };
-
-    void LazyCreateSender(THashMap<ui64, TSender>& senders, ui64 partitionId);
-    void RegisterSender(ui64 partitionId);
     void CreateMissingSenders(const TVector<ui64>& partitionIds);
     void RecreateSenders(const TVector<ui64>& partitionIds);
 
     bool RequestRecords();
     void SendRecords();
-
-    void SendPreparedRecords(ui64 partitionId);
-    void ReEnqueueRecords(const TSender& sender);
-
-    TBroadcast& EnsureBroadcast(const TChangeRecord& record);
-    bool AddBroadcastPartition(ui64 order, ui64 partitionId);
-    bool RemoveBroadcastPartition(ui64 order, ui64 partitionId);
-    bool CompleteBroadcastPartition(ui64 order, ui64 partitionId);
-    bool MaybeCompleteBroadcast(ui64 order);
-    void ProcessBroadcasting(std::function<bool(TBaseChangeSender*, ui64, ui64)> f,
-        ui64 partitionId, const TVector<ui64>& broadcasting);
 
 protected:
     template <typename T>
@@ -126,11 +104,6 @@ protected:
         }
 
         ActorOps->Send(DataShard.ActorId, new TEvChangeExchange::TEvRemoveRecords(std::move(remove)));
-    }
-
-    template <>
-    void RemoveRecords(TVector<ui64>&& records) {
-        ActorOps->Send(DataShard.ActorId, new TEvChangeExchange::TEvRemoveRecords(std::move(records)));
     }
 
     void CreateSenders(const TVector<ui64>& partitionIds, bool partitioningChanged = true) override;
@@ -164,7 +137,6 @@ private:
     TSet<TEnqueuedRecord> Enqueued;
     TSet<TRequestedRecord> PendingBody;
     TMap<ui64, TChangeRecord> PendingSent; // ui64 is order
-    THashMap<ui64, TBroadcast> Broadcasting; // ui64 is order
 
     TVector<ui64> GonePartitions;
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from contrib.ydb.public.tools.lib import cmds
+from ydb.public.tools.lib import cmds
 from library.python.testing.recipe import declare_recipe
 
 

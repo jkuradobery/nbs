@@ -5,7 +5,7 @@
 
 #include <ydb/core/base/tablet_pipe.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NSQS {
 
@@ -47,7 +47,7 @@ public:
     TNodeTrackerActor(NActors::TActorId schemeCacheActor);
     void Bootstrap(const NActors::TActorContext& ctx);
 
-    void WorkFunc(TAutoPtr<IEventHandle>& ev) {
+    void WorkFunc(TAutoPtr<IEventHandle>& ev, const NActors::TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvWakeup, HandleWakeup);
             HFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, HandleCacheNavigateResponse);
@@ -57,7 +57,7 @@ public:
             HFunc(TEvTabletPipe::TEvClientConnected, HandlePipeClientConnected);
             HFunc(TEvTxProxySchemeCache::TEvWatchNotifyUpdated, Handle);
         default:
-            LOG_SQS_ERROR("Unknown type of event came to SQS node tracker actor: " << ev->Type << " (" << ev->ToString() << "), sender: " << ev->Sender);
+            LOG_SQS_ERROR("Unknown type of event came to SQS node tracker actor: " << ev->Type << " (" << ev->GetBase()->ToString() << "), sender: " << ev->Sender);
         }
     }
 
@@ -76,7 +76,7 @@ public:
     ui64 GetTabletId(const TMap<TKeyPrefix, ui64>& tabletsPerEndKeyRange, TKeyPrefix keyPrefix) const;
     ui64 GetTabletId(const TSubscriberInfo& subscriber) const;
 
-    void AnswerForSubscriber(ui64 subscriptionId, ui32 nodeId, bool disconnected=false);
+    void AnswerForSubscriber(ui64 subscriptionId, ui32 nodeId);
     void RemoveSubscriber(TSqsEvents::TEvNodeTrackerUnsubscribeRequest::TPtr& request, const NActors::TActorContext& ctx);
     bool SubscriberMustWait(const TSubscriberInfo& subscriber) const;
     void AddSubscriber(TSqsEvents::TEvNodeTrackerSubscribeRequest::TPtr& request, const NActors::TActorContext& ctx);

@@ -379,150 +379,149 @@ namespace NKikimr::NYaml {
             serviceSet.InsertValue("availability_domains", arr);
         }
 
-        if (serviceSet.Has("groups")) {
-            auto& groups = serviceSet["groups"];
+        Y_ENSURE_BT(serviceSet.Has("groups"), "groups field should be specified in service_set field of blob_storage_config");
+        auto& groups = serviceSet["groups"];
 
-            bool shouldFillVdisks = !serviceSet.Has("vdisks");
-            auto& vdisksServiceSet = serviceSet["vdisks"];
-            if (shouldFillVdisks) {
-                vdisksServiceSet.SetType(NJson::EJsonValueType::JSON_ARRAY);
+        bool shouldFillVdisks = !serviceSet.Has("vdisks");
+        auto& vdisksServiceSet = serviceSet["vdisks"];
+        if (shouldFillVdisks) {
+            vdisksServiceSet.SetType(NJson::EJsonValueType::JSON_ARRAY);
+        }
+
+        bool shouldFillPdisks = !serviceSet.Has("pdisks");
+        auto& pdisksServiceSet = serviceSet["pdisks"];
+        if (shouldFillPdisks) {
+            pdisksServiceSet.SetType(NJson::EJsonValueType::JSON_ARRAY);
+        }
+
+        ui32 groupID = 0;
+
+        for(auto& group: groups.GetArraySafe()) {
+            if (!group.Has("group_generation")) {
+                group.InsertValue("group_generation", NJson::TJsonValue(1));
             }
 
-            bool shouldFillPdisks = !serviceSet.Has("pdisks");
-            auto& pdisksServiceSet = serviceSet["pdisks"];
-            if (shouldFillPdisks) {
-                pdisksServiceSet.SetType(NJson::EJsonValueType::JSON_ARRAY);
+            if (!group.Has("group_id")) {
+                group.InsertValue("group_id", NJson::TJsonValue(groupID));
             }
 
-            ui32 groupID = 0;
+            ui32 groupID = GetUnsignedIntegerSafe(group, "group_id");
+            ui32 groupGeneration = GetUnsignedIntegerSafe(group, "group_generation");
+            Y_ENSURE_BT(group.Has("erasure_species"), "erasure species are not specified for group, id " << groupID);
+            if (group["erasure_species"].IsString()) {
+                auto species = GetStringSafe(group, "erasure_species");
+                ui32 num = ErasureStrToNum(species);
+                group.EraseValue("erasure_species");
+                group.InsertValue("erasure_species", NJson::TJsonValue(num));
+            }
 
-            for(auto& group: groups.GetArraySafe()) {
-                if (!group.Has("group_generation")) {
-                    group.InsertValue("group_generation", NJson::TJsonValue(1));
-                }
+            EnsureJsonFieldIsArray(group, "rings");
 
-                if (!group.Has("group_id")) {
-                    group.InsertValue("group_id", NJson::TJsonValue(groupID));
-                }
+            auto& ringsInfo = group["rings"].GetArraySafe();
 
-                ui32 groupID = GetUnsignedIntegerSafe(group, "group_id");
-                ui32 groupGeneration = GetUnsignedIntegerSafe(group, "group_generation");
-                Y_ENSURE_BT(group.Has("erasure_species"), "erasure species are not specified for group, id " << groupID);
-                if (group["erasure_species"].IsString()) {
-                    auto species = GetStringSafe(group, "erasure_species");
-                    ui32 num = ErasureStrToNum(species);
-                    group.EraseValue("erasure_species");
-                    group.InsertValue("erasure_species", NJson::TJsonValue(num));
-                }
+            ui32 ringID = 0;
+            std::unordered_map<ui32, std::unordered_set<ui32>> UniquePdiskIds;
+            std::unordered_map<ui32, std::unordered_set<ui32>> UniquePdiskGuids;
 
-                EnsureJsonFieldIsArray(group, "rings");
+            for(auto& ring: ringsInfo) {
+                EnsureJsonFieldIsArray(ring, "fail_domains");
 
-                auto& ringsInfo = group["rings"].GetArraySafe();
+                auto& failDomains = ring["fail_domains"].GetArraySafe();
+                ui32 failDomainID = 0;
+                for(auto& failDomain: failDomains) {
+                    EnsureJsonFieldIsArray(failDomain, "vdisk_locations");
+                    Y_ENSURE_BT(failDomain["vdisk_locations"].GetArraySafe().size() == 1);
 
-                ui32 ringID = 0;
-                std::unordered_map<ui32, std::unordered_set<ui32>> UniquePdiskIds;
-                std::unordered_map<ui32, std::unordered_set<ui32>> UniquePdiskGuids;
+                    for(auto& vdiskLocation: failDomain["vdisk_locations"].GetArraySafe()) {
+                        Y_ENSURE_BT(vdiskLocation.Has("node_id"));
+                        vdiskLocation.InsertValue("node_id", FindNodeId(json, vdiskLocation["node_id"]));
+                        if (!vdiskLocation.Has("vdisk_slot_id")) {
+                            vdiskLocation.InsertValue("vdisk_slot_id", NJson::TJsonValue(0));
+                        }
 
-                for(auto& ring: ringsInfo) {
-                    EnsureJsonFieldIsArray(ring, "fail_domains");
-
-                    auto& failDomains = ring["fail_domains"].GetArraySafe();
-                    ui32 failDomainID = 0;
-                    for(auto& failDomain: failDomains) {
-                        EnsureJsonFieldIsArray(failDomain, "vdisk_locations");
-                        Y_ENSURE_BT(failDomain["vdisk_locations"].GetArraySafe().size() == 1);
-
-                        for(auto& vdiskLocation: failDomain["vdisk_locations"].GetArraySafe()) {
-                            Y_ENSURE_BT(vdiskLocation.Has("node_id"));
-                            vdiskLocation.InsertValue("node_id", FindNodeId(json, vdiskLocation["node_id"]));
-                            if (!vdiskLocation.Has("vdisk_slot_id")) {
-                                vdiskLocation.InsertValue("vdisk_slot_id", NJson::TJsonValue(0));
-                            }
-
-                            ui64 myNodeId = GetUnsignedIntegerSafe(vdiskLocation, "node_id");
-                            if (!vdiskLocation.Has("pdisk_guid")) {
-                                for(ui32 pdiskGuid = 1; ; pdiskGuid++) {
-                                    if (UniquePdiskGuids[myNodeId].find(pdiskGuid) == UniquePdiskGuids[myNodeId].end()) {
-                                        vdiskLocation.InsertValue("pdisk_guid",  NJson::TJsonValue(pdiskGuid));
-                                        break;
-                                    }
+                        ui64 myNodeId = GetUnsignedIntegerSafe(vdiskLocation, "node_id");
+                        if (!vdiskLocation.Has("pdisk_guid")) {
+                            for(ui32 pdiskGuid = 1; ; pdiskGuid++) {
+                                if (UniquePdiskGuids[myNodeId].find(pdiskGuid) == UniquePdiskGuids[myNodeId].end()) {
+                                    vdiskLocation.InsertValue("pdisk_guid",  NJson::TJsonValue(pdiskGuid));
+                                    break;
                                 }
-                            }
-
-                            {
-                                ui64 guid = GetUnsignedIntegerSafe(vdiskLocation, "pdisk_guid");
-                                auto [it, success] = UniquePdiskGuids[myNodeId].insert(guid);
-                                Y_ENSURE_BT(success, "pdisk guids should be unique, non-unique guid is " << guid);
-                            }
-
-                            if (!vdiskLocation.Has("pdisk_id")) {
-                                for(ui32 pdiskID = 1; ; pdiskID++) {
-                                    if (UniquePdiskIds[myNodeId].find(pdiskID) == UniquePdiskIds[myNodeId].end()) {
-                                        vdiskLocation.InsertValue("pdisk_id",  NJson::TJsonValue(pdiskID));
-                                        break;
-                                    }
-                                }
-                            }
-
-                            {
-                                ui64 pdiskId = GetUnsignedIntegerSafe(vdiskLocation, "pdisk_id");
-                                auto [it, success] = UniquePdiskIds[myNodeId].insert(pdiskId);
-                                Y_ENSURE_BT(success, "pdisk ids should be unique, non unique pdisk_id : " << pdiskId);
-                            }
-
-                            if (shouldFillPdisks) {
-                                NJson::TJsonValue pdiskInfo = vdiskLocation;
-                                if (pdiskInfo.Has("vdisk_slot_id")) {
-                                    pdiskInfo.EraseValue("vdisk_slot_id");
-                                }
-
-                                if (pdiskInfo.Has("pdisk_category")) {
-                                    if (pdiskInfo["pdisk_category"].IsString()) {
-                                        auto cat = GetStringSafe(pdiskInfo, "pdisk_category");
-                                        pdiskInfo.InsertValue("pdisk_category", NJson::TJsonValue(PdiskCategoryFromString(cat)));
-                                    }
-                                }
-
-                                pdisksServiceSet.AppendValue(pdiskInfo);
-                            }
-
-                            if (vdiskLocation.Has("path")) {
-                                vdiskLocation.EraseValue("path");
-                            }
-
-                            if (vdiskLocation.Has("pdisk_category")) {
-                                vdiskLocation.EraseValue("pdisk_category");
-                            }
-
-                            if (vdiskLocation.Has("pdisk_config")) {
-                                vdiskLocation.EraseValue("pdisk_config");
-                            }
-
-                            if (shouldFillVdisks) {
-
-                                NJson::TJsonValue myVdisk;
-                                auto loc = vdiskLocation;
-                                myVdisk.InsertValue("vdisk_location", loc);
-                                NJson::TJsonValue vdiskID;
-                                vdiskID.InsertValue("domain", NJson::TJsonValue(failDomainID));
-                                vdiskID.InsertValue("ring", NJson::TJsonValue(ringID));
-                                vdiskID.InsertValue("vdisk", NJson::TJsonValue(0));
-                                vdiskID.InsertValue("group_id", NJson::TJsonValue(groupID));
-                                vdiskID.InsertValue("group_generation", NJson::TJsonValue(groupGeneration));
-                                myVdisk.InsertValue("vdisk_id", vdiskID);
-                                myVdisk.InsertValue("vdisk_kind", NJson::TJsonValue("Default"));
-                                vdisksServiceSet.AppendValue(myVdisk);
                             }
                         }
 
-                        ++failDomainID;
+                        {
+                            ui64 guid = GetUnsignedIntegerSafe(vdiskLocation, "pdisk_guid");
+                            auto [it, success] = UniquePdiskGuids[myNodeId].insert(guid);
+                            Y_ENSURE_BT(success, "pdisk guids should be unique, non-unique guid is " << guid);
+                        }
+
+                        if (!vdiskLocation.Has("pdisk_id")) {
+                            for(ui32 pdiskID = 1; ; pdiskID++) {
+                                if (UniquePdiskIds[myNodeId].find(pdiskID) == UniquePdiskIds[myNodeId].end()) {
+                                    vdiskLocation.InsertValue("pdisk_id",  NJson::TJsonValue(pdiskID));
+                                    break;
+                                }
+                            }
+                        }
+
+                        {
+                            ui64 pdiskId = GetUnsignedIntegerSafe(vdiskLocation, "pdisk_id");
+                            auto [it, success] = UniquePdiskIds[myNodeId].insert(pdiskId);
+                            Y_ENSURE_BT(success, "pdisk ids should be unique, non unique pdisk_id : " << pdiskId);
+                        }
+
+                        if (shouldFillPdisks) {
+                            NJson::TJsonValue pdiskInfo = vdiskLocation;
+                            if (pdiskInfo.Has("vdisk_slot_id")) {
+                                pdiskInfo.EraseValue("vdisk_slot_id");
+                            }
+
+                            if (pdiskInfo.Has("pdisk_category")) {
+                                if (pdiskInfo["pdisk_category"].IsString()) {
+                                    auto cat = GetStringSafe(pdiskInfo, "pdisk_category");
+                                    pdiskInfo.InsertValue("pdisk_category", NJson::TJsonValue(PdiskCategoryFromString(cat)));
+                                }
+                            }
+
+                            pdisksServiceSet.AppendValue(pdiskInfo);
+                        }
+
+                        if (vdiskLocation.Has("path")) {
+                            vdiskLocation.EraseValue("path");
+                        }
+
+                        if (vdiskLocation.Has("pdisk_category")) {
+                            vdiskLocation.EraseValue("pdisk_category");
+                        }
+
+                        if (vdiskLocation.Has("pdisk_config")) {
+                            vdiskLocation.EraseValue("pdisk_config");
+                        }
+
+                        if (shouldFillVdisks) {
+
+                            NJson::TJsonValue myVdisk;
+                            auto loc = vdiskLocation;
+                            myVdisk.InsertValue("vdisk_location", loc);
+                            NJson::TJsonValue vdiskID;
+                            vdiskID.InsertValue("domain", NJson::TJsonValue(failDomainID));
+                            vdiskID.InsertValue("ring", NJson::TJsonValue(ringID));
+                            vdiskID.InsertValue("vdisk", NJson::TJsonValue(0));
+                            vdiskID.InsertValue("group_id", NJson::TJsonValue(groupID));
+                            vdiskID.InsertValue("group_generation", NJson::TJsonValue(groupGeneration));
+                            myVdisk.InsertValue("vdisk_id", vdiskID);
+                            myVdisk.InsertValue("vdisk_kind", NJson::TJsonValue("Default"));
+                            vdisksServiceSet.AppendValue(myVdisk);
+                        }
                     }
 
-                    ++ringID;
+                    ++failDomainID;
                 }
 
-                ++groupID;
+                ++ringID;
             }
+
+            ++groupID;
         }
     }
 
@@ -835,68 +834,10 @@ namespace NKikimr::NYaml {
         }
     }
 
-    void PrepareBlobStorageConfig(NJson::TJsonValue& json) {
-        if (!json.Has("blob_storage_config")) {
-            return;
-        }
-        auto& blobStorageConfig = json["blob_storage_config"];
-
-        if (!blobStorageConfig.Has("autoconfig_settings")) {
-            return;
-        }
-        auto& autoconfigSettings = blobStorageConfig["autoconfig_settings"];
-
-        autoconfigSettings.EraseValue("define_host_config");
-        autoconfigSettings.EraseValue("define_box");
-
-        if (json.Has("host_configs")) {
-            auto& array = autoconfigSettings.InsertValue("define_host_config", NJson::JSON_ARRAY);
-            for (const auto& hostConfig : json["host_configs"].GetArraySafe()) {
-                array.AppendValue(NJson::TJsonValue(hostConfig));
-            }
-        }
-
-        THashMap<std::tuple<TString, ui32>, ui32> hostNodeMap;
-        Y_ENSURE_BT(json.Has("nameservice_config"));
-        const auto& nameserviceConfig = json["nameservice_config"];
-        Y_ENSURE_BT(nameserviceConfig.Has("node"));
-        for (const auto& item : nameserviceConfig["node"].GetArraySafe()) {
-            const auto key = std::make_tuple(item["interconnect_host"].GetStringSafe(), item["port"].GetUIntegerSafe());
-            hostNodeMap[key] = item["node_id"].GetUIntegerSafe();
-        }
-
-        NJson::TJsonValue *defineBox = nullptr;
-
-        if (!json.Has("hosts")) {
-            return;
-        }
-        for (const auto& host : json["hosts"].GetArraySafe()) {
-            if (host.Has("host_config_id")) {
-                if (!defineBox) {
-                    defineBox = &autoconfigSettings.InsertValue("define_box", NJson::TJsonMap{
-                        {"box_id", 1},
-                        {"host", NJson::TJsonArray{}},
-                    });
-                }
-
-                const TString fqdn = host["interconnect_host"].GetStringSafe(host["host"].GetStringSafe());
-                const ui32 port = host["port"].GetUIntegerSafe(19001);
-                const auto key = std::make_tuple(fqdn, port);
-                Y_ENSURE_BT(hostNodeMap.contains(key));
-
-                (*defineBox)["host"].AppendValue(NJson::TJsonMap{
-                    {"host_config_id", host["host_config_id"].GetUIntegerSafe()},
-                    {"enforced_node_id", hostNodeMap[key]},
-                });
-            }
-        }
-    }
-
     void TransformConfig(NJson::TJsonValue& json, bool relaxed) {
         PrepareNameserviceConfig(json);
         PrepareActorSystemConfig(json);
         PrepareStaticGroup(json);
-        PrepareBlobStorageConfig(json);
         PrepareIcConfig(json);
         PrepareLogConfig(json);
         PrepareSystemTabletsInfo(json, relaxed);
@@ -922,10 +863,7 @@ namespace NKikimr::NYaml {
         for(auto hostConfig: json["host_configs"].GetArraySafe()) {
             auto *hostConfigProto = result.AddCommand()->MutableDefineHostConfig();
             NProtobufJson::MergeJson2Proto(hostConfig, *hostConfigProto, GetJsonToProtoConfig());
-            // KIKIMR-16712
-            // Avoid checking the version number for "host_config" configuration items.
-            // This allows to add new host configuration items after the initial cluster setup.
-            hostConfigProto->SetItemConfigGeneration(Max<ui64>());
+            hostConfigProto->SetItemConfigGeneration(itemConfigGeneration);
         }
 
         auto *defineBox = result.AddCommand()->MutableDefineBox();

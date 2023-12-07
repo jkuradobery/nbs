@@ -127,18 +127,6 @@ void WriteYsonValueImpl(TYsonResultWriter& writer, const NUdf::TUnboxedValuePod&
                 writer.OnUtf8StringScalar(out.AsStringRef());
                 return;
             }
-            case NUdf::TDataType<NUdf::TDate32>::Id:
-                writer.OnInt64Scalar(value.Get<i32>());
-                return;
-            case NUdf::TDataType<NUdf::TDatetime64>::Id:
-                writer.OnInt64Scalar(value.Get<i64>());
-                return;
-            case NUdf::TDataType<NUdf::TTimestamp64>::Id:
-                writer.OnInt64Scalar(value.Get<i64>());
-                return;
-            case NUdf::TDataType<NUdf::TInterval64>::Id:
-                writer.OnInt64Scalar(value.Get<i64>());
-                return;
 
             default:
                 throw yexception() << "Unknown data type: " << dataType->GetSchemeType();
@@ -427,13 +415,9 @@ TExprNode::TPtr DataNodeToExprLiteral(TPositionHandle pos, const TTypeAnnotation
 TString DataValueToString(const NKikimr::NUdf::TUnboxedValuePod& value, const TDataExprType* type) {
     switch (type->GetSlot()) {
         case NUdf::EDataSlot::Int32:
-        case NUdf::EDataSlot::Date32:
             return ToString(value.Get<i32>());
         case NUdf::EDataSlot::Int64:
         case NUdf::EDataSlot::Interval:
-        case NUdf::EDataSlot::Datetime64:
-        case NUdf::EDataSlot::Timestamp64:
-        case NUdf::EDataSlot::Interval64:
             return ToString(value.Get<i64>());
         case NUdf::EDataSlot::Uint32:
         case NUdf::EDataSlot::Datetime:
@@ -466,7 +450,6 @@ TString DataValueToString(const NKikimr::NUdf::TUnboxedValuePod& value, const TD
         case NUdf::EDataSlot::Decimal:
             {
                 const auto params = dynamic_cast<const TDataExprParamsType*>(type);
-                YQL_ENSURE(params, "Unable to cast decimal params");
                 return NDecimal::ToString(value.GetInt128(), FromString<ui8>(params->GetParamOne()), FromString<ui8>(params->GetParamTwo()));
             }
         case NUdf::EDataSlot::TzDate: {
@@ -490,7 +473,7 @@ TString DataValueToString(const NKikimr::NUdf::TUnboxedValuePod& value, const TD
         }
     }
 
-    Y_ABORT("Unexpected");
+    Y_FAIL("Unexpected");
 }
 } //namespace
 
@@ -770,31 +753,12 @@ NUdf::TUnboxedValue ReadYsonValue(TType* type,
 
         CHECK_EXPECTED(cmd, BeginListSymbol);
         cmd = buf.Read();
-        i64 index = 0;
+        ui64 index = 0;
         if (isTableFormat) {
-            YQL_ENSURE(cmd == Int64Marker || cmd == Uint64Marker);
-            if (cmd == Uint64Marker) {
-                index = buf.ReadVarUI64();
-            } else {
-                index = buf.ReadVarI64();
-            }
+            CHECK_EXPECTED(cmd, Uint64Marker);
+            index = buf.ReadVarUI64();
         } else {
-            if (cmd == BeginListSymbol) {
-                cmd = buf.Read();
-                YQL_ENSURE(underlyingType->IsStruct(), "Expected struct as underlying type");
-                auto name = ReadNextString(cmd, buf);
-                auto foundIndex = static_cast<TStructType*>(underlyingType)->FindMemberIndex(name);
-                YQL_ENSURE(foundIndex, "Unexpected member: " << name);
-                index = *foundIndex;
-                cmd = buf.Read();
-                if (cmd == ListItemSeparatorSymbol) {
-                    cmd = buf.Read();
-                }
-
-                CHECK_EXPECTED(cmd, EndListSymbol);
-            } else {
-                index = ReadNextSerializedNumber<ui64>(cmd, buf);
-            }
+            index = ReadNextSerializedNumber<ui64>(cmd, buf);
         }
 
         YQL_ENSURE(index < varType->GetAlternativesCount(), "Bad variant alternative: " << index << ", only " <<
@@ -1042,7 +1006,8 @@ NUdf::TUnboxedValue ReadYsonValue(TType* type,
 
             CHECK_EXPECTED(cmd, EndListSymbol);
             return ret;
-        } else {
+        }
+        else {
             cmd = buf.Read();
 
             for (;;) {
@@ -1152,9 +1117,8 @@ NUdf::TUnboxedValue ReadYsonValue(TType* type,
             bool unusedIsOptional;
             auto unpackedType = UnpackOptional(keyType, unusedIsOptional);
             YQL_ENSURE(unpackedType->IsData() &&
-                (static_cast<TDataType*>(unpackedType)->GetSchemeType() == NUdf::TDataType<char*>::Id ||
-                static_cast<TDataType*>(unpackedType)->GetSchemeType() == NUdf::TDataType<NUdf::TUtf8>::Id),
-                "Expected String or Utf8 type as dictionary key type");
+                static_cast<TDataType*>(unpackedType)->GetSchemeType() == NUdf::TDataType<char*>::Id,
+                "Expected String type as dictionary key type");
 
             auto filler = [&](TValuesDictHashMap& map) {
                 cmd = buf.Read();
@@ -1282,11 +1246,6 @@ NUdf::TUnboxedValue ReadYsonValue(TType* type,
     case TType::EKind::Pg: {
         auto pgType = static_cast<TPgType*>(type);
         return isTableFormat ? ReadYsonValueInTableFormatPg(pgType, cmd, buf) : ReadYsonValuePg(pgType, cmd, buf);
-    }
-
-    case TType::EKind::Tagged: {
-        auto taggedType = static_cast<TTaggedType*>(type);
-        return ReadYsonValue(taggedType->GetBaseType(), holderFactory, cmd, buf, isTableFormat);
     }
 
     default:
@@ -1547,176 +1506,6 @@ NUdf::TUnboxedValue ReadSkiffData(TType* type, ui64 nativeYtTypeFlags, TInputBuf
     default:
         YQL_ENSURE(false, "Unsupported data type: " << schemeType);
     }
-}
-
-void SkipSkiffField(NKikimr::NMiniKQL::TType* type, ui64 nativeYtTypeFlags, TInputBuf& buf) {
-    const bool isOptional = type->IsOptional();
-    if (isOptional) {
-        // Unwrap optional
-        type = static_cast<TOptionalType*>(type)->GetItemType();
-    }
-
-    if (isOptional) {
-        auto marker = buf.Read();
-        if (!marker) {
-            return;
-        }
-    }
-
-    if (type->IsData()) {
-        auto schemeType = static_cast<TDataType*>(type)->GetSchemeType();
-        switch (schemeType) {
-        case NUdf::TDataType<bool>::Id:
-            buf.SkipMany(sizeof(ui8));
-            break;
-
-        case NUdf::TDataType<ui8>::Id:
-        case NUdf::TDataType<ui16>::Id:
-        case NUdf::TDataType<ui32>::Id:
-        case NUdf::TDataType<ui64>::Id:
-        case NUdf::TDataType<NUdf::TDate>::Id:
-        case NUdf::TDataType<NUdf::TDatetime>::Id:
-        case NUdf::TDataType<NUdf::TTimestamp>::Id:
-            buf.SkipMany(sizeof(ui64));
-            break;
-
-        case NUdf::TDataType<i8>::Id:
-        case NUdf::TDataType<i16>::Id:
-        case NUdf::TDataType<i32>::Id:
-        case NUdf::TDataType<i64>::Id:
-        case NUdf::TDataType<NUdf::TInterval>::Id:
-            buf.SkipMany(sizeof(i64));
-            break;
-
-        case NUdf::TDataType<float>::Id:
-        case NUdf::TDataType<double>::Id:
-            buf.SkipMany(sizeof(double));
-            break;
-
-        case NUdf::TDataType<NUdf::TUtf8>::Id:
-        case NUdf::TDataType<char*>::Id:
-        case NUdf::TDataType<NUdf::TJson>::Id:
-        case NUdf::TDataType<NUdf::TYson>::Id:
-        case NUdf::TDataType<NUdf::TUuid>::Id:
-        case NUdf::TDataType<NUdf::TDyNumber>::Id:
-        case NUdf::TDataType<NUdf::TTzDate>::Id:
-        case NUdf::TDataType<NUdf::TTzDatetime>::Id:
-        case NUdf::TDataType<NUdf::TTzTimestamp>::Id:
-        case NUdf::TDataType<NUdf::TJsonDocument>::Id: {
-            ui32 size;
-            buf.ReadMany((char*)&size, sizeof(size));
-            CHECK_STRING_LENGTH_UNSIGNED(size);
-            buf.SkipMany(size);
-            break;
-        }
-        case NUdf::TDataType<NUdf::TDecimal>::Id: {
-            if (nativeYtTypeFlags & NTCF_DECIMAL) {
-                auto const params = static_cast<TDataDecimalType*>(type)->GetParams();
-                if (params.first < 10) {
-                    buf.SkipMany(sizeof(i32));
-                } else if (params.first < 19) {
-                    buf.SkipMany(sizeof(i64));
-                } else {
-                    buf.SkipMany(sizeof(NDecimal::TInt128));
-                }
-            } else {
-                ui32 size;
-                buf.ReadMany((char*)&size, sizeof(size));
-                CHECK_STRING_LENGTH_UNSIGNED(size);
-                buf.SkipMany(size);
-            }
-            break;
-        }
-        default:
-            YQL_ENSURE(false, "Unsupported data type: " << schemeType);
-        }
-        return;
-    }
-
-    if (type->IsPg()) {
-        SkipSkiffPg(static_cast<TPgType*>(type), buf);
-        return;
-    }
-
-    if (type->IsStruct()) {
-        auto structType = static_cast<TStructType*>(type);
-        const std::vector<size_t>* reorder = nullptr;
-        if (auto cookie = structType->GetCookie()) {
-            reorder = ((const std::vector<size_t>*)cookie);
-        }
-        for (ui32 i = 0; i < structType->GetMembersCount(); ++i) {
-            SkipSkiffField(structType->GetMemberType(reorder ? reorder->at(i) : i), nativeYtTypeFlags, buf);
-        }
-        return;
-    }
-
-    if (type->IsList()) {
-        auto itemType = static_cast<TListType*>(type)->GetItemType();
-        while (buf.Read() == '\0') {
-            SkipSkiffField(itemType, nativeYtTypeFlags, buf);
-        }
-        return;
-    }
-
-    if (type->IsTuple()) {
-        auto tupleType = static_cast<TTupleType*>(type);
-
-        for (ui32 i = 0; i < tupleType->GetElementsCount(); ++i) {
-            SkipSkiffField(tupleType->GetElementType(i), nativeYtTypeFlags, buf);
-        }
-        return;
-    }
-
-    if (type->IsVariant()) {
-        auto varType = AS_TYPE(TVariantType, type);
-        ui16 data = 0;
-        if (varType->GetAlternativesCount() < 256) {
-            buf.ReadMany((char*)&data, 1);
-        } else {
-            buf.ReadMany((char*)&data, sizeof(data));
-        }
-        
-        if (varType->GetUnderlyingType()->IsTuple()) {
-            auto tupleType = AS_TYPE(TTupleType, varType->GetUnderlyingType());
-            YQL_ENSURE(data < tupleType->GetElementsCount());
-            SkipSkiffField(tupleType->GetElementType(data), nativeYtTypeFlags, buf);
-        } else {
-            auto structType = AS_TYPE(TStructType, varType->GetUnderlyingType());
-            if (auto cookie = structType->GetCookie()) {
-                const std::vector<size_t>& reorder = *((const std::vector<size_t>*)cookie);
-                data = reorder[data];
-            }
-            YQL_ENSURE(data < structType->GetMembersCount());
-
-            SkipSkiffField(structType->GetMemberType(data), nativeYtTypeFlags, buf);
-        }
-        return;
-    }
-
-    if (type->IsVoid()) {
-        return;
-    }
-
-    if (type->IsNull()) {
-        return;
-    }
-
-    if (type->IsEmptyList() || type->IsEmptyDict()) {
-        return;
-    }
-
-    if (type->IsDict()) {
-        auto dictType = AS_TYPE(TDictType, type);
-        auto keyType = dictType->GetKeyType();
-        auto payloadType = dictType->GetPayloadType();
-        while (buf.Read() == '\0') {
-            SkipSkiffField(keyType, nativeYtTypeFlags, buf);
-            SkipSkiffField(payloadType, nativeYtTypeFlags, buf);
-        }
-        return;
-    }
-
-    YQL_ENSURE(false, "Unsupported type for skip: " << type->GetKindAsStr());
 }
 
 NKikimr::NUdf::TUnboxedValue ReadSkiffNativeYtValue(NKikimr::NMiniKQL::TType* type, ui64 nativeYtTypeFlags,

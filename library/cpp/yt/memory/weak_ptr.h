@@ -12,7 +12,7 @@ template <class T>
 class TWeakPtr
 {
 public:
-    using TUnderlying = T;
+    typedef T TUnderlying;
 
     //! Empty constructor.
     TWeakPtr() = default;
@@ -189,13 +189,6 @@ public:
         return !T_ || (RefCounter()->GetRefCount() == 0);
     }
 
-    const TRefCounter* TryGetRefCounter() const
-    {
-        return T_
-            ? RefCounter()
-            : nullptr;
-    }
-
 private:
     void AcquireRef()
     {
@@ -264,8 +257,7 @@ int ResetAndGetResidualRefCount(TIntrusivePtr<T>& pointer)
 {
     auto weakPointer = MakeWeak(pointer);
     pointer.Reset();
-    pointer = weakPointer.Lock();
-    if (pointer) {
+    if (pointer = weakPointer.Lock()) {
         // This _may_ return 0 if we are again the only holder of the pointee.
         return pointer->GetRefCount() - 1;
     } else {
@@ -275,13 +267,26 @@ int ResetAndGetResidualRefCount(TIntrusivePtr<T>& pointer)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// TODO(sandello): Kill comparsions.
+template <class T>
+bool operator<(const TWeakPtr<T>& lhs, const TWeakPtr<T>& rhs)
+{
+    return lhs.Lock().Get() < rhs.Lock().Get();
+}
+
+template <class T>
+bool operator>(const TWeakPtr<T>& lhs, const TWeakPtr<T>& rhs)
+{
+    return lhs.Lock().Get() > rhs.Lock().Get();
+}
+
 template <class T, class U>
 bool operator==(const TWeakPtr<T>& lhs, const TWeakPtr<U>& rhs)
 {
     static_assert(
         std::is_convertible_v<U*, T*>,
         "U* must be convertible to T*");
-    return lhs.TryGetRefCounter() == rhs.TryGetRefCounter();
+    return lhs.Lock().Get() == rhs.Lock().Get();
 }
 
 template <class T, class U>
@@ -290,31 +295,7 @@ bool operator!=(const TWeakPtr<T>& lhs, const TWeakPtr<U>& rhs)
     static_assert(
         std::is_convertible_v<U*, T*>,
         "U* must be convertible to T*");
-    return lhs.TryGetRefCounter() != rhs.TryGetRefCounter();
-}
-
-template <class T>
-bool operator==(std::nullptr_t, const TWeakPtr<T>& rhs)
-{
-    return nullptr == rhs.TryGetRefCounter();
-}
-
-template <class T>
-bool operator!=(std::nullptr_t, const TWeakPtr<T>& rhs)
-{
-    return nullptr != rhs.TryGetRefCounter();
-}
-
-template <class T>
-bool operator==(const TWeakPtr<T>& lhs, std::nullptr_t)
-{
-    return nullptr == lhs.TryGetRefCounter();
-}
-
-template <class T>
-bool operator!=(const TWeakPtr<T>& lhs, std::nullptr_t)
-{
-    return nullptr != lhs.TryGetRefCounter();
+    return lhs.Lock().Get() != rhs.Lock().Get();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

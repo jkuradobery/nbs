@@ -14,22 +14,11 @@ public:
     size_t operator()(const TKeyType& key) const {
         const auto& headers = std::get<1U>(key);
         auto initHash = CombineHashes(Hash(std::get<0U>(key)), Hash(std::get<2U>(key)));
-        return std::accumulate(headers.Fields.cbegin(), headers.Fields.cend(), initHash,
+        return std::accumulate(headers.cbegin(), headers.cend(), initHash,
                                [this](size_t hash, const TString& item) { return CombineHashes(hash, Hash(item)); });
     }
 public:
     const std::hash<TString> Hash;
-};
-
-struct TKeyEqual
-{
-    bool operator()(const TKeyType& lhs, const TKeyType& rhs) const
-    {
-        auto& lhsHeader = get<1>(lhs);
-        auto& rhsHeader = get<1>(rhs);
-        return std::tie(std::get<0U>(lhs), lhsHeader.Fields, lhsHeader.Options.AwsSigV4, lhsHeader.Options.UserPwd) 
-            == std::tie(std::get<0U>(rhs), rhsHeader.Fields, rhsHeader.Options.AwsSigV4, rhsHeader.Options.UserPwd);
-    }
 };
 
 class THTTPMockGateway : public IHTTPMockGateway {
@@ -47,29 +36,25 @@ public:
         TStringBuilder ret;
         ret << "{ Url: \"" << std::get<0>(key) << "\"";
         ret << " Headers: [";
-        for (const TString& field : std::get<1>(key).Fields) {
-            ret << " \"" << field << "\"";
+        for (const TString& header : std::get<1>(key)) {
+            ret << " \"" << header << "\"";
         }
         ret << " ] Data: \"" << std::get<2>(key) << "\" }";
         return std::move(ret);
     }
 
-    void Upload(TString, THeaders, TString, TOnResult, bool, TRetryPolicy::TPtr) final {}
-
-    void Delete(TString, THeaders, TOnResult, TRetryPolicy::TPtr) final {}
+    void Upload(TString, THeaders, TString, TOnResult, bool, IRetryPolicy<long>::TPtr) {}
 
     void Download(
             TString url,
             THeaders headers,
-            std::size_t offset,
             std::size_t sizeLimit,
             TOnResult callback,
             TString data,
-            TRetryPolicy::TPtr retryPolicy) final 
+            IRetryPolicy<long>::TPtr retryPolicy)
     {
 
         Y_UNUSED(sizeLimit);
-        Y_UNUSED(offset);
         Y_UNUSED(retryPolicy);
 
         auto key = TKeyType(url, headers, data);
@@ -115,7 +100,7 @@ public:
     }
 
 private:
-    std::unordered_map<TKeyType, std::vector<TDataResponse>, TKeyHash, TKeyEqual> RequestsResponse;
+    std::unordered_map<TKeyType, std::vector<TDataResponse>, TKeyHash> RequestsResponse;
     TDataDefaultResponse DefaultResponse;
 };
 }

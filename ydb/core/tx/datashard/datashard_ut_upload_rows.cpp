@@ -1,5 +1,5 @@
 #include "defs.h"
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include "datashard_ut_common_kqp.h"
 
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
@@ -38,7 +38,7 @@ static void DoStartUploadTestRows(
     for (ui32 i = 0; i < 32; i++) {
         auto key = TVector<TCell>{TCell::Make(1 << i)};
         auto value = TVector<TCell>{TCell::Make(i)};
-        TSerializedCellVec serializedKey(key);
+        TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
         TString serializedValue = TSerializedCellVec::Serialize(value);
         rows->emplace_back(serializedKey, serializedValue);
     }
@@ -84,7 +84,7 @@ static TActorId DoStartUploadRows(
     for (const auto& kv : data) {
         auto key = TVector<TCell>{TCell::Make(kv.first)};
         auto value = TVector<TCell>{TCell::Make(kv.second)};
-        TSerializedCellVec serializedKey(key);
+        TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
         TString serializedValue = TSerializedCellVec::Serialize(value);
         rows->emplace_back(serializedKey, serializedValue);
     }
@@ -177,7 +177,8 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
 
         // Capture all upload rows requests
         TVector<THolder<IEventHandle>> uploadRequests;
-        auto observer = [&](TAutoPtr<IEventHandle>& ev) {
+        auto observer = [&](auto& runtime, TAutoPtr<IEventHandle>& ev) {
+            Y_UNUSED(runtime);
             switch (ev->GetTypeRewrite()) {
                 case TEvDataShard::TEvUploadRowsRequest::EventType: {
                     Cerr << "... captured TEvUploadRowsRequest" << Endl;
@@ -288,7 +289,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             for (ui32 i = 1; i <= 9; i++) {
                 auto key = TVector<TCell>{TCell::Make(ui32(i))};
                 auto value = TVector<TCell>{TCell::Make(ui32(i * 10))};
-                TSerializedCellVec serializedKey(key);
+                TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
                 TString serializedValue = TSerializedCellVec::Serialize(value);
                 rows->emplace_back(serializedKey, serializedValue);
             }
@@ -353,7 +354,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             for (ui32 i = 1; i <= 9; i++) {
                 auto key = TVector<TCell>{TCell::Make(ui32(i))};
                 auto value = TVector<TCell>{TCell::Make(ui32(i * 10))};
-                TSerializedCellVec serializedKey(key);
+                TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
                 TString serializedValue = TSerializedCellVec::Serialize(value);
                 rows->emplace_back(serializedKey, serializedValue);
             }
@@ -433,7 +434,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             for (ui32 i = 1; i <= 9; i++) {
                 auto key = TVector<TCell>{TCell::Make(ui32(i))};
                 auto value = TVector<TCell>{TCell::Make(ui32(i * 10))};
-                TSerializedCellVec serializedKey(key);
+                TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
                 TString serializedValue = TSerializedCellVec::Serialize(value);
                 rows->emplace_back(serializedKey, serializedValue);
             }
@@ -531,7 +532,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             for (ui32 i = 1; i <= 9; i++) {
                 auto key = TVector<TCell>{TCell::Make(ui32(i))};
                 auto value = TVector<TCell>{TCell::Make(ui32(i * 10))};
-                TSerializedCellVec serializedKey(key);
+                TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
                 TString serializedValue = TSerializedCellVec::Serialize(value);
                 rows->emplace_back(serializedKey, serializedValue);
             }
@@ -632,7 +633,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             for (ui32 i = 1; i <= 9; i++) {
                 auto key = TVector<TCell>{TCell::Make(ui32(i))};
                 auto value = TVector<TCell>{TCell::Make(ui32(i * 10))};
-                TSerializedCellVec serializedKey(key);
+                TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
                 TString serializedValue = TSerializedCellVec::Serialize(value);
                 rows->emplace_back(serializedKey, serializedValue);
             }
@@ -684,7 +685,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             for (ui32 i = 1; i <= 9; i++) {
                 auto key = TVector<TCell>{TCell::Make(ui32(i))};
                 auto extra = TVector<TCell>{TCell::Make(ui32(i * 10))};
-                TSerializedCellVec serializedKey(key);
+                TSerializedCellVec serializedKey(TSerializedCellVec::Serialize(key));
                 TString serializedExtra = TSerializedCellVec::Serialize(extra);
                 rows->emplace_back(serializedKey, serializedExtra);
             }
@@ -743,7 +744,7 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
         DoUploadTestRows(server, sender, "/Root/table-1", Ydb::Type::UINT32, Ydb::StatusIds::GENERIC_ERROR);
     }
 
-    void DoShouldRejectOnChangeQueueOverflow(bool overloadSubscribe) {
+    Y_UNIT_TEST(ShouldRejectOnChangeQueueOverflow) {
         TPortManager pm;
         TServerSettings serverSettings(pm.GetPort(2134));
         serverSettings.SetDomainName("Root")
@@ -770,86 +771,16 @@ Y_UNIT_TEST_SUITE(TTxDataShardUploadRows) {
             })
         );
 
-        TVector<ui32> observedUploadStatus;
-        TVector<THolder<IEventHandle>> blockedEnqueueRecords;
-        auto prevObserverFunc = runtime.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case NDataShard::TEvChangeExchange::EvEnqueueRecords:
-                    blockedEnqueueRecords.emplace_back(ev.Release());
-                    return TTestActorRuntime::EEventAction::DROP;
-                case TEvDataShard::TEvUploadRowsRequest::EventType:
-                    if (!overloadSubscribe) {
-                        ev->Get<TEvDataShard::TEvUploadRowsRequest>()->Record.ClearOverloadSubscribe();
-                    }
-                    break;
-                case TEvDataShard::TEvUploadRowsResponse::EventType:
-                    observedUploadStatus.push_back(ev->Get<TEvDataShard::TEvUploadRowsResponse>()->Record.GetStatus());
-                    break;
+        runtime.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+            if (ev->GetTypeRewrite() == NDataShard::TEvChangeExchange::EvEnqueueRecords) {
+                return TTestActorRuntime::EEventAction::DROP;
             }
 
             return TTestActorRuntime::EEventAction::PROCESS;
         });
 
         DoUploadTestRows(server, sender, "/Root/table-1", Ydb::Type::UINT32, Ydb::StatusIds::SUCCESS);
-
-        UNIT_ASSERT(!observedUploadStatus.empty());
-        UNIT_ASSERT(observedUploadStatus.back() == NKikimrTxDataShard::TError::OK);
-        observedUploadStatus.clear();
-
-        if (!overloadSubscribe) {
-            DoUploadTestRows(server, sender, "/Root/table-1", Ydb::Type::UINT32, Ydb::StatusIds::OVERLOADED);
-            return;
-        }
-
-        TVector<THolder<TEvTxUserProxy::TEvUploadRowsResponse>> responses;
-        auto responseAwaiter = runtime.Register(new TLambdaActor([&](TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                case TEvTxUserProxy::TEvUploadRowsResponse::EventType: {
-                    auto msg = ev->Release<TEvTxUserProxy::TEvUploadRowsResponse>();
-                    responses.push_back(std::move(msg));
-                    break;
-                }
-            }
-        }));
-
-        DoStartUploadTestRows(server, responseAwaiter, "/Root/table-1", Ydb::Type::UINT32);
-
-        runtime.SimulateSleep(TDuration::Seconds(1));
-        UNIT_ASSERT(!blockedEnqueueRecords.empty());
-        UNIT_ASSERT(!observedUploadStatus.empty());
-        UNIT_ASSERT(observedUploadStatus.back() == NKikimrTxDataShard::TError::SHARD_IS_BLOCKED);
-        observedUploadStatus.clear();
-        UNIT_ASSERT(responses.empty());
-
-        runtime.SetObserverFunc(prevObserverFunc);
-        for (auto& ev : blockedEnqueueRecords) {
-            runtime.Send(ev.Release(), 0, true);
-        }
-        blockedEnqueueRecords.clear();
-
-        auto waitFor = [&](const auto& condition, const TString& description) {
-            if (!condition()) {
-                Cerr << "... waiting for " << description << Endl;
-                TDispatchOptions options;
-                options.CustomFinalCondition = [&]() {
-                    return condition();
-                };
-                runtime.DispatchEvents(options);
-                UNIT_ASSERT_C(condition(), "... failed to wait for " << description);
-            }
-        };
-
-        waitFor([&]{ return !responses.empty(); }, "upload rows response");
-
-        UNIT_ASSERT_VALUES_EQUAL(responses.back()->Status, Ydb::StatusIds::SUCCESS);
-    }
-
-    Y_UNIT_TEST(ShouldRejectOnChangeQueueOverflow) {
-        DoShouldRejectOnChangeQueueOverflow(false);
-    }
-
-    Y_UNIT_TEST(ShouldRejectOnChangeQueueOverflowAndRetry) {
-        DoShouldRejectOnChangeQueueOverflow(true);
+        DoUploadTestRows(server, sender, "/Root/table-1", Ydb::Type::UINT32, Ydb::StatusIds::OVERLOADED);
     }
 
 }

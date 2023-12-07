@@ -5,7 +5,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     ydb/core/actorlib_impl
     ydb/core/base
     ydb/core/cms/console
@@ -15,7 +15,6 @@ PEERDIR(
     ydb/core/protos
     ydb/core/tablet
     ydb/library/yql/dq/actors/compute
-    ydb/library/yql/providers/common/http_gateway
 )
 
 YQL_LAST_ABI_VERSION()

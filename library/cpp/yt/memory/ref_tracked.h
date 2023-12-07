@@ -2,7 +2,6 @@
 
 #include <library/cpp/yt/misc/port.h>
 #include <library/cpp/yt/misc/source_location.h>
-#include <library/cpp/yt/misc/strong_typedef.h>
 
 #include <util/system/defaults.h>
 
@@ -13,10 +12,10 @@ namespace NYT {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-YT_DEFINE_STRONG_TYPEDEF(TRefCountedTypeCookie, int)
-constexpr TRefCountedTypeCookie NullRefCountedTypeCookie{-1};
+using TRefCountedTypeCookie = int;
+const int NullRefCountedTypeCookie = -1;
 
-YT_DEFINE_STRONG_TYPEDEF(TRefCountedTypeKey, const std::type_info*)
+using TRefCountedTypeKey = const void*;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -77,10 +76,29 @@ class TRefTracked
 {
 public:
 #ifdef YT_ENABLE_REF_COUNTED_TRACKING
-    TRefTracked();
-    TRefTracked(const TRefTracked&);
-    TRefTracked(TRefTracked&&);
-    ~TRefTracked();
+    TRefTracked()
+    {
+        auto cookie = GetRefCountedTypeCookie<T>();
+        TRefCountedTrackerFacade::AllocateInstance(cookie);
+    }
+
+    TRefTracked(const TRefTracked&)
+    {
+        auto cookie = GetRefCountedTypeCookie<T>();
+        TRefCountedTrackerFacade::AllocateInstance(cookie);
+    }
+
+    TRefTracked(TRefTracked&&)
+    {
+        auto cookie = GetRefCountedTypeCookie<T>();
+        TRefCountedTrackerFacade::AllocateInstance(cookie);
+    }
+
+    ~TRefTracked()
+    {
+        auto cookie = GetRefCountedTypeCookie<T>();
+        TRefCountedTrackerFacade::FreeInstance(cookie);
+    }
 #endif
 };
 

@@ -391,12 +391,12 @@ struct CatchPoolEvent {
     {
     }
 
-    TTenantTestRuntime::EEventAction operator()(TAutoPtr<IEventHandle>& ev)
+    TTenantTestRuntime::EEventAction operator()(TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev)
     {
         if (ev->HasEvent()
-            && (ev->Type == TTenantsManager::TEvPrivate::TEvPoolAllocated::EventType)
-                || (ev->Type == TTenantsManager::TEvPrivate::TEvPoolFailed::EventType)
-                || (ev->Type == TTenantsManager::TEvPrivate::TEvPoolDeleted::EventType)) {
+            && (dynamic_cast<TTenantsManager::TEvPrivate::TEvPoolAllocated*>(ev->GetBase())
+                || dynamic_cast<TTenantsManager::TEvPrivate::TEvPoolFailed*>(ev->GetBase())
+                || dynamic_cast<TTenantsManager::TEvPrivate::TEvPoolDeleted*>(ev->GetBase()))) {
             Captured.emplace_back(std::move(ev));
             return TTestActorRuntime::EEventAction::DROP;
         }

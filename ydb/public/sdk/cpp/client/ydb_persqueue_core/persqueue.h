@@ -319,14 +319,6 @@ struct TWriteSessionMeta : public TThrRefBase {
     THashMap<TString, TString> Fields;
 };
 
-//! Message levelmetainformation.
-struct TMessageMeta : public TThrRefBase {
-    using TPtr = TIntrusivePtr<TWriteSessionMeta>;
-
-    //! User defined fields.
-    TVector<std::pair<TString, TString>> Fields;
-};
-
 //! Event that is sent to client during session destruction.
 struct TSessionClosedEvent : public TStatus {
     using TStatus::TStatus;
@@ -357,7 +349,7 @@ enum class EClusterDiscoveryMode {
 };
 
 class TContinuationToken : public TMoveOnly {
-    friend class TWriteSessionImpl;
+    friend class TWriteSession;
 private:
     TContinuationToken() = default;
 };
@@ -682,7 +674,7 @@ struct TReadSessionEvent {
 
     private:
         void CheckMessagesFilled(bool compressed) const {
-            Y_ABORT_UNLESS(!Messages.empty() || !CompressedMessages.empty());
+            Y_VERIFY(!Messages.empty() || !CompressedMessages.empty());
             if (compressed && CompressedMessages.empty()) {
                 ythrow yexception() << "cannot get compressed messages, parameter decompress=true for read session";
             }
@@ -725,7 +717,7 @@ struct TReadSessionEvent {
 
     //! Server request for creating partition stream.
     struct TCreatePartitionStreamEvent {
-        TCreatePartitionStreamEvent(TPartitionStream::TPtr, ui64 committedOffset, ui64 endOffset);
+        explicit TCreatePartitionStreamEvent(TPartitionStream::TPtr, ui64 committedOffset, ui64 endOffset);
 
         const TPartitionStream::TPtr& GetPartitionStream() const {
             return PartitionStream;
@@ -1113,8 +1105,8 @@ struct TWriteSessionSettings : public TRequestSettings<TWriteSessionSettings> {
         //! Function to handle all event types.
         //! If event with current type has no handler for this type of event,
         //! this handler (if specified) will be used.
-        //! If this handler is not specified, event can be received with TWriteSession::GetEvent() method.
-        FLUENT_SETTING(std::function<void(TWriteSessionEvent::TEvent&)>, CommonHandler);
+        //! If this handler is not specified, event can be received with TReadSession::GetEvent() method.
+        FLUENT_SETTING(std::function<void(TReadSessionEvent::TEvent&)>, CommonHandler);
 
         //! Executor for handlers.
         //! If not set, default single threaded executor will be used.
@@ -1128,7 +1120,8 @@ struct TWriteSessionSettings : public TRequestSettings<TWriteSessionSettings> {
     FLUENT_SETTING_DEFAULT(bool, ValidateSeqNo, true);
 
     //! Manages cluster discovery mode.
-    FLUENT_SETTING_DEFAULT(EClusterDiscoveryMode, ClusterDiscoveryMode, EClusterDiscoveryMode::Auto);
+    FLUENT_SETTING_OPTIONAL(EClusterDiscoveryMode, ClusterDiscoveryMode);
+
 };
 
 //! Read settings for single topic.
@@ -1453,7 +1446,7 @@ struct TPersQueueClientSettings : public TCommonClientSettingsBase<TPersQueueCli
     FLUENT_SETTING_DEFAULT(IExecutor::TPtr, DefaultHandlersExecutor, CreateThreadPoolExecutor(1));
 
     //! Manages cluster discovery mode.
-    FLUENT_SETTING_DEFAULT(EClusterDiscoveryMode, ClusterDiscoveryMode, EClusterDiscoveryMode::Auto);
+    FLUENT_SETTING_DEFAULT(EClusterDiscoveryMode, ClusterDiscoveryMode, EClusterDiscoveryMode::On);
 };
 
 // PersQueue client.

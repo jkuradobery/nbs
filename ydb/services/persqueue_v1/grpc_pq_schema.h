@@ -5,8 +5,8 @@
 #include <ydb/core/client/server/grpc_base.h>
 #include <ydb/core/persqueue/cluster_tracker.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actorsystem.h>
 
 #include <util/generic/hash.h>
 #include <util/system/mutex.h>
@@ -42,7 +42,6 @@ private:
             HFunc(NKikimr::NGRpcService::TEvAlterTopicRequest, Handle);
             HFunc(NKikimr::NGRpcService::TEvDescribeTopicRequest, Handle);
             HFunc(NKikimr::NGRpcService::TEvDescribeConsumerRequest, Handle);
-            HFunc(NKikimr::NGRpcService::TEvDescribePartitionRequest, Handle);
             hFunc(NPQ::NClusterTracker::TEvClusterTracker::TEvClustersUpdate, Handle);
         }
     }
@@ -59,7 +58,6 @@ private:
     void Handle(NKikimr::NGRpcService::TEvAlterTopicRequest::TPtr& ev, const TActorContext& ctx);
     void Handle(NKikimr::NGRpcService::TEvDescribeTopicRequest::TPtr& ev, const TActorContext& ctx);
     void Handle(NKikimr::NGRpcService::TEvDescribeConsumerRequest::TPtr& ev, const TActorContext& ctx);
-    void Handle(NKikimr::NGRpcService::TEvDescribePartitionRequest::TPtr& ev, const TActorContext& ctx);
 
     void Handle(NPQ::NClusterTracker::TEvClusterTracker::TEvClustersUpdate::TPtr& ev);
 

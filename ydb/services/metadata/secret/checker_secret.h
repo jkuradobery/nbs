@@ -12,7 +12,7 @@ class TSecretPreparationActor: public NActors::TActorBootstrapped<TSecretPrepara
 private:
     std::vector<TSecret> Objects;
     NModifications::IAlterPreparationController<TSecret>::TPtr Controller;
-    NModifications::IOperationsManager::TInternalModificationContext Context;
+    NModifications::IOperationsManager::TModificationContext Context;
     std::shared_ptr<NMetadata::NSecret::TSnapshot> Secrets;
     void StartChecker();
 protected:
@@ -29,7 +29,7 @@ public:
 
     TSecretPreparationActor(std::vector<TSecret>&& objects,
         NModifications::IAlterPreparationController<TSecret>::TPtr controller,
-        const NModifications::IOperationsManager::TInternalModificationContext& context);
+        const NModifications::IOperationsManager::TModificationContext& context);
 };
 
 }

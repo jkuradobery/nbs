@@ -8,41 +8,21 @@ namespace NKikimr::NTestShard {
         , Generation(generation)
         , Tablet(tablet)
         , Settings(settings)
+        , StateServerWriteLatency(1024)
+        , WriteLatency(1024)
     {}
-
-    TLoadActor::~TLoadActor() {
-        ClearKeys();
-    }
-
-    void TLoadActor::ClearKeys() {
-        for (auto& [key, info] : Keys) {
-            Y_ABORT_UNLESS(info.ConfirmedState == ::NTestShard::TStateServer::CONFIRMED
-                    ? info.ConfirmedKeyIndex < ConfirmedKeys.size() && ConfirmedKeys[info.ConfirmedKeyIndex] == key
-                    : info.ConfirmedKeyIndex == Max<size_t>());
-            info.ConfirmedKeyIndex = Max<size_t>();
-        }
-        Keys.clear();
-        ConfirmedKeys.clear();
-    }
 
     void TLoadActor::Bootstrap(const TActorId& parentId) {
         STLOG(PRI_DEBUG, TEST_SHARD, TS31, "TLoadActor::Bootstrap", (TabletId, TabletId));
         TabletActorId = parentId;
-        if (Settings.HasStorageServerHost()) {
-            Send(MakeStateServerInterfaceActorId(), new TEvStateServerConnect(Settings.GetStorageServerHost(),
-                Settings.GetStorageServerPort()));
-            Send(parentId, new TTestShard::TEvSwitchMode(TTestShard::EMode::STATE_SERVER_CONNECT));
-        } else {
-            RunValidation(true);
-        }
-        NextWriteTimestamp = TActivationContext::Monotonic();
+        Send(MakeStateServerInterfaceActorId(), new TEvStateServerConnect(Settings.GetStorageServerHost(),
+            Settings.GetStorageServerPort()));
+        Send(parentId, new TTestShard::TEvSwitchMode(TTestShard::EMode::STATE_SERVER_CONNECT));
         Become(&TThis::StateFunc);
     }
 
     void TLoadActor::PassAway() {
-        if (Settings.HasStorageServerHost()) {
-            Send(MakeStateServerInterfaceActorId(), new TEvStateServerDisconnect);
-        }
+        Send(MakeStateServerInterfaceActorId(), new TEvStateServerDisconnect);
         if (ValidationActorId) {
             TActivationContext::Send(new IEventHandle(TEvents::TSystem::Poison, 0, ValidationActorId, SelfId(), nullptr, 0));
         }
@@ -59,7 +39,7 @@ namespace NKikimr::NTestShard {
             return;
         }
         if (StallCounter > 500) {
-            if (WritesInFlight.empty() && DeletesInFlight.empty() && ReadsInFlight.empty() && TransitionInFlight.empty()) {
+            if (WritesInFlight.empty() && DeletesInFlight.empty() && TransitionInFlight.empty()) {
                 StallCounter = 0;
             } else {
                 return;
@@ -70,55 +50,20 @@ namespace NKikimr::NTestShard {
             barrier = Settings.GetValidateAfterBytes();
         }
         if (BytesProcessed > barrier) { // time to perform validation
-            if (WritesInFlight.empty() && DeletesInFlight.empty() && ReadsInFlight.empty() && TransitionInFlight.empty()) {
+            if (WritesInFlight.empty() && DeletesInFlight.empty() && TransitionInFlight.empty()) {
                 RunValidation(false);
             }
         } else { // resume load
-            const TMonotonic now = TActivationContext::Monotonic();
-
-            bool canWriteMore = false;
-            if (WritesInFlight.size() < Settings.GetMaxInFlight()) {
-                if (NextWriteTimestamp <= now) {
-                    IssueWrite();
-                    if (WritesInFlight.size() < Settings.GetMaxInFlight() || !Settings.GetResetWritePeriodOnFull()) {
-                        NextWriteTimestamp += GenerateRandomInterval(Settings.GetWritePeriods());
-                        canWriteMore = NextWriteTimestamp <= now;
-                    } else {
-                        NextWriteTimestamp = TMonotonic::Max();
-                    }
-                } else if (!WriteOnTimeScheduled) {
-                    Y_ABORT_UNLESS(NextWriteTimestamp != TMonotonic::Max());
-                    TActivationContext::Schedule(NextWriteTimestamp, new IEventHandle(EvWriteOnTime, 0, SelfId(), {}, nullptr, 0));
-                    WriteOnTimeScheduled = true;
+            if (WritesInFlight.size() < Settings.GetMaxInFlight()) { // write until there is space in inflight
+                IssueWrite();
+                if (WritesInFlight.size() < Settings.GetMaxInFlight()) {
+                    TActivationContext::Send(new IEventHandle(EvDoSomeAction, 0, SelfId(), {}, nullptr, 0));
                 }
             }
-
-            bool canReadMore = false;
-            if (ReadsInFlight.size() < Settings.GetMaxReadsInFlight()) {
-                canReadMore = IssueRead();
-            }
-
             if (BytesOfData > Settings.GetMaxDataBytes()) { // delete some data if needed
                 IssueDelete();
             }
-
-            if (!DoSomeActionInFlight && (canWriteMore || canReadMore)) {
-                TActivationContext::Send(new IEventHandle(EvDoSomeAction, 0, SelfId(), {}, nullptr, 0));
-                DoSomeActionInFlight = true;
-            }
         }
-    }
-
-    void TLoadActor::HandleDoSomeAction() {
-        Y_ABORT_UNLESS(DoSomeActionInFlight);
-        DoSomeActionInFlight = false;
-        Action();
-    }
-
-    void TLoadActor::HandleWriteOnTime() {
-        Y_ABORT_UNLESS(WriteOnTimeScheduled);
-        WriteOnTimeScheduled = false;
-        Action();
     }
 
     void TLoadActor::Handle(TEvStateServerStatus::TPtr ev) {
@@ -131,10 +76,10 @@ namespace NKikimr::NTestShard {
     }
 
     TDuration TLoadActor::GenerateRandomInterval(const NKikimrClient::TTestShardControlRequest::TTimeInterval& interval) {
-        Y_ABORT_UNLESS(interval.HasFrequency() && interval.HasMaxIntervalMs());
+        Y_VERIFY(interval.HasFrequency() && interval.HasMaxIntervalMs());
         const double frequency = interval.GetFrequency();
         const double xMin = exp(-frequency * interval.GetMaxIntervalMs() * 1e-3);
-        const double x = Max(xMin, RandomNumber<double>());
+        const double x = Max(xMin, TAppData::RandomProvider->GenRandReal2());
         return TDuration::Seconds(-log(x) / frequency);
     }
 
@@ -146,11 +91,11 @@ namespace NKikimr::NTestShard {
 
     size_t TLoadActor::GenerateRandomSize(const google::protobuf::RepeatedPtrField<NKikimrClient::TTestShardControlRequest::TSizeInterval>& intervals,
             bool *isInline) {
-        Y_ABORT_UNLESS(!intervals.empty());
+        Y_VERIFY(!intervals.empty());
         const auto& interval = intervals[PickInterval(intervals)];
-        Y_ABORT_UNLESS(interval.HasMin() && interval.HasMax() && interval.GetMin() <= interval.GetMax());
+        Y_VERIFY(interval.HasMin() && interval.HasMax() && interval.GetMin() <= interval.GetMax());
         *isInline = interval.GetInline();
-        return interval.GetMin() + RandomNumber<size_t>(interval.GetMax() - interval.GetMin() + 1);
+        return TAppData::RandomProvider->Uniform(interval.GetMin(), interval.GetMax());
     }
 
     std::unique_ptr<TEvKeyValue::TEvRequest> TLoadActor::CreateRequest() {
@@ -163,7 +108,7 @@ namespace NKikimr::NTestShard {
     }
 
     void TLoadActor::Handle(TEvKeyValue::TEvResponse::TPtr ev) {
-        Y_ABORT_UNLESS(!ValidationActorId); // no requests during validation
+        Y_VERIFY(!ValidationActorId); // no requests during validation
         auto& record = ev->Get()->Record;
         if (record.GetStatus() != NMsgBusProxy::MSTATUS_OK) {
             STLOG(PRI_ERROR, TEST_SHARD, TS26, "TEvKeyValue::TEvRequest failed", (TabletId, TabletId),
@@ -187,33 +132,10 @@ namespace NKikimr::NTestShard {
                 }
                 DeletesInFlight.erase(it);
             }
-            if (const auto it = ReadsInFlight.find(record.GetCookie()); it != ReadsInFlight.end()) {
-                const auto& [key, timestamp, payloadInResponse, items] = it->second;
-                const auto jt = KeysBeingRead.find(key);
-                Y_ABORT_UNLESS(jt != KeysBeingRead.end() && jt->second);
-                if (!--jt->second) {
-                    KeysBeingRead.erase(jt);
-                }
-                ReadsInFlight.erase(it);
-            }
         } else {
-            auto makeResponse = [&] {
-                NKikimrClient::TResponse copy;
-                copy.CopyFrom(record);
-                for (auto& m : *copy.MutableReadResult()) {
-                    if (m.HasValue()) {
-                        m.SetValue(TStringBuilder() << m.GetValue().size() << " bytes of data");
-                    }
-                }
-                return SingleLineProto(copy);
-            };
-            STLOG(PRI_INFO, TEST_SHARD, TS04, "TEvKeyValue::TEvResponse", (TabletId, TabletId), (Msg, makeResponse()));
+            STLOG(PRI_INFO, TEST_SHARD, TS04, "TEvKeyValue::TEvResponse", (TabletId, TabletId), (Msg, ev->Get()->ToString()));
             ProcessWriteResult(record.GetCookie(), record.GetWriteResult());
             ProcessDeleteResult(record.GetCookie(), record.GetDeleteRangeResult());
-            ProcessReadResult(record.GetCookie(), record.GetReadResult(), *ev->Get());
-        }
-        if (WritesInFlight.size() != Settings.GetMaxInFlight() && NextWriteTimestamp == TMonotonic::Max()) {
-            NextWriteTimestamp = TMonotonic::Now() + GenerateRandomInterval(Settings.GetWritePeriods());
         }
         Action();
     }

@@ -1,13 +1,13 @@
 #include "dst_creator.h"
-#include "dst_remover.h"
 #include "target_base.h"
 #include "util.h"
 
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/events.h>
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
-using ETargetKind = TReplication::ETargetKind;
 using EDstState = TReplication::EDstState;
 using EStreamState = TReplication::EStreamState;
 
@@ -77,10 +77,6 @@ ui64 TTargetBase::GetTargetId() const {
     return TargetId;
 }
 
-ETargetKind TTargetBase::GetTargetKind() const {
-    return Kind;
-}
-
 void TTargetBase::Progress(ui64 schemeShardId, const TActorId& proxy, const TActorContext& ctx) {
     switch (DstState) {
     case EDstState::Creating:
@@ -94,22 +90,20 @@ void TTargetBase::Progress(ui64 schemeShardId, const TActorId& proxy, const TAct
     case EDstState::Ready:
         break; // TODO
     case EDstState::Removing:
-        if (!DstRemover) {
-            DstRemover = ctx.Register(CreateDstRemover(ctx.SelfID, schemeShardId, proxy,
-                ReplicationId, TargetId, Kind, DstPathId));
-        }
-        break;
+        break; // TODO
     case EDstState::Error:
         break;
     }
 }
 
 void TTargetBase::Shutdown(const TActorContext& ctx) {
-    for (auto* x : TVector<TActorId*>{&DstCreator, &DstRemover}) {
-        if (auto actorId = std::exchange(*x, {})) {
+    for (auto& x : TVector<TActorId>{DstCreator, DstRemover}) {
+        if (auto actorId = std::exchange(x, {})) {
             ctx.Send(actorId, new TEvents::TEvPoison());
         }
     }
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

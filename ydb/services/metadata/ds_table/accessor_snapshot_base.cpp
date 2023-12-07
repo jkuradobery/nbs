@@ -2,7 +2,7 @@
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/string/escape.h>
 
@@ -12,41 +12,20 @@ void TDSAccessorBase::OnNewParsedSnapshot(Ydb::Table::ExecuteQueryResult&& /*qRe
     SnapshotConstructor->EnrichSnapshotData(snapshot, InternalController);
 }
 
-void TDSAccessorBase::OnConstructSnapshotError(const TString& errorMessage) {
-    ALS_ERROR(NKikimrServices::METADATA_PROVIDER) << "cannot construct snapshot: " << errorMessage;
+void TDSAccessorBase::OnIncorrectSnapshotFromYQL(const TString& errorMessage) {
+    ALS_ERROR(NKikimrServices::METADATA_PROVIDER) << "cannot parse current snapshot: " << errorMessage;
 }
 
-void TDSAccessorBase::Handle(NRequest::TEvRequestFailed::TPtr& ev) {
-    OnConstructSnapshotError("on request failed: " + ev->Get()->GetErrorMessage());
-}
-
-void TDSAccessorBase::Handle(NRequest::TEvRequestResult<NRequest::TDialogYQLRequest>::TPtr& ev) {
-    auto& currentFullReply = ev->Get()->GetResult();
+void TDSAccessorBase::Handle(TEvYQLResponse::TPtr& ev) {
+    auto& currentFullReply = ev->Get()->GetResponse();
     Ydb::Table::ExecuteQueryResult qResult;
     currentFullReply.operation().result().UnpackTo(&qResult);
-
-    auto& managers = SnapshotConstructor->GetManagers();
-    Y_ABORT_UNLESS(managers.size());
-    Ydb::Table::ExecuteQueryResult qResultFull;
-    ui32 replyIdx = 0;
-    for (auto&& i : managers) {
-        auto it = CurrentExistence.find(i->GetStorageTablePath());
-        Y_ABORT_UNLESS(it != CurrentExistence.end());
-        Y_ABORT_UNLESS(it->second);
-        if (it->second == 1) {
-            *qResultFull.add_result_sets() = std::move(qResult.result_sets()[replyIdx]);
-            ++replyIdx;
-        } else {
-            qResultFull.add_result_sets();
-        }
-    }
-    Y_ABORT_UNLESS((int)replyIdx == qResult.result_sets().size());
-    Y_ABORT_UNLESS((size_t)qResultFull.result_sets().size() == SnapshotConstructor->GetManagers().size());
-    auto parsedSnapshot = SnapshotConstructor->ParseSnapshot(qResultFull, RequestedActuality);
+    Y_VERIFY((size_t)qResult.result_sets().size() == SnapshotConstructor->GetManagers().size());
+    auto parsedSnapshot = SnapshotConstructor->ParseSnapshot(qResult, RequestedActuality);
     if (!parsedSnapshot) {
-        OnConstructSnapshotError("snapshot is null after parsing");
+        OnIncorrectSnapshotFromYQL("snapshot is null after parsing");
     } else {
-        OnNewParsedSnapshot(std::move(qResultFull), parsedSnapshot);
+        OnNewParsedSnapshot(std::move(qResult), parsedSnapshot);
     }
 }
 
@@ -55,9 +34,13 @@ void TDSAccessorBase::Handle(TEvEnrichSnapshotResult::TPtr& ev) {
     OnNewEnrichedSnapshot(ev->Get()->GetEnrichedSnapshot());
 }
 
+void TDSAccessorBase::OnSnapshotEnrichingError(const TString& errorMessage) {
+    ALS_ERROR(NKikimrServices::METADATA_PROVIDER) << "cannot enrich current snapshot: " << errorMessage;
+}
+
 void TDSAccessorBase::Handle(TEvEnrichSnapshotProblem::TPtr& ev) {
     RequestedActuality = TInstant::Zero();
-    OnConstructSnapshotError("on enrich: " + ev->Get()->GetErrorText());
+    OnSnapshotEnrichingError(ev->Get()->GetErrorText());
 }
 
 void TDSAccessorBase::Handle(TEvRecheckExistence::TPtr& ev) {
@@ -65,28 +48,29 @@ void TDSAccessorBase::Handle(TEvRecheckExistence::TPtr& ev) {
 }
 
 void TDSAccessorBase::Handle(TTableExistsActor::TEvController::TEvError::TPtr& ev) {
-    AFL_ERROR(NKikimrServices::METADATA_PROVIDER)("action", "cannot detect path existence")("path", ev->Get()->GetPath())("error", ev->Get()->GetErrorMessage());
+    ALS_ERROR(NKikimrServices::METADATA_PROVIDER) << "cannot detect path existence: " << ev->Get()->GetPath() << "/" << ev->Get()->GetErrorMessage();
     Schedule(TDuration::Seconds(1), new TEvRecheckExistence(ev->Get()->GetPath()));
 }
 
 void TDSAccessorBase::Handle(TTableExistsActor::TEvController::TEvResult::TPtr& ev) {
     auto it = ExistenceChecks.find(ev->Get()->GetTablePath());
-    Y_ABORT_UNLESS(it != ExistenceChecks.end());
+    Y_VERIFY(it != ExistenceChecks.end());
     if (ev->Get()->IsTableExists()) {
         it->second = 1;
     } else {
         it->second = -1;
     }
-    bool hasExists = false;
+    bool hasNonExist = false;
     for (auto&& i : ExistenceChecks) {
         if (i.second == 0) {
             return;
         }
-        if (i.second == 1) {
-            hasExists = true;
+        if (i.second == -1) {
+            hasNonExist = true;
+            continue;
         }
     }
-    if (!hasExists) {
+    if (hasNonExist) {
         OnNewEnrichedSnapshot(SnapshotConstructor->CreateEmpty(RequestedActuality));
     } else {
         StartSnapshotsFetchingImpl();
@@ -96,7 +80,7 @@ void TDSAccessorBase::Handle(TTableExistsActor::TEvController::TEvResult::TPtr& 
 void TDSAccessorBase::StartSnapshotsFetching() {
     RequestedActuality = TInstant::Now();
     auto& managers = SnapshotConstructor->GetManagers();
-    Y_ABORT_UNLESS(managers.size());
+    Y_VERIFY(managers.size());
     bool hasExistsCheckers = false;
     for (auto&& i : managers) {
         auto it = ExistenceChecks.find(i->GetStorageTablePath());
@@ -114,20 +98,14 @@ void TDSAccessorBase::StartSnapshotsFetching() {
 }
 
 void TDSAccessorBase::StartSnapshotsFetchingImpl() {
+    TStringBuilder sb;
     RequestedActuality = TInstant::Now();
     auto& managers = SnapshotConstructor->GetManagers();
-    Y_ABORT_UNLESS(managers.size());
-    CurrentExistence = ExistenceChecks;
-    TStringBuilder sb;
+    Y_VERIFY(managers.size());
     for (auto&& i : managers) {
-        auto it = CurrentExistence.find(i->GetStorageTablePath());
-        Y_ABORT_UNLESS(it != CurrentExistence.end());
-        Y_ABORT_UNLESS(it->second);
-        if (it->second == 1) {
-            sb << "SELECT * FROM `" + EscapeC(i->GetStorageTablePath()) + "`;" << Endl;
-        }
+        sb << "SELECT * FROM `" + EscapeC(i->GetStorageTablePath()) + "`;";
     }
-    NRequest::TYQLRequestExecutor::Execute(sb, NACLib::TSystemUsers::Metadata(), InternalController, true);
+    Register(new NRequest::TYQLQuerySessionedActor(sb, NACLib::TSystemUsers::Metadata(), Config, InternalController));
 }
 
 TDSAccessorBase::TDSAccessorBase(const NRequest::TConfig& config, NFetcher::ISnapshotsFetcher::TPtr snapshotConstructor)

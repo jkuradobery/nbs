@@ -1,6 +1,6 @@
 option cc_enable_arenas = true;
 
-import "ydb/core/protos/data_events.proto";
+import "ydb/core/protos/tx_datashard.proto";
 
 package NKikimrDataShardLoad;
 option java_package = "ru.yandex.kikimr.proto";
@@ -29,7 +29,7 @@ message TEvYCSBTestLoadRequest {
         optional bool Infinite = 4;
 
         // only for bulk upsert
-        optional uint32 BatchSize = 5 [default = 1];
+        optional uint32 BatchSize = 5;
     }
 
     message TReadStart {
@@ -40,14 +40,11 @@ message TEvYCSBTestLoadRequest {
         // number of random rows to be read (point reads)
         optional uint64 ReadCount = 2;
 
-        // note that KQP supports only 1 inflight
         repeated uint32 Inflights = 3;
-
-        // not used in KQP
         repeated uint32 Chunks = 4;
 
         // Specifies the format for result data in TEvReadResult
-        optional NKikimrDataEvents.EDataFormat ResultFormat = 5;
+        optional NKikimrTxDataShard.EScanDataFormat ResultFormat = 5;
 
         // special mode: actor reads RowCount rows again and again
         // implies no full scan and only first inflight will be used
@@ -90,7 +87,6 @@ message TEvYCSBTestLoadRequest {
         TUpdateStart UpsertProposeStart = 24;
 
         TReadStart ReadIteratorStart = 25;
-        TReadStart ReadKqpStart = 26;
     }
 }
 

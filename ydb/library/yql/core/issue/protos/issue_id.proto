@@ -139,12 +139,9 @@ message TIssuesIds {
         YQL_DEPRECATED_POSITIONAL_SCHEMA = 4535;
         YQL_DUPLICATE_DECLARE = 4536;
         YQL_OFFSET_WITHOUT_SORT = 4537;
-        YQL_DEPRECATED_BINDINGS = 4538;
-        YQL_HINT_INVALID_PARAMETERS = 4539;
 
 // yql parser errors
         YQL_NOT_ALLOWED_IN_DISCOVERY = 4600;
-        YQL_DISABLED_BINDINGS = 4601;
 
 // jsonpath errors
         JSONPATH_PARSE_ERROR = 4700;
@@ -179,7 +176,6 @@ message TIssuesIds {
 // dq
         DQ_GATEWAY_ERROR = 6000;
         DQ_GATEWAY_NEED_FALLBACK_ERROR = 6001;
-        DQ_OPTIMIZE_ERROR = 6002;
 
 // range [200000, 399999) reserved for KiKiMR issue codes, do not use!
 

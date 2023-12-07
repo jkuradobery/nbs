@@ -1,9 +1,8 @@
 #include "dynamic_nameserver_impl.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/nameservice.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
 namespace NKikimr {
 namespace NNodeBroker {
@@ -223,7 +222,7 @@ void TDynamicNameserver::SendNodesList(const TActorContext &ctx)
         for (const auto &pr : StaticConfig->StaticNodeTable) {
             reply->Nodes.emplace_back(pr.first,
                                       pr.second.Address, pr.second.Host, pr.second.ResolveHost,
-                                      pr.second.Port, pr.second.Location, true);
+                                      pr.second.Port, pr.second.Location);
         }
 
         for (auto &config : DynamicConfigs) {
@@ -231,7 +230,7 @@ void TDynamicNameserver::SendNodesList(const TActorContext &ctx)
                 if (pr.second.Expire > now)
                     reply->Nodes.emplace_back(pr.first, pr.second.Address,
                                               pr.second.Host, pr.second.ResolveHost,
-                                              pr.second.Port, pr.second.Location, false);
+                                              pr.second.Port, pr.second.Location);
             }
         }
 
@@ -415,7 +414,7 @@ void TDynamicNameserver::Handle(TEvTabletPipe::TEvClientConnected::TPtr &ev, con
 void TDynamicNameserver::Handle(TEvNodeBroker::TEvNodesInfo::TPtr &ev, const TActorContext &ctx)
 {
     auto &rec = ev->Get()->GetRecord();
-    Y_ABORT_UNLESS(rec.HasDomain());
+    Y_VERIFY(rec.HasDomain());
     ui32 domain = rec.GetDomain();
 
     if (rec.GetEpoch().GetVersion() != DynamicConfigs[domain]->Epoch.Version)

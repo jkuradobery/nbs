@@ -80,7 +80,7 @@ int TYCloudClientCommandRoot::Run(TConfig& config) {
         }
         if (updater.CheckIfUpdateNeeded(config.ForceVersionCheck)) {
             NColorizer::TColors colors = NColorizer::AutoColors(Cerr);
-            Cerr << colors.Green() << "(!) New version of YDB CLI is available. Run 'ydb update' command for update. "
+            Cerr << colors.RedColor() << "(!) New version of YDB CLI is available. Run 'ydb update' command for update. "
                 << "You can also disable further version checks with 'ydb version --disable-checks' command"
                 << colors.OldColor() << Endl;
         } else if (config.ForceVersionCheck) {
@@ -104,7 +104,7 @@ int NewYCloudClient(int argc, char** argv) {
     settings.YdbDir = "ydb";
 
     auto commandsRoot = MakeHolder<TYCloudClientCommandRoot>(std::filesystem::path(argv[0]).stem().string(), settings);
-    commandsRoot->Opts.SetTitle("YDB client");
+    commandsRoot->Opts.SetTitle("YDB client for Yandex.Cloud");
     TClientCommand::TConfig config(argc, argv);
     return commandsRoot->Process(config);
 }

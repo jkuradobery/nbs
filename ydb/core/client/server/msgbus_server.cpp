@@ -83,7 +83,7 @@ public:
                 try { \
                     static_cast<TYPE&>(*Message).Record = dynamic_cast<const TYPE::RecordType&>(*RequestContext->GetRequest()); \
                 } catch (const std::bad_cast&) { \
-                    Y_ABORT("incorrect request message type"); \
+                    Y_FAIL("incorrect request message type"); \
                 } \
                 return;
 
@@ -141,7 +141,7 @@ public:
 #undef MTYPE
         }
 
-        Y_ABORT();
+        Y_FAIL();
     }
 
     ~TImplGRpc() {
@@ -164,12 +164,12 @@ public:
     }
 
     void SendReply(NBus::TBusMessage *resp) {
-        Y_ABORT_UNLESS(RequestContext);
+        Y_VERIFY(RequestContext);
         switch (const ui32 type = resp->GetHeader()->Type) {
 #define REPLY_OPTION(TYPE) \
             case TYPE::MessageType: { \
                 auto *msg = dynamic_cast<TYPE *>(resp); \
-                Y_ABORT_UNLESS(msg); \
+                Y_VERIFY(msg); \
                 RequestContext->Reply(msg->Record); \
                 break; \
             }
@@ -183,7 +183,7 @@ public:
             REPLY_OPTION(TBusConsoleResponse)
 
             default:
-                Y_ABORT("unexpected response type %" PRIu32, type);
+                Y_FAIL("unexpected response type %" PRIu32, type);
         }
         RequestContext = nullptr;
     }
@@ -223,17 +223,17 @@ TBusMessageContext& TBusMessageContext::operator =(TBusMessageContext other) {
 }
 
 NBus::TBusMessage *TBusMessageContext::GetMessage() {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     return Impl->GetMessage();
 }
 
 NBus::TBusMessage *TBusMessageContext::ReleaseMessage() {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     return Impl->ReleaseMessage();
 }
 
 void TBusMessageContext::SendReplyMove(NBus::TBusMessageAutoPtr response) {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     Impl->SendReplyMove(response);
 }
 
@@ -244,7 +244,7 @@ void TBusMessageContext::Swap(TBusMessageContext &msg) {
 TVector<TStringBuf> TBusMessageContext::FindClientCert() const { return Impl->FindClientCert(); }
 
 THolder<TMessageBusSessionIdentHolder::TImpl> TBusMessageContext::CreateSessionIdentHolder() {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     return Impl->CreateSessionIdentHolder();
 }
 
@@ -324,14 +324,14 @@ public:
     }
 
     void SendReply(NBus::TBusMessage *resp) override {
-        Y_ABORT_UNLESS(Context);
+        Y_VERIFY(Context);
         Context->SendReply(resp);
 
         auto context = std::move(Context);
     }
 
     void SendReplyMove(NBus::TBusMessageAutoPtr resp) override {
-        Y_ABORT_UNLESS(Context);
+        Y_VERIFY(Context);
         Context->SendReplyMove(resp);
 
         auto context = std::move(Context);
@@ -366,17 +366,17 @@ void TMessageBusSessionIdentHolder::InitSession(TBusMessageContext &msg) {
 }
 
 ui64 TMessageBusSessionIdentHolder::GetTotalTimeout() const {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     return Impl->GetTotalTimeout();
 }
 
 void TMessageBusSessionIdentHolder::SendReply(NBus::TBusMessage *resp) {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     Impl->SendReply(resp);
 }
 
 void TMessageBusSessionIdentHolder::SendReplyMove(NBus::TBusMessageAutoPtr resp) {
-    Y_ABORT_UNLESS(Impl);
+    Y_VERIFY(Impl);
     Impl->SendReplyMove(resp);
 }
 

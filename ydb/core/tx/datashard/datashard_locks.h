@@ -8,7 +8,6 @@
 #include <ydb/core/tablet/tablet_counters.h>
 
 #include <library/cpp/cache/cache.h>
-#include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
 #include <util/generic/list.h>
 #include <util/generic/queue.h>
 #include <util/generic/set.h>
@@ -43,7 +42,6 @@ public:
 
         TVector<TLockRange> Ranges;
         TVector<ui64> Conflicts;
-        TVector<ui64> VolatileDependencies;
     };
 
     virtual bool Load(TVector<TLockRow>& rows) = 0;
@@ -67,10 +65,6 @@ public:
     // Persist a conflict, i.e. this lock must break some other lock on commit
     virtual void PersistAddConflict(ui64 lockId, ui64 otherLockId) = 0;
     virtual void PersistRemoveConflict(ui64 lockId, ui64 otherLockId) = 0;
-
-    // Persist volatile dependencies, i.e. which undecided transactions must be waited for on commit
-    virtual void PersistAddVolatileDependency(ui64 lockId, ui64 txId) = 0;
-    virtual void PersistRemoveVolatileDependency(ui64 lockId, ui64 txId) = 0;
 };
 
 class TLocksDataShard {
@@ -316,25 +310,16 @@ public:
     void PersistRanges(ILocksDb* db);
 
     void AddConflict(TLockInfo* otherLock, ILocksDb* db);
-    void AddVolatileDependency(ui64 txId, ILocksDb* db);
     void PersistConflicts(ILocksDb* db);
     void CleanupConflicts();
 
     void RestorePersistentRange(ui64 rangeId, const TPathId& tableId, ELockRangeFlags flags);
     void RestorePersistentConflict(TLockInfo* otherLock);
-    void RestorePersistentVolatileDependency(ui64 txId);
 
     template<class TCallback>
     void ForAllConflicts(TCallback&& callback) {
         for (auto& pr : ConflictLocks) {
             callback(pr.first);
-        }
-    }
-
-    template<class TCallback>
-    void ForAllVolatileDependencies(TCallback&& callback) {
-        for (auto& item : VolatileDependencies) {
-            callback(item);
         }
     }
 
@@ -382,7 +367,6 @@ private:
 
     // A set of locks we must break on commit
     THashMap<TLockInfo*, ELockConflictFlags> ConflictLocks;
-    absl::flat_hash_set<ui64> VolatileDependencies;
     TVector<TPersistentRange> PersistentRanges;
 
     ui64 LastOpId = 0;
@@ -439,12 +423,12 @@ public:
     }
 
     NScheme::TTypeInfo GetKeyColumnType(ui32 pos) const {
-        Y_ABORT_UNLESS(pos < KeyColumnTypes.size());
+        Y_VERIFY(pos < KeyColumnTypes.size());
         return KeyColumnTypes[pos];
     }
 
     void UpdateKeyColumnsTypes(const TVector<NScheme::TTypeInfo>& keyTypes) {
-        Y_ABORT_UNLESS(KeyColumnTypes.size() <= keyTypes.size());
+        Y_VERIFY(KeyColumnTypes.size() <= keyTypes.size());
         if (KeyColumnTypes.size() < keyTypes.size()) {
             KeyColumnTypes = keyTypes;
             Ranges.SetKeyTypes(keyTypes);
@@ -567,7 +551,7 @@ public:
     }
 
     TRangeKey MakeRange(const TTableId& tableId, const TTableRange& range) const {
-        Y_ABORT_UNLESS(!range.Point);
+        Y_VERIFY(!range.Point);
         return TRangeKey{
             GetTableLocks(tableId),
             TOwnedCellVec(range.From),
@@ -634,7 +618,7 @@ private:
 
     TTableLocks::TPtr GetTableLocks(const TTableId& table) const {
         auto it = Tables.find(table.PathId);
-        Y_ABORT_UNLESS(it != Tables.end());
+        Y_VERIFY(it != Tables.end());
         return it->second;
     }
 
@@ -667,7 +651,6 @@ struct TLocksUpdate {
     TIntrusiveList<TLockInfo, TLockInfoReadConflictListTag> ReadConflictLocks;
     TIntrusiveList<TLockInfo, TLockInfoWriteConflictListTag> WriteConflictLocks;
     TIntrusiveList<TTableLocks, TTableLocksWriteConflictShardListTag> WriteConflictShardLocks;
-    absl::flat_hash_set<ui64> VolatileDependencies;
 
     TIntrusiveList<TLockInfo, TLockInfoEraseListTag> EraseLocks;
 
@@ -738,10 +721,6 @@ struct TLocksUpdate {
         WriteConflictShardLocks.PushBack(table);
     }
 
-    void AddVolatileDependency(ui64 txId) {
-        VolatileDependencies.insert(txId);
-    }
-
     void AddEraseLock(TLockInfo* lock) {
         EraseLocks.PushBack(lock);
     }
@@ -784,8 +763,8 @@ public:
     {}
 
     void SetupUpdate(TLocksUpdate* update, ILocksDb* db = nullptr) noexcept {
-        Y_ABORT_UNLESS(!Update, "Cannot setup a recursive update");
-        Y_ABORT_UNLESS(update, "Cannot setup a nullptr update");
+        Y_VERIFY(!Update, "Cannot setup a recursive update");
+        Y_VERIFY(update, "Cannot setup a nullptr update");
         Update = update;
         Db = db;
     }
@@ -809,7 +788,7 @@ public:
     }
 
     ui64 CurrentLockTxId() const {
-        Y_ABORT_UNLESS(Update);
+        Y_VERIFY(Update);
         return Update->LockTxId;
     }
 
@@ -835,7 +814,6 @@ public:
     void AddReadConflict(ui64 conflictId);
     void AddWriteConflict(ui64 conflictId);
     void AddWriteConflict(const TTableId& tableId, const TArrayRef<const TCell>& key);
-    void AddVolatileDependency(ui64 txId);
     void BreakAllLocks(const TTableId& tableId);
     void BreakSetLocks();
     bool IsMyKey(const TArrayRef<const TCell>& key) const;
@@ -901,7 +879,7 @@ private:
     static ui64 GetLockId(const TArrayRef<const TCell>& key) {
         ui64 lockId;
         bool ok = TLocksTable::ExtractKey(key, TLocksTable::EColumns::LockId, lockId);
-        Y_ABORT_UNLESS(ok);
+        Y_VERIFY(ok);
         return lockId;
     }
 };

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import contrib.ydb.core.protos.msgbus_pb2 as msgbus
-from contrib.ydb.tests.library.common.types import DeltaTypes, PType
+import ydb.core.protos.msgbus_pb2 as msgbus
+from ydb.tests.library.common.types import DeltaTypes, PType
 
 
 def column_to_dict(delta):

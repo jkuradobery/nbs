@@ -46,9 +46,6 @@ IComputationNode* WrapKqpScanWideReadTableRanges(TCallable& callable, const TCom
 IComputationNode* WrapKqpScanWideReadTable(TCallable& callable, const TComputationNodeFactoryContext& ctx,
     TKqpScanComputeContext& computeCtx);
 
-IComputationNode* WrapKqpScanBlockReadTableRanges(TCallable& callable, const TComputationNodeFactoryContext& ctx,
-    TKqpScanComputeContext& computeCtx);
-
 } // namespace NMiniKQL
 } // namespace NKikimr
 

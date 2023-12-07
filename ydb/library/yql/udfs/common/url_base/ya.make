@@ -1,8 +1,8 @@
-YQL_UDF_CONTRIB(url_udf)
+YQL_UDF(url_udf)
 
 YQL_ABI_VERSION(
     2
-    35
+    27
     0
 )
 
@@ -16,8 +16,3 @@ PEERDIR(
 )
 
 END()
-
-RECURSE_FOR_TESTS(
-    test
-)
-

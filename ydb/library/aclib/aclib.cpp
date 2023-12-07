@@ -63,7 +63,7 @@ TUserToken::TUserToken(NACLibProto::TUserToken&& token) {
 }
 
 TUserToken::TUserToken(const TString& token) {
-    Y_ABORT_UNLESS(ParseFromString(token));
+    Y_VERIFY(ParseFromString(token));
     Serialized_ = token;
 }
 
@@ -384,7 +384,7 @@ void TACL::SortACL() {
 }
 
 TACL::TACL(const TString& string) {
-    Y_ABORT_UNLESS(ParseFromString(string));
+    Y_VERIFY(ParseFromString(string));
 }
 
 std::pair<ui32, ui32> TACL::ApplyDiff(const NACLibProto::TDiffACL& diffACL) Y_NO_SANITIZE("undefined") {
@@ -700,7 +700,7 @@ void TACL::FromString(const TString& string) {
 }
 
 TDiffACL::TDiffACL(const TString& string) {
-    Y_ABORT_UNLESS(ParseFromString(string));
+    Y_VERIFY(ParseFromString(string));
 }
 
 void TDiffACL::AddAccess(EAccessType type, ui32 access, const TSID& sid, ui32 inheritance) {

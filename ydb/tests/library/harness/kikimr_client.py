@@ -3,20 +3,20 @@
 import time
 import os
 
-from contrib.ydb.tests.library.common.msgbus_types import MessageBusStatus
-from contrib.ydb.tests.library.common.protobuf_ss import TSchemeOperationStatus
+from ydb.tests.library.common.msgbus_types import MessageBusStatus
+from ydb.tests.library.common.protobuf_ss import TSchemeOperationStatus
 
 import grpc
 import six
 
 from google.protobuf.text_format import Parse
-from contrib.ydb.core.protos import blobstorage_config_pb2
-import contrib.ydb.core.protos.msgbus_pb2 as msgbus
-import contrib.ydb.core.protos.msgbus_kv_pb2 as msgbus_kv
-import contrib.ydb.core.protos.flat_scheme_op_pb2 as flat_scheme_op_pb2
-import contrib.ydb.core.protos.grpc_pb2_grpc as grpc_server
-from contrib.ydb.core.protos import flat_scheme_op_pb2 as flat_scheme_op
-from contrib.ydb.public.api.protos.ydb_status_codes_pb2 import StatusIds
+from ydb.core.protos import blobstorage_config_pb2
+import ydb.core.protos.msgbus_pb2 as msgbus
+import ydb.core.protos.msgbus_kv_pb2 as msgbus_kv
+import ydb.core.protos.flat_scheme_op_pb2 as flat_scheme_op_pb2
+import ydb.core.protos.grpc_pb2_grpc as grpc_server
+from ydb.core.protos import flat_scheme_op_pb2 as flat_scheme_op
+from ydb.public.api.protos.ydb_status_codes_pb2 import StatusIds
 from collections import namedtuple
 
 

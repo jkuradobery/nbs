@@ -320,19 +320,6 @@ Y_UNIT_TEST_SUITE(JsonValueTest) {
         );
     }
 
-    Y_UNIT_TEST(EmptyList) {
-        TValue value = TValueBuilder()
-            .EmptyList(TTypeBuilder().Primitive(EPrimitiveType::Int64).Build())
-            .Build();
-        TString jsonString = FormatValueJson(value, EBinaryStringEncoding::Unicode);
-        UNIT_ASSERT_NO_DIFF(jsonString, "[]");
-        TValue resultValue = JsonToYdbValue(jsonString, value.GetType(), EBinaryStringEncoding::Unicode);
-        UNIT_ASSERT_NO_DIFF(
-            TProtoAccessor::GetProto(value).DebugString(),
-            TProtoAccessor::GetProto(resultValue).DebugString()
-        );
-    }
-
     namespace {
         TString InvalidJsonToBinaryStringBase(const TString& jsonString) {
             TString errorMessage;
@@ -589,7 +576,7 @@ Y_UNIT_TEST_SUITE(JsonValueTest) {
     }
 
     Y_UNIT_TEST(PgValue) {
-        TPgType pgType("");
+        TPgType pgType(1, 2, 3);
         TPgValue v1(TPgValue::VK_TEXT, "text_value", pgType);
         TPgValue v2(TPgValue::VK_BINARY, "binary_value", pgType);
         TPgValue v3(TPgValue::VK_TEXT, "", pgType);

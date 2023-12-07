@@ -23,6 +23,7 @@ SRCS(
     console__add_config_subscription.cpp
     console__alter_tenant.cpp
     console__replace_yaml_config.cpp
+    console__set_yaml_config.cpp
     console__cleanup_subscriptions.cpp
     console__configure.cpp
     console__create_tenant.cpp
@@ -72,14 +73,15 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/http
+    library/cpp/actors/core
+    library/cpp/actors/http
     ydb/core/actorlib_impl
     ydb/core/base
     ydb/core/blobstorage
     ydb/core/blobstorage/base
     ydb/core/blobstorage/groupinfo
     ydb/core/cms/console/validators
+    ydb/core/cms/console/yaml_config
     ydb/core/control
     ydb/core/engine/minikql
     ydb/core/mind
@@ -89,7 +91,6 @@ PEERDIR(
     ydb/core/tablet_flat
     ydb/core/util
     ydb/library/aclib
-    ydb/library/yaml_config
     ydb/public/api/protos
     ydb/public/lib/operation_id
 )
@@ -99,6 +100,7 @@ END()
 RECURSE(
     util
     validators
+    yaml_config
 )
 
 RECURSE_FOR_TESTS(

@@ -103,12 +103,6 @@ public:
         return *this;
     }
 
-    TNodeBuilder<TParent, TCoAtom>& Value(i64 value) {
-        return value >= 0 && value <= i64(std::numeric_limits<ui32>::max()) ?
-            Value(this->Ctx.GetIndexAsString(ui32(value)), TNodeFlags::Default) :
-            Value(ToString(value), TNodeFlags::Default);
-    }
-
     TCoAtom DoBuild() {
         auto node = this->Ctx.NewAtom(this->Pos, ValueHolder, this->Flags);
         return TCoAtom(node);
@@ -125,10 +119,9 @@ public:
     }
 
     TParent& Build(i64 value) {
-        return value >= 0 && value <= i64(std::numeric_limits<ui32>::max()) ?
-            Build(this->Ctx.GetIndexAsString(ui32(value)), TNodeFlags::Default) :
-            Build(ToString(value), TNodeFlags::Default);
+        return Build(ToString(value), TNodeFlags::Default);
     }
+
 private:
     TStringBuf ValueHolder;
     ui32 Flags = TNodeFlags::ArbitraryContent;
@@ -153,7 +146,7 @@ public:
         {}
 
     TNodeBuilder<TParent, TCoLambda>& Args(const TCoArgument& node) {
-        Y_DEBUG_ABORT_UNLESS(!this->ArgsHolder.IsValid());
+        Y_VERIFY_DEBUG(!this->ArgsHolder.IsValid());
 
         auto argsNode = this->Ctx.NewArguments(this->Pos, { node.Ptr() });
         this->ArgsHolder = TCoArguments(argsNode);
@@ -162,7 +155,7 @@ public:
     }
 
     TNodeBuilder<TParent, TCoLambda>& Args(const TCoArguments& node) {
-        Y_DEBUG_ABORT_UNLESS(!this->ArgsHolder.IsValid());
+        Y_VERIFY_DEBUG(!this->ArgsHolder.IsValid());
 
         this->ArgsHolder = node;
         return *this;
@@ -170,7 +163,7 @@ public:
 
     TNodeBuilder<TParent, TCoLambda>& Args(std::initializer_list<TStringBuf> list)
     {
-        Y_DEBUG_ABORT_UNLESS(!this->ArgsHolder.IsValid());
+        Y_VERIFY_DEBUG(!this->ArgsHolder.IsValid());
 
         TExprNode::TListType argNodes;
         for (auto name : list) {
@@ -188,7 +181,7 @@ public:
 
     TNodeBuilder<TParent, TCoLambda>& Args(const std::vector<TCoArgument>& list)
     {
-        Y_DEBUG_ABORT_UNLESS(!this->ArgsHolder.IsValid());
+        Y_VERIFY_DEBUG(!this->ArgsHolder.IsValid());
 
         TExprNode::TListType argNodes;
         for (auto arg : list) {
@@ -202,7 +195,7 @@ public:
 
     TNodeBuilder<TParent, TCoLambda>& Args(const TExprNode::TListType& list)
     {
-        Y_DEBUG_ABORT_UNLESS(!this->ArgsHolder.IsValid());
+        Y_VERIFY_DEBUG(!this->ArgsHolder.IsValid());
 
         auto argsNode = this->Ctx.NewArguments(this->Pos, TExprNode::TListType(list));
         this->ArgsHolder = TCoArguments(argsNode);

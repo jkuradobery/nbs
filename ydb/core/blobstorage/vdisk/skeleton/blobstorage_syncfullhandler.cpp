@@ -78,7 +78,7 @@ namespace NKikimr {
                 return;
             }
 
-            Y_DEBUG_ABORT_UNLESS(SourceVDisk != SelfVDiskId);
+            Y_VERIFY_DEBUG(SourceVDisk != SelfVDiskId);
 
             Run(ctx, clientSyncState);
         }
@@ -128,7 +128,7 @@ namespace NKikimr {
                 stage,
                 std::move(result));
             auto aid = ctx.Register(actor);
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
             Become(&TThis::StateFunc);
         }
 

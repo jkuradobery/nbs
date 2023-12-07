@@ -64,11 +64,11 @@ namespace NYql::NDqs::NExecutionHelpers {
             TBase::Send(FullResultWriterID, MakeHolder<NActors::TEvents::TEvPoison>());
         }
 
-        void OnReceiveData(NDq::TDqSerializedBatch&& data, const TString& messageId = "", bool autoAck = false) {
+        void OnReceiveData(NYql::NDqProto::TData&& data, const TString& messageId = "", bool autoAck = false) {
             YQL_LOG_CTX_ROOT_SESSION_SCOPE(TraceId);
 
-            if (data.RowCount() > 0 && !ResultBuilder) {
-                Issues.AddIssue(TIssue("Non empty rows: >=" + ToString(data.RowCount())).SetCode(0, TSeverityIds::S_WARNING));
+            if (data.GetRows() > 0 && !ResultBuilder) {
+                Issues.AddIssue(TIssue("Non empty rows: >=" + ToString(data.GetRows())).SetCode(0, TSeverityIds::S_WARNING));
             }
             if (Discard || !ResultBuilder || autoAck) {
                 TBase::Send(TBase::SelfId(), MakeHolder<TEvMessageProcessed>(messageId));
@@ -83,8 +83,7 @@ namespace NYql::NDqs::NExecutionHelpers {
                 bool exceedRows = false;
                 try {
                     TFailureInjector::Reach("result_actor_base_fail_on_response_write", [] { throw yexception() << "result_actor_base_fail_on_response_write"; });
-                    NDq::TDqSerializedBatch dataCopy = WriteQueue.back().Data;
-                    full = ResultBuilder->WriteYsonData(std::move(dataCopy), [this, &exceedRows](const TString& rawYson) {
+                    full = ResultBuilder->WriteYsonData(WriteQueue.back().WriteRequest.GetData(), [this, &exceedRows](const TString& rawYson) {
                         if (RowsLimit && Rows + 1 > *RowsLimit) {
                             exceedRows = true;
                             return false;
@@ -154,6 +153,7 @@ namespace NYql::NDqs::NExecutionHelpers {
 
     protected:
         STFUNC(HandlerBase) {
+            Y_UNUSED(ctx);
             switch (const ui32 etype = ev->GetTypeRewrite()) {
                 hFunc(NActors::TEvents::TEvUndelivered, OnUndelivered);
                 HFunc(TEvQueryResponse, OnQueryResult);
@@ -169,6 +169,7 @@ namespace NYql::NDqs::NExecutionHelpers {
         }
 
         STFUNC(ShutdownHandlerBase) {
+            Y_UNUSED(ctx);
             switch (const ui32 etype = ev->GetTypeRewrite()) {
                 HFunc(NActors::TEvents::TEvGone, OnShutdownQueryResult);
                 cFunc(NActors::TEvents::TEvPoison::EventType, TBase::PassAway);
@@ -213,7 +214,7 @@ namespace NYql::NDqs::NExecutionHelpers {
             if (ev->Get()->Record.IssuesSize() == 0) {  // weird way used by writer to acknowledge it's death
                 DoFinish();
             } else {
-                Y_ABORT_UNLESS(ev->Get()->Record.GetStatusCode() != NYql::NDqProto::StatusIds::SUCCESS);
+                Y_VERIFY(ev->Get()->Record.GetStatusCode() != NYql::NDqProto::StatusIds::SUCCESS);
                 TBase::Send(ExecuterID, ev->Release().Release());
             }
         }
@@ -229,7 +230,7 @@ namespace NYql::NDqs::NExecutionHelpers {
         void OnFullResultWriterAck(TEvFullResultWriterAck::TPtr& ev, const NActors::TActorContext&) {
             YQL_LOG_CTX_ROOT_SESSION_SCOPE(TraceId);
             YQL_CLOG(DEBUG, ProviderDq) << __FUNCTION__;
-            Y_ABORT_UNLESS(ev->Get()->Record.GetMessageId() == WriteQueue.front().MessageId);
+            Y_VERIFY(ev->Get()->Record.GetMessageId() == WriteQueue.front().MessageId);
             if (!WriteQueue.front().SentProcessedEvent) {  // messages, received before limits exceeded, are already been reported
                 TBase::Send(TBase::SelfId(), MakeHolder<TEvMessageProcessed>(WriteQueue.front().MessageId));
             }
@@ -280,7 +281,7 @@ namespace NYql::NDqs::NExecutionHelpers {
             record.MutableMessage()->PackFrom(payload);
             TBase::Send(GraphExecutionEventsId, new TEvGraphExecutionEvent(record));
             TBase::template Synchronize<TEvGraphExecutionEvent>([this](TEvGraphExecutionEvent::TPtr& ev) {
-                Y_ABORT_UNLESS(ev->Get()->Record.GetEventType() == NYql::NDqProto::EGraphExecutionEventType::SYNC);
+                Y_VERIFY(ev->Get()->Record.GetEventType() == NYql::NDqProto::EGraphExecutionEventType::SYNC);
                 YQL_LOG_CTX_ROOT_SESSION_SCOPE(TraceId);
 
                 if (auto msg = ev->Get()->Record.GetErrorMessage()) {
@@ -333,31 +334,20 @@ namespace NYql::NDqs::NExecutionHelpers {
         void UnsafeWriteToFullResultTable() {
             YQL_LOG_CTX_ROOT_SESSION_SCOPE(TraceId);
             YQL_CLOG(DEBUG, ProviderDq) << __FUNCTION__;
-
-            auto& src = WriteQueue.front();
-            auto req = MakeHolder<TEvFullResultWriterWriteRequest>();
-
-            req->Record.SetMessageId(src.MessageId);
-            *(req->Record.MutableData()) = std::move(src.Data.Proto);
-            req->Record.MutableData()->ClearPayloadId();
-            if (!src.Data.Payload.IsEmpty()) {
-                req->Record.MutableData()->SetPayloadId(req->AddPayload(std::move(src.Data.Payload)));
-            }
-
-            TBase::Send(FullResultWriterID, std::move(req));
+            TBase::Send(FullResultWriterID, MakeHolder<TEvFullResultWriterWriteRequest>(std::move(WriteQueue.front().WriteRequest)));
         }
 
     private:
         struct TQueueItem {
-            TQueueItem(NDq::TDqSerializedBatch&& data, const TString& messageId)
-                : Data(std::move(data))
+            TQueueItem(NDqProto::TData&& data, const TString& messageId)
+                : WriteRequest()
                 , MessageId(messageId)
-                , SentProcessedEvent(false)
-            {
+                , SentProcessedEvent(false) {
+                *WriteRequest.MutableData() = std::move(data);
+                WriteRequest.SetMessageId(messageId);
             }
 
-            //NDqProto::TFullResultWriterWriteRequest WriteRequest;
-            NDq::TDqSerializedBatch Data;
+            NDqProto::TFullResultWriterWriteRequest WriteRequest;
             const TString MessageId;
             bool SentProcessedEvent;
         };

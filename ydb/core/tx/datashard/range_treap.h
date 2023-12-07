@@ -104,8 +104,8 @@ namespace NDataShard {
          * Adds mapping from the given range to the given value
          */
         void AddRange(TOwnedRange range, TValue value) {
-            Y_ABORT_UNLESS(range.LeftKey.size() <= KeyTypes.size(), "Range left key is too large");
-            Y_ABORT_UNLESS(range.RightKey.size() <= KeyTypes.size(), "Range right key is too large");
+            Y_VERIFY(range.LeftKey.size() <= KeyTypes.size(), "Range left key is too large");
+            Y_VERIFY(range.RightKey.size() <= KeyTypes.size(), "Range right key is too large");
 
             auto leftBorder = TBorder::MakeLeft(range.LeftKey, range.LeftInclusive);
             auto rightBorder = TBorder::MakeRight(range.RightKey, range.RightInclusive);
@@ -199,7 +199,7 @@ namespace NDataShard {
                         return;
                     }
 
-                    Y_DEBUG_ABORT_UNLESS(!tptr->Get());
+                    Y_VERIFY_DEBUG(!tptr->Get());
                     break;
                 }
 
@@ -296,17 +296,17 @@ namespace NDataShard {
          * Removes node t from the tree
          */
         void DoRemove(TNode* t) noexcept {
-            Y_DEBUG_ABORT_UNLESS(t, "Trying to remove a nullptr node");
+            Y_VERIFY_DEBUG(t, "Trying to remove a nullptr node");
             TNode* p = t->Parent;
             if (p) {
                 if (p->Left == t) {
                     return DoRemove(&p->Left);
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(p->Right == t, "Node has corrupted parent link");
+                    Y_VERIFY_DEBUG(p->Right == t, "Node has corrupted parent link");
                     return DoRemove(&p->Right);
                 }
             } else {
-                Y_DEBUG_ABORT_UNLESS(Root.Get() == t, "Node has corrupted parent link");
+                Y_VERIFY_DEBUG(Root.Get() == t, "Node has corrupted parent link");
                 return DoRemove(&Root);
             }
         }
@@ -316,7 +316,7 @@ namespace NDataShard {
          */
         void DoRemove(THolder<TNode>* tptr) noexcept {
             THolder<TNode> d = std::move(*tptr);
-            Y_DEBUG_ABORT_UNLESS(d, "Cannot remove a null node");
+            Y_VERIFY_DEBUG(d, "Cannot remove a null node");
             ++Stats_.Deletes;
             --Size_;
 
@@ -335,8 +335,8 @@ namespace NDataShard {
          * Merges two subtrees l and r (where l < r)
          */
         THolder<TNode> Merge(THolder<TNode> l, THolder<TNode> r) noexcept {
-            Y_DEBUG_ABORT_UNLESS(!l || l->Parent == nullptr);
-            Y_DEBUG_ABORT_UNLESS(!r || r->Parent == nullptr);
+            Y_VERIFY_DEBUG(!l || l->Parent == nullptr);
+            Y_VERIFY_DEBUG(!r || r->Parent == nullptr);
             if (!l || !r) {
                 return l ? std::move(l) : std::move(r);
             } else if (l->Prio <= r->Prio) {
@@ -485,7 +485,7 @@ namespace NDataShard {
 
             // N.B. we avoid comparison with RightKey when it is equal to MaxRightKey.
             if ((wentLeft && t->MaxRightTrivial) ||
-                CompareBorders(leftBorder, t->RightBorder()) <= 0)
+                (cmp = CompareBorders(leftBorder, t->RightBorder()) <= 0))
             {
                 callback(t->ToRange(), t->Value);
             }
@@ -518,7 +518,7 @@ namespace NDataShard {
          */
         void Validate() const noexcept {
             if (Root) {
-                Y_ABORT_UNLESS(Root->Parent == nullptr, "Root must not have a parent");
+                Y_VERIFY(Root->Parent == nullptr, "Root must not have a parent");
                 DoValidate(Root.Get());
             }
         }
@@ -535,14 +535,14 @@ namespace NDataShard {
             bool maxRightTrivial = true;
 
             if (auto* l = t->Left.Get()) {
-                Y_ABORT_UNLESS(l->Parent == t, "Left child parent is incorrect");
-                Y_ABORT_UNLESS(l->Prio >= t->Prio, "Left child prio is incorrect");
+                Y_VERIFY(l->Parent == t, "Left child parent is incorrect");
+                Y_VERIFY(l->Prio >= t->Prio, "Left child prio is incorrect");
                 cmp = this->CompareBorders(l->LeftBorder(), t->LeftBorder());
-                Y_ABORT_UNLESS(cmp < 0 || cmp == 0 && TValueTraits::Less(l->Value, t->Value), "Left child must be smaller than t");
+                Y_VERIFY(cmp < 0 || cmp == 0 && TValueTraits::Less(l->Value, t->Value), "Left child must be smaller than t");
                 TNode* leftRightMost;
                 std::tie(leftMost, leftRightMost) = DoValidate(l);
                 cmp = this->CompareBorders(leftRightMost->LeftBorder(), t->LeftBorder());
-                Y_ABORT_UNLESS(cmp < 0 || cmp == 0 && TValueTraits::Less(leftRightMost->Value, t->Value), "Left child rightmost node must be smaller than t");
+                Y_VERIFY(cmp < 0 || cmp == 0 && TValueTraits::Less(leftRightMost->Value, t->Value), "Left child rightmost node must be smaller than t");
                 cmp = this->CompareBorders(maxRightBorder, l->MaxRightBorder());
                 if (cmp < 0) {
                     maxRightBorder = l->MaxRightBorder();
@@ -551,14 +551,14 @@ namespace NDataShard {
             }
 
             if (auto* r = t->Right.Get()) {
-                Y_ABORT_UNLESS(r->Parent == t, "Right child parent is incorrect");
-                Y_ABORT_UNLESS(r->Prio >= t->Prio, "Right child prio is incorrect");
+                Y_VERIFY(r->Parent == t, "Right child parent is incorrect");
+                Y_VERIFY(r->Prio >= t->Prio, "Right child prio is incorrect");
                 cmp = this->CompareBorders(t->LeftBorder(), r->LeftBorder());
-                Y_ABORT_UNLESS(cmp < 0 || cmp == 0 && TValueTraits::Less(t->Value, r->Value), "Right child must be bigger than t");
+                Y_VERIFY(cmp < 0 || cmp == 0 && TValueTraits::Less(t->Value, r->Value), "Right child must be bigger than t");
                 TNode* rightLeftMost;
                 std::tie(rightLeftMost, rightMost) = DoValidate(r);
                 cmp = this->CompareBorders(t->LeftBorder(), rightLeftMost->LeftBorder());
-                Y_ABORT_UNLESS(cmp < 0 || cmp == 0 && TValueTraits::Less(t->Value, rightLeftMost->Value), "Right child leftmost node must be bigger than t");
+                Y_VERIFY(cmp < 0 || cmp == 0 && TValueTraits::Less(t->Value, rightLeftMost->Value), "Right child leftmost node must be bigger than t");
                 cmp = this->CompareBorders(maxRightBorder, r->MaxRightBorder());
                 if (cmp < 0) {
                     maxRightBorder = r->MaxRightBorder();
@@ -567,8 +567,8 @@ namespace NDataShard {
             }
 
             cmp = this->CompareBorders(maxRightBorder, t->MaxRightBorder());
-            Y_ABORT_UNLESS(cmp == 0, "Subtree must have max right key equal to the calculated max");
-            Y_ABORT_UNLESS(maxRightTrivial == t->MaxRightTrivial,
+            Y_VERIFY(cmp == 0, "Subtree must have max right key equal to the calculated max");
+            Y_VERIFY(maxRightTrivial == t->MaxRightTrivial,
                 "Subtree must have correct MaxRightTrivial flag (computed=%d, stored=%d)",
                 int(maxRightTrivial), int(t->MaxRightTrivial));
 

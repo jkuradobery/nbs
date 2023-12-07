@@ -43,11 +43,6 @@ struct TDict {
     using ValueType = TValue;
 };
 
-template <typename TKey>
-struct TSetType {
-    using KeyType = TKey;
-};
-
 template <typename... TArgs>
 struct TTuple;
 
@@ -71,8 +66,6 @@ struct TBlockType { using ItemType = T; };
 
 template <typename T>
 struct TScalarType { using ItemType = T; };
-
-struct TVoid {};
 
 //////////////////////////////////////////////////////////////////////////////
 // ITypeBuilder
@@ -370,7 +363,7 @@ public:
     }
 
     inline void UnRef() noexcept {
-        Y_DEBUG_ABORT_UNLESS(Refs_ > 0);
+        Y_VERIFY_DEBUG(Refs_ > 0);
         if (--Refs_ == 0) {
             delete this;
         }
@@ -458,7 +451,6 @@ UDF_ASSERT_TYPE_SIZE(IListTypeBuilder, 8);
 namespace NImpl {
 
 template <typename T> struct TSimpleSignatureHelper;
-template <typename T> struct TSimpleSignatureTypeHelper;
 template <typename T> struct TTypeBuilderHelper;
 template <typename... TArgs> struct TArgsHelper;
 template <typename... TArgs> struct TTupleHelper;
@@ -651,18 +643,7 @@ public:
 };
 #endif
 
-#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 32)
-class IBlockTypeHelper;
-
-class IFunctionTypeInfoBuilder16: public IFunctionTypeInfoBuilder15 {
-public:
-    virtual const IBlockTypeHelper& IBlockTypeHelper() const = 0;
-};
-#endif
-
-#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 32)
-using IFunctionTypeInfoBuilderImpl = IFunctionTypeInfoBuilder16;
-#elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 28)
+#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 28)
 using IFunctionTypeInfoBuilderImpl = IFunctionTypeInfoBuilder15;
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 26)
 using IFunctionTypeInfoBuilderImpl = IFunctionTypeInfoBuilder14;
@@ -696,8 +677,6 @@ using IFunctionTypeInfoBuilderImpl = IFunctionTypeInfoBuilder1;
 
 class IFunctionTypeInfoBuilder: public IFunctionTypeInfoBuilderImpl {
 public:
-    IFunctionTypeInfoBuilder();
-    
     IFunctionTypeInfoBuilder& Implementation(
             TUniquePtr<IBoxedValue> impl) {
         ImplementationImpl(std::move(impl));
@@ -735,11 +714,6 @@ public:
     IFunctionTypeInfoBuilder& SimpleSignature() {
         NImpl::TSimpleSignatureHelper<T>::Register(*this);
         return *this;
-    }
-
-    template <typename T>
-    TType* SimpleSignatureType() const {
-        return NImpl::TSimpleSignatureTypeHelper<T>::Build(*this);
     }
 
     IFunctionTypeInfoBuilder& RunConfig(TDataTypeId type) {
@@ -864,13 +838,6 @@ struct TTypeBuilderHelper<TOptional<T>> {
     }
 };
 
-template <typename T>
-struct TTypeBuilderHelper<TAutoMap<T>> {
-    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
-        return TTypeBuilderHelper<T>::Build(builder);
-    }
-};
-
 template <typename TKey, typename TValue>
 struct TTypeBuilderHelper<TDict<TKey, TValue>> {
     static TType* Build(const IFunctionTypeInfoBuilder& builder) {
@@ -878,23 +845,6 @@ struct TTypeBuilderHelper<TDict<TKey, TValue>> {
                 Key(TTypeBuilderHelper<TKey>::Build(builder))
                 .Value(TTypeBuilderHelper<TValue>::Build(builder))
                 .Build();
-    }
-};
-
-template <typename TKey>
-struct TTypeBuilderHelper<TSetType<TKey>> {
-    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
-        return builder.Dict()->
-                Key(TTypeBuilderHelper<TKey>::Build(builder))
-                .Value(builder.Void())
-                .Build();
-    }
-};
-
-template <>
-struct TTypeBuilderHelper<TVoid> {
-    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
-        return builder.Void();
     }
 };
 
@@ -1055,22 +1005,9 @@ struct TArgsHelper<TArg, TArgs...> {
 
 template <typename TReturn, typename... TArgs>
 struct TSimpleSignatureHelper<TReturn(TArgs...)> {
-    static TType* BuildReturnType(IFunctionTypeInfoBuilder& builder) {
-        return TTypeBuilderHelper<TReturn>::Build(builder);
-    }
     static void Register(IFunctionTypeInfoBuilder& builder) {
-        builder.Returns(BuildReturnType(builder));
+        builder.Returns(TTypeBuilderHelper<TReturn>::Build(builder));
         TArgsHelper<TArgs...>::Add(*builder.Args());
-    }
-};
-
-template <typename TReturn, typename... TArgs>
-struct TSimpleSignatureTypeHelper<TReturn(TArgs...)> {
-    static TType* Build(const IFunctionTypeInfoBuilder& builder) {
-        auto callableBuilder = builder.Callable(sizeof...(TArgs));
-        callableBuilder->Returns(TTypeBuilderHelper<TReturn>::Build(builder));
-        TCallableArgsHelper<TArgs...>::Arg(*callableBuilder, builder);
-        return callableBuilder->Build();
     }
 };
 

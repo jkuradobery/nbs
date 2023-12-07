@@ -67,10 +67,6 @@ namespace NKikimr {
                 PassAway();
             }
 
-            void Handle(TEvBlobStorage::TEvConfigureProxy::TPtr&/* ev*/) {
-                //  do nothing, Model has neither monitoring counters nor Topology
-            }
-
             STATEFN(StateFunc) {
                 switch (const ui32 type = ev->GetTypeRewrite()) {
                     hFunc(TEvBlobStorage::TEvPut, Handle);
@@ -82,10 +78,9 @@ namespace NKikimr {
                     hFunc(TEvBlobStorage::TEvStatus, Handle);
 
                     hFunc(TEvents::TEvPoisonPill, HandlePoison);
-                    hFunc(TEvBlobStorage::TEvConfigureProxy, Handle);
 
                     default:
-                        Y_ABORT("unexpected event 0x%08" PRIx32, type);
+                        Y_FAIL("unexpected event 0x%08" PRIx32, type);
                 }
             }
 
@@ -98,12 +93,6 @@ namespace NKikimr {
                 : TActor(&TBlobStorageGroupProxyMockActor::StateFunc)
                 , Model(model ? std::move(model) : MakeIntrusive<NFake::TProxyDS>())
             {}
-
-
-            TBlobStorageGroupProxyMockActor(ui32 groupId)
-                : TActor(&TBlobStorageGroupProxyMockActor::StateFunc)
-                , Model(MakeIntrusive<NFake::TProxyDS>(groupId))
-            {}
         };
     } // anon
 
@@ -111,8 +100,8 @@ namespace NKikimr {
         return new TBlobStorageGroupProxyMockActor(std::move(model));
     }
 
-    IActor *CreateBlobStorageGroupProxyMockActor(ui32 groupId) {
-        return new TBlobStorageGroupProxyMockActor(groupId);
+    IActor *CreateBlobStorageGroupProxyMockActor() {
+        return new TBlobStorageGroupProxyMockActor(nullptr);
     }
 
 } // NKikimr

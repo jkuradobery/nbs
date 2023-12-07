@@ -1,5 +1,5 @@
 #include <library/cpp/testing/unittest/registar.h>
-#include <ydb/library/actors/core/actor_coroutine.h>
+#include <library/cpp/actors/core/actor_coroutine.h>
 #include <ydb/core/blobstorage/crypto/default.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo.h>
 #include <ydb/core/blobstorage/groupinfo/blobstorage_groupinfo_sets.h>
@@ -114,7 +114,7 @@ public:
     void ForwardToProxy(TAutoPtr<IEventHandle> ev) {
         const TGroupID groupId(GroupIDFromBlobStorageProxyID(ev->GetForwardOnNondeliveryRecipient()));
         const ui32 id = groupId.GetRaw();
-        Forward(ev, MakeBlobStorageProxyID(id));
+        TActivationContext::Send(ev->Forward(MakeBlobStorageProxyID(id)));
     }
 
     STRICT_STFUNC(StateFunc,
@@ -161,7 +161,7 @@ public:
     };
 
     TIntrusivePtr<::NMonitoring::TDynamicCounters> Counters;
-    const NPDisk::TMainKey MainKey{ .Keys = { NPDisk::YdbDefaultPDiskSequence } };
+    const NPDisk::TMainKey MainKey = { NPDisk::YdbDefaultPDiskSequence };
     const ui32 NodeCount;
     const ui32 GroupId = 0;
     std::vector<TDiskRecord> Disks;
@@ -274,9 +274,9 @@ public:
         std::set<ui32> nodes = runtime.GetNodes();
         for (const auto& actorId : Info->GetDynamicInfo().ServiceIdForOrderNumber) {
             const ui32 num = nodes.erase(actorId.NodeId());
-            Y_ABORT_UNLESS(num);
+            Y_VERIFY(num);
         }
-        Y_ABORT_UNLESS(nodes.size() == 1);
+        Y_VERIFY(nodes.size() == 1);
         const ui32 targetNode = *nodes.begin();
 
         // pick random target pdisk
@@ -342,7 +342,7 @@ public:
             Y_VERIFY_S(ev->Status == NKikimrProto::OK || ev->Status == NKikimrProto::ALREADY, "TEvSlayResult# " << ev->ToString());
             LOG_INFO_S(runtime, NActorsServices::TEST, "Slayed VDiskId# " << disk.VDiskId);
         } else {
-            Y_ABORT("unexpected event to edge actor");
+            Y_FAIL("unexpected event to edge actor");
         }
     }
 
@@ -456,8 +456,8 @@ public:
         ++*DoneCounter;
     }
 
-    void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) {
-        Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
+    void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) override {
+        Y_FAIL("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
     }
 
     template<typename TEvent, typename... TArgs>
@@ -468,7 +468,7 @@ public:
         GetActorSystem()->Schedule(TDuration::MicroSeconds(TAppData::RandomProvider->Uniform(10, 100)),
             new IEventHandle(ProxyId, SelfActorId, q.release()));
         ++*Counter;
-        auto ev = WaitForSpecificEvent<TResultFor<TEvent>>(&TActivityActorImpl::ProcessUnexpectedEvent);
+        auto ev = WaitForSpecificEvent<TResultFor<TEvent>>();
         LOG_DEBUG_S(GetActorContext(), NActorsServices::TEST, Prefix << " received "
             << TypeName<TResultFor<TEvent>>() << "# " << ev->Get()->Print(false));
         return ev;
@@ -491,9 +491,9 @@ public:
 
         // discover previously written data
         if (auto ev = Query<TEvBlobStorage::TEvDiscover>(TabletId, 0, true, false, TInstant::Max(), 0, true)) {
-            Y_ABORT_UNLESS(ev->Get()->Status == (Committed.empty() ? NKikimrProto::NODATA : NKikimrProto::OK));
+            Y_VERIFY(ev->Get()->Status == (Committed.empty() ? NKikimrProto::NODATA : NKikimrProto::OK));
             if (ev->Get()->Status == NKikimrProto::OK) {
-                Y_ABORT_UNLESS(ev->Get()->Buffer == Committed.rbegin()->second);
+                Y_VERIFY(ev->Get()->Buffer == Committed.rbegin()->second);
             }
         }
 
@@ -502,7 +502,7 @@ public:
         const TLogoBlobID to(TabletId, generation - 1, Max<ui32>(), 0, TLogoBlobID::MaxBlobSize, TLogoBlobID::MaxCookie);
         std::deque<TLogoBlobID> readQueue;
         if (auto ev = Query<TEvBlobStorage::TEvRange>(TabletId, from, to, true, TInstant::Max(), true)) {
-            Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK);
+            Y_VERIFY(ev->Get()->Status == NKikimrProto::OK);
             for (const auto& response : ev->Get()->Responses) {
                 readQueue.push_back(response.Id);
             }
@@ -511,9 +511,9 @@ public:
         // issue gets from the read queue
         ui32 readsInFlight = 0;
         const ui32 maxReadsInFlight = 3;
-        TMonotonic nextSendTimestamp;
+        TInstant nextSendTimestamp;
         while (readsInFlight || !readQueue.empty()) {
-            const TMonotonic now = TActorCoroImpl::Monotonic();
+            const TInstant now = TActorCoroImpl::Now();
             if (readQueue.size() && now >= nextSendTimestamp && readsInFlight < maxReadsInFlight) {
                 auto ev = std::make_unique<TEvBlobStorage::TEvGet>(readQueue.front(), 0, 0, TInstant::Max(),
                     NKikimrBlobStorage::EGetHandleClass::FastRead, true, false);
@@ -523,16 +523,15 @@ public:
                 ++*Counter;
                 readQueue.pop_front();
                 ++readsInFlight;
-            } else if (auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvGetResult>(&TActivityActorImpl::ProcessUnexpectedEvent,
-                    nextSendTimestamp)) {
+            } else if (auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvGetResult>(nextSendTimestamp)) {
                 LOG_DEBUG_S(GetActorContext(), NActorsServices::TEST, Prefix << " received TEvGetResult# " << ev->Get()->Print(false));
-                Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK);
+                Y_VERIFY(ev->Get()->Status == NKikimrProto::OK);
                 for (ui32 i = 0; i < ev->Get()->ResponseSz; ++i) {
                     const auto& response = ev->Get()->Responses[i];
-                    Y_ABORT_UNLESS(response.Status == NKikimrProto::OK);
+                    Y_VERIFY(response.Status == NKikimrProto::OK);
                     const auto it = Committed.find(response.Id);
-                    Y_ABORT_UNLESS(it != Committed.end());
-                    Y_ABORT_UNLESS(it->second == response.Buffer.ConvertToString());
+                    Y_VERIFY(it != Committed.end());
+                    Y_VERIFY(it->second == response.Buffer);
                     Committed.erase(it);
                 }
                 --readsInFlight;
@@ -545,7 +544,7 @@ public:
         if (generation != 1) {
             if (auto ev = Query<TEvBlobStorage::TEvCollectGarbage>(TabletId, generation, 0, 0, true, generation - 1,
                     Max<ui32>(), nullptr, nullptr, TInstant::Max(), false)) {
-                Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK);
+                Y_VERIFY(ev->Get()->Status == NKikimrProto::OK);
             }
         }
 
@@ -555,7 +554,7 @@ public:
         ui32 numWritesRemain = TAppData::RandomProvider->Uniform(100, 201);
         ui32 step = 1;
         while (writesInFlight.size() || numWritesRemain) {
-            const TMonotonic now = TActorCoroImpl::Monotonic();
+            const TInstant now = TActorCoroImpl::Now();
             if (numWritesRemain && now >= nextSendTimestamp && writesInFlight.size() < maxWritesInFlight) {
                 TString buffer = GenerateRandomBuffer(Cache);
                 const TLogoBlobID id(TabletId, generation, step++, 0, buffer.size(), 0);
@@ -566,13 +565,12 @@ public:
                 ++*Counter;
                 writesInFlight.emplace(id, std::move(buffer));
                 --numWritesRemain;
-            } else if (auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvPutResult>(&TActivityActorImpl::ProcessUnexpectedEvent,
-                    nextSendTimestamp)) {
+            } else if (auto ev = WaitForSpecificEvent<TEvBlobStorage::TEvPutResult>(nextSendTimestamp)) {
                 LOG_DEBUG_S(GetActorContext(), NActorsServices::TEST, Prefix << " received TEvPutResult# " << ev->Get()->Print(false)
                     << " writesInFlight.size# " << writesInFlight.size());
                 Y_VERIFY_S(ev->Get()->Status == NKikimrProto::OK, "TEvPutResult# " << ev->Get()->Print(false));
                 const auto it = writesInFlight.find(ev->Get()->Id);
-                Y_ABORT_UNLESS(it != writesInFlight.end());
+                Y_VERIFY(it != writesInFlight.end());
                 Committed.insert(writesInFlight.extract(it));
             }
         }

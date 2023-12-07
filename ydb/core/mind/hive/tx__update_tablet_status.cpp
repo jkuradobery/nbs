@@ -132,7 +132,7 @@ public:
                     if (Generation < leader.KnownGeneration) {
                         return true;
                     }
-                    if (leader.GetRestartsPerPeriod(now - Self->GetTabletRestartsPeriod()) >= Self->GetTabletRestartsMaxCount()) {
+                    if (leader.GetRestartsPerPeriod(now - Self->GetTabletRestartsPeriod()) >= Self->GetTabletRestarsMaxCount()) {
                         if (IsGoodStatusForPostpone()) {
                             leader.PostponeStart(now + Self->GetPostponeStartPeriod());
                             BLOG_D("THive::TTxUpdateTabletStatus::Execute for tablet " << tablet->ToString()
@@ -158,7 +158,7 @@ public:
                 }
                 switch (tablet->GetLeader().State) {
                 case ETabletState::GroupAssignment:
-                    //Y_ABORT("Unexpected tablet boot failure during group assignment");
+                    //Y_FAIL("Unexpected tablet boot failure during group assignment");
                     // Just ignore it. This is fail from previous generation.
                     return true;
                 case ETabletState::StoppingInGroupAssignment:
@@ -181,7 +181,6 @@ public:
                 default:
                     break;
                 };
-                tablet->PreferredNodeId = 0;
             }
             tablet->GetLeader().TryToBoot();
         }

@@ -205,12 +205,12 @@ protected:
 };
 
 
-using CompactVectorTestTypes = ::testing::Types<TCompactVector<Constructable, 0>,
+typedef ::testing::Types<TCompactVector<Constructable, 0>,
                          TCompactVector<Constructable, 1>,
                          TCompactVector<Constructable, 2>,
                          TCompactVector<Constructable, 4>,
                          TCompactVector<Constructable, 5>
-                         >;
+                         > CompactVectorTestTypes;
 TYPED_TEST_SUITE(CompactVectorTest, CompactVectorTestTypes);
 
 // New vector test.
@@ -723,7 +723,7 @@ protected:
   static size_t NumBuiltinElts(const TCompactVector<T, N>&) { return N; }
 };
 
-using DualCompactVectorTestTypes = ::testing::Types<
+typedef ::testing::Types<
     // Small mode -> Small mode.
     std::pair<TCompactVector<Constructable, 4>, TCompactVector<Constructable, 4>>,
     // Small mode -> Big mode.
@@ -732,7 +732,7 @@ using DualCompactVectorTestTypes = ::testing::Types<
     std::pair<TCompactVector<Constructable, 2>, TCompactVector<Constructable, 4>>,
     // Big mode -> Big mode.
     std::pair<TCompactVector<Constructable, 2>, TCompactVector<Constructable, 2>>
-  >;
+  > DualCompactVectorTestTypes;
 
 TYPED_TEST_SUITE(DualCompactVectorsTest, DualCompactVectorTestTypes);
 
@@ -1078,17 +1078,6 @@ TEST(CompactVectorTest, AssignToLonger) {
   lhs = rhs;
   EXPECT_EQ(1U, lhs.size());
   EXPECT_EQ("foo", lhs[0]);
-}
-
-TEST(CompactVectorTest, ZeroPaddingOnHeapMeta) {
-  TCompactVector<uint8_t, 6> vector;
-  std::vector<uint8_t> expected;
-  for (int i = 0; i < 10; ++i) {
-    vector.push_back(i);
-    expected.push_back(i);
-
-    ASSERT_THAT(vector, ::testing::ElementsAreArray(expected));
-  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

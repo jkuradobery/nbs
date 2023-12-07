@@ -12,12 +12,11 @@ using namespace NStorage;
 
 void TNodeWarden::RegisterPendingActor(const TActorId& actorId) {
     const bool inserted = PendingMessageQ.emplace(actorId, std::deque<std::unique_ptr<IEventHandle>>()).second;
-    Y_ABORT_UNLESS(inserted);
+    Y_VERIFY(inserted);
 }
 
 void TNodeWarden::EnqueuePendingMessage(TAutoPtr<IEventHandle> ev) {
-    const TActorId recipient = ev->GetForwardOnNondeliveryRecipient();
-    ev = IEventHandle::Forward(std::move(ev), recipient);
+    ev = ev->Forward(ev->GetForwardOnNondeliveryRecipient());
     const auto it = PendingMessageQ.find(ev->Recipient);
     if (it != PendingMessageQ.end()) {
         it->second.emplace_back(ev.Release());
@@ -28,7 +27,7 @@ void TNodeWarden::EnqueuePendingMessage(TAutoPtr<IEventHandle> ev) {
 
 void TNodeWarden::IssuePendingMessages(const TActorId& actorId) {
     const auto it = PendingMessageQ.find(actorId);
-    Y_ABORT_UNLESS(it != PendingMessageQ.end());
+    Y_VERIFY(it != PendingMessageQ.end());
     for (auto& ev : it->second) {
         TActivationContext::Send(ev.release());
     }
@@ -37,7 +36,7 @@ void TNodeWarden::IssuePendingMessages(const TActorId& actorId) {
 
 void TNodeWarden::ApplyServiceSet(const NKikimrBlobStorage::TNodeWardenServiceSet &serviceSet, bool isStatic, bool comprehensive, bool updateCache) {
     if (Cfg->IsCacheEnabled() && updateCache) {
-        Y_ABORT_UNLESS(!isStatic);
+        Y_VERIFY(!isStatic);
         return EnqueueSyncOp(WrapCacheOp(UpdateServiceSet(serviceSet, comprehensive, [=] {
             return ApplyServiceSet(serviceSet, false, comprehensive, false);
         })));
@@ -70,7 +69,7 @@ void TNodeWarden::ApplyServiceSet(const NKikimrBlobStorage::TNodeWardenServiceSe
             pdiskQ.erase({vslotId.NodeId, vslotId.PDiskId});
         }
         for (const TPDiskKey& pdiskId : pdiskQ) { // terminate excessive PDisks
-            Y_ABORT_UNLESS(pdiskId.NodeId == LocalNodeId);
+            Y_VERIFY(pdiskId.NodeId == LocalNodeId);
             DestroyLocalPDisk(pdiskId.PDiskId);
         }
     }
@@ -84,36 +83,13 @@ void TNodeWarden::ApplyServiceSet(const NKikimrBlobStorage::TNodeWardenServiceSe
     }
 }
 
-void TNodeWarden::Handle(TEvNodeWardenQueryStorageConfig::TPtr ev) {
-    Send(ev->Sender, new TEvNodeWardenStorageConfig(StorageConfig));
-    if (ev->Get()->Subscribe) {
-        StorageConfigSubscribers.insert(ev->Sender);
-    }
-}
-
-void TNodeWarden::Handle(TEvNodeWardenStorageConfig::TPtr ev) {
-    ev->Get()->Config->Swap(&StorageConfig);
-    if (StorageConfig.HasBlobStorageConfig()) {
-        if (const auto& bsConfig = StorageConfig.GetBlobStorageConfig(); bsConfig.HasServiceSet()) {
-            ApplyServiceSet(bsConfig.GetServiceSet(), true, false, true);
-        }
-    }
-    for (const TActorId& subscriber : StorageConfigSubscribers) {
-        Send(subscriber, new TEvNodeWardenStorageConfig(StorageConfig));
-    }
-}
-
-void TNodeWarden::HandleUnsubscribe(STATEFN_SIG) {
-    StorageConfigSubscribers.erase(ev->Sender);
-}
-
 void TNodeWarden::HandleIncrHugeInit(NIncrHuge::TEvIncrHugeInit::TPtr ev) {
     const TActorId keeperId = ev->GetForwardOnNondeliveryRecipient();
     const ui32 pdiskId = NIncrHuge::PDiskIdFromIncrHugeKeeperId(keeperId);
 
     // find local pdisk config to extract GUID
     auto it = LocalPDisks.find(TPDiskKey(LocalNodeId, pdiskId));
-    Y_ABORT_UNLESS(it != LocalPDisks.end());
+    Y_VERIFY(it != LocalPDisks.end());
 
     // get config
     const NKikimrBlobStorage::TIncrHugeConfig& config = Cfg->IncrHugeConfig;

@@ -44,13 +44,8 @@ namespace NKikimr {
             return config;
         }
 
-        void DefaultSignalTabletActive(const TActorContext &) override {
-            // must be empty
-        }
-
         void OnActivateExecutor(const TActorContext &ctx) final {
             Become(&TFakeCoordinator::StateWork);
-            SignalTabletActive(ctx);
             SendQueued(ctx);
         }
 
@@ -66,7 +61,7 @@ namespace NKikimr {
         }
 
         void StateInit(STFUNC_SIG) {
-            StateInitImpl(ev, SelfId());
+            StateInitImpl(ev, ctx);
         }
 
         void StateWork(STFUNC_SIG) {
@@ -217,7 +212,7 @@ namespace NKikimr {
                     ev->SerializeToArcadiaStream(&serializer);
                     Cerr << "FAKE_COORDINATOR:  Send Plan to tablet " << tabletId << " for txId: " << ev->Record.GetTransactions(0).GetTxId() << " at step: " << step << "\n";
 
-                    Pipes->Send(ctx, tabletId, ev->EventType, serializer.Release(ev->CreateSerializationInfo()));
+                    Pipes->Send(ctx, tabletId, ev->EventType, serializer.Release(ev->IsExtendedFormat()));
                 }
             }
         }

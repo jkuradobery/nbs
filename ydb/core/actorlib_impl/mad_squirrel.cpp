@@ -1,6 +1,6 @@
 #include "mad_squirrel.h"
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NActors {
 
@@ -11,7 +11,7 @@ class TMadSquirrel : public TActor<TMadSquirrel> {
 
 public:
     static constexpr auto ActorActivityType() {
-        return IActor::EActivityType::ACTORLIB_COMMON;
+        return ACTORLIB_COMMON;
     }
 
     TMadSquirrel()
@@ -20,7 +20,7 @@ public:
 
     STFUNC(StateFunc) {
         Y_UNUSED(ev);
-        Send(SelfId(), new TEvents::TEvWakeup());
+        ctx.Send(ctx.SelfID, new TEvents::TEvWakeup());
     }
 };
 

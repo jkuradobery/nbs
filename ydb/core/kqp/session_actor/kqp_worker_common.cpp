@@ -67,7 +67,7 @@ bool IsSameProtoTypeImpl(const NKikimrMiniKQL::TVariantType& actual, const NKiki
 } // namespace
 
 TKikimrQueryLimits GetQueryLimits(const TKqpWorkerSettings& settings) {
-    const auto& queryLimitsProto = settings.TableService.GetQueryLimits();
+    const auto& queryLimitsProto = settings.Service.GetQueryLimits();
     const auto& phaseLimitsProto = queryLimitsProto.GetPhaseLimits();
 
     TKikimrQueryLimits queryLimits;
@@ -111,7 +111,7 @@ void SlowLogQuery(const TActorContext &ctx, const TKikimrConfiguration* config, 
             username = "UNAUTHENTICATED";
         }
 
-        Y_DEBUG_ABORT_UNLESS(extractQueryText);
+        Y_VERIFY_DEBUG(extractQueryText);
         auto queryText = extractQueryText();
 
         auto paramsText = TStringBuilder()
@@ -145,16 +145,12 @@ bool IsSameProtoType(const NKikimrMiniKQL::TType& actual, const NKikimrMiniKQL::
             return IsSameProtoTypeImpl(actual.GetData(), expected.GetData());
         case NKikimrMiniKQL::ETypeKind::Optional:
             return IsSameProtoType(actual.GetOptional().GetItem(), expected.GetOptional().GetItem());
-        case NKikimrMiniKQL::ETypeKind::EmptyList:
-            return true;
         case NKikimrMiniKQL::ETypeKind::List:
             return IsSameProtoType(actual.GetList().GetItem(), expected.GetList().GetItem());
         case NKikimrMiniKQL::ETypeKind::Tuple:
             return IsSameProtoTypeImpl(actual.GetTuple(), expected.GetTuple());
         case NKikimrMiniKQL::ETypeKind::Struct:
             return IsSameProtoTypeImpl(actual.GetStruct(), expected.GetStruct());
-        case NKikimrMiniKQL::ETypeKind::EmptyDict:
-            return true;
         case NKikimrMiniKQL::ETypeKind::Dict:
             return IsSameProtoType(actual.GetDict().GetKey(), expected.GetDict().GetKey()) &&
                 IsSameProtoType(actual.GetDict().GetPayload(), expected.GetDict().GetPayload());
@@ -168,28 +164,11 @@ bool IsSameProtoType(const NKikimrMiniKQL::TType& actual, const NKikimrMiniKQL::
             return (actual.GetTagged().GetTag() == expected.GetTagged().GetTag()) &&
                 IsSameProtoType(actual.GetTagged().GetItem(), expected.GetTagged().GetItem());
         case NKikimrMiniKQL::ETypeKind::Unknown:
+        case NKikimrMiniKQL::ETypeKind::Reserved_12:
+        case NKikimrMiniKQL::ETypeKind::Reserved_13:
         case NKikimrMiniKQL::ETypeKind::Reserved_14:
             return false;
     }
-}
-
-bool CanCacheQuery(const NKqpProto::TKqpPhyQuery& query) {
-    for (const auto& tx : query.GetTransactions()) {
-        if (tx.GetType() == NKqpProto::TKqpPhyTx::TYPE_SCHEME) {
-            return false;
-        }
-
-        for (const auto& stage : tx.GetStages()) {
-            for (const auto& source : stage.GetSources()) {
-                // S3 provider stores S3 paths to read in AST, so we can't cache such queries
-                if (source.HasExternalSource() && source.GetExternalSource().GetType() == "S3Source") {
-                    return false;
-                }
-            }
-        }
-    }
-
-    return true;
 }
 
 } // namespace NKikimr::NKqp

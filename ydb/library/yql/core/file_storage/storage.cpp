@@ -134,8 +134,10 @@ public:
 
     private:
         void Reinit() {
-            for (auto& v : Registered) {
-                v.ResetRandom();
+            with_lock (Mutex) {
+                for (auto& v : Registered) {
+                    v.ResetRandom();
+                }
             }
         }
 
@@ -274,7 +276,7 @@ public:
         const i64 prevFileSize = Max<i64>(0, GetFileLength(dstStorageFile.c_str()));
 
         if (!NFs::Rename(src, dstStorageFile)) {
-            ythrow TSystemError() << "Failed to rename file from " << src << " to " << dstStorageFile;
+            ythrow yexception() << "Failed to rename file from " << src << " to " << dstStorageFile;
         }
         SetCacheFilePermissionsNoThrow(dstStorageFile);
 

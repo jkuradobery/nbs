@@ -126,18 +126,6 @@ TCheckFunc ExtractTenantSysViewProcessor(ui64* tenantSVPId) {
     };
 }
 
-TCheckFunc ExtractTenantStatisticsAggregator(ui64* tenantSAId) {
-    return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
-        UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrScheme::StatusSuccess);
-        const auto& pathDescr = record.GetPathDescription();
-        UNIT_ASSERT(pathDescr.HasDomainDescription());
-        const auto& domainDesc = pathDescr.GetDomainDescription();
-        UNIT_ASSERT(domainDesc.HasProcessingParams());
-        const auto& procParams = domainDesc.GetProcessingParams();
-        *tenantSAId = procParams.GetStatisticsAggregator();
-    };
-}
-
 TCheckFunc ExtractDomainHive(ui64* domainHiveId) {
     return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
         UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrScheme::StatusSuccess);
@@ -209,19 +197,6 @@ TCheckFunc StoragePoolsEqual(TSet<TString> poolNames) {
 
         UNIT_ASSERT_VALUES_EQUAL(presentPools.size(), poolNames.size());
         UNIT_ASSERT_VALUES_EQUAL(presentPools, poolNames);
-    };
-}
-
-TCheckFunc SharedHive(ui64 sharedHiveId) {
-    return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
-        UNIT_ASSERT_C(IsGoodDomainStatus(record.GetStatus()), "Unexpected status: " << record.GetStatus());
-
-        const auto& domainDesc = record.GetPathDescription().GetDomainDescription();
-        if (sharedHiveId) {
-            UNIT_ASSERT_VALUES_EQUAL(domainDesc.GetSharedHive(), sharedHiveId);
-        } else {
-            UNIT_ASSERT(!domainDesc.HasSharedHive());
-        }
     };
 }
 
@@ -431,27 +406,6 @@ void IsTable(const NKikimrScheme::TEvDescribeSchemeResult& record) {
     UNIT_ASSERT_VALUES_EQUAL(selfPath.GetPathType(), NKikimrSchemeOp::EPathTypeTable);
 }
 
-void IsExternalTable(const NKikimrScheme::TEvDescribeSchemeResult& record) {
-    UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrScheme::StatusSuccess);
-    const auto& pathDescr = record.GetPathDescription();
-    const auto& selfPath = pathDescr.GetSelf();
-    UNIT_ASSERT_VALUES_EQUAL(selfPath.GetPathType(), NKikimrSchemeOp::EPathTypeExternalTable);
-}
-
-void IsExternalDataSource(const NKikimrScheme::TEvDescribeSchemeResult& record) {
-    UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrScheme::StatusSuccess);
-    const auto& pathDescr = record.GetPathDescription();
-    const auto& selfPath = pathDescr.GetSelf();
-    UNIT_ASSERT_VALUES_EQUAL(selfPath.GetPathType(), NKikimrSchemeOp::EPathTypeExternalDataSource);
-}
-
-void IsView(const NKikimrScheme::TEvDescribeSchemeResult& record) {
-    UNIT_ASSERT_VALUES_EQUAL(record.GetStatus(), NKikimrScheme::StatusSuccess);
-    const auto& pathDescr = record.GetPathDescription();
-    const auto& selfPath = pathDescr.GetSelf();
-    UNIT_ASSERT_VALUES_EQUAL(selfPath.GetPathType(), NKikimrSchemeOp::EPathTypeView);
-}
-
 TCheckFunc CheckColumns(const TString& name, const TSet<TString>& columns, const TSet<TString>& droppedColumns, const TSet<TString> keyColumns,
                         NKikimrSchemeOp::EPathState pathState) {
     return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
@@ -490,9 +444,8 @@ void CheckBoundaries(const NKikimrScheme::TEvDescribeSchemeResult &record) {
     const NKikimrSchemeOp::TPathDescription& descr = record.GetPathDescription();
     THashMap<ui32, NScheme::TTypeInfo> colTypes;
     for (const auto& col : descr.GetTable().GetColumns()) {
-        auto typeInfoMod = NScheme::TypeInfoModFromProtoColumnType(col.GetTypeId(),
+        colTypes[col.GetId()] = NScheme::TypeInfoFromProtoColumnType(col.GetTypeId(),
             col.HasTypeInfo() ? &col.GetTypeInfo() : nullptr);
-        colTypes[col.GetId()] = typeInfoMod.TypeInfo;
     }
     TVector<NScheme::TTypeInfo> keyColTypes;
     for (const auto& ki : descr.GetTable().GetKeyColumnIds()) {
@@ -504,8 +457,7 @@ void CheckBoundaries(const NKikimrScheme::TEvDescribeSchemeResult &record) {
     for (ui32 i = 0; i < descr.GetTable().SplitBoundarySize(); ++i) {
         const auto& b = descr.GetTable().GetSplitBoundary(i);
         TVector<TCell> cells;
-        TVector<TString> memoryOwner;
-        NMiniKQL::CellsFromTuple(nullptr, b.GetKeyPrefix(), keyColTypes, false, cells, errStr, memoryOwner);
+        NMiniKQL::CellsFromTuple(nullptr, b.GetKeyPrefix(), keyColTypes, false, cells, errStr);
         UNIT_ASSERT_VALUES_EQUAL(errStr, "");
 
         TString serialized = TSerializedCellVec::Serialize(cells);
@@ -831,12 +783,6 @@ TCheckFunc StreamState(NKikimrSchemeOp::ECdcStreamState state) {
 TCheckFunc StreamVirtualTimestamps(bool value) {
     return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
         UNIT_ASSERT_VALUES_EQUAL(record.GetPathDescription().GetCdcStreamDescription().GetVirtualTimestamps(), value);
-    };
-}
-
-TCheckFunc StreamResolvedTimestamps(const TDuration& value) {
-    return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
-        UNIT_ASSERT_VALUES_EQUAL(record.GetPathDescription().GetCdcStreamDescription().GetResolvedTimestampsIntervalMs(), value.MilliSeconds());
     };
 }
 
@@ -1167,19 +1113,6 @@ TCheckFunc PartitionKeys(TVector<TString> lastShardKeys) {
         UNIT_ASSERT_VALUES_EQUAL(lastShardKeys.size(), pathDescr.TablePartitionsSize());
         for (size_t i = 0; i < lastShardKeys.size(); ++i) {
             UNIT_ASSERT_STRING_CONTAINS(pathDescr.GetTablePartitions(i).GetEndOfRangeKeyPrefix(), lastShardKeys[i]);
-        }
-    };
-}
-
-TCheckFunc ServerlessComputeResourcesMode(NKikimrSubDomains::EServerlessComputeResourcesMode serverlessComputeResourcesMode) {
-    return [=] (const NKikimrScheme::TEvDescribeSchemeResult& record) {
-        UNIT_ASSERT_C(IsGoodDomainStatus(record.GetStatus()), "Unexpected status: " << record.GetStatus());
-
-        const auto& domainDesc = record.GetPathDescription().GetDomainDescription();
-        if (serverlessComputeResourcesMode) {
-            UNIT_ASSERT_VALUES_EQUAL(domainDesc.GetServerlessComputeResourcesMode(), serverlessComputeResourcesMode);
-        } else {
-            UNIT_ASSERT(!domainDesc.HasServerlessComputeResourcesMode());
         }
     };
 }

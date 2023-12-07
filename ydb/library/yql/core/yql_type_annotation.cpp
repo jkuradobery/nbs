@@ -38,32 +38,21 @@ bool TTypeAnnotationContext::DoInitialize(TExprContext& ctx) {
     }
 
     Y_ENSURE(UserDataStorage);
-    UserDataStorage->FillUserDataUrls();
 
+    // Disable "in progress" constraints
+    //DisableConstraintCheck.emplace(TSortedConstraintNode::Name());
+    //DisableConstraintCheck.emplace(TEmptyConstraintNode::Name());
+    DisableConstraintCheck.emplace(TUniqueConstraintNode::Name());
+    //DisableConstraintCheck.emplace(TMultiConstraintNode::Name());
+    //DisableConstraintCheck.emplace(TVarIndexConstraintNode::Name());
 
     return true;
 }
 
-void TTypeAnnotationContext::Reset() {
-    UdfImports.clear();
-    UdfModules.clear();
-    UdfTypeCache.clear();
-    NodeToOperationId.clear();
-    EvaluationInProgress = 0;
-    ExpectedTypes.clear();
-    ExpectedConstraints.clear();
-    ExpectedColumnOrders.clear();
-    StatisticsMap.clear();
-}
-
-TString FormatColumnOrder(const TMaybe<TColumnOrder>& columnOrder, TMaybe<size_t> maxColumns) {
+TString FormatColumnOrder(const TMaybe<TColumnOrder>& columnOrder) {
     TStringStream ss;
     if (columnOrder) {
-        if (maxColumns.Defined() && columnOrder->size() > *maxColumns) {
-            ss << "[" << JoinRange(", ", columnOrder->begin(), columnOrder->begin() + *maxColumns) << ", ... ]";
-        } else {
-            ss << "[" << JoinSeq(", ", *columnOrder) << "]";
-        }
+        ss << "[" << JoinSeq(", ", *columnOrder) << "]";
     } else {
         ss << "default";
     }
@@ -89,7 +78,7 @@ TMaybe<TColumnOrder> TTypeAnnotationContext::LookupColumnOrder(const TExprNode& 
 }
 
 IGraphTransformer::TStatus TTypeAnnotationContext::SetColumnOrder(const TExprNode& node,
-    const TColumnOrder& columnOrder, TExprContext& ctx, bool overwrite)
+    const TColumnOrder& columnOrder, TExprContext& ctx)
 {
     if (!OrderedColumns) {
         return IGraphTransformer::TStatus::Ok;
@@ -99,11 +88,9 @@ IGraphTransformer::TStatus TTypeAnnotationContext::SetColumnOrder(const TExprNod
     YQL_ENSURE(node.IsCallable());
 
     if (auto existing = ColumnOrderStorage->Lookup(node.UniqueId())) {
-        if (!overwrite) {
-            ctx.AddError(TIssue(ctx.GetPosition(node.Pos()),
-                TStringBuilder() << "Column order " << FormatColumnOrder(existing) << " is already set for node " << node.Content()));
-            return IGraphTransformer::TStatus::Error;
-        }
+        ctx.AddError(TIssue(ctx.GetPosition(node.Pos()),
+            TStringBuilder() << "Column order " << FormatColumnOrder(existing) << " is already set for node " << node.Content()));
+        return IGraphTransformer::TStatus::Error;
     }
 
     auto nodeType = node.GetTypeAnn();
@@ -143,7 +130,7 @@ IGraphTransformer::TStatus TTypeAnnotationContext::SetColumnOrder(const TExprNod
         return IGraphTransformer::TStatus::Error;
     }
 
-    YQL_CLOG(DEBUG, Core) << "Setting column order " << FormatColumnOrder(columnOrder, 10) << " for " << node.Content() << "#" << node.UniqueId();
+    YQL_CLOG(DEBUG, Core) << "Setting column order " << FormatColumnOrder(columnOrder) << " for " << node.Content() << "#" << node.UniqueId();
 
     ColumnOrderStorage->Set(node.UniqueId(), columnOrder);
     return IGraphTransformer::TStatus::Ok;
@@ -199,9 +186,9 @@ const TExportTable* TModuleResolver::GetModule(const TString& module) const {
     return Modules.FindPtr(normalizedModuleName);
 }
 
-bool TModuleResolver::AddFromUrl(const std::string_view& file, const std::string_view& url, const std::string_view& tokenName, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos) {
+bool TModuleResolver::AddFromUrl(const TStringBuf& file, const TStringBuf& url, const TStringBuf& tokenName, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion) {
     if (!UserData) {
-        ctx.AddError(TIssue(pos, "Loading libraries is prohibited"));
+        ctx.AddError(TIssue(TPosition(), "Loading libraries is prohibited"));
         return false;
     }
 
@@ -209,42 +196,41 @@ bool TModuleResolver::AddFromUrl(const std::string_view& file, const std::string
     block.Type = EUserDataType::URL;
     block.Data = url;
     block.Data = SubstParameters(block.Data);
-    if (!tokenName.empty()) {
+    if (tokenName) {
         if (!Credentials) {
-            ctx.AddError(TIssue(pos, "Missing credentials"));
+            ctx.AddError(TIssue(TPosition(), "Missing credentials"));
             return false;
         }
         auto cred = Credentials->FindCredential(tokenName);
         if (!cred) {
-            ctx.AddError(TIssue(pos, TStringBuilder() << "Unknown token name: " << tokenName));
+            ctx.AddError(TIssue(TPosition(), TStringBuilder() << "Unknown token name: " << tokenName));
             return false;
         }
         block.UrlToken = cred->Content;
     }
-
     UserData->AddUserDataBlock(file, block);
 
-    return AddFromFile(file, ctx, syntaxVersion, packageVersion, pos);
+    return AddFromFile(file, ctx, syntaxVersion, packageVersion);
 }
 
-bool TModuleResolver::AddFromFile(const std::string_view& file, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos) {
+bool TModuleResolver::AddFromFile(const TStringBuf& file, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion) {
     if (!UserData) {
-        ctx.AddError(TIssue(pos, "Loading libraries is prohibited"));
+        ctx.AddError(TIssue(TPosition(), "Loading libraries is prohibited"));
         return false;
     }
 
     const auto fullName = TUserDataStorage::MakeFullName(file);
-    const bool isSql = file.ends_with(".sql");
-    const bool isYql = file.ends_with(".yql");
+    bool isSql = file.EndsWith(".sql");
+    bool isYql = file.EndsWith(".yql");
     if (!isSql && !isYql) {
-        ctx.AddError(TIssue(pos, TStringBuilder() << "Unsupported syntax of library file, expected one of (.sql, .yql): " << file));
+        ctx.AddError(TIssue(TStringBuilder() << "Unsupported syntax of library file, expected one of (.sql, .yql): " << file));
         return false;
     }
 
     const TUserDataBlock* block = UserData->FindUserDataBlock(fullName);
 
     if (!block) {
-        ctx.AddError(TIssue(pos, TStringBuilder() << "File not found: " << file));
+        ctx.AddError(TIssue(TStringBuilder() << "File not found: " << file));
         return false;
     }
 
@@ -268,7 +254,7 @@ bool TModuleResolver::AddFromFile(const std::string_view& file, TExprContext& ct
         break;
     case EUserDataType::URL:
         if (!UrlLoader) {
-            ctx.AddError(TIssue(pos, TStringBuilder() << "Unable to load file \"" << file
+            ctx.AddError(TIssue(TStringBuilder() << "Unable to load file \"" << file
                 << "\" from url, because url loader is not available"));
             return false;
         }
@@ -279,20 +265,20 @@ bool TModuleResolver::AddFromFile(const std::string_view& file, TExprContext& ct
         throw yexception() << "Unknown block type " << block->Type;
     }
 
-    return AddFromMemory(fullName, moduleName, isYql, body, ctx, syntaxVersion, packageVersion, pos);
+    return AddFromMemory(fullName, moduleName, isYql, body, ctx, syntaxVersion, packageVersion);
 }
 
-bool TModuleResolver::AddFromMemory(const std::string_view& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos) {
+bool TModuleResolver::AddFromMemory(const TStringBuf& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion) {
     TString unusedModuleName;
-    return AddFromMemory(file, body, ctx, syntaxVersion, packageVersion, pos, unusedModuleName);
+    return AddFromMemory(file, body, ctx, syntaxVersion, packageVersion, unusedModuleName);
 }
 
-bool TModuleResolver::AddFromMemory(const std::string_view& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos, TString& moduleName, std::vector<TString>* exports, std::vector<TString>* imports) {
+bool TModuleResolver::AddFromMemory(const TStringBuf& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TString& moduleName, std::vector<TString>* exports, std::vector<TString>* imports) {
     const auto fullName = TUserDataStorage::MakeFullName(file);
-    const bool isSql = file.ends_with(".sql");
-    const bool isYql = file.ends_with(".yql");
+    bool isSql = file.EndsWith(".sql");
+    bool isYql = file.EndsWith(".yql");
     if (!isSql && !isYql) {
-        ctx.AddError(TIssue(pos, TStringBuilder() << "Unsupported syntax of library file, expected one of (.sql, .yql): " << file));
+        ctx.AddError(TIssue(TStringBuilder() << "Unsupported syntax of library file, expected one of (.sql, .yql): " << file));
         return false;
     }
 
@@ -306,22 +292,16 @@ bool TModuleResolver::AddFromMemory(const std::string_view& file, const TString&
         }
     }
 
-    return AddFromMemory(fullName, moduleName, isYql, body, ctx, syntaxVersion, packageVersion, pos, exports, imports);
+    return AddFromMemory(fullName, moduleName, isYql, body, ctx, syntaxVersion, packageVersion, exports, imports);
 }
 
-bool TModuleResolver::AddFromMemory(const TString& fullName, const TString& moduleName, bool isYql, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos, std::vector<TString>* exports, std::vector<TString>* imports) {
-    const auto addSubIssues = [&fullName](TIssue&& issue, const TIssues& issues) {
-        std::for_each(issues.begin(), issues.end(), [&](const TIssue& i) {
-            issue.AddSubIssue(MakeIntrusive<TIssue>(TPosition(i.Position.Column, i.Position.Row, fullName), i.GetMessage()));
-        });
-        return std::move(issue);
-    };
-
+bool TModuleResolver::AddFromMemory(const TString& fullName, const TString& moduleName, bool isYql, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, std::vector<TString>* exports, std::vector<TString>* imports) {
     TAstParseResult astRes;
     if (isYql) {
         astRes = ParseAst(body, nullptr, fullName);
         if (!astRes.IsOk()) {
-            ctx.AddError(addSubIssues(TIssue(pos, TStringBuilder() << "Failed to parse YQL: " << fullName), astRes.Issues));
+            ctx.IssueManager.AddIssues(astRes.Issues);
+            ctx.AddError(TIssue(TStringBuilder() << "Failed to parse YQL: " << fullName));
             return false;
         }
     } else {
@@ -332,23 +312,25 @@ bool TModuleResolver::AddFromMemory(const TString& fullName, const TString& modu
         settings.Flags = SqlFlags;
         settings.SyntaxVersion = syntaxVersion;
         settings.V0Behavior = NSQLTranslation::EV0Behavior::Silent;
-        settings.FileAliasPrefix = FileAliasPrefix;
         astRes = SqlToYql(body, settings);
         if (!astRes.IsOk()) {
-            ctx.AddError(addSubIssues(TIssue(pos, TStringBuilder() << "Failed to parse SQL: " << fullName), astRes.Issues));
+            ctx.IssueManager.AddIssues(astRes.Issues);
+            ctx.AddError(TIssue(TStringBuilder() << "Failed to parse SQL: " << fullName));
             return false;
         }
     }
 
     TLibraryCohesion cohesion;
     if (!CompileExpr(*astRes.Root, cohesion, LibsContext)) {
-        ctx.AddError(addSubIssues(TIssue(pos, TStringBuilder() << "Failed to compile: " << fullName), LibsContext.IssueManager.GetIssues()));
+        ctx.IssueManager.AddIssues(LibsContext.IssueManager.GetIssues());
+        ctx.AddError(TIssue(TStringBuilder() << "Failed to compile: " << fullName));
         return false;
     }
 
     if (OptimizeLibraries) {
         if (!OptimizeLibrary(cohesion, LibsContext)) {
-            ctx.AddError(addSubIssues(TIssue(pos, TStringBuilder() << "Failed to optimize: " << fullName), LibsContext.IssueManager.GetIssues()));
+            ctx.IssueManager.AddIssues(LibsContext.IssueManager.GetIssues());
+            ctx.AddError(TIssue(TStringBuilder() << "Failed to optimize: " << fullName));
             return false;
         }
     }
@@ -450,15 +432,7 @@ IModuleResolver::TPtr TModuleResolver::CreateMutableChild() const {
         throw yexception() << "Module resolver should not contain user data and URL loader";
     }
 
-    return std::make_shared<TModuleResolver>(&Modules, LibsContext.NextUniqueId, ClusterMapping, SqlFlags, OptimizeLibraries, KnownPackages, Libs, FileAliasPrefix);
-}
-
-void TModuleResolver::SetFileAliasPrefix(TString&& prefix) {
-    FileAliasPrefix = std::move(prefix);
-}
-
-TString TModuleResolver::GetFileAliasPrefix() const {
-    return FileAliasPrefix;
+    return std::make_shared<TModuleResolver>(&Modules, LibsContext.NextUniqueId, ClusterMapping, SqlFlags, OptimizeLibraries, KnownPackages, Libs);
 }
 
 TString TModuleResolver::SubstParameters(const TString& str) {

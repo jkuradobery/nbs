@@ -3,10 +3,10 @@ from hamcrest import has_properties, contains_inanyorder, is_not
 import logging
 import time
 
-from contrib.ydb.tests.library.common.wait_for import wait_for_and_assert, wait_for
-from contrib.ydb.tests.library.matchers.response_matchers import DynamicFieldsProtobufMatcher
-from contrib.ydb.tests.library.common.types import TabletStates
-from contrib.ydb.tests.library.wardens import hive
+from ydb.tests.library.common.wait_for import wait_for_and_assert, wait_for
+from ydb.tests.library.matchers.response_matchers import DynamicFieldsProtobufMatcher
+from ydb.tests.library.common.types import TabletStates
+from ydb.tests.library.wardens import hive
 
 logger = logging.getLogger(__name__)
 

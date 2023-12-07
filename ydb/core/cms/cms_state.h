@@ -10,17 +10,15 @@
 
 namespace NKikimr::NCms {
 
-struct TTaskInfo {
+struct TWalleTaskInfo {
     TString TaskId;
     TString RequestId;
-    TString Owner;
     TSet<TString> Permissions;
 
     TString ToString() const {
         return TStringBuilder() << "{"
             << " TaskId: " << TaskId
             << " RequestId: " << RequestId
-            << " Owner: " << Owner
             << " Permissions: [" << JoinSeq(", ", Permissions) << "]"
             << " }";
     }
@@ -38,11 +36,8 @@ struct TCmsState : public TAtomicRefCount<TCmsState> {
     ui64 LastLogRecordTimestamp = 0;
 
     // State of Wall-E tasks.
-    THashMap<TString, TTaskInfo> WalleTasks;
+    THashMap<TString, TWalleTaskInfo> WalleTasks;
     THashMap<TString, TString> WalleRequests;
-
-    THashMap<TString, TTaskInfo> MaintenanceTasks;
-    THashMap<TString, TString> MaintenanceRequests;
 
     // CMS config.
     TCmsConfig Config;

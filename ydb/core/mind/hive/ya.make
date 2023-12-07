@@ -26,7 +26,6 @@ SRCS(
     monitoring.cpp
     node_info.cpp
     node_info.h
-    object_distribution.h
     sequencer.cpp
     sequencer.h
     follower_group.h
@@ -38,7 +37,6 @@ SRCS(
     storage_pool_info.h
     tablet_info.cpp
     tablet_info.h
-    tablet_move_info.cpp
     tx__adopt_tablet.cpp
     tx__block_storage_result.cpp
     tx__configure_subdomain.cpp
@@ -76,13 +74,11 @@ SRCS(
     tx__update_tablet_groups.cpp
     tx__update_tablet_metrics.cpp
     tx__update_tablet_status.cpp
-    tx__update_tablets_object.cpp
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect
-    library/cpp/containers/ring_buffer
+    library/cpp/actors/core
+    library/cpp/actors/interconnect
     library/cpp/json
     library/cpp/monlib/dynamic_counters
     ydb/core/base

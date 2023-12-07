@@ -41,7 +41,7 @@ TString DefineUserOperationName(const NKikimrSchemeOp::TModifyScheme& tx) {
             case NKikimrSchemeOp::TAlterLogin::kRemoveGroup:
                 return "REMOVE GROUP";
             default:
-                Y_ABORT("switch should cover all operation types");
+                Y_FAIL("switch should cover all operation types");
         }
     case NKikimrSchemeOp::EOperationType::ESchemeOp_DEPRECATED_35:
         return "ESchemeOp_DEPRECATED_35";
@@ -206,28 +206,8 @@ TString DefineUserOperationName(const NKikimrSchemeOp::TModifyScheme& tx) {
         return "ALTER BLOB DEPOT";
     case NKikimrSchemeOp::EOperationType::ESchemeOpDropBlobDepot:
         return "DROP BLOB DEPOT";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalTable:
-        return "CREATE EXTERNAL TABLE";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalTable:
-        return "DROP EXTERNAL TABLE";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExternalTable:
-        return "ALTER EXTERNAL TABLE";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalDataSource:
-        return "CREATE EXTERNAL DATA SOURCE";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalDataSource:
-        return "DROP EXTERNAL DATA SOURCE";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExternalDataSource:
-        return "ALTER EXTERNAL DATA SOURCE";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnBuild:
-        return "ALTER TABLE ADD COLUMN DEFAULT";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateView:
-        return "CREATE VIEW";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterView:
-        return "ALTER VIEW";
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropView:
-        return "DROP VIEW";
     }
-    Y_ABORT("switch should cover all operation types");
+    Y_FAIL("switch should cover all operation types");
 }
 
 TVector<TString> ExtractChangingPaths(const NKikimrSchemeOp::TModifyScheme& tx) {
@@ -485,38 +465,6 @@ TVector<TString> ExtractChangingPaths(const NKikimrSchemeOp::TModifyScheme& tx) 
         result.emplace_back(NKikimr::JoinPath({tx.GetMoveIndex().GetTablePath(), tx.GetMoveIndex().GetSrcPath()}));
         result.emplace_back(NKikimr::JoinPath({tx.GetMoveIndex().GetTablePath(), tx.GetMoveIndex().GetDstPath()}));
         break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalTable:
-        result.emplace_back(NKikimr::JoinPath({tx.GetWorkingDir(), tx.GetCreateExternalTable().GetName()}));
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalTable:
-        result.emplace_back(NKikimr::JoinPath({tx.GetWorkingDir(), tx.GetDrop().GetName()}));
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExternalTable:
-        // TODO: unimplemented
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateExternalDataSource:
-        result.emplace_back(NKikimr::JoinPath({tx.GetWorkingDir(), tx.GetCreateExternalDataSource().GetName()}));
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropExternalDataSource:
-        result.emplace_back(NKikimr::JoinPath({tx.GetWorkingDir(), tx.GetDrop().GetName()}));
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterExternalDataSource:
-        // TODO: unimplemented
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateColumnBuild:
-        result.emplace_back(tx.GetInitiateColumnBuild().GetTable());
-        break;
-
-    case NKikimrSchemeOp::EOperationType::ESchemeOpCreateView:
-        result.emplace_back(NKikimr::JoinPath({tx.GetWorkingDir(), tx.GetCreateView().GetName()}));
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpDropView:
-        result.emplace_back(NKikimr::JoinPath({tx.GetWorkingDir(), tx.GetDrop().GetName()}));
-        break;
-    case NKikimrSchemeOp::EOperationType::ESchemeOpAlterView:
-        // TODO: implement
-        break;
-
     }
 
     return result;
@@ -616,7 +564,7 @@ TChangeLogin ExtractLoginChange(const NKikimrSchemeOp::TModifyScheme& tx) {
                 result.LoginGroup = tx.GetAlterLogin().GetRemoveGroup().GetGroup();
                 break;
             default:
-                Y_ABORT("switch should cover all operation types");
+                Y_FAIL("switch should cover all operation types");
         }
         return result;
     }

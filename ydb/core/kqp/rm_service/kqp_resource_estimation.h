@@ -14,7 +14,6 @@ struct TTaskResourceEstimation {
     ui64 ChannelBufferMemoryLimit = 0;
     ui64 MkqlProgramMemoryLimit = 0;
     ui64 TotalMemoryLimit = 0;
-    bool HeavyProgram = false;
 
     TString ToString() const {
         return TStringBuilder() << "TaskResourceEstimation{"
@@ -27,11 +26,13 @@ struct TTaskResourceEstimation {
     }
 };
 
-TTaskResourceEstimation BuildInitialTaskResources(const NYql::NDqProto::TDqTask& task);
-
 TTaskResourceEstimation EstimateTaskResources(const NYql::NDqProto::TDqTask& task,
-    const NKikimrConfig::TTableServiceConfig::TResourceManager& config, const ui32 tasksCount);
+    const NKikimrConfig::TTableServiceConfig::TResourceManager& config);
 
-void EstimateTaskResources(const NKikimrConfig::TTableServiceConfig::TResourceManager& config, TTaskResourceEstimation& result, const ui32 tasksCount);
+void EstimateTaskResources(const NYql::NDqProto::TDqTask& task,
+    const NKikimrConfig::TTableServiceConfig::TResourceManager& config, TTaskResourceEstimation& result);
+
+TVector<TTaskResourceEstimation> EstimateTasksResources(const TVector<NYql::NDqProto::TDqTask>& tasks,
+    const NKikimrConfig::TTableServiceConfig::TResourceManager& config);
 
 } // namespace NKikimr::NKqp

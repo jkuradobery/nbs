@@ -6,7 +6,7 @@ namespace {
 using namespace NKikimr;
 using namespace NSchemeShard;
 
-class TTxCancelTx: public ISubOperation {
+class TTxCancelTx: public ISubOperationBase {
     const TOperationId OperationId;
     const TOperationId TargetOperationId;
     const TActorId Sender;
@@ -18,8 +18,8 @@ public:
         , Sender(ev->Sender)
     {
         const auto& record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasTxId());
-        Y_ABORT_UNLESS(record.HasTargetTxId());
+        Y_VERIFY(record.HasTxId());
+        Y_VERIFY(record.HasTargetTxId());
     }
 
     const TOperationId& GetOperationId() const override {
@@ -76,15 +76,15 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TTxCancelTx");
+        Y_FAIL("no AbortPropose for TTxCancelTx");
     }
 
-    bool ProgressState(TOperationContext&) override {
-        Y_ABORT("no progress state for cancel tx");
+    void ProgressState(TOperationContext&) override {
+        Y_FAIL("no progress state for cancel tx");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_ABORT("no AbortUnsafe for cancel tx");
+        Y_FAIL("no AbortUnsafe for cancel tx");
     }
 };
 
@@ -92,7 +92,7 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateTxCancelTx(TEvSchemeShard::TEvCancelTx::TPtr ev) {
+ISubOperationBase::TPtr CreateTxCancelTx(TEvSchemeShard::TEvCancelTx::TPtr ev) {
     return new TTxCancelTx(ev);
 }
 

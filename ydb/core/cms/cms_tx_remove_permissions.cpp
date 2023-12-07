@@ -18,7 +18,8 @@ public:
 
     TTxType GetTxType() const override { return TXTYPE_REMOVE_PERMISSIONS; }
 
-    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override {
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemovePermissions Execute");
 
         NIceDb::TNiceDb db(txc.DB);
@@ -44,11 +45,6 @@ public:
                 Self->State->WalleTasks.find(taskId)->second.Permissions.erase(id);
             }
 
-            if (Self->State->MaintenanceRequests.contains(requestId)) {
-                auto taskId = Self->State->MaintenanceRequests.find(requestId)->second;
-                Self->State->MaintenanceTasks.find(taskId)->second.Permissions.erase(id);
-            }
-
             Self->AuditLog(ctx, TStringBuilder() << "Remove permission"
                 << ": id# " << id
                 << ", reason# " << (Request ? "explicit remove" : "scheduled cleanup"));
@@ -57,15 +53,16 @@ public:
         return true;
     }
 
-    void Complete(const TActorContext &ctx) override {
+    void Complete(const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemovePermissions Complete");
 
         if (Response) {
-            Y_ABORT_UNLESS(Request);
+            Y_VERIFY(Request);
             Self->Reply(Request.Get(), Response, ctx);
         }
 
-        Self->RemoveEmptyTasks(ctx);
+        Self->RemoveEmptyWalleTasks(ctx);
     }
 
 private:
@@ -75,8 +72,7 @@ private:
     bool Expired;
 };
 
-ITransaction *TCms::CreateTxRemovePermissions(TVector<TString> ids, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp,
-        bool expired)
+ITransaction* TCms::CreateTxRemovePermissions(TVector<TString> ids, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp, bool expired)
 {
     return new TTxRemovePermissions(this, std::move(ids), std::move(req), std::move(resp), expired);
 }

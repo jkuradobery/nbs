@@ -1,8 +1,8 @@
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/log.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/http/io/stream.h>
 #include <library/cpp/openssl/init/init.h>
@@ -144,7 +144,7 @@ class TNodeIdentifier : public TActorBootstrapped<TNodeIdentifier> {
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() { return NKikimrServices::TActivity::NODE_IDENTIFIER; }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvPrivate::TEvUpdateNodeInfo, Handle);
             CFunc(TEvents::TSystem::PoisonPill, Die);

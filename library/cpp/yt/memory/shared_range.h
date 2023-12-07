@@ -1,15 +1,10 @@
 #pragma once
 
-#include "public.h"
 #include "intrusive_ptr.h"
 #include "range.h"
 #include "ref_counted.h"
 
 #include <library/cpp/yt/assert/assert.h>
-
-#include <util/ysaveload.h>
-
-#include <optional>
 
 namespace NYT {
 
@@ -25,21 +20,12 @@ struct TSharedRangeHolderCloneOptions
     bool KeepMemoryReferenceTracking = true;
 };
 
+DECLARE_REFCOUNTED_STRUCT(TSharedRangeHolder)
+
 struct TSharedRangeHolder
     : public TRefCounted
 {
-    //! Clones the holder possibly adjusting its flavor based on #options.
-    /*!
-     *  The default implementation just returns this.
-     */
-    virtual TSharedRangeHolderPtr Clone(const TSharedRangeHolderCloneOptions& options);
-
-    //! Returns the (estimated) total number of bytes being held or |null| if unable to estimate.
-    /*!
-     *  The returned value is static and never changes.
-     *  The default implementation returns |null|.
-     */
-    virtual std::optional<size_t> GetTotalByteSize() const;
+    virtual TSharedRangeHolderPtr Clone(const TSharedRangeHolderCloneOptions& /*options*/);
 };
 
 DEFINE_REFCOUNTED_TYPE(TSharedRangeHolder)
@@ -57,7 +43,7 @@ public:
     { }
 
     //! Constructs an empty TSharedRange from a nullptr expression.
-    TSharedRange(std::nullptr_t)
+    TSharedRange(nullptr_t)
         : TRange<T>(nullptr, 0UL)
         , Holder_(nullptr)
     { }
@@ -100,26 +86,6 @@ public:
         , Holder_(std::move(holder))
     { }
 
-    TSharedRange(const TSharedRange& other) = default;
-
-    TSharedRange(TSharedRange&& other) noexcept
-        : TSharedRange()
-    {
-        other.Swap(*this);
-    }
-
-    TSharedRange& operator=(TSharedRange other) noexcept
-    {
-        other.Swap(*this);
-        return *this;
-    }
-
-    void Swap(TSharedRange& other) noexcept
-    {
-        DoSwap(TRange<T>::Data_, other.Data_);
-        DoSwap(TRange<T>::Length_, other.Length_);
-        Holder_.Swap(other.Holder_);
-    }
 
     void Reset()
     {
@@ -234,7 +200,7 @@ TSharedRange<U> ReinterpretCastRange(const TSharedRange<T>& range)
 {
     static_assert(sizeof(T) == sizeof(U), "T and U must have equal sizes.");
     return TSharedRange<U>(reinterpret_cast<const U*>(range.Begin()), range.Size(), range.GetHolder());
-}
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -287,26 +253,6 @@ public:
         , Holder_(std::move(holder))
     { }
 
-    TSharedMutableRange(const TSharedMutableRange& other) = default;
-
-    TSharedMutableRange(TSharedMutableRange&& other) noexcept
-        : TSharedMutableRange()
-    {
-        other.Swap(*this);
-    }
-
-    TSharedMutableRange& operator=(TSharedMutableRange other) noexcept
-    {
-        other.Swap(*this);
-        return *this;
-    }
-
-    void Swap(TSharedMutableRange& other) noexcept
-    {
-        DoSwap(TRange<T>::Data_, other.Data_);
-        DoSwap(TRange<T>::Length_, other.Length_);
-        Holder_.Swap(other.Holder_);
-    }
 
     void Reset()
     {

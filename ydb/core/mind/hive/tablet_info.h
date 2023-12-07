@@ -152,7 +152,6 @@ public:
 protected:
     NKikimrTabletBase::TMetrics ResourceValues; // current values of various metrics
     TTabletMetricsAggregates ResourceMetricsAggregates;
-    TResourceNormalizedValues ResourceNormalizedValues;
 
 public:
     TVector<TActorId> ActorsToNotify; // ...OnCreation persistent
@@ -191,7 +190,7 @@ public:
     TFollowerTabletInfo& AsFollower();
     const TFollowerTabletInfo& AsFollower() const;
     std::pair<TTabletId, TFollowerId> GetFullTabletId() const;
-    TFullObjectId GetObjectId() const;
+    TObjectId GetObjectId() const;
     TTabletTypes::EType GetTabletType() const;
     TString ToString() const;
     TString StateString() const;
@@ -233,22 +232,10 @@ public:
     static i64 GetCounterValue(const NKikimrTabletBase::TMetrics& metrics, const TVector<i64>& allowedMetricIds);
     void FilterRawValues(TResourceRawValues& values) const;
     void FilterRawValues(TResourceNormalizedValues& values) const;
-    void ActualizeCounter();
 
     template <typename ResourcesType>
-    static double GetUsage(const ResourcesType& current, const ResourcesType& maximum, EResourceToBalance resource = EResourceToBalance::Dominant) {
-        auto normValues = NormalizeRawValues(current, maximum);
-        return ExtractResourceUsage(normValues, resource);
-    }
-
-    static double ExtractResourceUsage(const TResourceNormalizedValues& normValues, EResourceToBalance resource = EResourceToBalance::Dominant) {
-        switch (resource) {
-        case EResourceToBalance::CPU: return std::get<NMetrics::EResource::CPU>(normValues);
-        case EResourceToBalance::Memory: return std::get<NMetrics::EResource::Memory>(normValues);
-        case EResourceToBalance::Network: return std::get<NMetrics::EResource::Network>(normValues);
-        case EResourceToBalance::Counter: return std::get<NMetrics::EResource::Counter>(normValues);
-        case EResourceToBalance::Dominant: return max(normValues);
-        }
+    static double GetUsage(const ResourcesType& current, const ResourcesType& maximum) {
+        return max(NormalizeRawValues(current, maximum));
     }
 
     void UpdateWeight() {
@@ -257,19 +244,15 @@ public:
         FilterRawValues(current);
         FilterRawValues(maximum);
 
-        ResourceNormalizedValues = NormalizeRawValues(current, maximum);
-        Weight = ExtractResourceUsage(ResourceNormalizedValues);
-    }
-
-    double GetWeight(EResourceToBalance resourceToBalance) const {
-        return ExtractResourceUsage(ResourceNormalizedValues, resourceToBalance);
+        Weight = GetUsage(current, maximum);
     }
 
     void PostponeStart(TInstant nextStart) {
         PostponedStart = nextStart;
     }
 
-    const TNodeFilter& GetNodeFilter() const;
+    const TVector<TNodeId>& GetAllowedNodes() const;
+    const TVector<TDataCenterId>& GetAllowedDataCenters() const;
     bool InitiateStart(TNodeInfo* node);
 
     const NKikimrTabletBase::TMetrics& GetResourceValues() const {
@@ -277,7 +260,7 @@ public:
     }
 
     void InitTabletMetrics() {
-        UpdateResourceUsage({});
+        ResourceValues.SetCounter(1);
     }
 
     const TTabletMetricsAggregates& GetResourceMetricsAggregates() const {
@@ -288,18 +271,12 @@ public:
         return ResourceMetricsAggregates;
     }
 
-    // ONLY for use in unit tests
-    NKikimrTabletBase::TMetrics& GetMutableResourceValues() {
+    /*NKikimrTabletBase::TMetrics& GetMutableResourceValues() {
         return ResourceValues;
-    }
+    }*/
 
     void ActualizeTabletStatistics(TInstant now);
     ui64 GetRestartsPerPeriod(TInstant barrier);
-    bool RestartsOften() const;
-
-    bool HasCounter() {
-        return std::get<NMetrics::EResource::Counter>(GetResourceCurrentValues()) > 0;
-    }
 };
 
 

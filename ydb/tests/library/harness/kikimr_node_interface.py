@@ -2,7 +2,7 @@
 import abc
 import signal
 
-from contrib.ydb.tests.library.harness import kikimr_monitoring as monitoring
+from ydb.tests.library.harness import kikimr_monitoring as monitoring
 
 
 class NodeInterface(object):

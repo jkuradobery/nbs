@@ -6,12 +6,10 @@ SRCS(
     erasure_rope.cpp
     erasure_rope.h
     erasure_perf_test.cpp
-    erasure_split.cpp
-    erasure_restore.cpp
 )
 
 PEERDIR(
-    ydb/library/actors/util
+    library/cpp/actors/util
     library/cpp/containers/stack_vector
     library/cpp/digest/crc32c
     library/cpp/digest/old_crc

@@ -20,13 +20,9 @@ SRCS(
     encryption.cpp
     extra_block_checks.cpp
     gc_quorum_3dc.cpp
-    group_reconfiguration.cpp
     incorrect_queries.cpp
-    index_restore_get.cpp
     main.cpp
     mirror3of4.cpp
-    monitoring.cpp
-    recovery.cpp
     sanitize_groups.cpp
     scrub_fast.cpp
     snapshots.cpp
@@ -34,9 +30,9 @@ SRCS(
     sync.cpp
 )
 
-IF (BUILD_TYPE != "DEBUG")
+IF (BUILD_TYPE == "RELEASE")
     SRCS(
-#        big_cluster.cpp
+        big_cluster.cpp
         get.cpp
         discover.cpp
         multiget.cpp
@@ -64,9 +60,7 @@ RECURSE_FOR_TESTS(
     ut_blob_depot_fat
     ut_donor
     ut_group_reconfiguration
-    ut_read_only_vdisk
     ut_osiris
     ut_replication
     ut_scrub
-    ut_vdisk_restart
 )

@@ -3,7 +3,7 @@
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 
 #include <ydb/core/testlib/actors/test_runtime.h>
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 
 #include <functional>
 
@@ -65,7 +65,6 @@ namespace NLs {
     void InExternalSubdomain(const NKikimrScheme::TEvDescribeSchemeResult& record);
     TCheckFunc ExtractTenantSchemeshard(ui64* tenantSchemeShardId);
     TCheckFunc ExtractTenantSysViewProcessor(ui64* tenantSVPId);
-    TCheckFunc ExtractTenantStatisticsAggregator(ui64* tenantSAId);
     TCheckFunc ExtractDomainHive(ui64* domainHiveId);
 
     void NotFinished(const NKikimrScheme::TEvDescribeSchemeResult& record);
@@ -85,9 +84,6 @@ namespace NLs {
 
 
     void IsTable(const NKikimrScheme::TEvDescribeSchemeResult& record);
-    void IsExternalTable(const NKikimrScheme::TEvDescribeSchemeResult& record);
-    void IsExternalDataSource(const NKikimrScheme::TEvDescribeSchemeResult& record);
-    void IsView(const NKikimrScheme::TEvDescribeSchemeResult& record);
     TCheckFunc CheckColumns(const TString& name, const TSet<TString>& columns, const TSet<TString>& droppedColumns, const TSet<TString> keyColumns,
                             NKikimrSchemeOp::EPathState pathState = NKikimrSchemeOp::EPathState::EPathStateNoChanges);
     void CheckBoundaries(const NKikimrScheme::TEvDescribeSchemeResult& record);
@@ -135,7 +131,6 @@ namespace NLs {
     TCheckFunc StreamFormat(NKikimrSchemeOp::ECdcStreamFormat format);
     TCheckFunc StreamState(NKikimrSchemeOp::ECdcStreamState state);
     TCheckFunc StreamVirtualTimestamps(bool value);
-    TCheckFunc StreamResolvedTimestamps(const TDuration& value);
     TCheckFunc StreamAwsRegion(const TString& value);
     TCheckFunc RetentionPeriod(const TDuration& value);
 
@@ -149,9 +144,7 @@ namespace NLs {
 
     TCheckFunc KesusConfigIs(ui64 self_check_period_millis, ui64 session_grace_period_millis);
     TCheckFunc DatabaseQuotas(ui64 dataStreamShards);
-    TCheckFunc SharedHive(ui64 sharedHiveId);
-    TCheckFunc ServerlessComputeResourcesMode(NKikimrSubDomains::EServerlessComputeResourcesMode serverlessComputeResourcesMode);
-    
+
     template<class TCheck>
     void PerformAllChecks(const NKikimrScheme::TEvDescribeSchemeResult& result, TCheck&& check) {
         check(result);

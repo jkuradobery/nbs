@@ -487,7 +487,6 @@ public:
         passManagerBuilder.populateModulePassManager(*modulePassManager);
         passManagerBuilder.populateFunctionPassManager(*functionPassManager);
 
-        auto functionPassStart = Now();
         functionPassManager->doInitialization();
         for (auto it = Module_->begin(), jt = Module_->end(); it != jt; ++it) {
             if (!it->isDeclaration()) {
@@ -495,10 +494,6 @@ public:
             }
         }
         functionPassManager->doFinalization();
-
-        if (compileStats) {
-            compileStats->FunctionPassTime = (Now() - functionPassStart).MilliSeconds();
-        }
 
         auto modulePassStart = Now();
         modulePassManager->run(*Module_);
@@ -535,10 +530,6 @@ public:
         if (dumpTimers) {
             llvm::TimerGroup::printAll(llvm::errs());
             llvm::TimePassesIsEnabled = false;
-        }
-
-        if (compileStats) {
-            compileStats->TotalObjectSize = TotalObjectSize;
         }
     }
 
@@ -669,8 +660,6 @@ public:
                             const llvm::RuntimeDyld::LoadedObjectInfo &loi) override
     {
         Y_UNUSED(key);
-        TotalObjectSize += obj.getData().size();
-
         for (const auto& section : obj.sections()) {
             //auto nameExp = section.getName();
             //auto name = nameExp.get();
@@ -743,7 +732,6 @@ private:
     llvm::JITEventListener* PerfListener_ = nullptr;
     std::unique_ptr<llvm::ExecutionEngine> Engine_;
     std::vector<std::pair<llvm::object::SectionRef, ui64>> CodeSections_;
-    ui64 TotalObjectSize = 0;
     std::vector<std::pair<ui64, llvm::Function*>> SortedFuncs_;
     TMaybe<THashSet<TString>> ExportedSymbols;
     THashMap<const void*, TString> ReverseGlobalMapping_;
@@ -755,11 +743,6 @@ private:
 ICodegen::TPtr
 ICodegen::Make(ETarget target, ESanitize sanitize) {
     return std::make_unique<TCodegen>(target, sanitize);
-}
-
-ICodegen::TSharedPtr
-ICodegen::MakeShared(ETarget target, ESanitize sanitize) {
-    return std::make_shared<TCodegen>(target, sanitize);
 }
 
 }

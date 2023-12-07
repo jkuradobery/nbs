@@ -68,17 +68,11 @@ service TopicService {
     // Single commit offset request.
     rpc CommitOffset(CommitOffsetRequest) returns (CommitOffsetResponse);
 
-    // Add information about offset ranges to the transaction.
-    rpc UpdateOffsetsInTransaction(UpdateOffsetsInTransactionRequest) returns (UpdateOffsetsInTransactionResponse);
-
     // Create topic command.
     rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
 
     // Describe topic command.
     rpc DescribeTopic(DescribeTopicRequest) returns (DescribeTopicResponse);
-
-    // Describe partition command.
-    rpc DescribePartition(DescribePartitionRequest) returns (DescribePartitionResponse);
 
     // Describe topic's consumer command.
     rpc DescribeConsumer(DescribeConsumerRequest) returns (DescribeConsumerResponse);

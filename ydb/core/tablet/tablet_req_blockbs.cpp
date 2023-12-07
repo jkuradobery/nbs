@@ -1,6 +1,6 @@
 #include "tablet_impl.h"
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <util/generic/set.h>
 
 namespace NKikimr {
@@ -47,6 +47,7 @@ public:
     }
 
     STFUNC(StateWait) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvBlobStorage::TEvBlockResult, Handle);
             cFunc(TEvents::TEvPoisonPill::EventType, PassAway);
@@ -97,7 +98,7 @@ class TTabletReqBlockBlobStorage : public TActorBootstrapped<TTabletReqBlockBlob
     void Handle(TEvTabletBase::TEvBlockBlobStorageResult::TPtr &ev) {
         auto *msg = ev->Get();
         auto it = Find(ReqActors, ev->Sender);
-        Y_ABORT_UNLESS(it != ReqActors.end(), "must not get response from unknown actor");
+        Y_VERIFY(it != ReqActors.end(), "must not get response from unknown actor");
         *it = TActorId();
 
         switch (msg->Status) {
@@ -161,6 +162,7 @@ public:
     }
 
     STFUNC(StateWait) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvTabletBase::TEvBlockBlobStorageResult, Handle);
             cFunc(TEvents::TEvPoisonPill::EventType, PassAway);

@@ -14,20 +14,6 @@ using TStatus = IGraphTransformer::TStatus;
 
 namespace {
 
-TExprBase BuildValueResult(const TDqCnValue& cn, TExprContext& ctx) {
-    YQL_ENSURE(cn.Ref().GetTypeAnn()->GetKind() == ETypeAnnotationKind::List);
-
-    return Build<TCoFlatMap>(ctx, cn.Pos())
-        .Input<TDqCnUnionAll>()
-            .Output(cn.Output())
-            .Build()
-        .Lambda()
-            .Args({"list"})
-            .Body("list")
-            .Build()
-        .Done();
-}
-
 TStatus KqpBuildPureExprStagesResult(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx,
     const TKqpOptimizeContext& kqpCtx)
 {
@@ -82,15 +68,7 @@ TStatus KqpBuildPureExprStagesResult(const TExprNode::TPtr& input, TExprNode::TP
 
         // TODO: Missing support for DqCnValue results in scan queries
         if (node.Maybe<TDqPhyPrecompute>() && omitResultPrecomputes && !kqpCtx.IsScanQuery()) {
-            YQL_CLOG(DEBUG, ProviderKqp) << "Building precompute result #" << node.Raw()->UniqueId();
-
-            auto connection = node.Cast<TDqPhyPrecompute>().Connection();
-            if (connection.Maybe<TDqCnValue>()) {
-                replaces[node.Raw()] = BuildValueResult(connection.Cast<TDqCnValue>(), ctx).Ptr();
-            } else {
-                YQL_ENSURE(connection.Maybe<TDqCnUnionAll>());
-                replaces[node.Raw()] = connection.Ptr();
-            }
+            replaces[node.Raw()] = node.Cast<TDqPhyPrecompute>().Connection().Ptr();
         } else {
             auto result = DqBuildPureExprStage(node, ctx);
             if (result.Raw() != node.Raw()) {
@@ -99,13 +77,9 @@ TStatus KqpBuildPureExprStagesResult(const TExprNode::TPtr& input, TExprNode::TP
             }
         }
     }
-
-    if (replaces.empty()) {
-        return TStatus::Ok;
-    }
-
     output = ctx.ReplaceNodes(TExprNode::TPtr(input), replaces);
-    return TStatus(TStatus::Repeat, true);
+
+    return TStatus::Ok;
 }
 
 TStatus KqpBuildUnionResult(const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {

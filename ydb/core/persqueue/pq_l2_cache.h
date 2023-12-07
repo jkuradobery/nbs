@@ -12,6 +12,8 @@
 namespace NKikimr {
 namespace NPQ {
 
+static const ui32 MAX_BLOB_SIZE = 8_MB;
+
 struct TL2Counters {
     ::NMonitoring::TDynamicCounters::TCounterPtr TotalSize;
     ::NMonitoring::TDynamicCounters::TCounterPtr TotalCount;

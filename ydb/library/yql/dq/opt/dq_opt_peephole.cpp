@@ -292,8 +292,6 @@ TExprBase DqPeepholeRewriteMapJoin(const TExprBase& node, TExprContext& ctx) {
     const bool payloads = !rightPayloads.empty();
     rightInput = MakeDictForJoin<true>(PrepareListForJoin(std::move(rightInput), keyTypes, rightKeyColumnNodes, rightPayloads, payloads, false, true, ctx), payloads, withRightSide, ctx);
     leftInput = AddConvertedKeys(std::move(leftInput), ctx, leftKeyColumnNodes, keyTypesLeft, itemTypeLeft);
-    auto [_, rightKeyColumnNodesCopy] = JoinKeysToAtoms(ctx, mapJoin, leftTableLabel, rightTableLabel);
-
     return Build<TCoExtractMembers>(ctx, pos)
         .Input<TCoFlatMap>()
             .Input(std::move(rightInput))
@@ -304,7 +302,6 @@ TExprBase DqPeepholeRewriteMapJoin(const TExprBase& node, TExprContext& ctx) {
                     .RightDict("dict")
                     .JoinKind(mapJoin.JoinType())
                     .LeftKeysColumns(ctx.NewList(pos, std::move(leftKeyColumnNodes)))
-                    .RightKeysColumns(ctx.NewList(pos, std::move(rightKeyColumnNodesCopy)))
                     .LeftRenames(ctx.NewList(pos, std::move(leftRenames)))
                     .RightRenames(ctx.NewList(pos, std::move(rightRenames)))
                 .Build()
@@ -675,41 +672,12 @@ NNodes::TExprBase DqPeepholeDropUnusedInputs(const NNodes::TExprBase& node, TExp
     return NNodes::TExprBase(ctx.ChangeChildren(node.Ref(), std::move(children)));
 }
 
-NNodes::TExprBase DqPeepholeRewriteLength(const NNodes::TExprBase& node, TExprContext& ctx, TTypeAnnotationContext& typesCtx) {
+NNodes::TExprBase DqPeepholeRewriteLength(const NNodes::TExprBase& node, TExprContext& ctx) {
     if (!node.Maybe<TDqPhyLength>()) {
         return node;
     }
 
     auto dqPhyLength = node.Cast<TDqPhyLength>();
-    if (typesCtx.UseBlocks) {
-        return NNodes::TExprBase(ctx.Builder(node.Pos())
-            .Callable("NarrowMap")
-                .Callable(0, "BlockCombineAll")
-                    .Callable(0, "WideToBlocks")
-                        .Add(0, MakeExpandMap(node.Pos(), {}, dqPhyLength.Input().Ptr(), ctx))
-                    .Seal()
-                    .Callable(1, "Void")
-                    .Seal()
-                    .List(2)
-                        .List(0)
-                            .Callable(0, "AggBlockApply")
-                                .Atom(0, "count_all")
-                            .Seal()
-                        .Seal()
-                    .Seal()
-                .Seal()
-                .Lambda(1)
-                    .Param("value")
-                    .Callable("AsStruct")
-                        .List(0)
-                            .Atom(0, dqPhyLength.Name())
-                            .Arg(1, "value")
-                        .Seal()
-                    .Seal()
-                .Seal()
-            .Seal()
-            .Build());
-    }
 
     return Build<TCoCondense>(ctx, node.Pos())
         .Input(dqPhyLength.Input())

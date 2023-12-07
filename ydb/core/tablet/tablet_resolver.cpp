@@ -1,21 +1,19 @@
 #include <ydb/core/base/tablet_resolver.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/statestorage.h>
 #include <ydb/core/base/tabletid.h>
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <ydb/core/util/cache.h>
 #include <ydb/core/util/queue_oneone_inplace.h>
 #include <util/generic/map.h>
 #include <util/generic/deque.h>
-#include <library/cpp/random_provider/random_provider.h>
-
 
 namespace NKikimr {
 
@@ -314,9 +312,8 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
         const std::pair<TActorId, TActorId> endpoint = SelectForward(ctx, entry, info, msg->TabletID);
         if (endpoint.first) {
             ctx.Send(sender, new TEvTabletResolver::TEvForwardResult(msg->TabletID, endpoint.second, endpoint.first, LastCacheEpoch));
-            if (!!msg->Ev) {
-                ctx.ExecutorThread.Send(IEventHandle::Forward(std::move(msg->Ev), msg->SelectActor(endpoint.second, endpoint.first)));
-            }
+            if (!!msg->Ev)
+                ctx.ExecutorThread.Send(msg->Ev->Forward(msg->SelectActor(endpoint.second, endpoint.first)));
             return true;
         } else {
             return false;
@@ -398,14 +395,14 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
 
     void MoveEntryToResolved(ui64 tabletId, TAutoPtr<TEntry>& entry) {
         TAutoPtr<TEntry>* resolvedEntryPtr;
-        Y_ABORT_UNLESS(ResolvedTablets.Insert(tabletId, entry, resolvedEntryPtr));
-        Y_ABORT_UNLESS(UnresolvedTablets.Erase(tabletId));
+        Y_VERIFY(ResolvedTablets.Insert(tabletId, entry, resolvedEntryPtr));
+        Y_VERIFY(UnresolvedTablets.Erase(tabletId));
     }
 
     void MoveEntryToUnresolved(ui64 tabletId, TAutoPtr<TEntry>& entry) {
         TAutoPtr<TEntry>* unresolvedEntryPtr;
-        Y_ABORT_UNLESS(UnresolvedTablets.Insert(tabletId, entry, unresolvedEntryPtr));
-        Y_ABORT_UNLESS(ResolvedTablets.Erase(tabletId));
+        Y_VERIFY(UnresolvedTablets.Insert(tabletId, entry, unresolvedEntryPtr));
+        Y_VERIFY(ResolvedTablets.Erase(tabletId));
     }
 
     void CheckDelayedNodeProblem(ui64 tabletId, const TActorContext &ctx) {
@@ -516,7 +513,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
                 PushQueue(ev, entry, ctx);
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -568,7 +565,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
             }
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -611,7 +608,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
 
         switch (entry.State) {
         case TEntry::StInit:
-            Y_ABORT("must not happens");
+            Y_FAIL("must not happens");
         case TEntry::StInitResolve:
             if (success) {
                 if (msg->CurrentLeaderTablet) {
@@ -671,7 +668,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
         case TEntry::StNormal:
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -706,7 +703,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
             }
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -737,7 +734,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
             }
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -769,7 +766,7 @@ class TTabletResolver : public TActorBootstrapped<TTabletResolver> {
             }
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
     }
 
@@ -865,8 +862,8 @@ public:
             HFunc(TEvPrivate::TEvRefreshNodes, Handle);
             HFunc(TEvents::TEvUndelivered, Handle);
             default:
-                LOG_WARN(*TlsActivationContext, NKikimrServices::TABLET_RESOLVER, "TTabletResolver::StateWork unexpected event type: %" PRIx32
-                    " event: %s", ev->GetTypeRewrite(), ev->ToString().data());
+                LOG_WARN(ctx, NKikimrServices::TABLET_RESOLVER, "TTabletResolver::StateWork unexpected event type: %" PRIx32
+                    " event: %s", ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
                 break;
         }
     }

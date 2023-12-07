@@ -14,26 +14,26 @@ using TTypeInfo = NScheme::TTypeInfo;
 struct TDataRow {
     TSmallVec<TKqpComputeContextBase::TColumn> Columns() {
         return {
-            {0, TTypeInfo(NTypeIds::Bool), ""},
-            {1, TTypeInfo(NTypeIds::Int8), ""},
-            {2, TTypeInfo(NTypeIds::Int16), ""},
-            {3, TTypeInfo(NTypeIds::Int32), ""},
-            {4, TTypeInfo(NTypeIds::Int64), ""},
-            {5, TTypeInfo(NTypeIds::Uint8), ""},
-            {6, TTypeInfo(NTypeIds::Uint16), ""},
-            {7, TTypeInfo(NTypeIds::Uint32), ""},
-            {8, TTypeInfo(NTypeIds::Uint64), ""},
-            {9, TTypeInfo(NTypeIds::Float), ""},
-            {10, TTypeInfo(NTypeIds::Double), ""},
-            {11, TTypeInfo(NTypeIds::String), ""},
-            {12, TTypeInfo(NTypeIds::Utf8), ""},
-            {13, TTypeInfo(NTypeIds::Json), ""},
-            {14, TTypeInfo(NTypeIds::Yson), ""},
-            {15, TTypeInfo(NTypeIds::Date), ""},
-            {16, TTypeInfo(NTypeIds::Datetime), ""},
-            {17, TTypeInfo(NTypeIds::Timestamp), ""},
-            {18, TTypeInfo(NTypeIds::Interval), ""},
-            {19, TTypeInfo(NTypeIds::Decimal), ""},
+            {0, TTypeInfo(NTypeIds::Bool)},
+            {1, TTypeInfo(NTypeIds::Int8)},
+            {2, TTypeInfo(NTypeIds::Int16)},
+            {3, TTypeInfo(NTypeIds::Int32)},
+            {4, TTypeInfo(NTypeIds::Int64)},
+            {5, TTypeInfo(NTypeIds::Uint8)},
+            {6, TTypeInfo(NTypeIds::Uint16)},
+            {7, TTypeInfo(NTypeIds::Uint32)},
+            {8, TTypeInfo(NTypeIds::Uint64)},
+            {9, TTypeInfo(NTypeIds::Float)},
+            {10, TTypeInfo(NTypeIds::Double)},
+            {11, TTypeInfo(NTypeIds::String)},
+            {12, TTypeInfo(NTypeIds::Utf8)},
+            {13, TTypeInfo(NTypeIds::Json)},
+            {14, TTypeInfo(NTypeIds::Yson)},
+            {15, TTypeInfo(NTypeIds::Date)},
+            {16, TTypeInfo(NTypeIds::Datetime)},
+            {17, TTypeInfo(NTypeIds::Timestamp)},
+            {18, TTypeInfo(NTypeIds::Interval)},
+            {19, TTypeInfo(NTypeIds::Decimal)},
         };
     }
 
@@ -82,7 +82,7 @@ struct TDataRow {
             arrow::field("dec", arrow::decimal(NScheme::DECIMAL_PRECISION, NScheme::DECIMAL_SCALE)),
         };
 
-        return std::make_shared<arrow::Schema>(std::move(fields));
+        return std::make_shared<arrow::Schema>(fields);
     }
 };
 
@@ -247,9 +247,9 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
         TMemoryUsageInfo memInfo("");
         THolderFactory factory(alloc.Ref(), memInfo);
 
-        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), rows.front().Columns(), {}, rows.front().Columns());
+        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), rows.front().Columns(), {}, {}, rows.front().Columns());
 
-        scanData.AddData(batch, {}, factory);
+        scanData.AddRows(*batch, {}, factory);
 
         std::vector<NUdf::TUnboxedValue> container;
         container.resize(20);
@@ -258,7 +258,7 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
             containerPtr.emplace_back(&i);
         }
         for (auto& row: rows) {
-            scanData.FillDataValues(containerPtr.data());
+            scanData.FillUnboxedCells(containerPtr.data());
             UNIT_ASSERT_EQUAL(container[0 ].Get<bool  >(), row.Bool   );
             UNIT_ASSERT_EQUAL(container[1 ].Get<i8    >(), row.Int8   );
             UNIT_ASSERT_EQUAL(container[2 ].Get<i16   >(), row.Int16  );
@@ -303,9 +303,9 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
             .Type = TTypeInfo(NTypeIds::Int8)
         };
         resultCols.push_back(resCol);
-        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), rows.front().Columns(), {}, resultCols);
+        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), rows.front().Columns(), {}, {}, resultCols);
 
-        scanData.AddData(batch, {}, factory);
+        scanData.AddRows(*batch, {}, factory);
 
         std::vector<NUdf::TUnboxedValue> container;
         container.resize(1);
@@ -315,7 +315,7 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
         }
 
         for (auto& row: rows) {
-            scanData.FillDataValues(containerPtr.data());
+            scanData.FillUnboxedCells(containerPtr.data());
             UNIT_ASSERT_EQUAL(container[0].Get<i8>(), row.Int8);
         }
 
@@ -329,9 +329,9 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
         TMemoryUsageInfo memInfo("");
         THolderFactory factory(alloc.Ref(), memInfo);
 
-        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), {}, {}, {});
+        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), {}, {}, {}, {});
         TVector<TOwnedCellVec> emptyBatch(1000);
-        auto bytes = scanData.AddData(emptyBatch, {}, factory);
+        auto bytes = scanData.AddRows(emptyBatch, {}, factory);
         UNIT_ASSERT(bytes > 0);
 
         std::vector<NUdf::TUnboxedValue*> containerPtr;
@@ -339,7 +339,7 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
         for (const auto& row: emptyBatch) {
             Y_UNUSED(row);
             UNIT_ASSERT(!scanData.IsEmpty());
-            UNIT_ASSERT(scanData.FillDataValues(containerPtr.data()) == 0);
+            UNIT_ASSERT(scanData.FillUnboxedCells(containerPtr.data()) == 0);
         }
         UNIT_ASSERT(scanData.IsEmpty());
     }
@@ -348,18 +348,18 @@ Y_UNIT_TEST_SUITE(TKqpScanData) {
         NKikimr::NMiniKQL::TScopedAlloc alloc(__LOCATION__);
         TMemoryUsageInfo memInfo("");
         THolderFactory factory(alloc.Ref(), memInfo);
-        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), {}, {}, {});
+        TKqpScanComputeContext::TScanData scanData({}, TTableRange({}), {}, {}, {}, {});
 
         TVector<TDataRow> rows = TestRows();
         std::shared_ptr<arrow::RecordBatch> anotherEmptyBatch = VectorToBatch(rows, rows.front().MakeArrowSchema());
 
-        auto bytes = scanData.AddData(anotherEmptyBatch, {}, factory);
+        auto bytes = scanData.AddRows(*anotherEmptyBatch, {}, factory);
         UNIT_ASSERT(bytes > 0);
         std::vector<NUdf::TUnboxedValue*> containerPtr;
         for (const auto& row: rows) {
             Y_UNUSED(row);
             UNIT_ASSERT(!scanData.IsEmpty());
-            UNIT_ASSERT(scanData.FillDataValues(containerPtr.data()) == 0);
+            UNIT_ASSERT(scanData.FillUnboxedCells(containerPtr.data()) == 0);
         }
         UNIT_ASSERT(scanData.IsEmpty());
     }

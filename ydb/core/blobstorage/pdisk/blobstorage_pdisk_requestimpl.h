@@ -141,16 +141,6 @@ public:
         v.GroupGeneration = -1;
         return v;
     }
-
-    TString ToString() const {
-        TStringStream str;
-        str << "TYardInit {";
-        str << "VDisk# " << VDisk.ToString();
-        str << " PDiskGuid# " << PDiskGuid;
-        str << " SlotId# " << SlotId;
-        str << "}";
-        return str.Str();
-    }
 };
 
 //
@@ -306,8 +296,8 @@ public:
     }
 
     void AddToBatch(TLogWrite *req) {
-        Y_ABORT_UNLESS(BatchTail->NextInBatch == nullptr);
-        Y_ABORT_UNLESS(req->NextInBatch == nullptr);
+        Y_VERIFY(BatchTail->NextInBatch == nullptr);
+        Y_VERIFY(req->NextInBatch == nullptr);
         BatchTail->NextInBatch = req;
         BatchTail = req;
     }
@@ -320,18 +310,6 @@ public:
 
     void SetOnDestroy(std::function<void()> onDestroy) {
         OnDestroy = std::move(onDestroy);
-    }
-
-    TString ToString() const {
-        TStringStream str;
-        str << "TLogWrite {";
-        str << "EstimatedChunkIdx# " << EstimatedChunkIdx;
-        str << " LsnSegmentStart# " << LsnSegmentStart;
-        str << " Lsn# " << Lsn;
-        str << " Result# " << (!Result ? "is empty" : Result->ToString());
-        str << " OnDestroy is " << (!OnDestroy ? "not " : "") << "set";
-        str << "}";
-        return str.Str();
     }
 };
 
@@ -382,11 +360,11 @@ public:
     }
 
     virtual ~TChunkRead() {
-        Y_ABORT_UNLESS(DoubleFreeCanary == ReferenceCanary, "DoubleFreeCanary in TChunkRead is dead");
+        Y_VERIFY(DoubleFreeCanary == ReferenceCanary, "DoubleFreeCanary in TChunkRead is dead");
         // Set DoubleFreeCanary to 0 and make sure compiler will not eliminate that action
         SecureWipeBuffer((ui8*)&DoubleFreeCanary, sizeof(DoubleFreeCanary));
-        Y_ABORT_UNLESS(!SelfPointer);
-        Y_ABORT_UNLESS(IsReplied, "Unreplied read request, chunkIdx# %" PRIu32 " Offset# %" PRIu32 " Size# %" PRIu32
+        Y_VERIFY(!SelfPointer);
+        Y_VERIFY(IsReplied, "Unreplied read request, chunkIdx# %" PRIu32 " Offset# %" PRIu32 " Size# %" PRIu32
             " CurrentSector# %" PRIu32 " RemainingSize# %" PRIu32,
             (ui32)ChunkIdx, (ui32)Offset, (ui32)Size, (ui32)CurrentSector, (ui32)RemainingSize);
     }
@@ -436,7 +414,7 @@ public:
     TChunkReadPiece(TIntrusivePtr<TChunkRead> &read, ui64 pieceCurrentSector, ui64 pieceSizeLimit, bool isTheLastPiece);
 
     virtual ~TChunkReadPiece() {
-        Y_ABORT_UNLESS(!SelfPointer);
+        Y_VERIFY(!SelfPointer);
     }
 
     void OnSuccessfulDestroy(TActorSystem* actorSystem);
@@ -934,18 +912,6 @@ public:
 
     ERequestType GetType() const override {
         return ERequestType::RequestLogCommitDone;
-    }
-
-    TString ToString() const {
-        TStringStream str;
-        str << "TLogCommitDone {";
-        str << "OwnerId# " << (ui32)OwnerId;
-        str << " OwnerRound# " << OwnerRound;
-        str << " Lsn# " << Lsn;
-        str << " CommitedChunks.size()# " << CommitedChunks.size();
-        str << " DeletedChunks.size()# " << DeletedChunks.size();
-        str << "}";
-        return str.Str();
     }
 };
 

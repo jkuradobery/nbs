@@ -22,9 +22,17 @@ public:
     void AddState(EPDiskState state);
     EPDiskStatus Compute(EPDiskStatus current, TString& reason) const;
 
-    EPDiskState GetState() const;
-    EPDiskState GetPrevState() const;
-    ui64 GetStateCounter() const;
+    EPDiskState GetState() const {
+        return State;
+    }
+
+    EPDiskState GetPrevState() const {
+        return PrevState;
+    }
+
+    ui64 GetStateCounter() const {
+        return StateCounter;
+    }
 
     void Reset();
 
@@ -65,12 +73,10 @@ struct TStatusChangerState: public TSimpleRefCount<TStatusChangerState> {
 
     explicit TStatusChangerState(NKikimrBlobStorage::EDriveStatus status)
         : Status(status)
-    {
-    }
+    {}
 
     const NKikimrBlobStorage::EDriveStatus Status;
     ui32 Attempt = 0;
-
 }; // TStatusChangerState
 
 struct TPDiskInfo
@@ -78,6 +84,7 @@ struct TPDiskInfo
     , public TPDiskStatus
 {
     using TPtr = TIntrusivePtr<TPDiskInfo>;
+
     using EIgnoreReason = NKikimrCms::TPDiskInfo::EIgnoreReason;
 
     EPDiskStatus ActualStatus = EPDiskStatus::ACTIVE;
@@ -98,7 +105,6 @@ struct TPDiskInfo
 
 private:
     bool Touched;
-
 }; // TPDiskInfo
 
 struct TNodeInfo {
@@ -120,6 +126,7 @@ struct TConfigUpdaterState {
 /// Main state
 struct TSentinelState: public TSimpleRefCount<TSentinelState> {
     using TPtr = TIntrusivePtr<TSentinelState>;
+
     using TNodeId = ui32;
 
     TMap<TPDiskID, TPDiskInfo::TPtr> PDisks;
@@ -145,10 +152,9 @@ public:
     TDistribution ByRack;
     THashMap<TString, TNodeIDSet> NodeByRack;
 
-    explicit TClusterMap(TSentinelState::TPtr state);
+    TClusterMap(TSentinelState::TPtr state);
 
     void AddPDisk(const TPDiskID& id);
-
 }; // TClusterMap
 
 class TGuardian : public TClusterMap {
@@ -169,7 +175,6 @@ private:
     const ui32 DataCenterRatio;
     const ui32 RoomRatio;
     const ui32 RackRatio;
-
 }; // TGuardian
 
 } // namespace NKikimr::NCms::NSentinel

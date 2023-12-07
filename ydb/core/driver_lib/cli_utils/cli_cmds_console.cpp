@@ -1,7 +1,7 @@
 #include "cli.h"
 #include "cli_cmds.h"
 
-#include <ydb/library/yaml_config/console_dumper.h>
+#include <ydb/core/cms/console/yaml_config/console_dumper.h>
 
 #include <util/string/type.h>
 #include <util/string/split.h>
@@ -346,112 +346,6 @@ public:
     }
 };
 
-class TClientCommandConvertToYaml: public TClientCommandConfig {
-    NKikimrConsole::TConfigureRequest Request;
-public:
-    TClientCommandConvertToYaml()
-        : TClientCommandConfig("convert-to-yaml", {}, "Convert config-item to yaml format")
-    {
-    }
-
-    void Config(TConfig &config) override
-    {
-        TClientCommand::Config(config);
-        config.SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<CONFIGURE-PROTO>", "Console configure request protobuf or file with protobuf");
-    }
-
-    void Parse(TConfig& config) override
-    {
-        TClientCommand::Parse(config);
-        ParseProtobuf(&Request, config.ParseResult->GetFreeArgs()[0]);
-    }
-
-    int Run(TConfig &) override
-    {
-        bool domain = false;
-
-        TStringStream result;
-        TStringStream warnings;
-
-        for (auto& action : Request.GetActions()) {
-            if (action.HasModifyConfigItem()) {
-                Cerr << "Error: Modify items are not supported" << Endl;
-                return 1;
-            }
-
-            if (action.HasRemoveConfigItem()) {
-                warnings << "Warning: this config contains remove, you should remove entry with id="
-                         << action.GetRemoveConfigItem().GetConfigItemId().GetId() << "." << action.GetRemoveConfigItem().GetConfigItemId().GetGeneration()
-                         << " by hand" << Endl;
-                continue;
-            }
-
-            if (action.HasRemoveConfigItems()) {
-                warnings << "Warning: this config contains remove, you should remove entry with cookie=";
-                for (auto& cookie : action.GetRemoveConfigItems().GetCookieFilter().GetCookies()) {
-                    warnings << "\"" << cookie << "\",";
-                }
-                warnings << " by hand" << Endl;
-                continue;
-            }
-
-            auto add = action.GetAddConfigItem().GetConfigItem();
-
-            auto [hasDomain, cfg] =  NYamlConfig::DumpConsoleConfigItem(add);
-
-            domain |= hasDomain;
-
-            result << cfg << Endl;
-        }
-
-        if (domain) {
-            warnings << "Warning: this config contains domain config item, it should be merged by hand or inserted before scoped selectors" << Endl;
-        }
-
-        Cerr << warnings.Str();
-        Cout << result.Str();
-
-        return 0;
-    }
-};
-
-class TClientCommandConvertFromYaml: public TClientCommandConfig {
-    TString Request;
-    TString Domain;
-public:
-    TClientCommandConvertFromYaml()
-        : TClientCommandConfig("convert-from-yaml", {}, "Convert config-item from yaml format")
-    {
-    }
-
-    void Config(TConfig &config) override
-    {
-        TClientCommand::Config(config);
-        config.Opts->AddLongOption("domain", "domain where config will be applied")
-            .RequiredArgument("<DOMAIN>").StoreResult(&Domain).Required();
-        config.SetFreeArgsNum(1);
-        SetFreeArgTitle(0, "<CONFIGURE-YAML>", "Console configure request yaml");
-    }
-
-    void Parse(TConfig& config) override
-    {
-        TClientCommand::Parse(config);
-
-        Request = TUnbufferedFileInput(config.ParseResult->GetFreeArgs()[0]).ReadAll();
-    }
-
-    int Run(TConfig &) override
-    {
-        NKikimrConsole::TConfigureRequest req = NYamlConfig::DumpYamlConfigRequest(Request, Domain);
-        TString result;
-        google::protobuf::TextFormat::PrintToString(req, &result);
-        Cout << result;
-
-        return 0;
-    }
-};
-
 class TClientCommandConsoleConfigs : public TClientCommandTree {
 public:
     TClientCommandConsoleConfigs()
@@ -459,8 +353,6 @@ public:
     {
         AddCommand(std::make_unique<TClientCommandConsoleConfigsLoad>());
         AddCommand(std::make_unique<TClientCommandConsoleConfigsDumpYaml>());
-        AddCommand(std::make_unique<TClientCommandConvertToYaml>());
-        AddCommand(std::make_unique<TClientCommandConvertFromYaml>());
         AddCommand(std::make_unique<TClientCommandConsoleConfigsUpdate>());
     }
 };

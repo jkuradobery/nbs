@@ -2,7 +2,7 @@
 
 #include <ydb/core/base/statestorage.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/cms/console/console.h>
@@ -40,7 +40,8 @@ public:
         , Callback(std::move(callback)) {}
 
     void Bootstrap() {
-        auto boardLookup = CreateBoardLookupActor(BoardPath, SelfId(), StateStorageGroupId, EBoardLookupMode::Majority);
+        auto boardLookup = CreateBoardLookupActor(BoardPath, SelfId(), StateStorageGroupId, EBoardLookupMode::Majority,
+                                                  false, false);
         BoardLookupId = Register(boardLookup);
 
         Become(&TTakeResourcesSnapshotActor::WorkState);
@@ -52,7 +53,7 @@ public:
             cFunc(TEvents::TSystem::Poison, PassAway);
             default:
                 LOG_C("Unexpected event type: " << ev->GetTypeRewrite()
-                    << ", event: " << ev->GetTypeName());
+                    << ", event: " << (ev->HasEvent() ? ev->GetBase()->ToString().data() : "<serialized>"));
         }
     }
 

@@ -23,7 +23,6 @@ void EnableKikimrSymbolize();
 
 void KikimrBackTrace();
 void KikimrBackTraceFormatImpl(IOutputStream*);
-void KikimrBacktraceFormatImpl(IOutputStream* out, void* const* stack, size_t stackSize);
 
 void SetModulesMapping(const THashMap<TString, TString>& mapping);
 

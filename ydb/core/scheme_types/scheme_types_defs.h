@@ -212,7 +212,7 @@ public:
     }
 
     static TRawTypeValue ToRawTypeValue(const ::TString& value) {
-        Y_ABORT_UNLESS(value.size() <= MaxSize);
+        Y_VERIFY(value.size() <= MaxSize);
         return TRawTypeValue((const void*)value.data(), value.size(), TTypeInfo(TypeId));
     }
 };
@@ -227,14 +227,9 @@ using TLargeBoundedString = TBoundedString<0x200000, NTypeIds::String2m, NNames:
 
 namespace NNames {
     extern const char Decimal[8];
-    extern const char Uuid[5];
 }
 
 class TDecimal : public IIntegerPair<ui64, i64, NTypeIds::Decimal, NNames::Decimal> {};
-
-class TUuid : public TTypedType<char[16], TUuid, NTypeIds::Uuid, NNames::Uuid> {
-public:
-};
 
 ////////////////////////////////////////////////////////
 /// Datetime types
@@ -278,7 +273,6 @@ class TInterval : public IIntegerTypeWithKeyString<i64, NTypeIds::Interval, NNam
     xx(Timestamp, TTimestamp, __VA_ARGS__) \
     xx(Interval, TInterval, __VA_ARGS__) \
     xx(DyNumber, TDyNumber, __VA_ARGS__) \
-    xx(Uuid, TUuid, __VA_ARGS__) \
     /**/
 
 

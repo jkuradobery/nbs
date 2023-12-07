@@ -33,7 +33,7 @@ public:
     void ParseAddress(TConfig& config) override;
     void ParseCredentials(TConfig& config) override;
     void Validate(TConfig& config) override;
-    int Run(TConfig& config) override;
+
 protected:
     virtual void FillConfig(TConfig& config);
     virtual void SetCredentialsGetter(TConfig& config);
@@ -45,12 +45,6 @@ private:
     void ParseProfile();
     void ParseDatabase(TConfig& config);
     void ParseIamEndpoint(TConfig& config);
-    void ParseCaCerts(TConfig& config) override;
-    void GetAddressFromString(TConfig& config, TString* result = nullptr);
-    bool ParseProtocolNoConfig(TString& message);
-    void GetCaCerts(TConfig& config);
-    bool TryGetParamFromProfile(const TString& name, std::shared_ptr<IProfile> profile, bool explicitOption,
-                                std::function<bool(const TString&, const TString&, bool)> callback);
 
     TString Database;
 
@@ -60,7 +54,6 @@ private:
     }
 
     TString ProfileName;
-    TString ProfileFile;
     std::shared_ptr<IProfile> Profile;
     std::shared_ptr<IProfileManager> ProfileManager;
 
@@ -75,12 +68,6 @@ private:
     TString IamEndpoint;
     const TClientSettings& Settings;
     TVector<TString> MisuseErrors;
-
-    bool IsAddressSet = false;
-    bool IsDatabaseSet = false;
-    bool IsIamEndpointSet = false;
-    bool IsCaCertsFileSet = false;
-    bool IsAuthSet = false;
 };
 
 }

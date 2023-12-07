@@ -44,9 +44,7 @@ private:
     const i64 MaxSmallBlockSize_;
     const TRefCountedTypeCookie TagCookie_;
 
-    // Zero-sized arrays are prohibited by C++ standard
-    // Also even if supported they actually occupy some space (usually 1 byte)
-    char EmptyBuf_[1];
+    char EmptyBuf_[0];
 
     // Chunk memory layout:
     //   |AAAA|....|UUUU|

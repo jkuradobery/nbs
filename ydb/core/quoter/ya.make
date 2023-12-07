@@ -11,14 +11,13 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/containers/ring_buffer
     ydb/core/base
     ydb/core/kesus/tablet
     ydb/core/tx/scheme_cache
     ydb/core/util
     ydb/library/yql/public/issue
-    ydb/library/time_series_vec
 )
 
 END()

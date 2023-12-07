@@ -45,12 +45,10 @@ NYql::NNodes::TExprBase KqpRewriteLookupTable(const NYql::NNodes::TExprBase& nod
     const TKqpOptimizeContext& kqpCtx);
 
 NYql::NNodes::TExprBase KqpRewriteTopSortOverIndexRead(const NYql::NNodes::TExprBase& node, NYql::TExprContext&,
-    const TKqpOptimizeContext& kqpCtx, const NYql::TParentsMap& parentsMap);
-
-NYql::NNodes::TExprBase KqpRewriteTopSortOverFlatMap(const NYql::NNodes::TExprBase& node, NYql::TExprContext& ctx);
+    const TKqpOptimizeContext& kqpCtx);
 
 NYql::NNodes::TExprBase KqpRewriteTakeOverIndexRead(const NYql::NNodes::TExprBase& node, NYql::TExprContext&,
-    const TKqpOptimizeContext& kqpCtx, const NYql::TParentsMap& parentsMap);
+    const TKqpOptimizeContext& kqpCtx);
 
 NYql::NNodes::TExprBase KqpDeleteOverLookup(const NYql::NNodes::TExprBase& node, NYql::TExprContext& ctx,
     const TKqpOptimizeContext &kqpCtx);
@@ -74,8 +72,5 @@ NYql::NNodes::TExprBase KqpApplyExtractMembersToLookupTable(NYql::NNodes::TExprB
 
 NYql::NNodes::TExprBase KqpTopSortOverExtend(NYql::NNodes::TExprBase node, NYql::TExprContext& ctx,
     const NYql::TParentsMap& parents);
-
-NYql::NNodes::TExprBase KqpUpsertRowsInputRewrite(NYql::NNodes::TExprBase node, NYql::TExprContext& ctx,
-    const TKqpOptimizeContext& kqpCtx);
 
 } // namespace NKikimr::NKqp::NOpt

@@ -5,6 +5,7 @@
 #undef INCLUDE_YDB_INTERNAL_H
 
 #include <ydb/public/sdk/cpp/client/ydb_params/params.h>
+#include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_types/fatal_error_handlers/handlers.h>
 
 #include <ydb/public/api/protos/ydb_value.pb.h>
@@ -69,7 +70,7 @@ static TTypeParser::ETypeKind GetKind(const Ydb::Type& type) {
 }
 
 bool TypesEqual(const TType& t1, const TType& t2) {
-    return TypesEqual(t1.GetProto(), t2.GetProto());
+    return TypesEqual(TProtoAccessor::GetProto(t1), TProtoAccessor::GetProto(t2));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -82,7 +83,7 @@ public:
     TImpl(Ydb::Type&& typeProto)
         : ProtoType_(std::move(typeProto)) {}
 
-    Ydb::Type ProtoType_;
+    const Ydb::Type ProtoType_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -105,11 +106,6 @@ const Ydb::Type& TType::GetProto() const {
     return Impl_->ProtoType_;
 }
 
-Ydb::Type& TType::GetProto()
-{
-    return Impl_->ProtoType_;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 
 class TTypeParser::TImpl {
@@ -122,7 +118,7 @@ public:
 
     void Reset() {
         Path_.clear();
-        Path_.emplace_back(TProtoPosition{&Type_.GetProto(), -1});
+        Path_.emplace_back(TProtoPosition{&TProtoAccessor::GetProto(Type_), -1});
     }
 
     ETypeKind GetKind(ui32 offset = 0) const {
@@ -144,11 +140,7 @@ public:
     TPgType GetPg() const {
         CheckKind(ETypeKind::Pg, "GetPg");
         const auto& pg = GetProto().pg_type();
-        TPgType type(pg.type_name(), pg.type_modifier());
-        type.Oid = pg.oid();
-        type.Typlen = pg.typlen();
-        type.Typmod = pg.typmod();
-        return type;
+        return TPgType(pg.oid(), pg.typlen(), pg.typmod());
     }
 
     template<ETypeKind kind>
@@ -480,8 +472,7 @@ void FormatTypeInternal(TTypeParser& parser, IOutputStream& out) {
 
         case TTypeParser::ETypeKind::Pg: {
             auto pg = parser.GetPg();
-            out << "Pg('"sv << pg.TypeName << "\',\'" << pg.TypeModifier << "\',"
-                << pg.Oid << "," << pg.Typlen << ',' << pg.Typmod << ')';
+            out << "Pg("sv << pg.Oid << ',' << pg.Typlen << ',' << pg.Typmod << ')';
             break;
         }
 
@@ -616,8 +607,9 @@ public:
 
     void Pg(const TPgType& pgType) {
         auto& pg = *GetProto().mutable_pg_type();
-        pg.set_type_name(pgType.TypeName);
-        pg.set_type_modifier(pgType.TypeModifier);
+        pg.set_oid(pgType.Oid);
+        pg.set_typlen(pgType.Typlen);
+        pg.set_typmod(pgType.Typmod);
     }
 
     void BeginOptional() {
@@ -629,7 +621,7 @@ public:
     }
 
     void Optional(const TType& itemType) {
-        GetProto().mutable_optional_type()->mutable_item()->CopyFrom(itemType.GetProto());
+        GetProto().mutable_optional_type()->mutable_item()->CopyFrom(TProtoAccessor::GetProto(itemType));
     }
 
     void BeginList() {
@@ -641,7 +633,7 @@ public:
     }
 
     void List(const TType& itemType) {
-        GetProto().mutable_list_type()->mutable_item()->CopyFrom(itemType.GetProto());
+        GetProto().mutable_list_type()->mutable_item()->CopyFrom(TProtoAccessor::GetProto(itemType));
     }
 
     void BeginStruct() {
@@ -663,7 +655,7 @@ public:
 
     void AddMember(const TString& memberName, const TType& memberType) {
         AddMember(memberName);
-        GetProto().CopyFrom(memberType.GetProto());
+        GetProto().CopyFrom(TProtoAccessor::GetProto(memberType));
     }
 
     void SelectMember(size_t index) {
@@ -690,7 +682,7 @@ public:
 
     void AddElement(const TType& elementType) {
         AddElement();
-        GetProto().CopyFrom(elementType.GetProto());
+        GetProto().CopyFrom(TProtoAccessor::GetProto(elementType));
     }
 
     void SelectElement(size_t index) {
@@ -716,7 +708,7 @@ public:
 
     void DictKey(const TType& keyType) {
         DictKey();
-        GetProto().CopyFrom(keyType.GetProto());
+        GetProto().CopyFrom(TProtoAccessor::GetProto(keyType));
     }
 
     void DictPayload() {
@@ -727,7 +719,7 @@ public:
 
     void DictPayload(const TType& payloadType) {
         DictPayload();
-        GetProto().CopyFrom(payloadType.GetProto());
+        GetProto().CopyFrom(TProtoAccessor::GetProto(payloadType));
     }
 
     void BeginTagged(const TString& tag) {
@@ -742,7 +734,7 @@ public:
     void Tagged(const TString& tag, const TType& itemType) {
         auto taggedType = GetProto().mutable_tagged_type();
         taggedType->set_tag(tag);
-        taggedType->mutable_type()->CopyFrom(itemType.GetProto());
+        taggedType->mutable_type()->CopyFrom(TProtoAccessor::GetProto(itemType));
     }
 
     Ydb::Type& GetProto(ui32 offset = 0) {
@@ -750,11 +742,7 @@ public:
     }
 
     void SetType(const TType& type) {
-        GetProto().CopyFrom(type.GetProto());
-    }
-
-    void SetType(TType&& type) {
-        GetProto() = std::move(type.GetProto());
+        GetProto().CopyFrom(TProtoAccessor::GetProto(type));
     }
 
 private:
@@ -1021,7 +1009,6 @@ TUuidValue::TUuidValue(const TString& uuidString) {
         ThrowFatalError(TStringBuilder() << "Unable to parse string as uuid");
     }
     static_assert(sizeof(dw) == sizeof(Buf_.Bytes));
-    // TODO: check output on big-endian machines here and everywhere.
     std::memcpy(Buf_.Bytes, dw, sizeof(dw));
 }
 
@@ -1032,6 +1019,7 @@ TString TUuidValue::ToString() const {
     std::memcpy(dw, Buf_.Bytes, sizeof(dw));
     NKikimr::NUuid::UuidToString(dw, s);
     return s.Str();
+  
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1046,8 +1034,8 @@ public:
         : Type_(type)
         , ProtoValue_(std::move(valueProto)) {}
 
-    TType Type_;
-    Ydb::Value ProtoValue_;
+    const TType Type_;
+    const Ydb::Value ProtoValue_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1062,15 +1050,7 @@ const TType& TValue::GetType() const {
     return Impl_->Type_;
 }
 
-TType & TValue::GetType() {
-    return Impl_->Type_;
-}
-
 const Ydb::Value& TValue::GetProto() const {
-    return Impl_->ProtoValue_;
-}
-
-Ydb::Value& TValue::GetProto() {
     return Impl_->ProtoValue_;
 }
 
@@ -1986,7 +1966,7 @@ public:
         : TypeBuilder_()
     {
         PushPath(ProtoValue_);
-        GetType().CopyFrom(type.GetProto());
+        GetType().CopyFrom(TProtoAccessor::GetProto(type));
     }
 
     TValueBuilderImpl(Ydb::Type& type, Ydb::Value& value)
@@ -2145,11 +2125,9 @@ public:
 
     void Pg(const TPgValue& value) {
         FillPgType(value.PgType_);
-        if (value.IsNull()) {
-            GetValue().set_null_flag_value(::google::protobuf::NULL_VALUE);
-        } else if (value.IsText()) {
+        if (value.IsText()) {
             GetValue().set_text_value(value.Content_);
-        } else {
+        } else if (!value.IsNull()) {
             GetValue().set_bytes_value(value.Content_);
         }
     }
@@ -2252,17 +2230,6 @@ public:
         SetProtoValue(itemValue);
     }
 
-    void AddListItem(TValue&& itemValue) {
-        CheckContainerKind(ETypeKind::List);
-        PopPath();
-        PushPath(*GetValue().add_items());
-
-        if (!CheckType(itemValue.GetType())) {
-            TypeBuilder_.SetType(std::move(itemValue.GetType()));
-        }
-        SetProtoValue(std::move(itemValue));
-    }
-
     void EmptyList(const TType& itemType) {
         BeginList(itemType);
         EndList();
@@ -2329,16 +2296,6 @@ public:
         }
 
         SetProtoValue(memberValue);
-    }
-
-    void AddMember(const TString& memberName, TValue&& memberValue) {
-        AddMember(memberName);
-
-        if (!CheckType(memberValue.GetType())) {
-            TypeBuilder_.SetType(std::move(memberValue.GetType()));
-        }
-
-        SetProtoValue(std::move(memberValue));
     }
 
     void EndStruct() {
@@ -2537,11 +2494,7 @@ private:
     }
 
     void SetProtoValue(const TValue& value) {
-        GetValue().CopyFrom(value.GetProto());
-    }
-
-    void SetProtoValue(TValue&& value) {
-        GetValue() = std::move(value.GetProto());
+        GetValue().CopyFrom(TProtoAccessor::GetProto(value));
     }
 
     bool GetBuildType() {
@@ -2598,7 +2551,7 @@ private:
             return false;
         }
 
-        if (!TypesEqual(GetType(), type.GetProto())) {
+        if (!TypesEqual(GetType(), type)) {
             FatalError(TStringBuilder() << "Type mismatch, expected: " << FormatType(GetType())
                 << ", actual: " << FormatType(type));
             return false;
@@ -3092,12 +3045,6 @@ TDerived& TValueBuilderBase<TDerived>::AddListItem(const TValue& itemValue) {
 }
 
 template<typename TDerived>
-TDerived& TValueBuilderBase<TDerived>::AddListItem(TValue&& itemValue) {
-    Impl_->AddListItem(std::move(itemValue));
-    return static_cast<TDerived&>(*this);
-}
-
-template<typename TDerived>
 TDerived& TValueBuilderBase<TDerived>::EmptyList(const TType& itemType) {
     Impl_->EmptyList(itemType);
     return static_cast<TDerived&>(*this);
@@ -3124,12 +3071,6 @@ TDerived& TValueBuilderBase<TDerived>::AddMember(const TString& memberName) {
 template<typename TDerived>
 TDerived& TValueBuilderBase<TDerived>::AddMember(const TString& memberName, const TValue& memberValue) {
     Impl_->AddMember(memberName, memberValue);
-    return static_cast<TDerived&>(*this);
-}
-
-template<typename TDerived>
-TDerived& TValueBuilderBase<TDerived>::AddMember(const TString& memberName, TValue&& memberValue) {
-    Impl_->AddMember(memberName, std::move(memberValue));
     return static_cast<TDerived&>(*this);
 }
 

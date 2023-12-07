@@ -13,9 +13,7 @@
 #include <ydb/core/protos/tx_datashard.pb.h>
 #include <ydb/core/tablet_flat/flat_row_versions.h>
 
-#include <library/cpp/lwtrace/shuttle.h>
 #include <library/cpp/time_provider/time_provider.h>
-#include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
 
 namespace arrow {
 
@@ -124,14 +122,10 @@ namespace NDataShard {
             WaitingForAsyncJob = 1ULL << 43,
             // Operation must complete before results sending
             WaitCompletion = 1ULL << 44,
-            // Waiting for global tx id allocation
-            WaitingForGlobalTxId = 1ULL << 45,
             // Operation is waiting for restart
             WaitingForRestart = 1ULL << 46,
-            // Operation has write keys registered in the cache
-            DistributedWritesRegistered = 1ULL << 47,
 
-            LastFlag = DistributedWritesRegistered,
+            LastFlag = WaitingForRestart,
 
             PrivateFlagsMask = 0xFFFFFFFFFFFF0000ULL,
             PreservedPrivateFlagsMask = ReadOnly | ProposeBlocker | NeedDiagnostics | GlobalReader
@@ -287,8 +281,9 @@ struct TEvDataShard {
         EvGetS3DownloadInfo,
         EvStoreS3DownloadInfo,
         EvS3DownloadInfo,
-        EvS3UploadRowsRequest,
-        EvS3UploadRowsResponse,
+
+        EvUnsafeUploadRowsRequest,
+        EvUnsafeUploadRowsResponse,
 
         EvKqpScan,
 
@@ -322,9 +317,6 @@ struct TEvDataShard {
 
         EvCdcStreamScanRequest,
         EvCdcStreamScanResponse,
-
-        EvOverloadReady,
-        EvOverloadUnsubscribe,
 
         EvEnd
     };
@@ -437,7 +429,7 @@ struct TEvDataShard {
             const TStringBuf& txBody, ui32 flags = NDataShard::TTxFlags::Default)
         {
             Record.SetTxKind(txKind);
-            ActorIdToProto(source, Record.MutableSourceDeprecated());
+            ActorIdToProto(source, Record.MutableSource());
             Record.SetTxId(txId);
             Record.SetExecLevel(0);
             Record.SetTxBody(txBody.data(), txBody.size());
@@ -463,7 +455,7 @@ struct TEvDataShard {
             const TStringBuf& txBody, const NKikimrSubDomains::TProcessingParams &processingParams, ui32 flags = NDataShard::TTxFlags::Default)
             : TEvProposeTransaction(txKind, source, txId, txBody, flags)
         {
-            Y_ABORT_UNLESS(txKind == NKikimrTxDataShard::TX_KIND_SCHEME);
+            Y_VERIFY(txKind == NKikimrTxDataShard::TX_KIND_SCHEME);
             Record.SetSchemeShardId(ssId);
             Record.MutableProcessingParams()->CopyFrom(processingParams);
         }
@@ -481,6 +473,10 @@ struct TEvDataShard {
             return Record.GetTxKind();
         }
 
+        TActorId GetSource() const {
+            return ActorIdFromProto(Record.GetSource());
+        }
+
         ui64 GetTxId() const {
             return Record.GetTxId();
         }
@@ -492,9 +488,6 @@ struct TEvDataShard {
         TStringBuf GetTxBody() const {
             return Record.GetTxBody();
         }
-
-        // Orbit used for tracking request events
-        NLWTrace::TOrbit Orbit;
     };
 
     struct TEvCancelTransactionProposal : public TEventPB<TEvCancelTransactionProposal, NKikimrTxDataShard::TEvCancelTransactionProposal, TEvDataShard::EvCancelTransactionProposal> {
@@ -667,10 +660,6 @@ struct TEvDataShard {
     private:
         bool ForceOnline = false;
         bool ForceDirty = false;
-
-    public:
-        // Orbit used for tracking request events
-        NLWTrace::TOrbit Orbit;
     };
 
     struct TEvProposeTransactionRestart : public TEventPB<TEvProposeTransactionRestart, NKikimrTxDataShard::TEvProposeTransactionRestart, TEvDataShard::EvProposeTransactionRestart> {
@@ -864,7 +853,7 @@ struct TEvDataShard {
     struct TEvUploadRowsRequest : public TEventPBWithArena<TEvUploadRowsRequest,
                                                         NKikimrTxDataShard::TEvUploadRowsRequest,
                                                         TEvDataShard::EvUploadRowsRequest,
-                                                        16*1024, 32*1024> {
+                                                        16200, 32500> {
         TEvUploadRowsRequest() = default;
     };
 
@@ -876,33 +865,6 @@ struct TEvDataShard {
         explicit TEvUploadRowsResponse(ui64 tabletId, ui32 status = NKikimrTxDataShard::TError::OK) {
             Record.SetTabletID(tabletId);
             Record.SetStatus(status);
-        }
-    };
-
-    struct TEvOverloadReady
-        : public TEventPB<
-            TEvOverloadReady,
-            NKikimrTxDataShard::TEvOverloadReady,
-            EvOverloadReady>
-    {
-        TEvOverloadReady() = default;
-
-        explicit TEvOverloadReady(ui64 tabletId, ui64 seqNo) {
-            Record.SetTabletID(tabletId);
-            Record.SetSeqNo(seqNo);
-        }
-    };
-
-    struct TEvOverloadUnsubscribe
-        : public TEventPB<
-            TEvOverloadUnsubscribe,
-            NKikimrTxDataShard::TEvOverloadUnsubscribe,
-            EvOverloadUnsubscribe>
-    {
-        TEvOverloadUnsubscribe() = default;
-
-        explicit TEvOverloadUnsubscribe(ui64 seqNo) {
-            Record.SetSeqNo(seqNo);
         }
     };
 
@@ -948,9 +910,6 @@ struct TEvDataShard {
 
         // True when TEvRead is cancelled while enqueued in a waiting queue
         bool Cancelled = false;
-
-        // Orbit used for tracking request events
-        NLWTrace::TOrbit Orbit;
     };
 
     struct TEvReadResult : public TEventPB<TEvReadResult,
@@ -987,15 +946,11 @@ struct TEvDataShard {
         // CellVec (TODO: add schema?)
 
         TConstArrayRef<TCell> GetCells(size_t row) const {
-            if (Rows.empty() && Batch.Empty() && RowsSerialized.empty())
+            if (Rows.empty() && RowsSerialized.empty() && Record.GetRowCount())
                 return {};
 
             if (!Rows.empty()) {
                 return Rows[row];
-            }
-
-            if (!Batch.Empty()) {
-                return Batch[row];
             }
 
             return RowsSerialized[row].GetCells();
@@ -1003,10 +958,6 @@ struct TEvDataShard {
 
         void SetRows(TVector<TOwnedCellVec>&& rows) {
             Rows = std::move(rows);
-        }
-
-        void SetBatch(TOwnedCellVecBatch&& batch) {
-            Batch = std::move(batch);
         }
 
         // Arrow
@@ -1021,9 +972,6 @@ struct TEvDataShard {
     private:
         // for local events
         TVector<TOwnedCellVec> Rows;
-
-        // batch for local events
-        TOwnedCellVecBatch Batch;
 
         // for remote events to avoid extra copying
         TVector<TSerializedCellVec> RowsSerialized;
@@ -1300,7 +1248,7 @@ struct TEvDataShard {
             : TxId(txId)
             , Info(info)
         {
-            Y_ABORT_UNLESS(Info.DataETag);
+            Y_VERIFY(Info.DataETag);
         }
 
         TString ToString() const override {
@@ -1330,15 +1278,15 @@ struct TEvDataShard {
         }
     };
 
-    struct TEvS3UploadRowsRequest
-        : public TEventLocal<TEvS3UploadRowsRequest, TEvDataShard::EvS3UploadRowsRequest>
+    struct TEvUnsafeUploadRowsRequest
+        : public TEventLocal<TEvUnsafeUploadRowsRequest, TEvDataShard::EvUnsafeUploadRowsRequest>
     {
         ui64 TxId;
         std::shared_ptr<NKikimrTxDataShard::TEvUploadRowsRequest> RecordHolder;
         const NKikimrTxDataShard::TEvUploadRowsRequest& Record;
         NDataShard::TS3Download Info;
 
-        explicit TEvS3UploadRowsRequest(
+        explicit TEvUnsafeUploadRowsRequest(
                 ui64 txId,
                 const std::shared_ptr<NKikimrTxDataShard::TEvUploadRowsRequest>& record,
                 const NDataShard::TS3Download& info)
@@ -1347,7 +1295,7 @@ struct TEvDataShard {
             , Record(*RecordHolder)
             , Info(info)
         {
-            Y_ABORT_UNLESS(Info.DataETag);
+            Y_VERIFY(Info.DataETag);
         }
 
         TString ToString() const override {
@@ -1358,13 +1306,13 @@ struct TEvDataShard {
         }
     };
 
-    struct TEvS3UploadRowsResponse
-        : public TEventLocal<TEvS3UploadRowsResponse, TEvDataShard::EvS3UploadRowsResponse>
+    struct TEvUnsafeUploadRowsResponse
+        : public TEventLocal<TEvUnsafeUploadRowsResponse, TEvDataShard::EvUnsafeUploadRowsResponse>
     {
         NKikimrTxDataShard::TEvUploadRowsResponse Record;
         NDataShard::TS3Download Info;
 
-        explicit TEvS3UploadRowsResponse(ui64 tabletId, ui32 status = NKikimrTxDataShard::TError::OK) {
+        explicit TEvUnsafeUploadRowsResponse(ui64 tabletId, ui32 status = NKikimrTxDataShard::TError::OK) {
             Record.SetTabletID(tabletId);
             Record.SetStatus(status);
         }
@@ -1648,9 +1596,9 @@ struct TEvDataShard {
 
     struct TEvGetOpenTxsResult : public TEventLocal<TEvGetOpenTxsResult, EvGetOpenTxsResult> {
         TPathId PathId;
-        absl::flat_hash_set<ui64> OpenTxs;
+        TVector<ui64> OpenTxs;
 
-        TEvGetOpenTxsResult(const TPathId& pathId, absl::flat_hash_set<ui64> openTxs)
+        TEvGetOpenTxsResult(const TPathId& pathId, TVector<ui64> openTxs)
             : PathId(pathId)
             , OpenTxs(std::move(openTxs))
         { }

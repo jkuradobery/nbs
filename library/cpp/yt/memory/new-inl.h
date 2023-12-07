@@ -4,8 +4,6 @@
 #include "new.h"
 #endif
 
-#include "ref_tracked.h"
-
 #include <library/cpp/yt/malloc//malloc.h>
 
 namespace NYT {
@@ -58,9 +56,9 @@ class TRefCountedWrapperWithDeleter final
 {
 public:
     template <class... TArgs>
-    explicit TRefCountedWrapperWithDeleter(TDeleter deleter, TArgs&&... args)
+    explicit TRefCountedWrapperWithDeleter(const TDeleter& deleter, TArgs&&... args)
         : T(std::forward<TArgs>(args)...)
-        , Deleter_(std::move(deleter))
+        , Deleter_(deleter)
     { }
 
     ~TRefCountedWrapperWithDeleter() = default;
@@ -71,7 +69,7 @@ public:
     }
 
 private:
-    const TDeleter Deleter_;
+    TDeleter Deleter_;
 };
 
 template <class T>
@@ -114,7 +112,7 @@ Y_FORCE_INLINE T* NewEpilogue(void* ptr, As&& ... args)
         new (instance) T(std::forward<As>(args)...);
         CustomInitialize(instance);
         return instance;
-    } catch (...) {
+    } catch (const std::exception& ex) {
         // Do not forget to free the memory.
         TFreeMemory<T>::Do(ptr);
         throw;
@@ -166,8 +164,8 @@ Y_FORCE_INLINE TIntrusivePtr<T> SafeConstruct(void* ptr, As&&... args)
 {
     try {
         auto* instance = TConstructHelper<T>::Construct(ptr, std::forward<As>(args)...);
-        return TIntrusivePtr<T>(instance, /*addReference*/ false);
-    } catch (...) {
+        return TIntrusivePtr<T>(instance, false);
+    } catch (const std::exception& ex) {
         // Do not forget to free the memory.
         TFreeMemory<T>::Do(ptr);
         throw;
@@ -254,18 +252,19 @@ Y_FORCE_INLINE TIntrusivePtr<T> NewWithExtraSpace(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Support for polymorphic only
 template <class T, class TDeleter, class... As>
-Y_FORCE_INLINE TIntrusivePtr<T> NewWithDeleter(TDeleter deleter, As&&... args)
+Y_FORCE_INLINE TIntrusivePtr<T> NewWithDelete(const TDeleter& deleter, As&&... args)
 {
     using TWrapper = TRefCountedWrapperWithDeleter<T, TDeleter>;
     void* ptr = NYT::NDetail::AllocateConstSizeAligned<sizeof(TWrapper), alignof(TWrapper)>();
 
     auto* instance = NYT::NDetail::NewEpilogue<TWrapper>(
         ptr,
-        std::move(deleter),
+        deleter,
         std::forward<As>(args)...);
 
-    return TIntrusivePtr<T>(instance, /*addReference*/ false);
+    return TIntrusivePtr<T>(instance, false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -286,7 +285,7 @@ Y_FORCE_INLINE TIntrusivePtr<T> NewWithLocation(
     Y_UNUSED(location);
 #endif
 
-    return TIntrusivePtr<T>(instance, /*addReference*/ false);
+    return TIntrusivePtr<T>(instance, false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -3,8 +3,6 @@
 #include <util/string/builder.h>
 #include <util/string/printf.h>
 
-#include <locale>
-
 namespace NKikimr {
 
 TVector<TString> SplitPath(TString path) {
@@ -49,105 +47,13 @@ TString JoinPath(const TVector<TString>& path) {
     return result;
 }
 
-/**
- * Returns the first position that matches "//" or the end of string
- */
-static const char* FindDoubleSlash(const char* p, const char* end) {
-    if (p == end) {
-        return end;
-    }
-    const char* last = end - 1;
-    while (p != last) {
-        if (p[0] == '/' && p[1] == '/') {
-            return p;
-        }
-        ++p;
-    }
-    return end;
-}
+TString CanonizePath(const TString &path)
+{
+    if (!path)
+        return TString();
 
-/**
- * Returns the first position that does not match '/'
- */
-static const char* SkipSlashes(const char* p, const char* end) {
-    while (p != end && *p == '/') {
-        ++p;
-    }
-    return p;
-}
-
-TString CanonizePath(const TString& in) {
-    if (in.empty()) {
-        // Special handling for an empty string
-        return in;
-    }
-
-    const char* p = in.c_str();
-    const char* end = p + in.size();
-    const char* s = FindDoubleSlash(p, end);
-
-    // Check if there is no '//' anywhere
-    // Note when true we cannot match an empty string
-    if (s == end) {
-        if (p[0] == '/' && s[-1] != '/') {
-            // Current string is fully canonized
-            return in;
-        }
-
-        // Strip the last '/' if present
-        if (s[-1] == '/') {
-            --s;
-        }
-
-        // Check if all we had to do was strip the trailing slash
-        if (p[0] == '/') {
-            return TString(p, s);
-        }
-
-        // Otherwise we must append the leading slash
-        TString result;
-        result.reserve((s - p) + 1);
-        result.push_back('/');
-        result.append(p, s);
-        return result;
-    }
-
-    TString result;
-
-    // There's at least one "//" so in.size() is enough even when leading slash is missing
-    result.reserve(in.size());
-
-    // The first segment may need to add a leading slash
-    if (p != s) {
-        if (p[0] != '/') {
-            result.push_back('/');
-        }
-        result.append(p, s);
-    }
-
-    // Note: s matches "//" at the beginning of each iteration
-    while (true) {
-        p = SkipSlashes(s + 2, end);
-        if (p == end) {
-            // Original string ended with multiple "//"
-            break;
-        }
-
-        s = FindDoubleSlash(p + 1, end);
-        if (s == end) {
-            // No more double slashes, handle the last '/' and append
-            if (s[-1] == '/') {
-                --s;
-            }
-            result.append(p - 1, s);
-            break;
-        }
-
-        // Since p is the first non-'/' character, p-1 is always '/'
-        result.append(p - 1, s);
-    }
-
-    return result;
+    const auto parts = SplitPath(path);
+    return CanonizePath(parts);
 }
 
 TString CanonizePath(const TVector<TString>& path) {
@@ -208,7 +114,7 @@ bool IsPathPartContainsOnlyDots(const TString &part) {
 TString::const_iterator PathPartBrokenAt(const TString &part, const TStringBuf extraSymbols) {
     static constexpr TStringBuf basicSymbols = "-_.";
     for (auto it = part.begin(); it != part.end(); ++it) {
-        if (!std::isalnum(*it, std::locale::classic())
+        if (!isalnum(*it)
                 && !basicSymbols.Contains(*it)
                 && !extraSymbols.Contains(*it)) {
             return it;

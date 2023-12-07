@@ -37,7 +37,6 @@ public:
             auto groupLatencies = db.Table<Schema::GroupLatencies>().Select();
             auto scrubState = db.Table<Schema::ScrubState>().Select();
             auto pdiskSerial = db.Table<Schema::DriveSerial>().Select();
-            auto blobDepotDeleteQueue = db.Table<Schema::BlobDepotDeleteQueue>().Select();
             if (!state.IsReady()
                     || !nodes.IsReady()
                     || !disk.IsReady()
@@ -56,8 +55,7 @@ public:
                     || !groupStoragePool.IsReady()
                     || !groupLatencies.IsReady()
                     || !scrubState.IsReady()
-                    || !pdiskSerial.IsReady()
-                    || !blobDepotDeleteQueue.IsReady()) {
+                    || !pdiskSerial.IsReady()) {
                 return false;
             }
         }
@@ -86,11 +84,8 @@ public:
                 Self->GroupReservePart = state.GetValue<T::GroupReservePart>();
                 Self->MaxScrubbedDisksAtOnce = state.GetValue<T::MaxScrubbedDisksAtOnce>();
                 Self->PDiskSpaceColorBorder = state.GetValue<T::PDiskSpaceColorBorder>();
-                Self->GroupLayoutSanitizerEnabled = state.GetValue<T::GroupLayoutSanitizer>();
-                Self->AllowMultipleRealmsOccupation = state.GetValueOrDefault<T::AllowMultipleRealmsOccupation>();
+                Self->GroupLayoutSanitizer = state.GetValue<T::GroupLayoutSanitizer>();
                 Self->SysViewChangedSettings = true;
-                Self->UseSelfHealLocalPolicy = state.GetValue<T::UseSelfHealLocalPolicy>();
-                Self->TryToRelocateBrokenDisksLocallyFirst = state.GetValue<T::TryToRelocateBrokenDisksLocallyFirst>();
             }
         }
 
@@ -121,7 +116,7 @@ public:
                 const auto boxId = groupStoragePool.GetValue<Table::BoxId>();
                 const auto storagePoolId = groupStoragePool.GetValue<Table::StoragePoolId>();
                 const bool inserted = groupToStoragePool.try_emplace(groupId, boxId, storagePoolId).second;
-                Y_ABORT_UNLESS(inserted);
+                Y_VERIFY(inserted);
                 Self->StoragePoolGroups.emplace(TBoxStoragePoolId(boxId, storagePoolId), groupId);
                 if (!groupStoragePool.Next()) {
                     return false;
@@ -177,7 +172,7 @@ public:
                 return false;
             while (!groups.EndOfSet()) {
                 const auto it = groupToStoragePool.find(groups.GetKey());
-                Y_ABORT_UNLESS(it != groupToStoragePool.end());
+                Y_VERIFY(it != groupToStoragePool.end());
                 const TBoxStoragePoolId storagePoolId = it->second;
                 groupToStoragePool.erase(it);
 
@@ -224,7 +219,7 @@ public:
 
                 if (groups.HaveValue<T::Metrics>()) {
                     const bool success = group.GroupMetrics.emplace().ParseFromString(groups.GetValue<T::Metrics>());
-                    Y_DEBUG_ABORT_UNLESS(success);
+                    Y_VERIFY_DEBUG(success);
                 }
 
 #undef OPTIONAL
@@ -235,14 +230,13 @@ public:
                     return false;
             }
         }
-        Y_ABORT_UNLESS(groupToStoragePool.empty());
+        Y_VERIFY(groupToStoragePool.empty());
 
         // HostConfig, Box, BoxStoragePool
         if (!NTableAdapter::FetchTable<Schema::HostConfig>(db, Self, Self->HostConfigs)
                 || !NTableAdapter::FetchTable<Schema::Box>(db, Self, Self->Boxes)
                 || !NTableAdapter::FetchTable<Schema::BoxStoragePool>(db, Self, Self->StoragePools)
-                || !NTableAdapter::FetchTable<Schema::DriveSerial>(db, Self, Self->DrivesSerials)
-                || !NTableAdapter::FetchTable<Schema::BlobDepotDeleteQueue>(db, Self, Self->BlobDepotDeleteQueue)) {
+                || !NTableAdapter::FetchTable<Schema::DriveSerial>(db, Self, Self->DrivesSerials)) {
             return false;
         }
         for (const auto& [storagePoolId, storagePool] : Self->StoragePools) {
@@ -258,21 +252,20 @@ public:
                 if (const auto it = Self->HostConfigs.find(value.HostConfigId); it != Self->HostConfigs.end()) {
                     for (const auto& [drive, info] : it->second.Drives) {
                         const bool inserted = driveToBox.emplace(std::make_pair(*nodeId, drive.Path), boxId).second;
-                        Y_ABORT_UNLESS(inserted, "duplicate Box-generated drive BoxId# %" PRIu64 " FQDN# %s IcPort# %d Path# '%s'",
+                        Y_VERIFY(inserted, "duplicate Box-generated drive BoxId# %" PRIu64 " FQDN# %s IcPort# %d Path# '%s'",
                             host.BoxId, host.Fqdn.data(), host.IcPort, drive.Path.data());
                     }
                 } else {
-                    Y_ABORT("HostConfigId# %" PRIu64 " not found in BoxId# %" PRIu64 " FQDN# %s IcPort# %d",
+                    Y_FAIL("HostConfigId# %" PRIu64 " not found in BoxId# %" PRIu64 " FQDN# %s IcPort# %d",
                         value.HostConfigId, host.BoxId, host.Fqdn.data(), host.IcPort);
                 }
             }
         }
 
-        for (const auto& [_, info] : Self->DrivesSerials) {
-            if (info->LifeStage == NKikimrBlobStorage::TDriveLifeStage::ADDED_BY_DSTOOL) {
-                Y_ABORT_UNLESS(info->NodeId);
-                Y_ABORT_UNLESS(info->Path);
-                driveToBox.emplace(std::make_tuple(*info->NodeId, *info->Path), info->BoxId);
+        for (const auto& [serial, info] : Self->DrivesSerials) {
+            if (info->NodeId && info->PDiskId) {
+                const bool inserted = driveToBox.emplace(std::make_tuple(*info->NodeId, serial.Serial), info->BoxId).second;
+                Y_VERIFY(inserted, "duplicate Serial-generated drive");
             }
         }
 
@@ -296,20 +289,22 @@ public:
                 THostId hostId;
                 TBoxId boxId;
                 TString path = disks.GetValue<T::Path>();
-                Y_VERIFY_S(path, "Couldn't find path for pdiskId# " << disks.GetValue<T::PDiskID>());
+                TString pathOrSerial = path ? path : disks.GetValue<T::ExpectedSerial>();
+                Y_VERIFY_S(pathOrSerial, "For pdiskId# " << disks.GetValue<T::PDiskID>()
+                        << " not found neither pathOrSerial nor serial");
 
                 if (const auto& x = Self->HostRecords->GetHostId(disks.GetValue<T::NodeID>())) {
                     hostId = *x;
                 } else {
-                    Y_ABORT("unknown node NodeId# %" PRIu32, disks.GetValue<T::NodeID>());
+                    Y_FAIL("unknown node NodeId# %" PRIu32, disks.GetValue<T::NodeID>());
                 }
 
                 // find the owning box
-                if (const auto it = driveToBox.find(std::make_tuple(disks.GetValue<T::NodeID>(), path)); it != driveToBox.end()) {
+                if (const auto it = driveToBox.find(std::make_tuple(disks.GetValue<T::NodeID>(), pathOrSerial)); it != driveToBox.end()) {
                     boxId = it->second;
                     driveToBox.erase(it);
                 } else {
-                    Y_ABORT("PDisk NodeId# %" PRIu32 " PDiskId# %" PRIu32 " not belonging to a box",
+                    Y_FAIL("PDisk NodeId# %" PRIu32 " PDiskId# %" PRIu32 " not belonging to a box",
                         disks.GetValue<T::NodeID>(), disks.GetValue<T::PDiskID>());
                 }
 
@@ -328,7 +323,7 @@ public:
                     return false;
             }
         }
-        Y_ABORT_UNLESS(driveToBox.empty(), "missing PDisks defined by the box exist");
+        Y_VERIFY(driveToBox.empty(), "missing PDisks defined by the box exist");
 
         // PDiskMetrics
         TVector<Schema::PDiskMetrics::TKey::Type> pdiskMetricsToDelete;
@@ -361,10 +356,10 @@ public:
             while (!slot.EndOfSet()) {
                 const TVSlotId& vslotId(slot.GetKey());
                 TPDiskInfo *pdisk = Self->FindPDisk(vslotId.ComprisingPDiskId());
-                Y_ABORT_UNLESS(pdisk);
+                Y_VERIFY(pdisk);
 
                 const TGroupId groupId = slot.GetValue<T::GroupID>();
-                Y_ABORT_UNLESS(groupId);
+                Y_VERIFY(groupId);
 
                 auto& x = Self->AddVSlot(vslotId, pdisk, groupId, slot.GetValueOrDefault<T::GroupPrevGeneration>(),
                     slot.GetValue<T::GroupGeneration>(), slot.GetValue<T::Category>(), slot.GetValue<T::RingIdx>(),
@@ -382,13 +377,6 @@ public:
         }
         for (const auto& [id, group] : Self->GroupMap) {
             group->FinishVDisksInGroup();
-        }
-        for (const auto& [vslotId, vslot] : Self->VSlots) {
-            if (vslot->IsBeingDeleted()) {
-                if (TGroupInfo *group = Self->FindGroup(vslot->GroupId)) {
-                    group->VSlotsBeingDeleted.insert(vslotId);
-                }
-            }
         }
 
         // tie donors and acceptors
@@ -464,7 +452,7 @@ public:
         for (const auto& [vslotId, slot] : Self->VSlots) {
             if (!slot->IsBeingDeleted()) {
                 TGroupInfo *group = Self->FindGroup(slot->GroupId);
-                Y_ABORT_UNLESS(group);
+                Y_VERIFY(group);
                 allocatedSizeMap[group->StoragePoolId] += slot->Metrics.GetAllocatedSize();
             }
         }
@@ -477,7 +465,6 @@ public:
         }
 
         // scrub state
-        Self->ScrubState.Clear();
         {
             using Table = Schema::ScrubState;
             auto scrubState = db.Table<Table>().Select();

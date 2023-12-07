@@ -10,7 +10,7 @@ SRCS(
 
 PEERDIR(
     contrib/libs/libxml
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/cgiparam
     library/cpp/http/misc
     library/cpp/http/server

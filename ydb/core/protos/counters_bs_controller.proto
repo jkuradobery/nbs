@@ -17,9 +17,9 @@ enum ESimpleCounters {
     COUNTER_SLOTS_ON_TO_BE_REMOVED_DISKS = 7 [(CounterOpts) = {Name: "SlotsOnToBeRemovedDisks"}];
     COUNTER_BYTES_ON_TO_BE_REMOVED_DISKS = 8 [(CounterOpts) = {Name: "BytesOnToBeRemovedDisks"}];
     COUNTER_PDISKS_WITHOUT_EXPECTED_SERIAL = 9 [(CounterOpts) = {Name: "PDisksWithoutExpectedSerial"}];
-    COUNTER_DRIVE_SERIAL_FREE = 10 [(CounterOpts) = {Name: "DriveSerialFree"}];
-    COUNTER_DRIVE_SERIAL_REMOVED_BY_DSTOOL = 11 [(CounterOpts) = {Name: "DriveSerialRemovedByDstool"}];
-    COUNTER_DRIVE_SERIAL_ADDED_BY_DSTOOL = 12 [(CounterOpts) = {Name: "DriveSerialAddedByDstool"}];
+    COUNTER_DRIVE_SERIAL_NOT_SEEN = 10 [(CounterOpts) = {Name: "DriveSerialNotSeen"}];
+    COUNTER_DRIVE_SERIAL_REMOVED = 11 [(CounterOpts) = {Name: "DriveSerialRemoved"}];
+    COUNTER_DRIVE_SERIAL_ERROR = 12 [(CounterOpts) = {Name: "DriveSerialError"}];
     COUNTER_DISK_SCRUB_WAITING_FOR_START = 13 [(CounterOpts) = {Name: "DiskScrubWaitingForStart"}];
     COUNTER_DISK_SCRUB_RUNNING = 14 [(CounterOpts) = {Name: "DiskScrubRunning"}];
     COUNTER_DISK_SCRUB_IN_PROGRESS = 15 [(CounterOpts) = {Name: "DiskScrubInProgress"}];
@@ -80,10 +80,6 @@ enum ECumulativeCounters {
     COUNTER_CONFIGCMD_ALLOCATE_VIRTUAL_GROUP_USEC = 42 [(CounterOpts) = {Name: "AllocateVirtualGroup"}];
     COUNTER_CONFIGCMD_DECOMMIT_GROUPS_USEC = 43 [(CounterOpts) = {Name: "DecommitGroups"}];
     COUNTER_CONFIGCMD_CANCEL_VIRTUAL_GROUP_USEC = 44 [(CounterOpts) = {Name: "CancelVirtualGroup"}];
-
-    COUNTER_GROUP_LAYOUT_SANITIZER_BSC_REQUESTS = 45 [(CounterOpts) = {Name: "GroupLayoutSanitizerBscRequests"}];
-    COUNTER_GROUP_LAYOUT_SANITIZER_BSC_OK = 46 [(CounterOpts) = {Name: "GroupLayoutSanitizerBscOk"}];
-    COUNTER_GROUP_LAYOUT_SANITIZER_BSC_ERR = 47 [(CounterOpts) = {Name: "GroupLayoutSanitizerBscErr"}];
 }
 
 enum EPercentileCounters {
@@ -274,5 +270,4 @@ enum ETxTypes {
     TXTYPE_GROUP_METRICS_EXCHANGE = 25 [(TxTypeOpts) = {Name: "TTxGroupMetricsExchange"}];
     TXTYPE_DECOMMIT_GROUP = 26 [(TxTypeOpts) = {Name: "TTxDecommitGroup"}];
     TXTYPE_UPDATE_GROUP = 27 [(TxTypeOpts) = {Name: "TTxUpdateGroup"}];
-    TXTYPE_DELETE_BLOB_DEPOT = 28 [(TxTypeOpts) = {Name: "TTxDeleteBlobDepot"}];
 }

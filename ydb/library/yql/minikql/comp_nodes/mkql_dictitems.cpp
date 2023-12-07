@@ -137,19 +137,19 @@ private:
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         NextFunc = GenerateNext(codegen);
-        codegen.ExportSymbol(NextFunc);
+        codegen->ExportSymbol(NextFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (NextFunc)
-            Next = reinterpret_cast<TNextPtr>(codegen.GetPointerToFunction(NextFunc));
+            Next = reinterpret_cast<TNextPtr>(codegen->GetPointerToFunction(NextFunc));
     }
 
-    Function* GenerateNext(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateNext(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto& name = TBaseComputation::MakeName("Next");
         if (const auto f = module.getFunction(name.c_str()))
@@ -158,7 +158,7 @@ private:
         const auto valueType = Type::getInt128Ty(context);
         const auto indexType = Type::getInt32Ty(context);
         const auto pairType = ArrayType::get(valueType, 2U);
-        const auto containerType = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
+        const auto containerType = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ? static_cast<Type*>(PointerType::getUnqual(valueType)) : static_cast<Type*>(valueType);
         const auto contextType = GetCompContextType(context);
         const auto statusType = Type::getInt1Ty(context);
         const auto funcType = FunctionType::get(statusType, {PointerType::getUnqual(contextType), containerType, PointerType::getUnqual(valueType)}, false);
@@ -175,8 +175,8 @@ private:
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
         auto block = main;
 
-        const auto container = codegen.GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
-            new LoadInst(valueType, containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
+        const auto container = codegen->GetEffectiveTarget() == NYql::NCodegen::ETarget::Windows ?
+            new LoadInst(containerArg, "load_container", false, block) : static_cast<Value*>(containerArg);
 
         const auto good = BasicBlock::Create(context, "good", ctx.Func);
         const auto done = BasicBlock::Create(context, "done", ctx.Func);
@@ -184,8 +184,8 @@ private:
         const auto pairPtr = new AllocaInst(pairType, 0U, "pair_ptr", block);
         new StoreInst(ConstantAggregateZero::get(pairType), pairPtr, block);
 
-        const auto keyPtr = GetElementPtrInst::CreateInBounds(pairType, pairPtr, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 0)}, "key_ptr", block);
-        const auto payPtr = GetElementPtrInst::CreateInBounds(pairType, pairPtr, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 1)}, "pay_ptr", block);
+        const auto keyPtr = GetElementPtrInst::CreateInBounds(pairPtr, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 0)}, "key_ptr", block);
+        const auto payPtr = GetElementPtrInst::CreateInBounds(pairPtr, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, 1)}, "pay_ptr", block);
 
         const auto status = CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::NextPair>(statusType, container, codegen, block, keyPtr, payPtr);
 
@@ -194,12 +194,11 @@ private:
 
         SafeUnRefUnboxed(valuePtr, ctx, block);
 
-        const auto itemsType = PointerType::getUnqual(pairType);
-        const auto itemsPtr = new AllocaInst(itemsType, 0U, "items_ptr", block);
+        const auto itemsPtr = new AllocaInst(PointerType::getUnqual(pairType), 0U, "items_ptr", block);
         const auto output = ResPair.GenNewArray(2U, itemsPtr, ctx, block);
         AddRefBoxed(output, ctx, block);
-        const auto items = new LoadInst(itemsType, itemsPtr, "items", block);
-        const auto pair = new LoadInst(pairType, pairPtr, "pair", block);
+        const auto items = new LoadInst(itemsPtr, "items", block);
+        const auto pair = new LoadInst(pairPtr, "pair", block);
         new StoreInst(pair, items, block);
         new StoreInst(output, valuePtr, block);
         BranchInst::Create(done, block);
@@ -291,7 +290,7 @@ IComputationNode* WrapDictItems(TCallable& callable, const TComputationNodeFacto
     case EDictItems::Payloads:
         return new TDictHalfsWrapper<false>(ctx.Mutables, node);
     default:
-        Y_ABORT("Unknown mode: %" PRIu32, mode);
+        Y_FAIL("Unknown mode: %" PRIu32, mode);
     }
 }
 

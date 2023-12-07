@@ -15,5 +15,5 @@ void RegisterS3WriteActorFactory(
     TDqAsyncIoFactory& factory,
     ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory,
     IHTTPGateway::TPtr gateway,
-    const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy = GetHTTPDefaultRetryPolicy());
+    const IRetryPolicy<long>::TPtr& retryPolicy = GetHTTPDefaultRetryPolicy());
 }

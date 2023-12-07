@@ -12,12 +12,14 @@
 #include <ydb/library/folder_service/folder_service.h>
 #include <ydb/library/folder_service/proto/config.pb.h>
 #include <ydb/library/pdisk_io/aio.h>
-#include <ydb/core/fq/libs/config/protos/audit.pb.h>
+#include <ydb/core/yq/libs/config/protos/audit.pb.h>
 
 #include <ydb/library/yql/minikql/computation/mkql_computation_node.h>
 #include <ydb/library/yql/providers/pq/cm_client/client.h>
 
-#include <ydb/library/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/actorsystem.h>
+
+#include <ydb/library/security/ydb_credentials_provider_factory.h>
 
 #include <functional>
 #include <unordered_map>
@@ -42,6 +44,8 @@ struct TModuleFactories {
     IActor*(*CreateTicketParser)(const NKikimrProto::TAuthConfig&);
     IActor*(*FolderServiceFactory)(const NKikimrProto::NFolderService::TFolderServiceConfig&);
 
+    std::function<IActor*(const NYq::NConfig::TAuditConfig& auditConfig, const ::NMonitoring::TDynamicCounterPtr& counters)> YqAuditServiceFactory;
+    NKikimr::TYdbCredentialsProviderFactory YdbCredentialProviderFactory;
     // Factory for grpc services
     TGrpcServiceFactory GrpcServiceFactory;
 

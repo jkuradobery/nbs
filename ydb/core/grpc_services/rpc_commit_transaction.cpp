@@ -3,9 +3,8 @@
 
 #include "rpc_calls.h"
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
@@ -34,10 +33,10 @@ public:
         Become(&TCommitTransactionRPC::StateWork);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -46,17 +45,16 @@ private:
         const auto req = GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
-        AuditContextAppend(Request_.get(), *req);
-
         TString sessionId;
         auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
         SetAuthToken(ev, *Request_);
         SetDatabase(ev, *Request_);
 
-        if (CheckSession(req->session_id(), Request_.get())) {
+        NYql::TIssues issues;
+        if (CheckSession(req->session_id(), issues)) {
             ev->Record.MutableRequest()->SetSessionId(req->session_id());
         } else {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         if (traceId) {
@@ -93,8 +91,6 @@ private:
                 FillQueryStats(*commitResult->mutable_query_stats(), kqpResponse);
             }
 
-            AuditContextAppend(Request_.get(), *GetProtoRequest(), *commitResult);
-
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, *commitResult, ctx);
         } else {
             return OnGenericQueryResponseError(record, ctx);
@@ -102,13 +98,8 @@ private:
     }
 };
 
-void DoCommitTransactionRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TCommitTransactionRPC(p.release()));
-}
-
-template<>
-IActor* TEvCommitTransactionRequest::CreateRpcActor(NKikimr::NGRpcService::IRequestOpCtx* msg) {
-    return new TCommitTransactionRPC(msg);
+void DoCommitTransactionRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TCommitTransactionRPC(p.release()));
 }
 
 } // namespace NGRpcService

@@ -6,7 +6,7 @@
 namespace NKikimr::NMetadata::NSecret {
 
 void TAccessPreparationActor::StartChecker() {
-    Y_ABORT_UNLESS(Secrets);
+    Y_VERIFY(Secrets);
     auto g = PassAwayGuard();
     for (auto&& i : Objects) {
         if (Context.GetActivityType() == NModifications::IOperationsManager::EActivityType::Create) {
@@ -39,7 +39,7 @@ void TAccessPreparationActor::Bootstrap() {
 
 TAccessPreparationActor::TAccessPreparationActor(std::vector<TAccess>&& objects,
     NModifications::IAlterPreparationController<TAccess>::TPtr controller,
-    const NModifications::IOperationsManager::TInternalModificationContext& context)
+    const NModifications::IOperationsManager::TModificationContext& context)
     : Objects(std::move(objects))
     , Controller(controller)
     , Context(context)

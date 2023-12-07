@@ -98,20 +98,11 @@ public:
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 24)
-class IDateBuilder: public IDateBuilder3 {
-protected:
-    IDateBuilder();
-};
+class IDateBuilder: public IDateBuilder3 {};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 7)
-class IDateBuilder: public IDateBuilder2 {
-protected:
-    IDateBuilder();
-};
+class IDateBuilder: public IDateBuilder2 {};
 #else
-class IDateBuilder: public IDateBuilder1 {
-protected:
-    IDateBuilder();
-};
+class IDateBuilder: public IDateBuilder1 {};
 #endif
 
 UDF_ASSERT_TYPE_SIZE(IDateBuilder, 8);
@@ -119,9 +110,9 @@ UDF_ASSERT_TYPE_SIZE(IDateBuilder, 8);
 ///////////////////////////////////////////////////////////////////////////////
 // IPgBuilder
 ///////////////////////////////////////////////////////////////////////////////
-class IPgBuilder1 {
+class IPgBuilder {
 public:
-    virtual ~IPgBuilder1() = default;
+    virtual ~IPgBuilder() {}
     // returns Null in case of text format parsing error, error message passed via 'error' arg
     virtual TUnboxedValue ValueFromText(ui32 typeId, const TStringRef& value, TStringValue& error) const = 0;
 
@@ -137,55 +128,6 @@ public:
     // targetTypeId is required for diagnostic only in debug mode
     virtual TUnboxedValue NewString(i32 typeLen, ui32 targetTypeId, TStringRef data) const = 0;
 };
-
-#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 31)
-class IPgBuilder2: public IPgBuilder1
-{
-public:
-    virtual TStringRef AsCStringBuffer(const TUnboxedValue& value) const = 0;
-    virtual TStringRef AsTextBuffer(const TUnboxedValue& value) const = 0;
-};
-#endif
-
-#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 33)
-class IPgBuilder3: public IPgBuilder2
-{
-public:
-    virtual TUnboxedValue MakeCString(const char* value) const = 0;
-    virtual TUnboxedValue MakeText(const char* value) const = 0;
-};
-#endif
-
-#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 35)
-class IPgBuilder4: public IPgBuilder3
-{
-public:
-    virtual TStringRef AsFixedStringBuffer(const TUnboxedValue& value, ui32 length) const = 0;
-};
-#endif
-
-#if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 35)
-class IPgBuilder: public IPgBuilder4 {
-protected:
-    IPgBuilder();
-};
-#elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 33)
-class IPgBuilder: public IPgBuilder3 {
-protected:
-    IPgBuilder();
-};
-#elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 31)
-class IPgBuilder: public IPgBuilder2 {
-protected:
-    IPgBuilder();
-};
-#else
-class IPgBuilder: public IPgBuilder1 {
-protected:
-    IPgBuilder();
-};
-#endif
-
 UDF_ASSERT_TYPE_SIZE(IPgBuilder, 8);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -258,15 +200,11 @@ public:
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 19)
 class IValueBuilder5: public IValueBuilder4 {
 public:
-    // exports one Array or Scalar to out. should be called for each chunk of ChunkedArray
     // returns array with one element for scalars
-    virtual void ExportArrowBlock(TUnboxedValuePod value, ui32 chunk, ArrowArray* out) const = 0;
-    // imports all chunks. returns Scalar, ChunkedArray if chunkCount > 1, otherwise Array
-    // arrays should be a pointer to array of chunkCount structs
+    virtual void ExportArrowBlock(TUnboxedValuePod value, bool& isScalar, ArrowArray* out) const = 0;
     // the ArrowArray struct has its contents moved to a private object held alive by the result.
-    virtual TUnboxedValue ImportArrowBlock(ArrowArray* arrays, ui32 chunkCount, bool isScalar, const IArrowType& type) const = 0;
-    // always returns 1 for Scalar and Array, >= 1 for ChunkedArray
-    virtual ui32 GetArrowBlockChunks(TUnboxedValuePod value, bool& isScalar, ui64& length) const = 0;
+    virtual TUnboxedValue ImportArrowBlock(ArrowArray* array, const IArrowType& type, bool isScalar) const = 0;
+    virtual void Unused3() const = 0;
 };
 #endif
 
@@ -289,41 +227,19 @@ public:
 #endif
 
 #if UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 27)
-class IValueBuilder: public IValueBuilder7 {
-protected:    
-    IValueBuilder();
-};
-
+class IValueBuilder: public IValueBuilder7 {};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 25)
-class IValueBuilder: public IValueBuilder6 {
-protected:
-    IValueBuilder();
-};
+class IValueBuilder: public IValueBuilder6 {};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 19)
-class IValueBuilder: public IValueBuilder5 {
-protected:
-    IValueBuilder();
-};
+class IValueBuilder: public IValueBuilder5 {};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 17)
-class IValueBuilder: public IValueBuilder4 {
-protected:
-    IValueBuilder();
-};
+class IValueBuilder: public IValueBuilder4 {};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 14)
-class IValueBuilder: public IValueBuilder3 {
-protected:
-    IValueBuilder();
-};
+class IValueBuilder: public IValueBuilder3 {};
 #elif UDF_ABI_COMPATIBILITY_VERSION_CURRENT >= UDF_ABI_COMPATIBILITY_VERSION(2, 1)
-class IValueBuilder: public IValueBuilder2 {
-protected:
-    IValueBuilder();
-};
+class IValueBuilder: public IValueBuilder2 {};
 #else
-class IValueBuilder: public IValueBuilder1 {
-protected:    
-    IValueBuilder();
-};
+class IValueBuilder: public IValueBuilder1 {};
 #endif
 
 UDF_ASSERT_TYPE_SIZE(IValueBuilder, 8);

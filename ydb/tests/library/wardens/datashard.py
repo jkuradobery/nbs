@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from contrib.ydb.tests.library.wardens.base import LivenessWarden
+from ydb.tests.library.wardens.base import LivenessWarden
 
 
 class TxCompleteLagLivenessWarden(LivenessWarden):

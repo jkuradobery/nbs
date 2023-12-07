@@ -17,9 +17,9 @@ PEERDIR(
     cloud/storage/core/libs/common
     cloud/storage/core/libs/diagnostics
 
-    ydb/library/actors/core
-    ydb/library/actors/util
-    ydb/library/actors/wilson
+    library/cpp/actors/core
+    library/cpp/actors/util
+    library/cpp/actors/wilson
     library/cpp/getopt/small
     library/cpp/lwtrace
 

@@ -49,7 +49,7 @@ TBlockStoreVolumeInfo::TPtr CreateBlockStoreVolumeInfo(const NKikimrSchemeOp::TB
 void ApplySharding(TTxId txId, TPathId pathId, TBlockStoreVolumeInfo::TPtr volume, TTxState& txState,
                    const TChannelsBindings& partitionChannels, const TChannelsBindings& volumeChannels,
                    TOperationContext& context) {
-    Y_ABORT_UNLESS(volume->VolumeConfig.GetTabletVersion() <= 2);
+    Y_VERIFY(volume->VolumeConfig.GetTabletVersion() <= 2);
     ui64 count = volume->DefaultPartitionCount;
     txState.Shards.reserve(count + 1);
 
@@ -133,11 +133,11 @@ TTxState& PrepareChanges(TOperationId operationId, TPathElement::TPtr parentDir,
     context.SS->PersistUpdateNextPathId(db);
     context.SS->PersistUpdateNextShardIdx(db);
     for (auto shard : txState.Shards) {
-        Y_ABORT_UNLESS(shard.Operation == TTxState::CreateParts);
+        Y_VERIFY(shard.Operation == TTxState::CreateParts);
         context.SS->PersistChannelsBinding(db, shard.Idx, context.SS->ShardInfos[shard.Idx].BindedChannels);
         context.SS->PersistShardMapping(db, shard.Idx, InvalidTabletId, pathId, operationId.GetTxId(), shard.TabletType);
     }
-    Y_ABORT_UNLESS(txState.Shards.size() == shardsToCreate);
+    Y_VERIFY(txState.Shards.size() == shardsToCreate);
 
     return txState;
 }
@@ -335,7 +335,7 @@ public:
         }
 
         auto domainDir = context.SS->PathsById.at(dstPath.GetPathIdForDomain());
-        Y_ABORT_UNLESS(domainDir);
+        Y_VERIFY(domainDir);
 
         auto volumeSpace = volume->GetVolumeSpace();
         if (!domainDir->CheckVolumeSpaceChange(volumeSpace, { }, errStr)) {
@@ -370,7 +370,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreateBlockStoreVolume");
+        Y_FAIL("no AbortPropose for TCreateBlockStoreVolume");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -388,12 +388,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateNewBSV(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateNewBSV(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TCreateBlockStoreVolume>(id, tx);
 }
 
-ISubOperation::TPtr CreateNewBSV(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateNewBSV(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TCreateBlockStoreVolume>(id, state);
 }
 

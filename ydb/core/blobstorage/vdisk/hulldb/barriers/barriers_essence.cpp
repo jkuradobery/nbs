@@ -61,13 +61,8 @@ namespace NKikimr {
         NGc::TKeepStatus TBarriersEssence::KeepLogoBlob(const TLogoBlobID &id,
                                       const TIngress &ingress,
                                       const ui32 recsMerged,
-                                      const bool allowKeepFlags,
-                                      bool allowGarbageCollection) const
+                                      const bool allowKeepFlags) const
         {
-            if (!allowGarbageCollection) {
-                return {true};
-            }
-
             // extract gen and step
             const ui32 gen = id.Generation();
             const ui32 step = id.Step();

@@ -3,13 +3,11 @@
 #include "tabletid.h"
 #include "localdb.h"
 
+#include <ydb/core/protos/blobstorage_config.pb.h>
+
 #include <util/generic/map.h>
 #include <util/generic/hash.h>
 #include <util/generic/ptr.h>
-
-namespace NKikimrBlobStorage {
-    class TDefineStoragePool;
-}
 
 namespace NKikimr {
 
@@ -27,37 +25,37 @@ struct TDomainsInfo : public TThrRefBase {
     // but we do it with hiveUid == domain, and collision with dynamic tablets occurs
     // use AvoidBrokenUniqPartsBySystemTablets to avoid this mistake
     static ui64 MakeTxCoordinatorID(ui32 domain, ui32 uid) {
-        Y_DEBUG_ABORT_UNLESS(domain < 32 && uid < 256);
+        Y_VERIFY_DEBUG(domain < 32 && uid < 256);
         const ui64 uniqPart = 0x800000 | (ui64)uid;
         return MakeTabletID(domain, domain, uniqPart);
     }
 
     static ui64 MakeTxCoordinatorIDFixed(ui32 domain, ui32 uid) {
-        Y_DEBUG_ABORT_UNLESS(domain < 32 && uid < 256);
+        Y_VERIFY_DEBUG(domain < 32 && uid < 256);
         const ui64 uniqPart = 0x800000 | (ui64)uid;
         return MakeTabletID(domain, 0, uniqPart);
     }
 
     static ui64 MakeTxMediatorID(ui32 domain, ui32 uid) {
-        Y_DEBUG_ABORT_UNLESS(domain < 32 && uid < 256);
+        Y_VERIFY_DEBUG(domain < 32 && uid < 256);
         const ui64 uniqPart = 0x810000 | (ui64)uid;
         return MakeTabletID(domain, domain, uniqPart);
     }
 
     static ui64 MakeTxMediatorIDFixed(ui32 domain, ui32 uid) {
-        Y_DEBUG_ABORT_UNLESS(domain < 32 && uid < 256);
+        Y_VERIFY_DEBUG(domain < 32 && uid < 256);
         const ui64 uniqPart = 0x810000 | (ui64)uid;
         return MakeTabletID(domain, 0, uniqPart);
     }
 
     static ui64 MakeTxAllocatorID(ui32 domain, ui32 uid) {
-        Y_DEBUG_ABORT_UNLESS(domain < 32 && uid > 0 && uid < 4096);
+        Y_VERIFY_DEBUG(domain < 32 && uid > 0 && uid < 4096);
         const ui64 uniqPart = 0x820000 | (ui64)uid;
         return MakeTabletID(domain, domain, uniqPart);
     }
 
     static ui64 MakeTxAllocatorIDFixed(ui32 domain, ui32 uid) {
-        Y_DEBUG_ABORT_UNLESS(domain < 32 && uid > 0 && uid < 4096);
+        Y_VERIFY_DEBUG(domain < 32 && uid > 0 && uid < 4096);
         const ui64 uniqPart = 0x820000 | (ui64)uid;
         return MakeTabletID(domain, 0, uniqPart);
     }
@@ -102,11 +100,23 @@ struct TDomainsInfo : public TThrRefBase {
                 TVectorUi32 stateStorageGroup,
                 TVectorUi64 coordinators, TVectorUi64 mediators, TVectorUi64 allocators,
                 ui32 defaultHiveUid, TVectorUi32 hivesUids,
-                ui64 domainPlanResolution, const TStoragePoolKinds *poolTypes);
+                ui64 domainPlanResolution, const TStoragePoolKinds &poolTypes)
+            : DomainUid(domainUid)
+            , DefaultStateStorageGroup(defaultStateStorageGroup)
+            , DefaultSchemeBoardGroup(defaultSchemeBoardGroup)
+            , SchemeRoot(schemeRootId)
+            , Name(name)
+            , Coordinators(std::move(coordinators))
+            , Mediators(std::move(mediators))
+            , TxAllocators(std::move(allocators))
+            , StateStorageGroups(std::move(stateStorageGroup))
+            , DefaultHiveUid(defaultHiveUid)
+            , HiveUids(std::move(hivesUids))
+            , DomainPlanResolution(domainPlanResolution)
+            , StoragePoolTypes(poolTypes)
+        {}
 
      public:
-        ~TDomain();
-
         //interpret coordinatorUids, mediatorUids and allocatorUids as vector uids and call proper MakeTabletId for each
         template <typename TUidsContainerUi32, typename TUidsContainerUi64>
         static TDomain::TPtr ConstructDomain(const TString &name, ui32 domainUid, ui64 schemeRoot,
@@ -117,7 +127,7 @@ struct TDomainsInfo : public TThrRefBase {
                                              const TUidsContainerUi64 &coordinatorUids,
                                              const TUidsContainerUi64 &mediatorUids,
                                              const TUidsContainerUi64 &allocatorUids,
-                                             const TStoragePoolKinds &poolTypes)
+                                             const TStoragePoolKinds &poolTypes = TStoragePoolKinds())
         {
             return new TDomain(name, domainUid, schemeRoot,
                             defaultStateStorageGroup, defaultSchemeBoardGroup,
@@ -126,28 +136,7 @@ struct TDomainsInfo : public TThrRefBase {
                             MakeMediatrosIds(TVectorUi64(mediatorUids.begin(), mediatorUids.end()), domainUid),
                             MakeAllocatorsIds(TVectorUi64(allocatorUids.begin(), allocatorUids.end()), domainUid),
                             defaultHiveUid, TVectorUi32(hiveUids.begin(), hiveUids.end()),
-                            planResolution, &poolTypes);
-        }
-
-        //interpret coordinatorUids, mediatorUids and allocatorUids as vector uids and call proper MakeTabletId for each
-        template <typename TUidsContainerUi32, typename TUidsContainerUi64>
-        static TDomain::TPtr ConstructDomain(const TString &name, ui32 domainUid, ui64 schemeRoot,
-                                             ui32 defaultStateStorageGroup, ui32 defaultSchemeBoardGroup,
-                                            const TUidsContainerUi32 &stateStorageGroups,
-                                             ui32 defaultHiveUid,const TUidsContainerUi32 &hiveUids,
-                                             ui64 planResolution,
-                                             const TUidsContainerUi64 &coordinatorUids,
-                                             const TUidsContainerUi64 &mediatorUids,
-                                             const TUidsContainerUi64 &allocatorUids)
-        {
-            return new TDomain(name, domainUid, schemeRoot,
-                            defaultStateStorageGroup, defaultSchemeBoardGroup,
-                            TVectorUi32(stateStorageGroups.begin(), stateStorageGroups.end()),
-                            MakeCoordinatorsIds(TVectorUi64(coordinatorUids.begin(), coordinatorUids.end()), domainUid),
-                            MakeMediatrosIds(TVectorUi64(mediatorUids.begin(), mediatorUids.end()), domainUid),
-                            MakeAllocatorsIds(TVectorUi64(allocatorUids.begin(), allocatorUids.end()), domainUid),
-                            defaultHiveUid, TVectorUi32(hiveUids.begin(), hiveUids.end()),
-                            planResolution, nullptr);
+                            planResolution, poolTypes);
         }
 
         //no any tablets setted
@@ -164,7 +153,7 @@ struct TDomainsInfo : public TThrRefBase {
                             TVectorUi64(),
                             TVectorUi64(),
                             defHiveUid, TVectorUi32(1, defHiveUid),
-                            planResolution, nullptr);
+                            planResolution, TStoragePoolKinds());
         }
 
         template <typename TUidsContainerUi32, typename TUidsContainerUi64>
@@ -176,7 +165,7 @@ struct TDomainsInfo : public TThrRefBase {
                                             const TUidsContainerUi64 &coordinatorUids,
                                             const TUidsContainerUi64 &mediatorUids,
                                             const TUidsContainerUi64 &allocatorUids,
-                                            const TStoragePoolKinds &poolTypes)
+                                            const TStoragePoolKinds &poolTypes = TStoragePoolKinds())
         {
             return new TDomain(name, domainUid, schemeRoot,
                             defaultStateStorageGroup, defaultSchemeBoardGroup,
@@ -185,27 +174,7 @@ struct TDomainsInfo : public TThrRefBase {
                             TVectorUi64(mediatorUids.begin(), mediatorUids.end()),
                             TVectorUi64(allocatorUids.begin(), allocatorUids.end()),
                             defaultHiveUid, TVectorUi32(hiveUids.begin(), hiveUids.end()),
-                            planResolution, &poolTypes);
-        }
-
-        template <typename TUidsContainerUi32, typename TUidsContainerUi64>
-        static TDomain::TPtr ConstructDomainWithExplicitTabletIds(const TString &name, ui32 domainUid, ui64 schemeRoot,
-                                            ui32 defaultStateStorageGroup, ui32 defaultSchemeBoardGroup,
-                                            const TUidsContainerUi32 &stateStorageGroups,
-                                            ui32 defaultHiveUid,const TUidsContainerUi32 &hiveUids,
-                                            ui64 planResolution,
-                                            const TUidsContainerUi64 &coordinatorUids,
-                                            const TUidsContainerUi64 &mediatorUids,
-                                            const TUidsContainerUi64 &allocatorUids)
-        {
-            return new TDomain(name, domainUid, schemeRoot,
-                            defaultStateStorageGroup, defaultSchemeBoardGroup,
-                            TVectorUi32(stateStorageGroups.begin(), stateStorageGroups.end()),
-                            TVectorUi64(coordinatorUids.begin(), coordinatorUids.end()),
-                            TVectorUi64(mediatorUids.begin(), mediatorUids.end()),
-                            TVectorUi64(allocatorUids.begin(), allocatorUids.end()),
-                            defaultHiveUid, TVectorUi32(hiveUids.begin(), hiveUids.end()),
-                            planResolution, nullptr);
+                            planResolution, poolTypes);
         }
 
         ui32 DomainRootTag() const {
@@ -288,10 +257,10 @@ struct TDomainsInfo : public TThrRefBase {
     }
 
     void AddDomain(TDomain *domain) {
-        Y_ABORT_UNLESS(domain->DomainUid <= MaxDomainId);
+        Y_VERIFY(domain->DomainUid <= MaxDomainId);
         Domains[domain->DomainUid] = domain;
         DomainByName[domain->Name] = domain;
-        Y_ABORT_UNLESS(Domains.size() == DomainByName.size());
+        Y_VERIFY(Domains.size() == DomainByName.size());
         for (auto group: domain->StateStorageGroups) {
             DomainByStateStorageGroup[group] = domain;
         }
@@ -315,19 +284,19 @@ struct TDomainsInfo : public TThrRefBase {
 
     ui32 GetDefaultStateStorageGroup(ui32 domainUid) const {
         auto it = Domains.find(domainUid);
-        Y_ABORT_UNLESS(it != Domains.end(), "domainUid = %" PRIu32, domainUid);
+        Y_VERIFY(it != Domains.end(), "domainUid = %" PRIu32, domainUid);
         return it->second->DefaultStateStorageGroup;
     }
 
     ui32 GetDefaultHiveUid(ui32 domainUid) const {
         auto it = Domains.find(domainUid);
-        Y_ABORT_UNLESS(it != Domains.end(), "domainUid = %" PRIu32, domainUid);
+        Y_VERIFY(it != Domains.end(), "domainUid = %" PRIu32, domainUid);
         return it->second->DefaultHiveUid;
     }
 
     ui32 GetStateStorageGroupDomainUid(ui32 stateStorageGroup) const {
         auto it = DomainByStateStorageGroup.find(stateStorageGroup);
-        Y_ABORT_UNLESS(it != DomainByStateStorageGroup.end(), "stateStorageGroup = %" PRIu32, stateStorageGroup);
+        Y_VERIFY(it != DomainByStateStorageGroup.end(), "stateStorageGroup = %" PRIu32, stateStorageGroup);
         return it->second->DomainUid;
     }
 
@@ -341,7 +310,7 @@ struct TDomainsInfo : public TThrRefBase {
 
     const TDomain& GetDomain(ui32 domainUid) const {
         auto it = Domains.find(domainUid);
-        Y_ABORT_UNLESS(it != Domains.end(), "domainUid = %" PRIu32, domainUid);
+        Y_VERIFY(it != Domains.end(), "domainUid = %" PRIu32, domainUid);
         return *(it->second);
     }
 

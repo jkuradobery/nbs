@@ -19,14 +19,7 @@ PEERDIR(
     ydb/core/base
     ydb/core/tablet
     ydb/core/tablet_flat
-    ydb/core/tx/columnshard/counters
     ydb/library/yql/sql/pg_dummy
-    ydb/library/yql/core/arrow_kernels/request
-    ydb/core/testlib/default
-    ydb/core/tx/columnshard/hooks/abstract
-    ydb/core/tx/columnshard/hooks/testing
-
-    ydb/library/yql/udfs/common/json2
 )
 
 YQL_LAST_ABI_VERSION()
@@ -34,8 +27,6 @@ YQL_LAST_ABI_VERSION()
 SRCS(
     ut_insert_table.cpp
     ut_logs_engine.cpp
-    ut_program.cpp
-    ydb/core/tx/columnshard/columnshard_ut_common.cpp
 )
 
 END()

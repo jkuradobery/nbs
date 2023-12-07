@@ -33,14 +33,14 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
 
-        const auto load = new LoadInst(valueType, statePtr, "load", block);
+        const auto load = new LoadInst(statePtr, "load", block);
         const auto state = PHINode::Create(load->getType(), 2U, "state", main);
         state->addIncoming(load, block);
 
@@ -49,7 +49,7 @@ public:
         block = init;
 
         GetNodeValue(statePtr, Count, ctx, block);
-        const auto save = new LoadInst(valueType, statePtr, "save", block);
+        const auto save = new LoadInst(statePtr, "save", block);
         state->addIncoming(save, block);
         BranchInst::Create(main, block);
 
@@ -120,14 +120,14 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto main = BasicBlock::Create(context, "main", ctx.Func);
 
-        const auto load = new LoadInst(valueType, statePtr, "load", block);
+        const auto load = new LoadInst(statePtr, "load", block);
         const auto state = PHINode::Create(load->getType(), 2U, "state", main);
         state->addIncoming(load, block);
 
@@ -136,7 +136,7 @@ public:
         block = init;
 
         GetNodeValue(statePtr, Count, ctx, block);
-        const auto save = new LoadInst(valueType, statePtr, "save", block);
+        const auto save = new LoadInst(statePtr, "save", block);
         state->addIncoming(save, block);
         BranchInst::Create(main, block);
 
@@ -254,7 +254,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto factory = ctx.GetFactory();
         const auto builder = ctx.GetBuilder();
@@ -265,18 +265,18 @@ public:
         const auto cnt = GetNodeValue(Count, ctx, block);
         const auto count = GetterFor<ui64>(cnt, context, block);
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(list->getType(), {factory->getType(), builder->getType(), list->getType(), count->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            const auto result = CallInst::Create(funType, funcPtr, {factory, builder, list, count}, "result", block);
+            const auto result = CallInst::Create(funcPtr, {factory, builder, list, count}, "result", block);
             return result;
         } else {
             const auto retPtr = new AllocaInst(list->getType(), 0U, "ret_ptr", block);
             new StoreInst(list, retPtr, block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {factory->getType(), retPtr->getType(), builder->getType(), retPtr->getType(), count->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            CallInst::Create(funType, funcPtr, {factory, retPtr, builder, retPtr, count}, "", block);
-            const auto result = new LoadInst(list->getType(), retPtr, "result", block);
+            CallInst::Create(funcPtr, {factory, retPtr, builder, retPtr, count}, "", block);
+            const auto result = new LoadInst(retPtr, "result", block);
             return result;
         }
     }

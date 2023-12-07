@@ -3,7 +3,6 @@
 #include <ydb/library/yql/minikql/computation/mkql_custom_list.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_codegen.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_node_pack.h>
-#include <ydb/library/yql/minikql/computation/mkql_llvm_base.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 
@@ -96,22 +95,22 @@ public:
     }
 
     void Live(IComputationNode* flow, NUdf::TUnboxedValue&& liveValue) {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
-        Y_DEBUG_ABORT_UNLESS(Count == 0);
+        Y_VERIFY_DEBUG(!IsLive());
+        Y_VERIFY_DEBUG(Count == 0);
         LiveFlow = flow;
         LiveValue = std::move(liveValue);
     }
 
     void Live(TLiveFetcher&& fetcher, NUdf::TUnboxedValue* liveValues) {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
-        Y_DEBUG_ABORT_UNLESS(Count == 0);
+        Y_VERIFY_DEBUG(!IsLive());
+        Y_VERIFY_DEBUG(Count == 0);
         Fetcher = std::move(fetcher);
         LiveValues = liveValues;
     }
 
     void Add(NUdf::TUnboxedValue&& value) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(!IsSealed);
+        Y_VERIFY_DEBUG(!IsSealed);
 #endif
         if (SingleShot && Count > 0) {
             MKQL_ENSURE(Count == 1, "Counter inconsistent");
@@ -126,7 +125,7 @@ public:
             }
             else {
                 if (Count == DEFAULT_STACK_ITEMS) {
-                    Y_DEBUG_ABORT_UNLESS(Heap.empty());
+                    Y_VERIFY_DEBUG(Heap.empty());
                     Heap.assign(Stack, Stack + DEFAULT_STACK_ITEMS);
                 }
 
@@ -158,7 +157,7 @@ public:
     }
 
     ui64 GetCount() const {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
         return Count;
     }
 
@@ -168,7 +167,7 @@ public:
 
     NUdf::TUnboxedValue Next(TComputationContext& ctx) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         if (IsLive()) {
             if ((Index + 1) == 0) {
@@ -248,9 +247,9 @@ public:
     }
 
     void Rewind() {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         Index = ui64(-1);
         if (FileState) {
@@ -275,7 +274,7 @@ private:
     }
 
     void Write(NUdf::TUnboxedValue&& value) {
-        Y_DEBUG_ABORT_UNLESS(FileState->Output);
+        Y_VERIFY_DEBUG(FileState->Output);
         TStringBuf serialized = ItemPacker.Pack(value);
         ui32 length = serialized.size();
         FileState->Output->Write(&length, sizeof(length));
@@ -292,10 +291,10 @@ private:
     NUdf::TUnboxedValue Read(TComputationContext& ctx) {
         ui32 length = 0;
         auto wasRead = FileState->Input->Load(&length, sizeof(length));
-        Y_ABORT_UNLESS(wasRead == sizeof(length));
+        Y_VERIFY(wasRead == sizeof(length));
         FileState->Buffer.Reserve(length);
         wasRead = FileState->Input->Load((void*)FileState->Buffer.Data(), length);
-        Y_ABORT_UNLESS(wasRead == length);
+        Y_VERIFY(wasRead == length);
         return ReadValue = ItemPacker.Unpack(TStringBuf(FileState->Buffer.Data(), length), ctx.HolderFactory);
     }
 
@@ -501,7 +500,7 @@ public:
                             break;
 
                         default:
-                            Y_ABORT("Unknown kind");
+                            Y_FAIL("Unknown kind");
                         }
 
                         if (OutputMode == EOutputMode::Unknown) {
@@ -555,7 +554,7 @@ public:
                 case EOutputMode::None:
                     return NUdf::TUnboxedValuePod::MakeFinish();
                 default:
-                    Y_ABORT("Unknown output mode");
+                    Y_FAIL("Unknown output mode");
                 }
             }
         }
@@ -762,7 +761,6 @@ public:
             , List1(Self->PackerLeft.RefMutableObject(ctx, false, Self->InputLeftType), IsAnyJoinLeft(Self->AnyJoinSettings), Self->InputLeftType->GetElementsCount())
             , List2(Self->PackerRight.RefMutableObject(ctx, false, Self->InputRightType), IsAnyJoinRight(Self->AnyJoinSettings), Self->InputRightType->GetElementsCount())
             , Fields(GetPointers(Values))
-            , Stubs(Values.size(), nullptr)
         {
             Init();
         }
@@ -818,14 +816,12 @@ public:
                         }
 
                         if (Self->SortedTableOrder && *Self->SortedTableOrder == RightIndex) {
-                            auto fetcher = IsAnyJoinLeft(Self->AnyJoinSettings) ?
-                                TLiveFetcher(std::bind(Fetcher, std::placeholders::_1, Stubs.data())):
-                                [this] (TComputationContext& ctx, NUdf::TUnboxedValue* output) {
-                                    if (const auto status = Fetcher(ctx, Fields.data()); EFetchResult::One != status)
-                                        return status;
-                                    std::transform(Self->LeftInputColumns.cbegin(), Self->LeftInputColumns.cend(), output, [this] (ui32 index) { return std::move(this->Values[index]); });
-                                    return EFetchResult::One;
-                                };
+                            TLiveFetcher fetcher = [this] (TComputationContext& ctx, NUdf::TUnboxedValue* output) {
+                                if (const auto status = Fetcher(ctx, Fields.data()); EFetchResult::One != status)
+                                    return status;
+                                std::transform(Self->LeftInputColumns.cbegin(), Self->LeftInputColumns.cend(), output, [this] (ui32 index) { return std::move(this->Values[index]); });
+                                return EFetchResult::One;
+                            };
                             std::transform(Self->LeftInputColumns.cbegin(), Self->LeftInputColumns.cend(), Values.data(), [this] (ui32 index) { return std::move(this->Values[index]); });
                             List1.Live(std::move(fetcher), Values.data());
                             EatInput = false;
@@ -847,14 +843,12 @@ public:
                         }
 
                         if (Self->SortedTableOrder && *Self->SortedTableOrder == LeftIndex) {
-                            auto fetcher = IsAnyJoinRight(Self->AnyJoinSettings) ?
-                                TLiveFetcher(std::bind(Fetcher, std::placeholders::_1, Stubs.data())):
-                                [this] (TComputationContext& ctx, NUdf::TUnboxedValue* output) {
-                                    if (const auto status = Fetcher(ctx, Fields.data()); EFetchResult::One != status)
-                                        return status;
-                                    std::transform(Self->RightInputColumns.cbegin(), Self->RightInputColumns.cend(), output, [this] (ui32 index) { return std::move(this->Values[index]); });
-                                    return EFetchResult::One;
-                                };
+                            TLiveFetcher fetcher = [this] (TComputationContext& ctx, NUdf::TUnboxedValue* output) {
+                                if (const auto status = Fetcher(ctx, Fields.data()); EFetchResult::One != status)
+                                    return status;
+                                std::transform(Self->RightInputColumns.cbegin(), Self->RightInputColumns.cend(), output, [this] (ui32 index) { return std::move(this->Values[index]); });
+                                return EFetchResult::One;
+                            };
                             std::transform(Self->RightInputColumns.cbegin(), Self->RightInputColumns.cend(), Values.data(), [this] (ui32 index) { return std::move(this->Values[index]); });
                             List2.Live(std::move(fetcher), Values.data());
                             EatInput = false;
@@ -945,7 +939,7 @@ public:
                             break;
 
                         default:
-                            Y_ABORT("Unknown kind");
+                            Y_FAIL("Unknown kind");
                         }
 
                         if (OutputMode == EOutputMode::Unknown) {
@@ -1003,13 +997,13 @@ public:
                 case EOutputMode::None:
                     return EFetchResult::Finish;
                 default:
-                    Y_ABORT("Unknown output mode");
+                    Y_FAIL("Unknown output mode");
                 }
             }
         }
 
         template <bool IsLeftNull>
-        void PrepareNullItem(TComputationContext&, NUdf::TUnboxedValue*const* output) {
+        void PrepareNullItem(TComputationContext& ctx, NUdf::TUnboxedValue*const* output) {
             for (ui32 i = 0; i < Self->LeftInputColumns.size(); ++i) {
                 if (const auto out = output[Self->LeftOutputColumns[i]]) {
                     if constexpr (IsLeftNull) {
@@ -1123,7 +1117,6 @@ public:
 
         NUdf::TUnboxedValue* ResItems = nullptr;
         const std::vector<NUdf::TUnboxedValue*> Fields;
-        const std::vector<NUdf::TUnboxedValue*> Stubs;
     };
 
     TWideCommonJoinCoreWrapper(TComputationMutables& mutables, IComputationWideFlowNode* flow, const TTupleType* inputLeftType, const TTupleType* inputRightType,
@@ -1157,7 +1150,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
         const auto indexType = Type::getInt32Ty(context);
@@ -1179,21 +1172,27 @@ public:
         std::vector<Value*> pointers;
         pointers.reserve(size);
         for (auto i = 0U; i < size; ++i) {
-            pointers.emplace_back(GetElementPtrInst::CreateInBounds(arrayType, values, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, i)}, (TString("ptr_") += ToString(i)).c_str(), atTop));
+            pointers.emplace_back(GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, i)}, (TString("ptr_") += ToString(i)).c_str(), atTop));
             initV = InsertValueInst::Create(initV, ConstantInt::get(valueType, 0), {i}, (TString("zero_") += ToString(i)).c_str(), atTop);
             initF = InsertValueInst::Create(initF, pointers.back(), {i}, (TString("insert_") += ToString(i)).c_str(), atTop);
 
-            getters[i] = [i, values, valueType, indexType, arrayType](const TCodegenContext& ctx, BasicBlock*& block) {
-                const auto pointer = GetElementPtrInst::CreateInBounds(arrayType, values, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, i)}, (TString("ptr_") += ToString(i)).c_str(), block);
-                return new LoadInst(valueType, pointer, (TString("load_") += ToString(i)).c_str(), block);
+            getters[i] = [i, values](const TCodegenContext& ctx, BasicBlock*& block) {
+                const auto indexType = Type::getInt32Ty(ctx.Codegen->GetContext());
+                const auto pointer = GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(indexType, 0), ConstantInt::get(indexType, i)}, (TString("ptr_") += ToString(i)).c_str(), block);
+                return new LoadInst(pointer, (TString("load_") += ToString(i)).c_str(), block);
             };
         }
 
         new StoreInst(initV, values, atTop);
         new StoreInst(initF, fields, atTop);
 
-        TLLVMFieldsStructure<TComputationValue<TNull>> fieldsStruct(context);
-        const auto stateType = StructType::get(context, fieldsStruct.GetFieldsArray());
+        const auto stateType = StructType::get(context, {
+            structPtrType,              // vtbl
+            Type::getInt32Ty(context),  // ref
+            Type::getInt16Ty(context),  // abi
+            Type::getInt16Ty(context),  // reserved
+            structPtrType,              // meminfo
+        });
 
         const auto statePtrType = PointerType::getUnqual(stateType);
 
@@ -1209,7 +1208,7 @@ public:
         const auto makeFunc = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TWideCommonJoinCoreWrapper::MakeState));
         const auto makeType = FunctionType::get(Type::getVoidTy(context), {self->getType(), ctx.Ctx->getType(), statePtr->getType()}, false);
         const auto makeFuncPtr = CastInst::Create(Instruction::IntToPtr, makeFunc, PointerType::getUnqual(makeType), "function", block);
-        CallInst::Create(makeType, makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
+        CallInst::Create(makeFuncPtr, {self, ctx.Ctx, statePtr}, "", block);
         BranchInst::Create(main, block);
 
         block = main;
@@ -1220,14 +1219,14 @@ public:
 
         new StoreInst(initV, values, block);
 
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto half = CastInst::Create(Instruction::Trunc, state, Type::getInt64Ty(context), "half", block);
         const auto stateArg = CastInst::Create(Instruction::IntToPtr, half, statePtrType, "state_arg", block);
 
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TValue::FetchValues));
         const auto funcType = FunctionType::get(Type::getInt32Ty(context), { statePtrType, ctx.Ctx->getType(), fields->getType() }, false);
         const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funcType), "fetch_func", block);
-        const auto result = CallInst::Create(funcType, funcPtr, { stateArg, ctx.Ctx, fields }, "fetch", block);
+        const auto result = CallInst::Create(funcPtr, { stateArg, ctx.Ctx, fields }, "fetch", block);
 
         for (ui32 i = 0U; i < OutputRepresentations.size(); ++i) {
             ValueRelease(OutputRepresentations[i], pointers[i], ctx, block);
@@ -1241,7 +1240,7 @@ private:
 #ifdef MKQL_DISABLE_CODEGEN
         state = ctx.HolderFactory.Create<TValue>(ctx, this, std::bind(&IComputationWideFlowNode::FetchValues, Flow, std::placeholders::_1, std::placeholders::_2));
 #else
-        state = ctx.ExecuteLLVM && Fetch ?
+        state = Fetch && ctx.ExecuteLLVM ?
             ctx.HolderFactory.Create<TValue>(ctx, this, Fetch):
             ctx.HolderFactory.Create<TValue>(ctx, this, std::bind(&IComputationWideFlowNode::FetchValues, Flow, std::placeholders::_1, std::placeholders::_2));
 #endif
@@ -1275,14 +1274,14 @@ private:
 
     Function* FetchFunc = nullptr;
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (FetchFunc) {
-            Fetch = reinterpret_cast<TFetchPtr>(codegen.GetPointerToFunction(FetchFunc));
+            Fetch = reinterpret_cast<TFetchPtr>(codegen->GetPointerToFunction(FetchFunc));
         }
     }
 
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
-        codegen.ExportSymbol(FetchFunc = GenerateFetchFunction(codegen));
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
+        codegen->ExportSymbol(FetchFunc = GenerateFetchFunction(codegen));
     }
 
     TString MakeName() const {
@@ -1291,9 +1290,9 @@ private:
         return out.Str();
     }
 
-    Function* GenerateFetchFunction(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateFetchFunction(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto& name = MakeName();
         if (const auto f = module.getFunction(name.c_str()))
@@ -1328,7 +1327,7 @@ private:
 
         block = good;
 
-        const auto fields = new LoadInst(arrayType, outputArg, "fields", block);
+        const auto fields = new LoadInst(outputArg, "fields", block);
 
         for (ui32 i = 0U; i < InputRepresentations.size(); ++i) {
             const auto save = BasicBlock::Create(context, (TString("save_") += ToString(i)).c_str(), ctx.Func);
@@ -1413,15 +1412,15 @@ public:
     }
 
     void Live(NUdf::TUnboxedValue& stream, NUdf::TUnboxedValue&& liveValue) {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
-        Y_DEBUG_ABORT_UNLESS(Count == 0);
+        Y_VERIFY_DEBUG(!IsLive());
+        Y_VERIFY_DEBUG(Count == 0);
         LiveStream = stream;
         LiveValue = std::move(liveValue);
     }
 
     void Add(NUdf::TUnboxedValue&& value) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(!IsSealed);
+        Y_VERIFY_DEBUG(!IsSealed);
 #endif
         if (SingleShot && Count > 0) {
             MKQL_ENSURE(Count == 1, "Counter inconsistent");
@@ -1436,7 +1435,7 @@ public:
             }
             else {
                 if (Count == DEFAULT_STACK_ITEMS) {
-                    Y_DEBUG_ABORT_UNLESS(Heap.empty());
+                    Y_VERIFY_DEBUG(Heap.empty());
                     Heap.assign(Stack, Stack + DEFAULT_STACK_ITEMS);
                 }
 
@@ -1468,7 +1467,7 @@ public:
     }
 
     ui64 GetCount() const {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
         return Count;
     }
 
@@ -1478,7 +1477,7 @@ public:
 
     NUdf::EFetchStatus Next(NUdf::TUnboxedValue& result) {
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         if (IsLive()) {
             auto status = NUdf::EFetchStatus::Ok;
@@ -1519,9 +1518,9 @@ public:
     }
 
     void Rewind() {
-        Y_DEBUG_ABORT_UNLESS(!IsLive());
+        Y_VERIFY_DEBUG(!IsLive());
 #ifndef NDEBUG
-        Y_DEBUG_ABORT_UNLESS(IsSealed);
+        Y_VERIFY_DEBUG(IsSealed);
 #endif
         Index = ui64(-1);
         if (FileState) {
@@ -1546,7 +1545,7 @@ private:
     }
 
     void Write(NUdf::TUnboxedValue&& value) {
-        Y_DEBUG_ABORT_UNLESS(FileState->Output);
+        Y_VERIFY_DEBUG(FileState->Output);
         TStringBuf serialized = ItemPacker.Pack(value);
         ui32 length = serialized.size();
         FileState->Output->Write(&length, sizeof(length));
@@ -1563,10 +1562,10 @@ private:
     NUdf::TUnboxedValue Read() {
         ui32 length = 0;
         auto wasRead = FileState->Input->Load(&length, sizeof(length));
-        Y_ABORT_UNLESS(wasRead == sizeof(length));
+        Y_VERIFY(wasRead == sizeof(length));
         FileState->Buffer.Reserve(length);
         wasRead = FileState->Input->Load((void*)FileState->Buffer.Data(), length);
-        Y_ABORT_UNLESS(wasRead == length);
+        Y_VERIFY(wasRead == length);
         return ItemPacker.Unpack(TStringBuf(FileState->Buffer.Data(), length), Ctx->HolderFactory);
     }
 
@@ -1774,7 +1773,7 @@ public:
                             break;
 
                         default:
-                            Y_ABORT("Unknown kind");
+                            Y_FAIL("Unknown kind");
                         }
 
                         if (OutputMode == EOutputMode::Unknown) {
@@ -1844,7 +1843,7 @@ public:
                 case EOutputMode::None:
                     return NUdf::EFetchStatus::Finish;
                 default:
-                    Y_ABORT("Unknown output mode");
+                    Y_FAIL("Unknown output mode");
                 }
             }
         }
@@ -2057,15 +2056,6 @@ IComputationNode* WrapCommonJoinCore(TCallable& callable, const TComputationNode
             fieldTypes.emplace_back(tupleType->GetElementType(i));
             inputRepresentations.emplace_back(GetValueRepresentation(fieldTypes.back()));
         }
-    } else if (inputRowType->IsMulti()) {
-        const auto tupleType = AS_TYPE(TMultiType, inputRowType);
-        inputRepresentations.reserve(tupleType->GetElementsCount());
-        fieldTypes.reserve(tupleType->GetElementsCount());
-        for (ui32 i = 0U; i < tupleType->GetElementsCount(); ++i) {
-            fieldTypes.emplace_back(tupleType->GetElementType(i));
-            inputRepresentations.emplace_back(GetValueRepresentation(fieldTypes.back()));
-        }
-
     } else if (inputRowType->IsStruct()) {
         const auto structType = AS_TYPE(TStructType, inputRowType);
         inputRepresentations.reserve(structType->GetMembersCount());
@@ -2083,11 +2073,6 @@ IComputationNode* WrapCommonJoinCore(TCallable& callable, const TComputationNode
     std::vector<EValueRepresentation> outputRepresentations;
     if (outputRowType->IsTuple()) {
         const auto tupleType = AS_TYPE(TTupleType, outputRowType);
-        outputRepresentations.reserve(tupleType->GetElementsCount());
-        for (ui32 i = 0U; i < tupleType->GetElementsCount(); ++i)
-            outputRepresentations.emplace_back(GetValueRepresentation(tupleType->GetElementType(i)));
-    } else if (outputRowType->IsMulti()) {
-        const auto tupleType = AS_TYPE(TMultiType, outputRowType);
         outputRepresentations.reserve(tupleType->GetElementsCount());
         for (ui32 i = 0U; i < tupleType->GetElementsCount(); ++i)
             outputRepresentations.emplace_back(GetValueRepresentation(tupleType->GetElementType(i)));
@@ -2214,7 +2199,7 @@ IComputationNode* WrapCommonJoinCore(TCallable& callable, const TComputationNode
         MAKE_COMMON_JOIN_CORE_WRAPPER(RightSemi)
         MAKE_COMMON_JOIN_CORE_WRAPPER(Cross)
     default:
-        Y_ABORT("Unknown kind");
+        Y_FAIL("Unknown kind");
     }
 #undef MAKE_COMMON_JOIN_CORE_WRAPPER
 }

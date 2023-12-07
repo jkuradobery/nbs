@@ -3,7 +3,6 @@ LIBRARY()
 SRCS(
     alter_cdc_stream_unit.cpp
     alter_table_unit.cpp
-    backup_restore_common.cpp
     backup_restore_traits.cpp
     backup_unit.cpp
     build_and_wait_dependencies_unit.cpp
@@ -12,7 +11,6 @@ SRCS(
     build_index.cpp
     build_kqp_data_tx_out_rs_unit.cpp
     build_scheme_tx_out_rs_unit.cpp
-    cdc_stream_heartbeat.cpp
     cdc_stream_scan.cpp
     change_collector_async_index.cpp
     change_collector_base.cpp
@@ -22,7 +20,6 @@ SRCS(
     change_exchange_split.cpp
     change_record.cpp
     change_record_body_serializer.cpp
-    change_record_cdc_serializer.cpp
     change_sender.cpp
     change_sender_async_index.cpp
     change_sender_cdc_stream.cpp
@@ -36,7 +33,6 @@ SRCS(
     check_snapshot_tx_unit.cpp
     complete_data_tx_unit.cpp
     completed_operations_unit.cpp
-    conflicts_cache.cpp
     create_cdc_stream_unit.cpp
     create_persistent_snapshot_unit.cpp
     create_table_unit.cpp
@@ -99,14 +95,13 @@ SRCS(
     datashard_failpoints.h
     datashard_dep_tracker.cpp
     datashard_dep_tracker.h
-    datashard_overload.cpp
     datashard_pipeline.cpp
     datashard_pipeline.h
     datashard_s3_downloads.cpp
     datashard_s3_uploads.cpp
-    datashard_s3_upload_rows.cpp
     datashard_schema_snapshots.cpp
     datashard_snapshots.cpp
+    datashard_unsafe_upload.cpp
     datashard_user_db.cpp
     datashard_user_db.h
     datashard_user_table.cpp
@@ -153,7 +148,6 @@ SRCS(
     export_scan.cpp
     finalize_build_index_unit.cpp
     finish_propose_unit.cpp
-    follower_edge.cpp
     initiate_build_index_unit.cpp
     key_conflicts.cpp
     key_conflicts.h
@@ -170,7 +164,6 @@ SRCS(
     prepare_distributed_erase_tx_in_rs_unit.cpp
     prepare_kqp_data_tx_in_rs_unit.cpp
     prepare_scheme_tx_in_rs_unit.cpp
-    probes.cpp
     progress_queue.h
     protect_scheme_echoes_unit.cpp
     read_op_unit.cpp
@@ -215,15 +208,14 @@ RESOURCE(
 
 PEERDIR(
     contrib/libs/zstd
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/containers/absl_flat_hash
+    library/cpp/containers/flat_hash
     library/cpp/containers/stack_vector
     library/cpp/digest/md5
     library/cpp/html/pcdata
     library/cpp/json
     library/cpp/json/yson
-    library/cpp/lwtrace
-    library/cpp/lwtrace/mon
     library/cpp/monlib/service/pages
     library/cpp/string_utils/base64
     library/cpp/string_utils/quote
@@ -246,13 +238,10 @@ PEERDIR(
     ydb/library/aclib
     ydb/library/binary_json
     ydb/library/dynumber
-    ydb/library/yql/parser/pg_wrapper/interface
     ydb/public/api/protos
     ydb/public/lib/deprecated/kicli
     ydb/library/yql/dq/actors/compute
-    ydb/library/yql/parser/pg_wrapper/interface
     ydb/services/lib/sharding
-    ydb/library/chunks_limiter
 )
 
 YQL_LAST_ABI_VERSION()
@@ -298,7 +287,6 @@ RECURSE_FOR_TESTS(
     ut_reassign
     ut_replication
     ut_rs
-    ut_sequence
     ut_snapshot
     ut_stats
     ut_upload_rows

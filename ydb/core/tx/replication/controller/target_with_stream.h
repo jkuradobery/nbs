@@ -2,9 +2,9 @@
 
 #include "target_base.h"
 
-namespace NKikimr::NReplication::NController {
-
-extern const TString ReplicationConsumerName;
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 class TTargetWithStream: public TTargetBase {
 public:
@@ -25,4 +25,6 @@ private:
 
 }; // TTargetWithStream
 
-}
+} // NController
+} // NReplication
+} // NKikimr

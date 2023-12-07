@@ -16,9 +16,9 @@ public:
     STFUNC(StateFunc) {
         if (!Counter--) {
             Event->Signal();
-            PassAway();
+            Die(ctx);
         } else {
-            Forward(ev, PDiskId);
+            ctx.ExecutorThread.Send(ev->Forward(PDiskId));
         }
     }
 };

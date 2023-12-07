@@ -394,27 +394,18 @@ void CheckTableIsOfline(TBaseTestEnv &env, ui64 tablet_id) {
 }
 
 void CheckTableBecomeAlive(TBaseTestEnv &env, ui64 tablet_id) {
-    auto prev = env.GetRuntime().SetDispatchTimeout(WaitTimeOut);
     UNIT_ASSERT(
                 env.GetClient().WaitForTabletAlive(&env.GetRuntime(), tablet_id, true, WaitTimeOut));
-    env.GetRuntime().SetDispatchTimeout(prev);
+
 }
 
 void CheckTableBecomeOfline(TBaseTestEnv &env, ui64 tablet_id) {
-    {
-        auto prev = env.GetRuntime().SetDispatchTimeout(WaitTimeOut);
-        UNIT_ASSERT(
-                    env.GetClient().WaitForTabletDown(&env.GetRuntime(), tablet_id, true, WaitTimeOut));
-        env.GetRuntime().SetDispatchTimeout(prev);
-    }
-    // check that tablet did not wake up
+    UNIT_ASSERT(
+                env.GetClient().WaitForTabletDown(&env.GetRuntime(), tablet_id, true, WaitTimeOut));
+    //ensure that tablet do not wake up
     TDuration negativeTimeout = TDuration::Seconds(1);
-    {
-        auto prev = env.GetRuntime().SetDispatchTimeout(negativeTimeout);
-        UNIT_ASSERT(
-                    !env.GetClient().WaitForTabletAlive(&env.GetRuntime(), tablet_id, true, negativeTimeout));
-        env.GetRuntime().SetDispatchTimeout(prev);
-    }
+    UNIT_ASSERT(
+                !env.GetClient().WaitForTabletAlive(&env.GetRuntime(), tablet_id, true, negativeTimeout));
 }
 
 void CheckTableRunOnProperTenantNode(TBaseTestEnv &env, const TString &tenant, ui64 tablet_id) {

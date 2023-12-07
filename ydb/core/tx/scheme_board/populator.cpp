@@ -7,14 +7,14 @@
 
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/base/tabletid.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/util/yverify_stream.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/digest/city.h>
 
@@ -344,7 +344,7 @@ class TReplicaPopulator: public TMonitorableActor<TReplicaPopulator> {
                         info = update.AddVersions();
                     }
 
-                    Y_ABORT_UNLESS(info);
+                    Y_VERIFY(info);
                     info->SetVersion(version);
                     info->AddTxIds(txId);
                     prevVersion = version;
@@ -507,14 +507,14 @@ class TPopulator: public TMonitorableActor<TPopulator> {
 
     void Update(const TPathId pathId, const bool isDeletion, const ui64 cookie) {
         auto it = Descriptions.find(pathId);
-        Y_ABORT_UNLESS(it != Descriptions.end());
+        Y_VERIFY(it != Descriptions.end());
 
         const auto& record = it->second.Record;
 
         TConstArrayRef<TActorId> replicas = SelectReplicas(pathId, record.GetPath());
         for (const auto& replica : replicas) {
             const TActorId* replicaPopulator = ReplicaToReplicaPopulator.FindPtr(replica);
-            Y_ABORT_UNLESS(replicaPopulator != nullptr);
+            Y_VERIFY(replicaPopulator != nullptr);
 
             auto update = MakeHolder<TSchemeBoardEvents::TEvUpdateBuilder>(Owner, Generation, record, isDeletion);
             if (!isDeletion) {

@@ -21,10 +21,9 @@ namespace NKikimr {
         bool Check(const TKeyLogoBlob &key,
                    const TMemRecLogoBlob &memRec,
                    ui32 recsMerged,
-                   bool allowKeepFlags,
-                   bool allowGarbageCollection) const {
+                   bool allowKeepFlags) const {
             return TLogoBlobFilter::Check(key.LogoBlobID()) &&
-                    BarriersEssence->Keep(key, memRec, recsMerged, allowKeepFlags, allowGarbageCollection).KeepData;
+                    BarriersEssence->Keep(key, memRec, recsMerged, allowKeepFlags).KeepData;
         }
 
         TIntrusivePtr<THullCtx> HullCtx;
@@ -101,20 +100,20 @@ namespace NKikimr {
                     pres = Process(ctx, FullSnap.LogoBlobsSnap, KeyLogoBlob, LogoBlobFilter);
                     if (pres & MsgFullFlag)
                         break;
-                    Y_ABORT_UNLESS(pres & EmptyFlag);
+                    Y_VERIFY(pres & EmptyFlag);
                     [[fallthrough]];
                 case NKikimrBlobStorage::Blocks:
                     Stage = NKikimrBlobStorage::Blocks;
                     pres = Process(ctx, FullSnap.BlocksSnap, KeyBlock, FakeFilter);
                     if (pres & MsgFullFlag)
                         break;
-                    Y_ABORT_UNLESS(pres & EmptyFlag);
+                    Y_VERIFY(pres & EmptyFlag);
                     [[fallthrough]];
                 case NKikimrBlobStorage::Barriers:
                     Stage = NKikimrBlobStorage::Barriers;
                     pres = Process(ctx, FullSnap.BarriersSnap, KeyBarrier, FakeFilter);
                     break;
-                default: Y_ABORT("Unexpected case: stage=%d", Stage);
+                default: Y_FAIL("Unexpected case: stage=%d", Stage);
             }
 
             bool finished = (bool)(pres & EmptyFlag) && Stage == NKikimrBlobStorage::Barriers;
@@ -151,7 +150,7 @@ namespace NKikimr {
             // copy data until we have some space
             while (it.Valid() && (data->size() + NSyncLog::MaxRecFullSize <= data->capacity())) {
                 key = it.GetCurKey();
-                if (filter.Check(key, it.GetMemRec(), it.GetMemRecsMerged(), HullCtx->AllowKeepFlags, true /*allowGarbageCollection*/))
+                if (filter.Check(key, it.GetMemRec(), it.GetMemRecsMerged(), HullCtx->AllowKeepFlags))
                     Serialize(ctx, data, key, it.GetMemRec());
                 it.Next();
             }

@@ -1,7 +1,5 @@
 #include "scheme_cache.h"
 
-#include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/path.h>
 
 #include <util/string/builder.h>
@@ -12,11 +10,11 @@ namespace NSchemeCache {
 TSchemeCacheConfig::TSchemeCacheConfig(const TAppData* appData, ::NMonitoring::TDynamicCounterPtr counters)
     : Counters(counters)
 {
-    Y_ABORT_UNLESS(appData);
-    Y_ABORT_UNLESS(appData->DomainsInfo);
+    Y_VERIFY(appData);
+    Y_VERIFY(appData->DomainsInfo);
 
     for (const auto& [_, domain] : appData->DomainsInfo->Domains) {
-        Y_ABORT_UNLESS(domain);
+        Y_VERIFY(domain);
 
         if (!domain->SchemeRoot) {
             continue;
@@ -31,7 +29,6 @@ TString TDomainInfo::ToString() const {
         << " DomainKey: " << DomainKey
         << " ResourcesDomainKey: " << ResourcesDomainKey
         << " Params { " << Params.ShortDebugString() << " }"
-        << " ServerlessComputeResourcesMode: " << ServerlessComputeResourcesMode
     << " }";
 }
 

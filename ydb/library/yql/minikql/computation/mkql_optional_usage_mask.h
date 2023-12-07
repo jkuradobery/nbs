@@ -1,7 +1,6 @@
 #pragma once
 
-#include "mkql_computation_node_pack_impl.h"
-
+#include <ydb/library/yql/minikql/pack_num.h>
 #include <util/generic/bitmap.h>
 #include <util/generic/buffer.h>
 
@@ -21,12 +20,15 @@ public:
         Mask.Clear();
     }
 
-    void Reset(TChunkedInputBuffer& buf) {
+    void Reset(TStringBuf& buf) {
         Reset();
-        ui64 bytes = UnpackUInt64(buf);
+        ui64 bytes = 0ULL;
+        buf.Skip(Unpack64(buf.data(), buf.size(), bytes));
         if (bytes) {
+            Y_VERIFY_DEBUG(bytes <= buf.size());
             Mask.Reserve(bytes << 3ULL);
-            buf.CopyTo(reinterpret_cast<char*>(const_cast<ui8*>(Mask.GetChunks())), bytes);
+            std::memcpy(const_cast<ui8*>(Mask.GetChunks()), buf.data(), bytes);
+            buf.Skip(bytes);
         }
     }
 
@@ -55,17 +57,16 @@ public:
         return GetPack64Length(usedBytes) + usedBytes;
     }
 
-    template<typename TBuf>
-    void Serialize(TBuf& buf) const {
+    void Serialize(TBuffer& buf) const {
         if (!CountOfOptional || Mask.Empty()) {
             return buf.Append(0);
         }
 
         const size_t usedBits = Mask.ValueBitCount();
         const size_t usedBytes = (usedBits + 7ULL) >> 3ULL;
+        const auto off = buf.Size();
         buf.Advance(MAX_PACKED64_SIZE);
-        // Note: usage of Pack64() is safe here - it won't overwrite useful data for small values of usedBytes
-        buf.EraseBack(MAX_PACKED64_SIZE - Pack64(usedBytes, buf.Pos() - MAX_PACKED64_SIZE));
+        buf.EraseBack(MAX_PACKED64_SIZE - Pack64(usedBytes, buf.Data() + off));
         buf.Append(reinterpret_cast<const char*>(Mask.GetChunks()), usedBytes);
     }
 

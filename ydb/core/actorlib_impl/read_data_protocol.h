@@ -1,8 +1,8 @@
 #pragma once
 
-#include <ydb/library/actors/interconnect/events_local.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect_stream.h>
+#include <library/cpp/actors/interconnect/events_local.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect_stream.h>
 
 namespace NActors {
 
@@ -52,7 +52,8 @@ public:
 
 private:
     void ProtocolFunc(
-        TAutoPtr<NActors::IEventHandle>& ev) noexcept;
+        TAutoPtr<NActors::IEventHandle>& ev,
+        const TActorContext& ctx) noexcept;
 
     void TryAgain(const TActorContext& ctx) noexcept;
 

@@ -139,18 +139,6 @@ public:
         return *this;
     }
 
-    inline THttpServerOptions& SetOneShotPoll(bool v) {
-        OneShotPoll = v;
-
-        return *this;
-    }
-
-    inline THttpServerOptions& SetListenerThreads(ui32 val) {
-        nListenerThreads = val;
-
-        return *this;
-    }
-
     struct TAddr {
         TString Addr;
         ui16 Port;
@@ -173,7 +161,6 @@ public:
     ui32 MaxFQueueSize = 0;
     ui32 MaxConnections = 100;
     int ListenBacklog = SOMAXCONN;
-    ui32 EpollMaxEvents = 1;
     TDuration ClientTimeout;
     size_t OutputBufferSize = 0;
     ui64 MaxInputContentLength = sizeof(size_t) <= 4 ? 2_GB : 64_GB;
@@ -186,7 +173,4 @@ public:
     TString ListenThreadName = "HttpListen";
     TString RequestsThreadName = "HttpServer";
     TString FailRequestsThreadName = "HttpServer";
-
-    bool OneShotPoll = false;
-    ui32 nListenerThreads = 1;
 };

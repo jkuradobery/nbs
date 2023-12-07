@@ -87,7 +87,7 @@ struct TComputationMutables {
     std::vector<TWideFieldsInitInfo> WideFieldInitialize;
 
     void DeferWideFieldsInit(ui32 count, std::set<ui32> used) {
-        Y_DEBUG_ABORT_UNLESS(AllOf(used, [count](ui32 i) { return i < count; }));
+        Y_VERIFY_DEBUG(AllOf(used, [count](ui32 i) { return i < count; }));
         WideFieldInitialize.push_back({CurValueIndex, CurWideFieldsIndex, std::move(used)});
         CurValueIndex += count;
         CurWideFieldsIndex += count;
@@ -116,15 +116,14 @@ struct TComputationContextLLVM {
 struct TComputationContext : public TComputationContextLLVM {
     IRandomProvider& RandomProvider;
     ITimeProvider& TimeProvider;
-    bool ExecuteLLVM = false;
+    bool ExecuteLLVM = true;
     arrow::MemoryPool& ArrowMemoryPool;
     std::vector<NUdf::TUnboxedValue*> WideFields;
     TTypeEnvironment* TypeEnv = nullptr;
-    const TComputationMutables Mutables;
 
     TComputationContext(const THolderFactory& holderFactory,
         const NUdf::IValueBuilder* builder,
-        const TComputationOptsFull& opts,
+        TComputationOptsFull& opts,
         const TComputationMutables& mutables,
         arrow::MemoryPool& arrowMemoryPool);
 
@@ -143,8 +142,6 @@ private:
     TInstant LastPrintUsage;
 #endif
 };
-
-class IArrowKernelComputationNode;
 
 class IComputationNode {
 public:
@@ -180,8 +177,6 @@ public:
     virtual void Ref() = 0;
     virtual void UnRef() = 0;
     virtual ui32 RefCount() const = 0;
-
-    virtual std::unique_ptr<IArrowKernelComputationNode> PrepareArrowKernelComputationNode(TComputationContext& ctx) const;
 };
 
 class IComputationExternalNode : public IComputationNode {
@@ -214,31 +209,6 @@ public:
     virtual void InvalidateValue(TComputationContext& compCtx) const = 0;
 };
 
-using TDatumProvider = std::function<arrow::Datum()>;
-
-TDatumProvider MakeDatumProvider(const arrow::Datum& datum);
-TDatumProvider MakeDatumProvider(const IComputationNode* node, TComputationContext& ctx);
-
-class IArrowKernelComputationNode {
-public:
-    virtual ~IArrowKernelComputationNode() = default;
-
-    virtual TStringBuf GetKernelName() const = 0;
-    virtual const arrow::compute::ScalarKernel& GetArrowKernel() const = 0;
-    virtual const std::vector<arrow::ValueDescr>& GetArgsDesc() const = 0;
-    virtual const IComputationNode* GetArgument(ui32 index) const = 0;
-};
-
-struct TArrowKernelsTopologyItem {
-    std::vector<ui32> Inputs;
-    std::unique_ptr<IArrowKernelComputationNode> Node;
-};
-
-struct TArrowKernelsTopology {
-    ui32 InputArgsCount = 0;
-    std::vector<TArrowKernelsTopologyItem> Items;
-};
-
 using TComputationNodePtrVector = std::vector<IComputationNode*, TMKQLAllocator<IComputationNode*>>;
 using TComputationWideFlowNodePtrVector = std::vector<IComputationWideFlowNode*, TMKQLAllocator<IComputationWideFlowNode*>>;
 using TComputationExternalNodePtrVector = std::vector<IComputationExternalNode*, TMKQLAllocator<IComputationExternalNode*>>;
@@ -253,7 +223,6 @@ public:
     virtual NUdf::TUnboxedValue GetValue() = 0;
     virtual TComputationContext& GetContext() = 0;
     virtual IComputationExternalNode* GetEntryPoint(size_t index, bool require) = 0;
-    virtual const TArrowKernelsTopology* GetKernelsTopology() = 0;
     virtual const TComputationNodePtrDeque& GetNodes() const = 0;
     virtual void Invalidate() = 0;
     virtual TMemoryUsageInfo& GetMemInfo() const = 0;
@@ -341,8 +310,7 @@ struct TComputationPatternOpts {
         const TString& optLLVM,
         EGraphPerProcess graphPerProcess,
         IStatsRegistry* stats = nullptr,
-        NUdf::ICountersProvider* countersProvider = nullptr,
-        const NUdf::ISecureParamsProvider* secureParamsProvider = nullptr)
+        NUdf::ICountersProvider* countersProvider = nullptr)
         : AllocState(allocState)
         , Env(env)
         , Factory(factory)
@@ -353,14 +321,12 @@ struct TComputationPatternOpts {
         , GraphPerProcess(graphPerProcess)
         , Stats(stats)
         , CountersProvider(countersProvider)
-        , SecureParamsProvider(secureParamsProvider)
     {}
 
     void SetOptions(TComputationNodeFactory factory, const IFunctionRegistry* functionRegistry,
         NUdf::EValidateMode validateMode, NUdf::EValidatePolicy validatePolicy,
         const TString& optLLVM, EGraphPerProcess graphPerProcess, IStatsRegistry* stats = nullptr,
-        NUdf::ICountersProvider* counters = nullptr,
-        const NUdf::ISecureParamsProvider* secureParamsProvider = nullptr) {
+        NUdf::ICountersProvider* counters = nullptr, const NUdf::ISecureParamsProvider* secureParamsProvider = nullptr) {
         Factory = factory;
         FunctionRegistry = functionRegistry;
         ValidateMode = validateMode;
@@ -405,10 +371,6 @@ public:
     typedef TIntrusivePtr<IComputationPattern> TPtr;
 
     virtual ~IComputationPattern() = default;
-    virtual void Compile(TString optLLVM, IStatsRegistry* stats) = 0;
-    virtual bool IsCompiled() const = 0;
-    virtual size_t CompiledCodeSize() const = 0;
-    virtual void RemoveCompiledCode() = 0;
     virtual THolder<IComputationGraph> Clone(const TComputationOptsFull& compOpts) = 0;
     virtual bool GetSuitableForCache() const = 0;
 };
@@ -421,21 +383,6 @@ IComputationPattern::TPtr MakeComputationPattern(
         const TComputationPatternOpts& opts);
 
 std::unique_ptr<NUdf::ISecureParamsProvider> MakeSimpleSecureParamsProvider(const THashMap<TString, TString>& secureParams);
-
-using TCallableComputationNodeBuilder = std::function<IComputationNode* (TCallable&, const TComputationNodeFactoryContext& ctx)>;
-
-template<typename... Ts>
-TCallableComputationNodeBuilder WrapComputationBuilder(IComputationNode* (*f)(const TComputationNodeFactoryContext&, Ts...)){
-    return [f](TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-        MKQL_ENSURE(callable.GetInputsCount() == sizeof...(Ts), "Incorrect number of inputs");
-        return CallComputationBuilderWithArgs(f, callable, ctx, std::make_index_sequence<sizeof...(Ts)>());
-    };
-}
-template<typename F, size_t... Is>
-auto CallComputationBuilderWithArgs(F* f, TCallable& callable, const TComputationNodeFactoryContext& ctx,
-                                           const std::integer_sequence<size_t, Is...> &)  {
-    return f(ctx, callable.GetInput(Is)...);
-}
 
 } // namespace NMiniKQL
 } // namespace NKikimr

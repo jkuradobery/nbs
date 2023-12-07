@@ -41,22 +41,22 @@ TLeaderTabletInfo& TTabletInfo::GetLeader() {
 }
 
 TLeaderTabletInfo& TTabletInfo::AsLeader() {
-    Y_ABORT_UNLESS(TabletRole == ETabletRole::Leader);
+    Y_VERIFY(TabletRole == ETabletRole::Leader);
     return static_cast<TLeaderTabletInfo&>(*this);
 }
 
 const TLeaderTabletInfo& TTabletInfo::AsLeader() const {
-    Y_ABORT_UNLESS(TabletRole == ETabletRole::Leader);
+    Y_VERIFY(TabletRole == ETabletRole::Leader);
     return static_cast<const TLeaderTabletInfo&>(*this);
 }
 
 TFollowerTabletInfo& TTabletInfo::AsFollower() {
-    Y_ABORT_UNLESS(TabletRole == ETabletRole::Follower);
+    Y_VERIFY(TabletRole == ETabletRole::Follower);
     return static_cast<TFollowerTabletInfo&>(*this);
 }
 
 const TFollowerTabletInfo& TTabletInfo::AsFollower() const {
-    Y_ABORT_UNLESS(TabletRole == ETabletRole::Follower);
+    Y_VERIFY(TabletRole == ETabletRole::Follower);
     return static_cast<const TFollowerTabletInfo&>(*this);
 }
 
@@ -68,7 +68,7 @@ std::pair<TTabletId, TFollowerId> TTabletInfo::GetFullTabletId() const {
     }
 }
 
-TFullObjectId TTabletInfo::GetObjectId() const {
+TObjectId TTabletInfo::GetObjectId() const {
     return GetLeader().ObjectId;
 }
 
@@ -245,7 +245,7 @@ bool TTabletInfo::InitiateStop(TSideEffects& sideEffects) {
 bool TTabletInfo::BecomeStarting(TNodeId nodeId) {
     if (VolatileState != EVolatileState::TABLET_VOLATILE_STATE_STARTING) {
         Node = Hive.FindNode(nodeId);
-        Y_ABORT_UNLESS(Node != nullptr);
+        Y_VERIFY(Node != nullptr);
         ChangeVolatileState(EVolatileState::TABLET_VOLATILE_STATE_STARTING);
         return true;
     }
@@ -256,14 +256,14 @@ bool TTabletInfo::BecomeRunning(TNodeId nodeId) {
     if (VolatileState != EVolatileState::TABLET_VOLATILE_STATE_RUNNING || NodeId != nodeId || (Node != nullptr && Node->Id != nodeId)) {
         NodeId = nodeId;
         PreferredNodeId = 0;
-        Y_ABORT_UNLESS(NodeId != 0);
+        Y_VERIFY(NodeId != 0);
         if (Node == nullptr) {
             Node = Hive.FindNode(NodeId);
-            Y_ABORT_UNLESS(Node != nullptr);
+            Y_VERIFY(Node != nullptr);
         } else if (Node->Id != NodeId) {
             ChangeVolatileState(EVolatileState::TABLET_VOLATILE_STATE_STOPPED);
             Node = Hive.FindNode(NodeId);
-            Y_ABORT_UNLESS(Node != nullptr);
+            Y_VERIFY(Node != nullptr);
         }
         ChangeVolatileState(EVolatileState::TABLET_VOLATILE_STATE_RUNNING);
         return true;
@@ -275,7 +275,7 @@ bool TTabletInfo::BecomeStopped() {
     if (VolatileState != EVolatileState::TABLET_VOLATILE_STATE_STOPPED) {
         if (Node == nullptr && NodeId != 0) {
             Node = Hive.FindNode(NodeId);
-            Y_ABORT_UNLESS(Node != nullptr);
+            Y_VERIFY(Node != nullptr);
         }
         ChangeVolatileState(EVolatileState::TABLET_VOLATILE_STATE_STOPPED);
         BootState.clear();
@@ -291,8 +291,8 @@ bool TTabletInfo::BecomeStopped() {
 }
 
 void TTabletInfo::BecomeUnknown(TNodeInfo* node) {
-    Y_ABORT_UNLESS(VolatileState == EVolatileState::TABLET_VOLATILE_STATE_UNKNOWN);
-    Y_ABORT_UNLESS(Node == nullptr || node == Node);
+    Y_VERIFY(VolatileState == EVolatileState::TABLET_VOLATILE_STATE_UNKNOWN);
+    Y_VERIFY(Node == nullptr || node == Node);
     Node = node;
     if (Node->Freeze) {
         PreferredNodeId = Node->Id;
@@ -314,7 +314,7 @@ const TVector<i64>& TTabletInfo::GetTabletAllowedMetricIds() const {
 }
 
 void TTabletInfo::UpdateResourceUsage(const NKikimrTabletBase::TMetrics& metrics) {
-    TInstant now = TActivationContext::Now();
+    TInstant now = TInstant::Now();
     const TVector<i64>& allowedMetricIds(GetTabletAllowedMetricIds());
     auto before = ResourceValues;
     auto maximum = GetResourceMaximumValues();
@@ -369,20 +369,10 @@ void TTabletInfo::UpdateResourceUsage(const NKikimrTabletBase::TMetrics& metrics
             ResourceValues.AddGroupWriteThroughput()->CopyFrom(v);
         }
     }
-    i64 counterBefore = ResourceValues.GetCounter();
-    ActualizeCounter();
-    i64 counterAfter = ResourceValues.GetCounter();
+    ResourceValues.SetCounter(GetCounterValue(ResourceValues, GetTabletAllowedMetricIds()));
     const auto& after = ResourceValues;
     if (Node != nullptr) {
-        if (IsResourceDrainingState(VolatileState)) {
-            Node->UpdateResourceValues(this, before, after);
-        }
-        if (IsAliveState(VolatileState)) {
-            i64 deltaCounter = counterAfter - counterBefore;
-            if (deltaCounter != 0 && IsLeader()) {
-                Hive.UpdateObjectCount(AsLeader(), *Node, deltaCounter);
-            }
-        }
+        Node->UpdateResourceValues(this, before, after);
     }
 }
 
@@ -445,16 +435,19 @@ void TTabletInfo::FilterRawValues(TResourceNormalizedValues& values) const {
     }
 }
 
-void TTabletInfo::ActualizeCounter() {
-    auto value = GetCounterValue(ResourceValues, GetTabletAllowedMetricIds());
-    ResourceValues.SetCounter(value);
+const TVector<TNodeId>& TTabletInfo::GetAllowedNodes() const {
+    if (IsLeader()) {
+        return AsLeader().AllowedNodes;
+    } else {
+        return AsFollower().FollowerGroup.AllowedNodes;
+    }
 }
 
-const TNodeFilter& TTabletInfo::GetNodeFilter() const {
+const TVector<TDataCenterId>& TTabletInfo::GetAllowedDataCenters() const {
     if (IsLeader()) {
-        return AsLeader().NodeFilter;
+        return AsLeader().AllowedDataCenters;
     } else {
-        return AsFollower().FollowerGroup.NodeFilter;
+        return AsFollower().FollowerGroup.AllowedDataCenters;
     }
 }
 
@@ -503,14 +496,6 @@ ui64 TTabletInfo::GetRestartsPerPeriod(TInstant barrier) {
         ++restarts;
     }
     return restarts;
-}
-
-bool TTabletInfo::RestartsOften() const {
-    // Statistics.RestartTimestamp is a repeated proto field that gets trimmed
-    // upon each update of tablet metrics (or restart).
-    // If its current size is >= RestartsMaxCount, it means the tablet was restarting
-    // often at the time of last update, and thus deserves low booting priority
-    return Statistics.RestartTimestampSize() >= Hive.GetTabletRestartsMaxCount();
 }
 
 } // NHive

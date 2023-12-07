@@ -6,15 +6,15 @@
 #include "util.h"
 
 #include <ydb/core/cms/console/util/config_index.h>
-#include <ydb/library/yaml_config/util.h>
-#include <ydb/library/yaml_config/yaml_config.h>
+#include <ydb/core/cms/console/yaml_config/util.h>
+#include <ydb/core/cms/console/yaml_config/yaml_config.h>
 #include <ydb/core/mind/tenant_pool.h>
 #include <ydb/core/mon/mon.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mon.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mon.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_writer.h>
 
@@ -49,14 +49,12 @@ const THashSet<ui32> DYNAMIC_KINDS({
     (ui32)NKikimrConsole::TConfigItem::NameserviceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::NetClassifierDistributableConfigItem,
     (ui32)NKikimrConsole::TConfigItem::NodeBrokerConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::QueryServiceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::SchemeShardConfigItem,
     (ui32)NKikimrConsole::TConfigItem::SharedCacheConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TableProfilesConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TableServiceConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TenantPoolConfigItem,
     (ui32)NKikimrConsole::TConfigItem::TenantSlotBrokerConfigItem,
-    (ui32)NKikimrConsole::TConfigItem::AllowEditYamlInUiItem,
 });
 
 const THashSet<ui32> NON_YAML_KINDS({
@@ -152,15 +150,8 @@ public:
 
     void UpdateYamlVersion(const TSubscription::TPtr &kinds) const;
 
-    struct TCheckKindsResult {
-        bool HasYamlKinds = false;
-        bool HasNonYamlKinds = false;
-    };
-
-    TCheckKindsResult CheckKinds(const TVector<ui32>& kinds, const char* errorContext) const;
-
     NKikimrConfig::TAppConfig ParseYamlProtoConfig();
-        
+
     void Handle(NMon::TEvHttpInfo::TPtr &ev);
     void Handle(TEvInterconnect::TEvNodesInfo::TPtr &ev);
     void Handle(TEvConsole::TEvConfigSubscriptionNotification::TPtr &ev);
@@ -220,8 +211,8 @@ public:
             // Pretend we got this
             hFuncTraced(TEvConsole::TEvConfigNotificationRequest, Handle);
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                   ev->GetTypeRewrite(), ev->ToString().data());
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                   ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
             break;
         }
     }
@@ -306,7 +297,7 @@ void TConfigsDispatcher::ProcessEnqueuedEvents()
 
 void TConfigsDispatcher::SendUpdateToSubscriber(TSubscription::TPtr subscription, TActorId subscriber)
 {
-    Y_ABORT_UNLESS(subscription->UpdateInProcess);
+    Y_VERIFY(subscription->UpdateInProcess);
 
     subscription->SubscribersToUpdate.insert(subscriber);
 
@@ -354,7 +345,8 @@ NKikimrConfig::TAppConfig TConfigsDispatcher::ParseYamlProtoConfig()
             Labels,
             newYamlProtoConfig,
             &ResolvedYamlConfig,
-            &ResolvedJsonConfig);
+            &ResolvedJsonConfig,
+            true);
     } catch (const yexception& ex) {
         BLOG_ERROR("Got invalid config from console error# " << ex.what());
     }
@@ -738,7 +730,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionNotification::T
             subscription->YamlVersion = std::nullopt;
         }
     }
-    
+
     if (CurrentStateFunc() == &TThis::StateInit) {
         Become(&TThis::StateWork);
         ProcessEnqueuedEvents();
@@ -759,7 +751,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvConfigSubscriptionError::TPtr &ev
 {
     // The only reason we can get this response is ambiguous domain
     // So it is okay to fail here
-    Y_ABORT("Can't start Configs Dispatcher: %s",
+    Y_FAIL("Can't start Configs Dispatcher: %s",
             ev->Get()->Record.GetReason().c_str());
 }
 
@@ -767,17 +759,16 @@ void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvGetConfigRequest::TPtr 
 {
     auto resp = MakeHolder<TEvConfigsDispatcher::TEvGetConfigResponse>();
 
-    auto [yamlKinds, _] = CheckKinds(
-        ev->Get()->ConfigItemKinds,
-        "TEvGetConfigRequest handler");
+    for (auto kind : ev->Get()->ConfigItemKinds) {
+        if (!DYNAMIC_KINDS.contains(kind)) {
+            TStringStream sstr;
+            sstr << static_cast<NKikimrConsole::TConfigItem::EKind>(kind);
+            Y_FAIL("unexpected kind in GetConfigRequest: %s", sstr.Str().data());
+        }
+    }
 
     auto trunc = std::make_shared<NKikimrConfig::TAppConfig>();
-    auto kinds = KindsToBitMap(ev->Get()->ConfigItemKinds);
-    if (YamlConfigEnabled && yamlKinds) {
-        ReplaceConfigItems(YamlProtoConfig, *trunc, kinds, InitialConfig);
-    } else {
-        ReplaceConfigItems(CurrentConfig, *trunc, kinds, InitialConfig);
-    }
+    ReplaceConfigItems(CurrentConfig, *trunc, KindsToBitMap(ev->Get()->ConfigItemKinds), InitialConfig);
     resp->Config = trunc;
 
     BLOG_TRACE("Send TEvConfigsDispatcher::TEvGetConfigResponse"
@@ -786,14 +777,15 @@ void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvGetConfigRequest::TPtr 
     Send(ev->Sender, std::move(resp), 0, ev->Cookie);
 }
 
-TConfigsDispatcher::TCheckKindsResult TConfigsDispatcher::CheckKinds(const TVector<ui32>& kinds, const char* errorContext) const {
+void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest::TPtr &ev)
+{
     bool yamlKinds = false;
     bool nonYamlKinds = false;
-    for (auto kind : kinds) {
+    for (auto kind : ev->Get()->ConfigItemKinds) {
         if (!DYNAMIC_KINDS.contains(kind)) {
             TStringStream sstr;
             sstr << static_cast<NKikimrConsole::TConfigItem::EKind>(kind);
-            Y_ABORT("unexpected kind in %s: %s", errorContext, sstr.Str().data());
+            Y_FAIL("unexpected kind in SetConfigSubscriptionRequest: %s", sstr.Str().data());
         }
 
         if (NON_YAML_KINDS.contains(kind)) {
@@ -804,18 +796,9 @@ TConfigsDispatcher::TCheckKindsResult TConfigsDispatcher::CheckKinds(const TVect
     }
 
     if (yamlKinds && nonYamlKinds) {
-        Y_ABORT("both yaml and non yaml kinds in %s", errorContext);
+        Y_FAIL("both yaml and non yaml kinds in SetConfigSubscriptionRequest");
     }
 
-    return {yamlKinds, nonYamlKinds};
-}
-
-void TConfigsDispatcher::Handle(TEvConfigsDispatcher::TEvSetConfigSubscriptionRequest::TPtr &ev)
-{
-    auto [yamlKinds, nonYamlKinds] = CheckKinds(
-        ev->Get()->ConfigItemKinds,
-        "SetConfigSubscriptionRequest handler");
-    Y_UNUSED(nonYamlKinds);
     auto kinds = KindsToBitMap(ev->Get()->ConfigItemKinds);
     auto subscriberActor = ev->Get()->Subscriber ? ev->Get()->Subscriber : ev->Sender;
 
@@ -950,7 +933,7 @@ void TConfigsDispatcher::Handle(TEvConsole::TEvGetNodeLabelsRequest::TPtr &ev) {
 
     Send(ev->Sender, Response.Release());
 }
-    
+
 IActor *CreateConfigsDispatcher(
     const NKikimrConfig::TAppConfig &config,
     const TMap<TString, TString> &labels,

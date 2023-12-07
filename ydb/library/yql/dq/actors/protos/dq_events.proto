@@ -2,7 +2,7 @@ package NYql.NDqProto;
 option cc_enable_arenas = true;
 
 import "google/protobuf/any.proto";
-import "ydb/library/actors/protos/actors.proto";
+import "library/cpp/actors/protos/actors.proto";
 import "ydb/library/yql/dq/actors/protos/dq_stats.proto";
 import "ydb/library/yql/dq/actors/protos/dq_status_codes.proto";
 import "ydb/library/yql/dq/proto/dq_state_load_plan.proto";
@@ -119,7 +119,7 @@ message TComputeRuntimeSettings {
 
     reserved 3; //optional NKqpProto.EKqpStatsMode LegacyStatsMode = 3;
     optional EDqStatsMode StatsMode = 8;
-    optional bool UseLLVM_DeprecatedForCompatibility = 4[default = false];
+    optional bool UseLLVM = 4;
     optional bool UseSpilling = 6;
     optional uint32 TasksOnNodeCount = 5; // approx
     optional TRlPath RlPath = 7;

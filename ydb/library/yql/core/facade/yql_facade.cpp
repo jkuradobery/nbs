@@ -22,6 +22,7 @@
 #include <ydb/library/yql/providers/common/arrow_resolve/yql_simple_arrow_resolver.h>
 #include <ydb/library/yql/providers/common/proto/gateways_config.pb.h>
 #include <ydb/library/yql/providers/common/config/yql_setting.h>
+#include <ydb/library/yql/public/issue/yql_issue.h>
 
 #include <library/cpp/yson/node/node_io.h>
 #include <library/cpp/deprecated/split/split_iterator.h>
@@ -177,19 +178,11 @@ void TProgramFactory::SetUdfIndex(TUdfIndex::TPtr udfIndex, TUdfIndexPackageSet:
 }
 
 void TProgramFactory::SetFileStorage(TFileStoragePtr fileStorage) {
-    FileStorage_ = std::move(fileStorage);
-}
-
-void TProgramFactory::SetUrlPreprocessing(IUrlPreprocessing::TPtr urlPreprocessing) {
-    UrlPreprocessing_ = std::move(urlPreprocessing);
+    FileStorage_ = fileStorage;
 }
 
 void TProgramFactory::SetArrowResolver(IArrowResolver::TPtr arrowResolver) {
     ArrowResolver_ = arrowResolver;
-}
-
-void TProgramFactory::SetUrlListerManager(IUrlListerManagerPtr urlListerManager) {
-    UrlListerManager_ = std::move(urlListerManager);
 }
 
 TProgramPtr TProgramFactory::Create(
@@ -214,13 +207,11 @@ TProgramPtr TProgramFactory::Create(
     TUdfIndex::TPtr udfIndex = UdfIndex_ ? UdfIndex_->Clone() : nullptr;
     TUdfIndexPackageSet::TPtr udfIndexPackageSet = (UdfIndexPackageSet_ && hiddenMode == EHiddenMode::Disable) ? UdfIndexPackageSet_->Clone() : nullptr;
     IModuleResolver::TPtr moduleResolver = Modules_ ? Modules_->CreateMutableChild() : nullptr;
-    IUrlListerManagerPtr urlListerManager = UrlListerManager_ ? UrlListerManager_->Clone() : nullptr;
     auto udfResolver = udfIndex ? NCommon::CreateUdfResolverWithIndex(udfIndex, UdfResolver_, FileStorage_) : UdfResolver_;
 
     // make UserDataTable_ copy here
     return new TProgram(FunctionRegistry_, randomProvider, timeProvider, NextUniqueId_, DataProvidersInit_,
-        UserDataTable_, Credentials_, moduleResolver, urlListerManager,
-        udfResolver, udfIndex, udfIndexPackageSet, FileStorage_, UrlPreprocessing_,
+        UserDataTable_, Credentials_, moduleResolver, udfResolver, udfIndex, udfIndexPackageSet, FileStorage_,
         GatewaysConfig_, filename, sourceCode, sessionId, Runner_, EnableRangeComputeFor_, ArrowResolver_, hiddenMode);
 }
 
@@ -236,12 +227,10 @@ TProgram::TProgram(
         const TUserDataTable& userDataTable,
         const TCredentials::TPtr& credentials,
         const IModuleResolver::TPtr& modules,
-        const IUrlListerManagerPtr& urlListerManager,
         const IUdfResolver::TPtr& udfResolver,
         const TUdfIndex::TPtr& udfIndex,
         const TUdfIndexPackageSet::TPtr& udfIndexPackageSet,
         const TFileStoragePtr& fileStorage,
-        const IUrlPreprocessing::TPtr& urlPreprocessing,
         const TGatewaysConfig* gatewaysConfig,
         const TString& filename,
         const TString& sourceCode,
@@ -256,13 +245,11 @@ TProgram::TProgram(
     , TimeProvider_(timeProvider)
     , NextUniqueId_(nextUniqueId)
     , DataProvidersInit_(dataProvidersInit)
-    , Credentials_(MakeIntrusive<NYql::TCredentials>(*credentials))
-    , UrlListerManager_(urlListerManager)
+    , Credentials_(credentials)
     , UdfResolver_(udfResolver)
     , UdfIndex_(udfIndex)
     , UdfIndexPackageSet_(udfIndexPackageSet)
     , FileStorage_(fileStorage)
-    , SavedUserDataTable_(userDataTable)
     , UserDataStorage_(MakeIntrusive<TUserDataStorage>(fileStorage, userDataTable, udfResolver, udfIndex))
     , GatewaysConfig_(gatewaysConfig)
     , Filename_(filename)
@@ -273,7 +260,6 @@ TProgram::TProgram(
     , Modules_(modules)
     , ExprRoot_(nullptr)
     , SessionId_(sessionId)
-    , ResultType_(IDataProvider::EResultFormat::Yson)
     , ResultFormat_(NYson::EYsonFormat::Binary)
     , OutputFormat_(NYson::EYsonFormat::Pretty)
     , EnableRangeComputeFor_(enableRangeComputeFor)
@@ -289,19 +275,16 @@ TProgram::TProgram(
         modules->SetUrlLoader(new TUrlLoader(FileStorage_));
         modules->SetCredentials(Credentials_);
     }
-
-    if (UrlListerManager_) {
-        UrlListerManager_->SetCredentials(Credentials_);
-        UrlListerManager_->SetUrlPreprocessing(urlPreprocessing);
-    }
-
     OperationOptions_.Runner = runner;
-    UserDataStorage_->SetUrlPreprocessor(urlPreprocessing);
 }
 
 TProgram::~TProgram() {
     try {
         CloseLastSession();
+        // Token resolver may keep some references to provider internal's. So reset it to release provider's data
+        if (FileStorage_) {
+            FileStorage_->SetTokenResolver({});
+        }
         // stop all non complete execution before deleting TExprCtx
         DataProviders_.clear();
     } catch (...) {
@@ -368,10 +351,6 @@ void TProgram::SetParametersYson(const TString& parameters) {
     if (auto modules = dynamic_cast<TModuleResolver*>(Modules_.get())) {
         modules->SetParameters(node);
     }
-
-    if (UrlListerManager_) {
-        UrlListerManager_->SetParameters(node);
-    }
 }
 
 bool TProgram::ExtractQueryParametersMetadata() {
@@ -429,39 +408,6 @@ TString TProgram::TakeSessionId() {
     }
 }
 
-void TProgram::AddCredentials(const TVector<std::pair<TString, TCredential>>& credentials) {
-    for (const auto& credential : credentials) {
-        Credentials_->AddCredential(credential.first, credential.second);
-    }
-
-    if (auto modules = dynamic_cast<TModuleResolver*>(Modules_.get())) {
-        modules->SetCredentials(Credentials_);
-    }
-    if (UrlListerManager_) {
-        UrlListerManager_->SetCredentials(Credentials_);
-    }
-}
-
-void TProgram::ClearCredentials() {
-    Credentials_ = MakeIntrusive<TCredentials>();
-
-    if (auto modules = dynamic_cast<TModuleResolver*>(Modules_.get())) {
-        modules->SetCredentials(Credentials_);
-    }
-    if (UrlListerManager_) {
-        UrlListerManager_->SetCredentials(Credentials_);
-    }
-}
-
-void TProgram::AddUserDataTable(const TUserDataTable& userDataTable) {
-    for (const auto& p : userDataTable) {
-        if (!SavedUserDataTable_.emplace(p).second) {
-            ythrow yexception() << "UserDataTable already has user data block with key " << p.first;
-        }
-        UserDataStorage_->AddUserDataBlock(p.first, p.second);
-    }
-}
-
 bool TProgram::ParseYql() {
     YQL_PROFILE_FUNC(TRACE);
     YQL_ENSURE(SourceSyntax_ == ESourceSyntax::Unknown);
@@ -513,11 +459,7 @@ bool TProgram::Compile(const TString& username, bool skipLibraries) {
         }
     }
 
-    if (!CompileExpr(
-        *AstRoot_, ExprRoot_, *ExprCtx_,
-        skipLibraries ? nullptr : Modules_.get(),
-        skipLibraries ? nullptr : UrlListerManager_.Get(), 0, SyntaxVersion_
-    )) {
+    if (!CompileExpr(*AstRoot_, ExprRoot_, *ExprCtx_, skipLibraries ? nullptr : Modules_.get(), 0, SyntaxVersion_)) {
         return false;
     }
 
@@ -623,53 +565,6 @@ TProgram::TFutureStatus TProgram::DiscoverAsync(const TString& username) {
     });
 }
 
-TProgram::TStatus TProgram::Lineage(const TString& username, IOutputStream* traceOut, IOutputStream* exprOut, bool withTypes) {
-    YQL_PROFILE_FUNC(TRACE);
-    auto m = &TProgram::LineageAsync;
-    return SyncExecution(this, m, username, traceOut, exprOut, withTypes);
-}
-
-TProgram::TFutureStatus TProgram::LineageAsync(const TString& username, IOutputStream* traceOut, IOutputStream* exprOut, bool withTypes) {
-    if (!ProvideAnnotationContext(username)->Initialize(*ExprCtx_) || !CollectUsedClusters()) {
-        return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-    }
-    TypeCtx_->IsReadOnly = true;
-
-    Y_ENSURE(ExprRoot_, "Program not compiled yet");
-
-    ExprStream_ = exprOut;
-    Transformer_ = TTransformationPipeline(TypeCtx_)
-        .AddServiceTransformers()
-        .AddParametersEvaluation(*FunctionRegistry_)
-        .AddPreTypeAnnotation()
-        .AddExpressionEvaluation(*FunctionRegistry_)
-        .AddIOAnnotation()
-        .AddTypeAnnotation()
-        .AddPostTypeAnnotation()
-        .Add(TExprOutputTransformer::Sync(ExprRoot_, traceOut), "ExprOutput")
-        .AddLineageOptimization(LineageStr_)
-        .Add(TExprOutputTransformer::Sync(ExprRoot_, exprOut, withTypes), "AstOutput")
-        .Build();
-
-    TFuture<void> openSession = OpenSession(username);
-    if (!openSession.Initialized())
-        return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-
-    SaveExprRoot();
-
-    return openSession.Apply([this](const TFuture<void>& f) {
-        YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
-        try {
-            f.GetValue();
-        } catch (const std::exception& e) {
-            YQL_LOG(ERROR) << "OpenSession error: " << e.what();
-            ExprCtx_->IssueManager.RaiseIssue(ExceptionToIssue(e));
-            return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-        }
-        return AsyncTransformWithFallback(false);
-    });
-}
-
 TProgram::TStatus TProgram::Validate(const TString& username, IOutputStream* exprOut, bool withTypes) {
     YQL_PROFILE_FUNC(TRACE);
     auto m = &TProgram::ValidateAsync;
@@ -710,7 +605,7 @@ TProgram::TFutureStatus TProgram::ValidateAsync(const TString& username, IOutput
         return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
     }
 
-    SaveExprRoot();
+    SavedExprRoot_ = ExprRoot_;
 
     return openSession.Apply([this](const TFuture<void>& f) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
@@ -775,14 +670,14 @@ TProgram::TFutureStatus TProgram::OptimizeAsync(
         .AddPostTypeAnnotation()
         .Add(TExprOutputTransformer::Sync(ExprRoot_, traceOut), "ExprOutput")
         .AddOptimization()
+        .Add(CreatePlanInfoTransformer(*TypeCtx_), "PlanInfo")
         .Add(TExprOutputTransformer::Sync(ExprRoot_, exprOut, withTypes), "AstOutput")
+        .Add(TPlanOutputTransformer::Sync(tracePlan, GetPlanBuilder(), OutputFormat_), "PlanOutput")
         .Build();
 
     TFuture<void> openSession = OpenSession(username);
     if (!openSession.Initialized())
         return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-
-    SaveExprRoot();
 
     return openSession.Apply([this](const TFuture<void>& f) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
@@ -853,59 +748,7 @@ TProgram::TFutureStatus TProgram::OptimizeAsyncWithConfig(
     if (!openSession.Initialized())
         return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
 
-    SaveExprRoot();
-
-    return openSession.Apply([this](const TFuture<void>& f) {
-        YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
-        try {
-            f.GetValue();
-        } catch (const std::exception& e) {
-            YQL_LOG(ERROR) << "OpenSession error: " << e.what();
-            ExprCtx_->IssueManager.RaiseIssue(ExceptionToIssue(e));
-            return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-        }
-        return AsyncTransformWithFallback(false);
-    });
-}
-
-TProgram::TStatus TProgram::LineageWithConfig(
-        const TString& username, const IPipelineConfigurator& pipelineConf)
-{
-    YQL_PROFILE_FUNC(TRACE);
-    auto m = &TProgram::LineageAsyncWithConfig;
-    return SyncExecution(this, m, username, pipelineConf);
-}
-
-TProgram::TFutureStatus TProgram::LineageAsyncWithConfig(
-        const TString& username, const IPipelineConfigurator& pipelineConf)
-{
-    if (!ProvideAnnotationContext(username)->Initialize(*ExprCtx_) || !CollectUsedClusters()) {
-        return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-    }
-    TypeCtx_->IsReadOnly = true;
-
-    Y_ENSURE(ExprRoot_, "Program not compiled yet");
-
-    TTransformationPipeline pipeline(TypeCtx_);
-    pipelineConf.AfterCreate(&pipeline);
-    pipeline.AddServiceTransformers();
-    pipeline.AddParametersEvaluation(*FunctionRegistry_);
-    pipeline.AddPreTypeAnnotation();
-    pipeline.AddExpressionEvaluation(*FunctionRegistry_);
-    pipeline.AddIOAnnotation();
-    pipeline.AddTypeAnnotation();
-    pipeline.AddPostTypeAnnotation();
-    pipelineConf.AfterTypeAnnotation(&pipeline);
-
-    pipeline.AddLineageOptimization(LineageStr_);
-
-    Transformer_ = pipeline.Build();
-
-    TFuture<void> openSession = OpenSession(username);
-    if (!openSession.Initialized())
-        return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
-
-    SaveExprRoot();
+    SavedExprRoot_ = ExprRoot_;
 
     return openSession.Apply([this](const TFuture<void>& f) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
@@ -987,7 +830,7 @@ TProgram::TFutureStatus TProgram::RunAsync(
         return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
     }
 
-    SaveExprRoot();
+    SavedExprRoot_ = ExprRoot_;
 
     return openSession.Apply([this](const TFuture<void>& f) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
@@ -1059,7 +902,7 @@ TProgram::TFutureStatus TProgram::RunAsyncWithConfig(
         return NThreading::MakeFuture<TStatus>(IGraphTransformer::TStatus::Error);
     }
 
-    SaveExprRoot();
+    SavedExprRoot_ = ExprRoot_;
 
     return openSession.Apply([this](const TFuture<void>& f) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(GetSessionId());
@@ -1074,49 +917,6 @@ TProgram::TFutureStatus TProgram::RunAsyncWithConfig(
     });
 }
 
-void TProgram::SaveExprRoot() {
-    TNodeOnNodeOwnedMap deepClones;
-    SavedExprRoot_ = ExprCtx_->DeepCopy(*ExprRoot_, *ExprCtx_, deepClones, /*internStrings*/false, /*copyTypes*/true, /*copyResult*/false, {});
-}
-
-std::optional<bool> TProgram::CheckFallbackIssues(const TIssues& issues) {
-    auto isFallback = std::optional<bool>();
-    auto checkIssue = [&](const TIssue& issue) {
-        if (issue.GetCode() == TIssuesIds::DQ_GATEWAY_ERROR) {
-            YQL_LOG(DEBUG) << "Gateway Error " << issue;
-            isFallback = false;
-        } else if (issue.GetCode() == TIssuesIds::DQ_GATEWAY_NEED_FALLBACK_ERROR) {
-            YQL_LOG(DEBUG) << "Gateway Fallback Error " << issue;
-            isFallback = true;
-        } else if (issue.GetCode() == TIssuesIds::DQ_OPTIMIZE_ERROR) {
-            YQL_LOG(DEBUG) << "Optimize Error " << issue;
-            isFallback = true;
-        } else if (issue.GetCode() >= TIssuesIds::YT_ACCESS_DENIED &&
-                   issue.GetCode() <= TIssuesIds::YT_FOLDER_INPUT_IS_NOT_A_FOLDER &&
-                  (issue.GetSeverity() == TSeverityIds::S_ERROR ||
-                   issue.GetSeverity() == TSeverityIds::S_FATAL)) {
-            YQL_LOG(DEBUG) << "Yt Error " << issue;
-            isFallback = false;
-        }
-    };
-
-    std::function<void(const TIssuePtr& issue)> recursiveCheck = [&](const TIssuePtr& issue) {
-        checkIssue(*issue);
-        for (const auto& subissue : issue->GetSubIssues()) {
-            recursiveCheck(subissue);
-        }
-    };
-
-    for (const auto& issue : issues) {
-        checkIssue(issue);
-        // check subissues
-        for (const auto& subissue : issue.GetSubIssues()) {
-            recursiveCheck(subissue);
-        }
-    }
-    return isFallback;
-}
-
 TFuture<IGraphTransformer::TStatus> TProgram::AsyncTransformWithFallback(bool applyAsyncChanges)
 {
     return AsyncTransform(*Transformer_, ExprRoot_, *ExprCtx_, applyAsyncChanges).Apply([this](const TFuture<IGraphTransformer::TStatus>& res) {
@@ -1125,21 +925,61 @@ TFuture<IGraphTransformer::TStatus> TProgram::AsyncTransformWithFallback(bool ap
             && !TypeCtx_->ForceDq
             && SavedExprRoot_
             && TypeCtx_->DqCaptured
-            && TypeCtx_->DqFallbackPolicy != EFallbackPolicy::Never)
+            && TypeCtx_->DqFallbackPolicy != "never")
         {
-            auto issues = ExprCtx_->IssueManager.GetIssues();
-            bool isFallback = CheckFallbackIssues(issues).value_or(true);
+            ExprRoot_ = SavedExprRoot_;
+            SavedExprRoot_ = nullptr;
 
-            if (!isFallback && TypeCtx_->DqFallbackPolicy != EFallbackPolicy::Always) {
+            auto issues = ExprCtx_->IssueManager.GetIssues();
+            bool hasDqGatewayError = false;
+            bool hasDqGatewayFallbackError = false;
+
+            auto checkIssue = [&](const TIssue& issue) {
+                if (issue.GetCode() == TIssuesIds::DQ_GATEWAY_ERROR) {
+                    YQL_LOG(DEBUG) << "Gateway Error " << issue;
+                    hasDqGatewayError = true;
+                } else if (issue.GetCode() == TIssuesIds::DQ_GATEWAY_NEED_FALLBACK_ERROR) {
+                    YQL_LOG(DEBUG) << "Gateway Fallback Error " << issue;
+                    hasDqGatewayError = true;
+                    hasDqGatewayFallbackError = true;
+                }
+            };
+
+            std::function<void(const TIssuePtr& issue)> recursiveCheck = [&](const TIssuePtr& issue) {
+                checkIssue(*issue);
+                for (const auto& subissue : issue->GetSubIssues()) {
+                    recursiveCheck(subissue);
+                }
+            };
+
+            std::function<void(const TIssuePtr& issue)> toWarning = [&](const TIssuePtr& issue) {
+                if (issue->Severity == TSeverityIds::S_ERROR
+                    || issue->Severity == TSeverityIds::S_FATAL
+                    || issue->Severity == TSeverityIds::S_WARNING)
+                {
+                    issue->Severity = TSeverityIds::S_INFO;
+                }
+                for (const auto& subissue : issue->GetSubIssues()) {
+                    toWarning(subissue);
+                }
+            };
+
+            for (const auto& issue : issues) {
+                checkIssue(issue);
+                // check subissues
+                for (const auto& subissue : issue.GetSubIssues()) {
+                    recursiveCheck(subissue);
+                }
+            }
+
+            ExprCtx_->IssueManager.Reset();
+
+            if (hasDqGatewayError && !hasDqGatewayFallbackError && TypeCtx_->DqFallbackPolicy.find("always") == TString::npos) {
                 // unrecoverable error
+                ExprCtx_->IssueManager.AddIssues(issues);
                 return res;
             }
 
-            ExprRoot_ = SavedExprRoot_;
-            SavedExprRoot_ = nullptr;
-            UserDataStorage_->SetUserDataTable(std::move(SavedUserDataTable_));
-
-            ExprCtx_->IssueManager.Reset();
             YQL_LOG(DEBUG) << "Fallback, Issues: " << issues.ToString();
 
             ExprCtx_->Reset();
@@ -1151,48 +991,37 @@ TFuture<IGraphTransformer::TStatus> TProgram::AsyncTransformWithFallback(bool ap
             for (auto source : TypeCtx_->DataSources) {
                 source->Reset();
             }
-            TypeCtx_->Reset();
             CleanupLastSession();
 
-            std::function<void(const TIssuePtr& issue)> toInfo = [&](const TIssuePtr& issue) {
-                if (issue->Severity == TSeverityIds::S_ERROR
-                    || issue->Severity == TSeverityIds::S_FATAL
-                    || issue->Severity == TSeverityIds::S_WARNING)
-                {
-                    issue->Severity = TSeverityIds::S_INFO;
-                }
-                for (const auto& subissue : issue->GetSubIssues()) {
-                    toInfo(subissue);
-                }
-            };
+            if (hasDqGatewayError) {
+                TIssue warning("DQ cannot execute the query");
+                warning.Severity = TSeverityIds::S_INFO;
 
-            TIssue info("DQ cannot execute the query");
-            info.Severity = TSeverityIds::S_INFO;
+                for (auto& issue : issues) {
+                    TIssuePtr newIssue = new TIssue(issue);
+                    if (newIssue->Severity == TSeverityIds::S_ERROR
+                        || issue.Severity == TSeverityIds::S_FATAL
+                        || issue.Severity == TSeverityIds::S_WARNING)
+                    {
+                        newIssue->Severity = TSeverityIds::S_INFO;
+                    }
+                    for (auto& subissue : newIssue->GetSubIssues()) {
+                        toWarning(subissue);
+                    }
+                    warning.AddSubIssue(newIssue);
+                }
 
-            for (auto& issue : issues) {
-                TIssuePtr newIssue = new TIssue(issue);
-                if (newIssue->Severity == TSeverityIds::S_ERROR
-                    || issue.Severity == TSeverityIds::S_FATAL
-                    || issue.Severity == TSeverityIds::S_WARNING)
-                {
-                    newIssue->Severity = TSeverityIds::S_INFO;
-                }
-                for (auto& subissue : newIssue->GetSubIssues()) {
-                    toInfo(subissue);
-                }
-                info.AddSubIssue(newIssue);
+                ExprCtx_->IssueManager.AddIssues({warning});
             }
 
-            ExprCtx_->IssueManager.AddIssues({info});
-
-            ++FallbackCounter_;
+            FallbackCounter ++;
             // don't execute recapture again
             ExprCtx_->Step.Done(TExprStep::Recapture);
             AbortHidden_();
             return AsyncTransformWithFallback(false);
         }
-        if (status == IGraphTransformer::TStatus::Error && (TypeCtx_->DqFallbackPolicy == EFallbackPolicy::Never || TypeCtx_->ForceDq)) {
-            YQL_LOG(INFO) << "Fallback skipped due to per query policy";
+        if (status == IGraphTransformer::TStatus::Error && (TypeCtx_->DqFallbackPolicy == "never" || TypeCtx_->ForceDq)) {
+            YQL_LOG(DEBUG) << "Fallback skipped due to per query policy";
         }
         return res;
     });
@@ -1218,7 +1047,7 @@ TMaybe<TString> TProgram::GetQueryAst() {
     return Nothing();
 }
 
-TMaybe<TString> TProgram::GetQueryPlan(const TPlanSettings& settings) {
+TMaybe<TString> TProgram::GetQueryPlan() {
     if (ExternalQueryPlan_) {
         return ExternalQueryPlan_;
     }
@@ -1228,7 +1057,7 @@ TMaybe<TString> TProgram::GetQueryPlan(const TPlanSettings& settings) {
         planStream.Reserve(DEFAULT_PLAN_BUF_SIZE);
 
         NYson::TYsonWriter writer(&planStream, OutputFormat_);
-        PlanBuilder_->WritePlan(writer, ExprRoot_, settings);
+        PlanBuilder_->WritePlan(writer, ExprRoot_);
 
         return planStream.Str();
     }
@@ -1334,7 +1163,6 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
 
     // Providers
     bool hasStatistics = false;
-    THashSet<TStringBuf> processed;
     for (auto& datasink : TypeCtx_->DataSinks) {
         TStringStream providerOut;
         NYson::TYsonWriter providerWriter(&providerOut);
@@ -1342,18 +1170,6 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
             writer.OnKeyedItem(datasink->GetName());
             writer.OnRaw(providerOut.Str());
             hasStatistics = true;
-            processed.insert(datasink->GetName());
-        }
-    }
-    for (auto& datasource : TypeCtx_->DataSources) {
-        if (processed.insert(datasource->GetName()).second) {
-            TStringStream providerOut;
-            NYson::TYsonWriter providerWriter(&providerOut);
-            if (datasource->CollectStatistics(providerWriter, totalOnly)) {
-                writer.OnKeyedItem(datasource->GetName());
-                writer.OnRaw(providerOut.Str());
-                hasStatistics = true;
-            }
         }
     }
 
@@ -1373,11 +1189,11 @@ TMaybe<TString> TProgram::GetStatistics(bool totalOnly, THashMap<TString, TStrin
             writer.OnInt64Scalar(rusage.MajorPageFaults);
         writer.OnEndMap();
 
-        if (FallbackCounter_) {
+        if (FallbackCounter) {
             writer.OnKeyedItem("Fallback");
             writer.OnBeginMap();
                 writer.OnKeyedItem("count");
-                writer.OnInt64Scalar(FallbackCounter_);
+                writer.OnInt64Scalar(FallbackCounter);
             writer.OnEndMap();
         }
 
@@ -1417,10 +1233,6 @@ TMaybe<TString> TProgram::GetDiscoveredData() {
     }
     writer.OnEndMap();
     return out.Str();
-}
-
-TMaybe<TString> TProgram::GetLineage() {
-    return LineageStr_;
 }
 
 TProgram::TFutureStatus TProgram::ContinueAsync() {
@@ -1484,7 +1296,6 @@ TTypeAnnotationContextPtr TProgram::BuildTypeAnnotationContext(const TString& us
     typeAnnotationContext->UserDataStorage = UserDataStorage_;
     typeAnnotationContext->Credentials = Credentials_;
     typeAnnotationContext->Modules = Modules_;
-    typeAnnotationContext->UrlListerManager = UrlListerManager_;
     typeAnnotationContext->UdfResolver = UdfResolver_;
     typeAnnotationContext->UdfIndex = UdfIndex_;
     typeAnnotationContext->UdfIndexPackageSet = UdfIndexPackageSet_;
@@ -1567,7 +1378,7 @@ TTypeAnnotationContextPtr TProgram::BuildTypeAnnotationContext(const TString& us
         auto resultFormat = ResultFormat_;
         auto writerFactory = [resultFormat] () { return CreateYsonResultWriter(resultFormat); };
         ResultProviderConfig_ = MakeIntrusive<TResultProviderConfig>(*typeAnnotationContext,
-            *FunctionRegistry_, ResultType_, ToString((ui32)resultFormat), writerFactory);
+            *FunctionRegistry_, IDataProvider::EResultFormat::Yson, ToString((ui32)resultFormat), writerFactory);
         ResultProviderConfig_->SupportsResultPosition = SupportsResultPosition_;
         auto resultProvider = CreateResultProvider(ResultProviderConfig_);
         typeAnnotationContext->AddDataSink(ResultProviderName, resultProvider);
@@ -1584,7 +1395,9 @@ TTypeAnnotationContextPtr TProgram::BuildTypeAnnotationContext(const TString& us
     }
 
     tokenResolvers.push_back(BuildDefaultTokenResolver(typeAnnotationContext->Credentials));
-    typeAnnotationContext->UserDataStorage->SetTokenResolver(BuildCompositeTokenResolver(std::move(tokenResolvers)));
+    if (FileStorage_) {
+        FileStorage_->SetTokenResolver(BuildCompositeTokenResolver(std::move(tokenResolvers)));
+    }
 
     return typeAnnotationContext;
 }

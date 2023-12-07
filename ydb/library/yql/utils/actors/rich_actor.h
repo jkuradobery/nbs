@@ -1,16 +1,16 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NYql {
 
 template<typename TDerived>
 class TRichActor: public NActors::TActor<TDerived> {
 public:
-    TRichActor(void (TDerived::*func)(TAutoPtr<NActors::IEventHandle>& ev))
+    TRichActor(void (TDerived::*func)(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext& ctx))
         : NActors::TActor<TDerived>(func)
     { }
 

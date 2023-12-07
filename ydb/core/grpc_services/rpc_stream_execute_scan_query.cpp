@@ -1,21 +1,21 @@
 #include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_kqp_base.h"
 #include "service_table.h"
 
 #include <ydb/core/actorlib_impl/long_timer.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/ydb_issue/issue_helpers.h>
+#include <ydb/core/base/kikimr_issue.h>
 #include <ydb/core/kqp/executer_actor/kqp_executer.h>
 #include <ydb/core/kqp/opt/kqp_query_plan.h>
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/protos/ydb_table_impl.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -91,12 +91,18 @@ bool NeedReportPlan(const Ydb::Table::ExecuteScanQueryRequest& req) {
     }
 }
 
-bool CheckRequest(const Ydb::Table::ExecuteScanQueryRequest& req, TParseRequestError& error)
+bool FillKqpRequest(const Ydb::Table::ExecuteScanQueryRequest& req, NKikimrKqp::TEvQueryRequest& kqpRequest,
+    TParseRequestError& error)
 {
+    kqpRequest.MutableRequest()->MutableYdbParameters()->insert(req.parameters().begin(), req.parameters().end());
     switch (req.mode()) {
         case Ydb::Table::ExecuteScanQueryRequest::MODE_EXEC:
+            kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
+            kqpRequest.MutableRequest()->SetStatsMode(GetKqpStatsMode(req.collect_stats()));
+            kqpRequest.MutableRequest()->SetCollectStats(req.collect_stats());
             break;
         case Ydb::Table::ExecuteScanQueryRequest::MODE_EXPLAIN:
+            kqpRequest.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXPLAIN);
             break;
         default: {
             NYql::TIssues issues;
@@ -105,19 +111,23 @@ bool CheckRequest(const Ydb::Table::ExecuteScanQueryRequest& req, TParseRequestE
             return false;
         }
     }
+    kqpRequest.MutableRequest()->SetType(NKikimrKqp::QUERY_TYPE_SQL_SCAN);
+    kqpRequest.MutableRequest()->SetKeepSession(false);
 
     auto& query = req.query();
     switch (query.query_case()) {
-        case Ydb::Table::Query::kYqlText: {
+        case Query::kYqlText: {
             NYql::TIssues issues;
             if (!CheckQuery(query.yql_text(), issues)) {
                 error = TParseRequestError(Ydb::StatusIds::BAD_REQUEST, issues);
                 return false;
             }
+
+            kqpRequest.MutableRequest()->SetQuery(query.yql_text());
             break;
         }
 
-        case Ydb::Table::Query::kId: {
+        case Query::kId: {
             NYql::TIssues issues;
             issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
                 "Specifying query by ID not supported in scan execution."));
@@ -170,7 +180,7 @@ public:
         auto selfId = this->SelfId();
         auto as = TActivationContext::ActorSystem();
 
-        Request_->SetFinishAction([selfId, as]() {
+        Request_->SetClientLostAction([selfId, as]() {
             as->Send(selfId, new TEvents::TEvWakeup(EWakeupTag::ClientLostTag));
         });
 
@@ -182,18 +192,20 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvents::TEvWakeup, Handle);
             HFunc(TRpcServices::TEvGrpcNextReply, Handle);
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
+            HFunc(NKqp::TEvKqp::TEvProcessResponse, Handle);
             HFunc(NKqp::TEvKqp::TEvAbortExecution, Handle);
             HFunc(NKqp::TEvKqpExecuter::TEvStreamData, Handle);
             HFunc(NKqp::TEvKqpExecuter::TEvStreamProfile, Handle);
+            HFunc(NKqp::TEvKqpExecuter::TEvExecuterProgress, Handle);
             default: {
                 auto issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, TStringBuilder()
                     << "Unexpected event received in TStreamExecuteScanQueryRPC::StateWork: " << ev->GetTypeRewrite());
-                return ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, issue);
+                return ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, issue, ctx);
             }
         }
     }
@@ -202,37 +214,26 @@ private:
         const auto req = Request_->GetProtoRequest();
         const auto traceId = Request_->GetTraceId();
 
-        TParseRequestError parseError;
-        if (!CheckRequest(*req, parseError)) {
-            return ReplyFinishStream(parseError.Status, parseError.Issues);
+        auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
+        SetAuthToken(ev, *Request_);
+        SetDatabase(ev, *Request_);
+        SetRlPath(ev, *Request_);
+
+        if (traceId) {
+            ev->Record.SetTraceId(traceId.GetRef());
         }
 
-        auto action = (req->mode() == Ydb::Table::ExecuteScanQueryRequest::MODE_EXEC)
-            ? NKikimrKqp::QUERY_ACTION_EXECUTE
-            : NKikimrKqp::QUERY_ACTION_EXPLAIN;
+        ActorIdToProto(this->SelfId(), ev->Record.MutableRequestActorId());
 
-        auto text = req->query().yql_text();
-        auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>(
-            action,
-            NKikimrKqp::QUERY_TYPE_SQL_SCAN,
-            SelfId(),
-            Request_,
-            TString(), //sessionId
-            std::move(text),
-            TString(), //queryId,
-            nullptr, //tx_control
-            &req->parameters(),
-            req->collect_stats(),
-            nullptr, // query_cache_policy
-            nullptr
-        );
-
-        ev->Record.MutableRequest()->SetCollectDiagnostics(req->Getcollect_full_diagnostics());
+        TParseRequestError parseError;
+        if (!FillKqpRequest(*req, ev->Record, parseError)) {
+            return ReplyFinishStream(parseError.Status, parseError.Issues, ctx);
+        }
 
         if (!ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release())) {
             NYql::TIssues issues;
             issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Internal error"));
-            ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, issues);
+            ReplyFinishStream(Ydb::StatusIds::INTERNAL_ERROR, issues, ctx);
         }
     }
 
@@ -256,7 +257,7 @@ private:
             GRpcResponsesSize_ -= GRpcResponsesSizeQueue_.front();
             GRpcResponsesSizeQueue_.pop();
         }
-        Y_DEBUG_ABORT_UNLESS(GRpcResponsesSizeQueue_.empty() == (GRpcResponsesSize_ == 0));
+        Y_VERIFY_DEBUG(GRpcResponsesSizeQueue_.empty() == (GRpcResponsesSize_ == 0));
         LastDataStreamTimestamp_ = TAppData::TimeProvider->Now();
 
         if (WaitOnSeqNo_ && RpcBufferSize_ > GRpcResponsesSize_) {
@@ -277,7 +278,7 @@ private:
         }
     }
 
-    void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext&) {
+    void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
         auto& record = ev->Get()->Record.GetRef();
 
         NYql::TIssues issues;
@@ -285,8 +286,6 @@ private:
         NYql::IssuesFromMessage(issueMessage, issues);
 
         if (record.GetYdbStatus() == Ydb::StatusIds::SUCCESS) {
-            Request_->SetRuHeader(record.GetConsumedRu());
-
             Ydb::Table::ExecuteScanQueryPartialResponse response;
             TString out;
             auto& kqpResponse = record.GetResponse();
@@ -315,13 +314,22 @@ private:
                     response.mutable_result()->mutable_query_stats()->set_query_ast(kqpResponse.GetQueryAst());
                 }
 
-                response.mutable_result()->set_query_full_diagnostics(kqpResponse.GetQueryDiagnostics());
-
                 Y_PROTOBUF_SUPPRESS_NODISCARD response.SerializeToString(&out);
                 Request_->SendSerializedResult(std::move(out), record.GetYdbStatus());
             }
         }
-        ReplyFinishStream(record.GetYdbStatus(), issues);
+
+        ReplyFinishStream(record.GetYdbStatus(), issues, ctx);
+    }
+
+    void Handle(NKqp::TEvKqp::TEvProcessResponse::TPtr& ev, const TActorContext& ctx) {
+        const auto& kqpResponse = ev->Get()->Record;
+        NYql::TIssues issues;
+        if (kqpResponse.HasError()) {
+            issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, kqpResponse.GetError()));
+        }
+
+        ReplyFinishStream(kqpResponse.GetYdbStatus(), issues, ctx);
     }
 
     void Handle(NKqp::TEvKqp::TEvAbortExecution::TPtr& ev, const TActorContext& ctx) {
@@ -332,14 +340,10 @@ private:
             << ev->Sender << ", code: " << NYql::NDqProto::StatusIds::StatusCode_Name(record.GetStatusCode())
             << ", message: " << issues.ToOneLineString());
 
-        ReplyFinishStream(NYql::NDq::DqStatusToYdbStatus(record.GetStatusCode()), issues);
+        ReplyFinishStream(NYql::NDq::DqStatusToYdbStatus(record.GetStatusCode()), issues, ctx);
     }
 
     void Handle(NKqp::TEvKqpExecuter::TEvStreamData::TPtr& ev, const TActorContext& ctx) {
-        if (!ExecuterActorId_) {
-            ExecuterActorId_ = ev->Sender;
-        }
-
         Ydb::Table::ExecuteScanQueryPartialResponse response;
         response.set_status(StatusIds::SUCCESS);
         response.mutable_result()->mutable_result_set()->Swap(ev->Get()->Record.MutableResultSet());
@@ -385,6 +389,11 @@ private:
         ExecutionProfiles_.emplace_back(std::move(profile));
     }
 
+    void Handle(NKqp::TEvKqpExecuter::TEvExecuterProgress::TPtr& ev, const TActorContext& ctx) {
+        ExecuterActorId_ = ActorIdFromProto(ev->Get()->Record.GetExecuterActorId());
+        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, this->SelfId() << " ExecuterActorId: " << ExecuterActorId_);
+    }
+
 private:
     void SetTimeoutTimer(TDuration timeout, const TActorContext& ctx) {
         LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, this->SelfId() << " Set stream timeout timer for " << timeout);
@@ -395,21 +404,25 @@ private:
     }
 
     void HandleClientLost(const TActorContext& ctx) {
-        LOG_WARN_S(ctx, NKikimrServices::RPC_REQUEST, "Client lost");
+        LOG_WARN_S(ctx, NKikimrServices::RPC_REQUEST, "Client lost, send abort event to executer " << ExecuterActorId_);
+
+        if (ExecuterActorId_) {
+            auto abortEv = TEvKqp::TEvAbortExecution::Aborted("Client lost"); // any status code can be here
+
+            ctx.Send(ExecuterActorId_, abortEv.Release());
+        }
 
         // We must try to finish stream otherwise grpc will not free allocated memory
         // If stream already scheduled to be finished (ReplyFinishStream already called)
         // this call do nothing but Die will be called after reply to grpc
         auto issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR,
             "Client should not see this message, if so... may the force be with you");
-        ReplyFinishStream(StatusIds::INTERNAL_ERROR, issue);
+        ReplyFinishStream(StatusIds::INTERNAL_ERROR, issue, ctx);
     }
 
     void HandleTimeout(const TActorContext& ctx) {
         TInstant now = TAppData::TimeProvider->Now();
         TDuration timeout;
-        LOG_DEBUG_S(ctx, NKikimrServices::RPC_REQUEST, "Got timeout event, InactiveClientTimeout: " << InactiveClientTimeout_
-            << " GRpcResponsesSizeQueue: " << GRpcResponsesSizeQueue_.size());
 
         if (InactiveClientTimeout_ && GRpcResponsesSizeQueue_.size() > 0) {
             TDuration processTime = now - LastDataStreamTimestamp_;
@@ -425,7 +438,7 @@ private:
                 }
 
                 auto issue = MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, message);
-                return ReplyFinishStream(StatusIds::TIMEOUT, issue);
+                return ReplyFinishStream(StatusIds::TIMEOUT, issue, ctx);
             }
             TDuration remain = InactiveClientTimeout_ - processTime;
             timeout = timeout ? Min(timeout, remain) : remain;
@@ -436,27 +449,27 @@ private:
         }
     }
 
-    void ReplyFinishStream(Ydb::StatusIds::StatusCode status, const NYql::TIssue& issue) {
+    void ReplyFinishStream(Ydb::StatusIds::StatusCode status, const NYql::TIssue& issue, const TActorContext& ctx) {
         google::protobuf::RepeatedPtrField<TYdbIssueMessageType> issuesMessage;
         NYql::IssueToMessage(issue, issuesMessage.Add());
 
-        ReplyFinishStream(status, issuesMessage);
+        ReplyFinishStream(status, issuesMessage, ctx);
     }
 
-    void ReplyFinishStream(Ydb::StatusIds::StatusCode status, const NYql::TIssues& issues) {
+    void ReplyFinishStream(Ydb::StatusIds::StatusCode status, const NYql::TIssues& issues, const TActorContext& ctx) {
         google::protobuf::RepeatedPtrField<TYdbIssueMessageType> issuesMessage;
         for (auto& issue : issues) {
             auto item = issuesMessage.Add();
             NYql::IssueToMessage(issue, item);
         }
 
-        ReplyFinishStream(status, issuesMessage);
+        ReplyFinishStream(status, issuesMessage, ctx);
     }
 
     void ReplyFinishStream(Ydb::StatusIds::StatusCode status,
-        const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message)
+        const google::protobuf::RepeatedPtrField<TYdbIssueMessageType>& message, const TActorContext& ctx)
     {
-        ALOG_INFO(NKikimrServices::RPC_REQUEST, "Finish grpc stream, status: "
+        LOG_INFO_S(ctx, NKikimrServices::RPC_REQUEST, "Finish grpc stream, status: "
             << Ydb::StatusIds::StatusCode_Name(status));
 
         // Skip sending empty result in case of success status - simplify client logic
@@ -469,12 +482,12 @@ private:
             Request_->SendSerializedResult(std::move(out), status);
         }
 
-        Request_->FinishStream(status);
+        Request_->FinishStream();
         this->PassAway();
     }
 
 private:
-    std::shared_ptr<TEvStreamExecuteScanQueryRequest> Request_;
+    std::unique_ptr<TEvStreamExecuteScanQueryRequest> Request_;
     const ui64 RpcBufferSize_;
 
     TDuration InactiveClientTimeout_;
@@ -492,10 +505,10 @@ private:
 } // namespace
 
 void DoExecuteScanQueryRequest(std::unique_ptr<IRequestNoOpCtx> p, const IFacilityProvider& f) {
-    ui64 rpcBufferSize = f.GetChannelBufferSize();
+    ui64 rpcBufferSize = f.GetAppConfig().GetTableServiceConfig().GetResourceManager().GetChannelBufferSize();
     auto* req = dynamic_cast<TEvStreamExecuteScanQueryRequest*>(p.release());
-    Y_ABORT_UNLESS(req != nullptr, "Wrong using of TGRpcRequestWrapper");
-    f.RegisterActor(new TStreamExecuteScanQueryRPC(req, rpcBufferSize));
+    Y_VERIFY(req != nullptr, "Wrong using of TGRpcRequestWrapper");
+    TActivationContext::AsActorContext().Register(new TStreamExecuteScanQueryRPC(req, rpcBufferSize));
 }
 
 } // namespace NGRpcService

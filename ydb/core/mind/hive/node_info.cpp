@@ -4,8 +4,6 @@
 namespace NKikimr {
 namespace NHive {
 
-const ui64 TNodeInfo::MAX_TABLET_COUNT_DEFAULT_VALUE = NKikimrLocal::TTabletAvailability().GetMaxCount();
-
 TNodeInfo::TNodeInfo(TNodeId nodeId, THive& hive)
     : VolatileState(EVolatileState::Unknown)
     , Hive(hive)
@@ -30,7 +28,6 @@ void TNodeInfo::ChangeVolatileState(EVolatileState state) {
         case EVolatileState::Disconnected:
         case EVolatileState::Connecting:
             RegisterInDomains();
-            Hive.UpdateCounterNodesConnected(+1);
             break;
 
         default:
@@ -43,7 +40,6 @@ void TNodeInfo::ChangeVolatileState(EVolatileState state) {
         case EVolatileState::Connected:
         case EVolatileState::Disconnecting:
             DeregisterInDomains();
-            Hive.UpdateCounterNodesConnected(-1);
             break;
 
         default:
@@ -69,9 +65,6 @@ bool TNodeInfo::OnTabletChangeVolatileState(TTabletInfo* tablet, TTabletInfo::EV
         TabletsRunningByType[tablet->GetTabletType()].erase(tablet);
         TabletsOfObject[tablet->GetObjectId()].erase(tablet);
         Hive.UpdateCounterTabletsAlive(-1);
-        if (tablet->HasCounter() && tablet->IsLeader()) {
-            Hive.UpdateObjectCount(tablet->AsLeader(), *this, -1);
-        }
     }
     if (IsResourceDrainingState(newState)) {
         if (Tablets[newState].insert(tablet).second) {
@@ -84,9 +77,6 @@ bool TNodeInfo::OnTabletChangeVolatileState(TTabletInfo* tablet, TTabletInfo::EV
         TabletsRunningByType[tablet->GetTabletType()].emplace(tablet);
         TabletsOfObject[tablet->GetObjectId()].emplace(tablet);
         Hive.UpdateCounterTabletsAlive(+1);
-        if (tablet->HasCounter() && tablet->IsLeader()) {
-            Hive.UpdateObjectCount(tablet->AsLeader(), *this, +1);
-        }
     }
     return true;
 }
@@ -99,53 +89,6 @@ void TNodeInfo::UpdateResourceValues(const TTabletInfo* tablet, const NKikimrTab
     auto normalizedValues = NormalizeRawValues(ResourceValues, ResourceMaximumValues);
     BLOG_TRACE("Node(" << Id << ", " << oldResourceValues << "->" << ResourceValues << ")");
     Hive.UpdateTotalResourceValues(this, tablet, before, after, ResourceValues - oldResourceValues, normalizedValues - oldNormalizedValues);
-}
-
-bool TNodeInfo::MatchesFilter(const TNodeFilter& filter, TTabletDebugState* debugState) const {
-    const auto& allowedDomains = filter.AllowedDomains;
-    bool result = false;
-
-    for (const auto& candidate : allowedDomains) {
-        if (Hive.DomainHasNodes(candidate)) {
-            result = std::find(ServicedDomains.begin(),
-                               ServicedDomains.end(),
-                               candidate) != ServicedDomains.end();
-            if (result) {
-                break;
-            }
-        }
-    }
-    if (!result) {
-        if (debugState) {
-            debugState->NodesWithoutDomain++;
-        }
-        return false;
-    }
-
-    const auto& allowedNodes = filter.AllowedNodes;
-
-    if (!allowedNodes.empty()
-            && std::find(allowedNodes.begin(), allowedNodes.end(), Id) == allowedNodes.end()) {
-        if (debugState) {
-            debugState->NodesNotAllowed++;
-        }
-        return false;
-    }
-
-    const TVector<TDataCenterId>& allowedDataCenters = filter.AllowedDataCenters;
-
-    if (!allowedDataCenters.empty()
-            && std::find(
-                allowedDataCenters.begin(),
-                allowedDataCenters.end(),
-                GetDataCenter()) == allowedDataCenters.end()) {
-        if (debugState) {
-            debugState->NodesInDatacentersNotAllowed++;
-        }
-        return false;
-    }
-
-    return true;
 }
 
 bool TNodeInfo::IsAllowedToRunTablet(TTabletDebugState* debugState) const {
@@ -170,7 +113,33 @@ bool TNodeInfo::IsAllowedToRunTablet(const TTabletInfo& tablet, TTabletDebugStat
         return false;
     }
 
-    if (!MatchesFilter(tablet.GetNodeFilter(), debugState)) {
+    const TVector<TSubDomainKey>& allowedDomains = tablet.GetLeader().EffectiveAllowedDomains;
+    bool result = false;
+
+    for (const auto& candidate : allowedDomains) {
+        if (Hive.DomainHasNodes(candidate)) {
+            result = std::find(ServicedDomains.begin(),
+                               ServicedDomains.end(),
+                               candidate) != ServicedDomains.end();
+            if (result) {
+                break;
+            }
+        }
+    }
+    if (!result) {
+        if (debugState) {
+            debugState->NodesWithoutDomain++;
+        }
+        return false;
+    }
+
+    const TVector<TNodeId>& allowedNodes = tablet.GetAllowedNodes();
+
+    if (!allowedNodes.empty()
+            && std::find(allowedNodes.begin(), allowedNodes.end(), Id) == allowedNodes.end()) {
+        if (debugState) {
+            debugState->NodesNotAllowed++;
+        }
         return false;
     }
 
@@ -188,6 +157,19 @@ bool TNodeInfo::IsAllowedToRunTablet(const TTabletInfo& tablet, TTabletDebugStat
             }
             return false;
         }
+    }
+
+    const TVector<TDataCenterId>& allowedDataCenters = tablet.GetAllowedDataCenters();
+
+    if (!allowedDataCenters.empty()
+            && std::find(
+                allowedDataCenters.begin(),
+                allowedDataCenters.end(),
+                GetDataCenter()) == allowedDataCenters.end()) {
+        if (debugState) {
+            debugState->NodesInDatacentersNotAllowed++;
+        }
+        return false;
     }
 
     return true;
@@ -262,14 +244,14 @@ bool TNodeInfo::IsAbleToRunTablet(const TTabletInfo& tablet, TTabletDebugState* 
                 maxCount = itTabletAvailability->second.GetMaxCount();
             }
         }
-        if (maxCount == MAX_TABLET_COUNT_DEFAULT_VALUE) {
+        if (maxCount == 0) {
             const std::unordered_map<TTabletTypes::EType, NKikimrConfig::THiveTabletLimit>& tabletLimit = Hive.GetTabletLimit();
             auto itTabletLimit = tabletLimit.find(tabletType);
             if (itTabletLimit != tabletLimit.end()) {
                 maxCount = itTabletLimit->second.GetMaxCount();
             }
         }
-        if (maxCount != MAX_TABLET_COUNT_DEFAULT_VALUE) {
+        if (maxCount != 0) {
             ui64 currentCount = GetTabletsRunningByType(tabletType);
             if (currentCount >= maxCount) {
                 if (debugState) {
@@ -313,7 +295,7 @@ bool TNodeInfo::BecomeConnected() {
         return true;
     }
     if (VolatileState == EVolatileState::Connecting) {
-        Y_ABORT_UNLESS((bool)Local);
+        Y_VERIFY((bool)Local);
         ChangeVolatileState(EVolatileState::Connected);
         StartTime = DEPRECATED_NOW;
         return true;
@@ -332,7 +314,7 @@ void TNodeInfo::DeregisterInDomains() {
 }
 
 void TNodeInfo::Ping() {
-    Y_ABORT_UNLESS((bool)Local);
+    Y_VERIFY((bool)Local);
     BLOG_D("Node(" << Id << ") Ping(" << Local << ")");
     Hive.SendPing(Local, Id);
 }
@@ -344,10 +326,7 @@ void TNodeInfo::SendReconnect(const TActorId& local) {
 
 void TNodeInfo::SetDown(bool down) {
     Down = down;
-    if (Down) {
-        Hive.ObjectDistributions.RemoveNode(*this);
-    } else {
-        Hive.ObjectDistributions.AddNode(*this);
+    if (!Down) {
         Hive.ProcessWaitQueue();
     }
 }
@@ -395,17 +374,12 @@ double TNodeInfo::GetNodeUsageForTablet(const TTabletInfo& tablet) const {
     return usage;
 }
 
-double TNodeInfo::GetNodeUsage(const TResourceNormalizedValues& normValues, EResourceToBalance resource) const {
-    double usage = TTabletInfo::ExtractResourceUsage(normValues, resource);
-    if (resource == EResourceToBalance::Dominant && AveragedNodeTotalUsage.IsValueStable()) {
+double TNodeInfo::GetNodeUsage() const {
+    double usage = TTabletInfo::GetUsage(GetResourceCurrentValues(), GetResourceMaximumValues());
+    if (AveragedNodeTotalUsage.IsValueStable()) {
         usage = std::max(usage, AveragedNodeTotalUsage.GetValue());
     }
     return usage;
-}
-
-double TNodeInfo::GetNodeUsage(EResourceToBalance resource) const {
-    auto normValues = NormalizeRawValues(GetResourceCurrentValues(), GetResourceMaximumValues());
-    return GetNodeUsage(normValues, resource);
 }
 
 ui64 TNodeInfo::GetTabletsRunningByType(TTabletTypes::EType tabletType) const {

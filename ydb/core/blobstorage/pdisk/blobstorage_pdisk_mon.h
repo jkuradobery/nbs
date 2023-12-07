@@ -231,7 +231,7 @@ private:
             }
             return;
         }
-        Y_ABORT_UNLESS(seqno != Seqno, "ordering overflow or duplicate event headSeqno# %d seqno# %d state# %d filled# %d",
+        Y_VERIFY(seqno != Seqno, "ordering overflow or duplicate event headSeqno# %d seqno# %d state# %d filled# %d",
                  (int)Seqno, (int)seqno, (int)state, (int)CountFilled());
         ui16 diff = seqno;
         diff -= Seqno; // Underflow is fine
@@ -244,7 +244,7 @@ private:
             }
         }
         TItem& item = Data[(HeadIdx + diff) % Data.size()];
-        Y_ABORT_UNLESS(!item.Filled, "ordering overflow or duplicate event headSeqno# %d seqno# %d state# %d filled# %d",
+        Y_VERIFY(!item.Filled, "ordering overflow or duplicate event headSeqno# %d seqno# %d state# %d filled# %d",
                  (int)Seqno, (int)seqno, (int)state, (int)CountFilled());
         item.Filled = true;
         item.State = state;
@@ -549,7 +549,6 @@ struct TPDiskMon {
     ::NMonitoring::TDynamicCounters::TCounterPtr DeviceSubmitThreadBusyTimeNs;
     ::NMonitoring::TDynamicCounters::TCounterPtr DeviceCompletionThreadBusyTimeNs;
     ::NMonitoring::TDynamicCounters::TCounterPtr DeviceIoErrors;
-    ::NMonitoring::TDynamicCounters::TCounterPtr DeviceWaitTimeMs;
 
     // queue subgroup
     TIntrusivePtr<::NMonitoring::TDynamicCounters> QueueGroup;

@@ -1,6 +1,6 @@
 #include "coordinator_impl.h"
 
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 
 namespace NKikimr::NFlatTxCoordinator {
 
@@ -17,6 +17,7 @@ namespace NKikimr::NFlatTxCoordinator {
 
     private:
         STFUNC(StateWork) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 sFunc(TEvents::TEvPoison, PassAway);
                 hFunc(TEvPrivate::TEvReadStepSubscribed, Handle);
@@ -67,12 +68,12 @@ namespace NKikimr::NFlatTxCoordinator {
             }
 
             if (msg->Sender.NodeId() != SelfId().NodeId()) {
-                Y_ABORT_UNLESS(msg->InterconnectSession);
+                Y_VERIFY(msg->InterconnectSession);
                 auto& session = SubscribeToSession(msg->InterconnectSession);
                 session.Subscribers.insert(msg->Sender);
                 subscriber.SessionId = msg->InterconnectSession;
             } else {
-                Y_ABORT_UNLESS(!msg->InterconnectSession);
+                Y_VERIFY(!msg->InterconnectSession);
             }
 
             if (msg->PipeServer) {
@@ -121,7 +122,7 @@ namespace NKikimr::NFlatTxCoordinator {
         }
 
         TSessionState& SubscribeToSession(const TActorId& sessionId) {
-            Y_ABORT_UNLESS(sessionId);
+            Y_VERIFY(sessionId);
             auto it = Sessions.find(sessionId);
             if (it != Sessions.end()) {
                 return it->second;
@@ -230,7 +231,8 @@ namespace NKikimr::NFlatTxCoordinator {
 
             // We currently have to force a read/write transaction.
             NIceDb::TNiceDb db(txc.DB);
-            Schema::SaveState(db, Schema::State::AcquireReadStepLast, LastAcquiredStep);
+            db.Table<Schema::State>().Key(Schema::State::AcquireReadStepLast).Update(
+                NIceDb::TUpdate<Schema::State::StateValue>(LastAcquiredStep));
 
             return true;
         }

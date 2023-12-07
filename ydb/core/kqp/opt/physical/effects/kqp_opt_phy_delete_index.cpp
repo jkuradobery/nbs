@@ -66,14 +66,8 @@ TExprBase KqpBuildDeleteIndexStages(TExprBase node, TExprContext& ctx, const TKq
 
     const auto indexes = BuildSecondaryIndexVector(table, del.Pos(), ctx);
     YQL_ENSURE(indexes);
-    THashSet<TString> keyColumns;
-    for (const auto& pair : indexes) {
-        for (const auto& col : pair.second->KeyColumns) {
-            keyColumns.emplace(col);
-        }
-    }
 
-    auto lookupDict = PrecomputeTableLookupDict(lookupKeys, table, {}, keyColumns, del.Pos(), ctx);
+    auto lookupDict = PrecomputeTableLookupDict(lookupKeys, table, {}, indexes, del.Pos(), ctx);
     if (!lookupDict) {
         return node;
     }

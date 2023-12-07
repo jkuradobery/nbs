@@ -1,11 +1,12 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/base/hive.h>
 #include <ydb/core/base/statestorage.h>
+#include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/tx/tx_proxy/proxy.h>
@@ -96,14 +97,13 @@ protected:
         SendRequestToPipe(pipeClient, request.Release(), hiveId);
     }
 
-    void RequestHiveNodeStats(NNodeWhiteboard::TTabletId hiveId, TPathId pathId) {
+    void RequestHiveNodeStats(NNodeWhiteboard::TTabletId hiveId, ui64 pathId) {
         TActorId pipeClient = ConnectTabletPipe(hiveId);
         THolder<TEvHive::TEvRequestHiveNodeStats> request = MakeHolder<TEvHive::TEvRequestHiveNodeStats>();
         request->Record.SetReturnMetrics(Metrics);
-        if (pathId != TPathId()) {
+        if (pathId) {
             request->Record.SetReturnExtendedTabletInfo(true);
-            request->Record.SetFilterTabletsBySchemeShardId(pathId.OwnerId);
-            request->Record.SetFilterTabletsByPathId(pathId.LocalPathId);
+            request->Record.SetFilterTabletsByPathId(pathId);
         }
         SendRequestToPipe(pipeClient, request.Release(), hiveId);
     }
@@ -194,7 +194,9 @@ protected:
         TBase::RegisterWithSameMailbox(CreateBoardLookupActor(MakeEndpointsBoardPath(path),
                                                               TBase::SelfId(),
                                                             domainInfo->DefaultStateStorageGroup,
-                                                               EBoardLookupMode::Second));
+                                                               EBoardLookupMode::Second,
+                                                                false,
+                                               false));
         ++Requests;
     }
 

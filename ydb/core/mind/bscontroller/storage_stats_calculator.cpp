@@ -6,11 +6,11 @@
 #include "sys_view.h"
 
 #include <ydb/core/blobstorage/base/utility.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_coroutine.h>
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_coroutine.h>
+#include <library/cpp/actors/core/events.h>
 
 #include <util/generic/ptr.h>
 #include <util/system/yassert.h>
@@ -28,15 +28,13 @@ private:
         EvResume = EventSpaceBegin(TEvents::ES_PRIVATE)
     };
 
-    struct TExPoison {};
-
 public:
     TStorageStatsCoroCalculatorImpl(
         const TControllerSystemViewsState& systemViewsState,
         const TBlobStorageController::THostRecordMap& hostRecordMap,
         ui32 groupReserveMin,
         ui32 groupReservePart)
-        : TActorCoroImpl(/* stackSize */ 640_KB, /* allowUnhandledDtor */ true) // 640 KiB should be enough for anything!
+        : TActorCoroImpl(/* stackSize */ 640 * 1024, /* allowUnhandledPoisonPill */ true, /* allowUnhandledDtor */ true) // 640 KiB should be enough for anything!
         , SystemViewsState(systemViewsState)
         , HostRecordMap(hostRecordMap)
         , GroupReserveMin(groupReserveMin)
@@ -44,24 +42,11 @@ public:
     {
     }
 
-    void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) {
-        switch (ev->GetTypeRewrite()) {
-            case TEvents::TSystem::Poison:
-                throw TExPoison();
-        }
-
-        Y_ABORT("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
+    void ProcessUnexpectedEvent(TAutoPtr<IEventHandle> ev) override {
+        Y_FAIL("unexpected event Type# 0x%08" PRIx32, ev->GetTypeRewrite());
     }
 
     void Run() override {
-        try {
-            RunImpl();
-        } catch (const TExPoison&) {
-            return;
-        }
-    }
-
-    void RunImpl() {
         std::vector<NKikimrSysView::TStorageStatsEntry> storageStats;
 
         using TEntityKey = std::tuple<TString, TString>; // PDiskFilter, ErasureSpecies
@@ -95,9 +80,9 @@ public:
                 storageStats.push_back(std::move(entry));
             } else {
                 const auto& entry = storageStats[index];
-                Y_ABORT_UNLESS(entry.GetPDiskFilter() == value.GetPDiskFilter());
-                Y_ABORT_UNLESS(entry.GetErasureSpecies() == value.GetErasureSpeciesV2());
-                Y_ABORT_UNLESS(entry.GetPDiskFilterData() == value.GetPDiskFilterData());
+                Y_VERIFY(entry.GetPDiskFilter() == value.GetPDiskFilter());
+                Y_VERIFY(entry.GetErasureSpecies() == value.GetErasureSpeciesV2());
+                Y_VERIFY(entry.GetPDiskFilterData() == value.GetPDiskFilterData());
             }
             spToEntity[key] = index;
         }
@@ -147,7 +132,7 @@ public:
                                 .Operational = true,
                                 .Decommitted = false,
                             });
-                            Y_ABORT_UNLESS(ok);
+                            Y_VERIFY(ok);
                             break;
                         }
                     }
@@ -224,7 +209,7 @@ public:
 private:
     void Yield() {
         Send(new IEventHandle(EvResume, 0, SelfActorId, {}, nullptr, 0));
-        WaitForSpecificEvent([](IEventHandle& ev) { return ev.Type == EvResume; }, &TStorageStatsCoroCalculatorImpl::ProcessUnexpectedEvent);
+        WaitForSpecificEvent([](IEventHandle& ev) { return ev.Type == EvResume; });
     }
 
 private:

@@ -13,12 +13,6 @@ using namespace NStorage;
 
 void TNodeWarden::Handle(NMon::TEvHttpInfo::TPtr &ev) {
     const TCgiParameters &cgi = ev->Get()->Request.GetParams();
-
-    if (cgi.Get("page") == "distconf") {
-        TActivationContext::Send(ev->Forward(DistributedConfigKeeperId));
-        return;
-    }
-
     TStringBuf pathInfo = ev->Get()->Request.GetPathInfo();
     TStringStream out;
     std::unique_ptr<NMon::TEvHttpInfoRes> result;
@@ -96,13 +90,6 @@ void TNodeWarden::RenderWholePage(IOutputStream& out) {
             )__";
 
         TAG(TH2) { out << "NodeWarden on node " << LocalNodeId; }
-
-        TAG(TH3) {
-            DIV() {
-                out << "<a href=\"?page=distconf\">Distributed Config Keeper</a>";
-            }
-        }
-
         RenderLocalDrives(out);
 
         TAG(TH3) { out << "PDisks"; }
@@ -296,7 +283,7 @@ void TNodeWarden::RenderLocalDrives(IOutputStream& out) {
                         TABLED() { out << (initialData ? "true" : "<b style='color: red'>false</b>"); }
                         TABLED() { out << (onlineData ? "true" : "<b style='color: red'>false</b>"); }
                         NPDisk::TDriveData *data = initialData ? initialData : onlineData ? onlineData : nullptr;
-                        Y_ABORT_UNLESS(data);
+                        Y_VERIFY(data);
                         TABLED() { out << data->Path; }
                         TABLED() { out << data->SerialNumber.Quote(); }
                         TABLED() {

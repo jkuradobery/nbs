@@ -1,4 +1,4 @@
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include "datashard_ut_common_kqp.h"
 #include "datashard_ut_read_table.h"
 
@@ -90,11 +90,15 @@ Y_UNIT_TEST_SUITE(DataShardFollowers) {
     }
 
     Y_UNIT_TEST(FollowerStaleRo) {
+        const bool useSource = true;
         TPortManager pm;
         TServerSettings serverSettings(pm.GetPort(2134));
+        NKikimrConfig::TAppConfig appCfg;
+        appCfg.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(useSource);
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
-            .SetEnableForceFollowers(true);
+            .SetEnableForceFollowers(true)
+            .SetAppConfig(appCfg);
 
         Tests::TServer::TPtr server = new TServer(serverSettings);
         auto &runtime = *server->GetRuntime();
@@ -123,7 +127,7 @@ Y_UNIT_TEST_SUITE(DataShardFollowers) {
         }
 
         std::vector<TAutoPtr<IEventHandle>> capturedUpdates;
-        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+        auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) {
             if (ev->GetTypeRewrite() == NKikimr::TEvTablet::TEvFollowerUpdate::EventType ||
                 ev->GetTypeRewrite() == NKikimr::TEvTablet::TEvFollowerAuxUpdate::EventType || 
                 ev->GetTypeRewrite() == NKikimr::TEvTablet::TEvFUpdate::EventType ||

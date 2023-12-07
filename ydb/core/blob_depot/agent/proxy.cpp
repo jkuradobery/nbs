@@ -36,16 +36,13 @@ namespace NKikimr::NBlobDepot {
                     auto& r = static_cast<TEvBlobStorage::TEvGetResult&>(*response);
                     for (size_t i = 0; i < r.ResponseSz; ++i) {
                         r.Responses[i].Status = NKikimrProto::NODATA;
-                        if (get.PhantomCheck) {
-                            r.Responses[i].LooksLikePhantom.emplace(true);
-                        }
                     }
                     r.ExecutionRelay = std::move(get.ExecutionRelay);
                     break;
                 }
 
                 default:
-                    Y_ABORT("unexpected request type for decommission proxy Type# 0x%08" PRIx32, type);
+                    Y_FAIL("unexpected request type for decommission proxy Type# 0x%08" PRIx32, type);
             }
             Send(SelfId(), response.release(), 0, id);
         }

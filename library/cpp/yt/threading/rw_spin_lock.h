@@ -2,9 +2,6 @@
 
 #include "public.h"
 #include "spin_lock_base.h"
-#include "spin_lock_count.h"
-
-#include <library/cpp/yt/memory/public.h>
 
 #include <util/system/rwlock.h>
 
@@ -107,16 +104,16 @@ private:
     void AcquireWriterSlow() noexcept;
 };
 
-REGISTER_TRACKED_SPIN_LOCK_CLASS(TReaderWriterSpinLock)
-
 ////////////////////////////////////////////////////////////////////////////////
 
-//! A variant of TReaderWriterSpinLock occupying the whole cache line.
-class alignas(CacheLineSize) TPaddedReaderWriterSpinLock
+//! A variant of TReaderWriterSpinLock occupyig the whole cache line.
+class TPaddedReaderWriterSpinLock
     : public TReaderWriterSpinLock
-{ };
-
-REGISTER_TRACKED_SPIN_LOCK_CLASS(TPaddedReaderWriterSpinLock)
+{
+private:
+    [[maybe_unused]]
+    char Padding_[CacheLineSize - sizeof(TReaderWriterSpinLock)];
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -133,6 +130,7 @@ struct TForkFriendlyReaderSpinlockTraits
     static void Acquire(T* spinlock);
     static void Release(T* spinlock);
 };
+
 
 template <class T>
 struct TWriterSpinlockTraits

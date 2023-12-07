@@ -12,7 +12,7 @@ SRCS(
 
 PEERDIR(
     library/cpp/getopt
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/regex/pcre
     library/cpp/svnversion
     ydb/core/testlib/default

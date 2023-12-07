@@ -126,7 +126,6 @@ public:
         Tenant->IsExternalSubdomain = Self->FeatureFlags.GetEnableExternalSubdomains();
         Tenant->IsExternalHive = Self->FeatureFlags.GetEnableExternalHive();
         Tenant->IsExternalSysViewProcessor = Self->FeatureFlags.GetEnableSystemViews();
-        Tenant->IsExternalStatisticsAggregator = Self->FeatureFlags.GetEnableStatistics();
 
         if (rec.options().disable_external_subdomain()) {
             Tenant->IsExternalSubdomain = false;
@@ -144,12 +143,10 @@ public:
             Tenant->IsExternalSubdomain = false;
             Tenant->IsExternalHive = false;
             Tenant->IsExternalSysViewProcessor = false;
-            Tenant->IsExternalStatisticsAggregator = false;
         }
 
         Tenant->IsExternalHive &= Tenant->IsExternalSubdomain; // external hive without external sub domain is pointless
         Tenant->IsExternalSysViewProcessor &= Tenant->IsExternalSubdomain;
-        Tenant->IsExternalStatisticsAggregator &= Tenant->IsExternalSubdomain;
 
         Tenant->StorageUnitsQuota = Self->Config.DefaultStorageUnitsQuota;
         Tenant->ComputationalUnitsQuota = Self->Config.DefaultComputationalUnitsQuota;
@@ -239,7 +236,7 @@ public:
                             TStringBuilder() << "Database is not running: " << sharedDbPath, ctx);
                     }
 
-                    Y_ABORT_UNLESS(tenant->DomainId);
+                    Y_VERIFY(tenant->DomainId);
                     Tenant->SharedDomainId = tenant->DomainId;
                     tenant->HostedTenants.emplace(Tenant);
 
@@ -293,7 +290,7 @@ public:
         auto ctx = executorCtx.MakeFor(Self->SelfId());
         LOG_DEBUG(ctx, NKikimrServices::CMS_TENANTS, "TTxCreateTenant Complete");
 
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
 
         if (Response->Record.GetResponse().operation().status())
             Self->Counters.Inc(Response->Record.GetResponse().operation().status(),

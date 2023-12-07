@@ -4,8 +4,6 @@
 #include <ydb/core/scheme/scheme_tabledefs.h>
 
 #include <ydb/library/yql/providers/common/mkql/yql_type_mkql.h>
-#include <ydb/library/yql/providers/dq/expr_nodes/dqs_expr_nodes.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
 
 namespace NKikimr {
 namespace NKqp {
@@ -72,29 +70,21 @@ TSmallVec<bool> GetSkipNullKeys(const TKqpReadTableSettings& settings, const TKi
     return skipNullKeys;
 }
 
-NMiniKQL::TType* CreateColumnType(const NKikimr::NScheme::TTypeInfo& typeInfo, const TKqlCompileContext& ctx) {
-    auto typeId = typeInfo.GetTypeId();
+NMiniKQL::TType* CreateColumnType(NUdf::TDataTypeId typeId, const TKqlCompileContext& ctx) {
     if (typeId == NUdf::TDataType<NUdf::TDecimal>::Id) {
         return ctx.PgmBuilder().NewDecimalType(22, 9);
-    } else if (typeId == NKikimr::NScheme::NTypeIds::Pg) {
-        return ctx.PgmBuilder().NewPgType(NPg::PgTypeIdFromTypeDesc(typeInfo.GetTypeDesc()));
     } else {
         return ctx.PgmBuilder().NewDataType(typeId);
     }
 }
 
-void ValidateColumnType(const TTypeAnnotationNode* type, NKikimr::NScheme::TTypeId columnTypeId) {
+void ValidateColumnType(const TTypeAnnotationNode* type, NUdf::TDataTypeId columnTypeId) {
     YQL_ENSURE(type);
     bool isOptional;
-    if (columnTypeId == NKikimr::NScheme::NTypeIds::Pg) {
-        const TPgExprType* pgType = nullptr;
-        YQL_ENSURE(IsPg(type, pgType));
-    } else {
-        const TDataExprType* dataType = nullptr;
-        YQL_ENSURE(IsDataOrOptionalOfData(type, isOptional, dataType));
-        auto schemeType = NUdf::GetDataTypeInfo(dataType->GetSlot()).TypeId;
-        YQL_ENSURE(schemeType == columnTypeId);
-    }
+    const TDataExprType* dataType = nullptr;
+    YQL_ENSURE(IsDataOrOptionalOfData(type, isOptional, dataType));
+    auto schemeType = NUdf::GetDataTypeInfo(dataType->GetSlot()).TypeId;
+    YQL_ENSURE(schemeType == columnTypeId);
 }
 
 void ValidateColumnsType(const TStreamExprType* streamType, const TKikimrTableMetadata& tableMeta) {
@@ -105,7 +95,9 @@ void ValidateColumnsType(const TStreamExprType* streamType, const TKikimrTableMe
         auto columnData = tableMeta.Columns.FindPtr(member->GetName());
         YQL_ENSURE(columnData);
         auto columnDataType = columnData->TypeInfo.GetTypeId();
-        YQL_ENSURE(columnDataType != 0);
+        // TODO: support pg types
+        YQL_ENSURE(columnDataType != 0 && columnDataType != NScheme::NTypeIds::Pg);
+
         ValidateColumnType(member->GetItemType(), columnDataType);
     }
 }
@@ -118,7 +110,8 @@ void ValidateRangeBoundType(const TTupleExprType* keyTupleType, const TKikimrTab
         auto columnData = tableMeta.Columns.FindPtr(tableMeta.KeyColumnNames[i]);
         YQL_ENSURE(columnData);
         auto columnDataType = columnData->TypeInfo.GetTypeId();
-        YQL_ENSURE(columnDataType != 0);
+        // TODO: support pg types
+        YQL_ENSURE(columnDataType != 0 && columnDataType != NScheme::NTypeIds::Pg);
 
         ValidateColumnType(keyTupleType->GetItems()[i]->Cast<TOptionalExprType>()->GetItemType(), columnDataType);
     }
@@ -159,9 +152,10 @@ TKqpKeyRange MakeKeyRange(const TKqlReadTableBase& readTable, const TKqlCompileC
         auto columnData = tableMeta.Columns.FindPtr(keyColumn);
         YQL_ENSURE(columnData);
         auto columnDataType = columnData->TypeInfo.GetTypeId();
+        // TODO: support pg types
+        YQL_ENSURE(columnDataType != 0 && columnDataType != NScheme::NTypeIds::Pg);
 
-        YQL_ENSURE(columnDataType != 0);
-        auto columnType = CreateColumnType(columnData->TypeInfo, ctx);
+        auto columnType = CreateColumnType(columnDataType, ctx);
 
         if (fromTuple.ArgCount() > i) {
             ValidateColumnType(fromTuple.Arg(i).Ref().GetTypeAnn(), columnDataType);
@@ -222,26 +216,8 @@ const TKikimrTableMetadata& TKqlCompileContext::GetTableMeta(const TKqpTable& ta
     return meta;
 }
 
-TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext& ctx, TTypeAnnotationContext& typesCtx) {
+TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext& ctx) {
     auto compiler = MakeIntrusive<NCommon::TMkqlCommonCallableCompiler>();
-
-    compiler->AddCallable({TDqSourceWideWrap::CallableName(), TDqSourceWideBlockWrap::CallableName(), TDqReadWideWrap::CallableName()},
-        [](const TExprNode& node, NCommon::TMkqlBuildContext&) {
-            YQL_ENSURE(false, "Unsupported reader: " << node.Head().Content());
-            return TRuntimeNode();
-        });
-
-    for (const auto& provider : typesCtx.DataSources) {
-        if (auto* dqIntegration = provider->GetDqIntegration()) {
-            dqIntegration->RegisterMkqlCompiler(*compiler);
-        }
-    }
-
-    for (const auto& provider : typesCtx.DataSinks) {
-        if (auto* dqIntegration = provider->GetDqIntegration()) {
-            dqIntegration->RegisterMkqlCompiler(*compiler);
-        }
-    }
 
     compiler->AddCallable(TKqpWideReadTable::CallableName(),
         [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
@@ -273,7 +249,6 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
             );
         });
 
-    // TODO: Rewrite to DqSource https://st.yandex-team.ru/KIKIMR-17161
     compiler->AddCallable(TKqpWideReadOlapTableRanges::CallableName(),
         [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
             TKqpWideReadOlapTableRanges readTable(&node);
@@ -304,37 +279,6 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
             return result;
         });
 
-    // TODO: Rewrite to DqSource https://st.yandex-team.ru/KIKIMR-17161
-    compiler->AddCallable(TKqpBlockReadOlapTableRanges::CallableName(),
-        [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
-            TKqpBlockReadOlapTableRanges readTable(&node);
-
-            const auto& tableMeta = ctx.GetTableMeta(readTable.Table());
-            ValidateRangesType(readTable.Ranges().Ref().GetTypeAnn(), tableMeta);
-
-            TKqpKeyRanges ranges = MakeComputedKeyRanges(readTable, ctx, buildCtx);
-
-            // Return type depends on the process program, so it is built explicitly.
-            TStringStream errorStream;
-            auto returnType = NCommon::BuildType(*readTable.Ref().GetTypeAnn(), ctx.PgmBuilder(), errorStream);
-            YQL_ENSURE(returnType, "Failed to build type: " << errorStream.Str());
-
-            // Process program for OLAP read is not present in MKQL, it is passed in range description
-            // in physical plan directly to executer. Read callables in MKQL only used to associate
-            // input stream of the graph with the external scans, so it doesn't make much sense to pass
-            // the process program through callable.
-            // We anyway move to explicit sources as external nodes in KQP program, so all the information
-            // about read settings will be passed in a side channel, not the program.
-            auto result = ctx.PgmBuilder().KqpBlockReadTableRanges(
-                MakeTableId(readTable.Table()),
-                ranges,
-                GetKqpColumns(tableMeta, readTable.Columns(), true),
-                returnType
-            );
-
-            return result;
-        });
-
     compiler->AddCallable(TKqpLookupTable::CallableName(),
         [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
             TKqpLookupTable lookupTable(&node);
@@ -355,8 +299,6 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
     compiler->AddCallable(TKqpUpsertRows::CallableName(),
         [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
             TKqpUpsertRows upsertRows(&node);
-
-            auto settings = TKqpUpsertRowsSettings::Parse(upsertRows);
 
             const auto& tableMeta = ctx.GetTableMeta(upsertRows.Table());
 
@@ -383,7 +325,7 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
             TVector<TStringBuf> upsertColumns(upsertSet.begin(), upsertSet.end());
 
             auto result = ctx.PgmBuilder().KqpUpsertRows(MakeTableId(upsertRows.Table()), rows,
-                GetKqpColumns(tableMeta, upsertColumns, false), settings.IsUpdate);
+                GetKqpColumns(tableMeta, upsertColumns, false));
 
             return result;
         });
@@ -425,19 +367,6 @@ TIntrusivePtr<IMkqlCallableCompiler> CreateKqlCompiler(const TKqlCompileContext&
             const auto message = MkqlBuildExpr(ensure.Message().Ref(), buildCtx);
 
             return ctx.PgmBuilder().KqpEnsure(value, predicate, issueCode, message);
-        });
-
-    compiler->AddCallable(TKqpIndexLookupJoin::CallableName(),
-        [&ctx](const TExprNode& node, TMkqlBuildContext& buildCtx) {
-            TKqpIndexLookupJoin indexLookupJoin(&node);
-
-            const TString joinType(indexLookupJoin.JoinType().Value());
-            const TString leftLabel(indexLookupJoin.LeftLabel().Value());
-            const TString rightLabel(indexLookupJoin.RightLabel().Value());
-
-            auto input = MkqlBuildExpr(indexLookupJoin.Input().Ref(), buildCtx);
-
-            return ctx.PgmBuilder().KqpIndexLookupJoin(input, joinType, leftLabel, rightLabel);
         });
 
     return compiler;

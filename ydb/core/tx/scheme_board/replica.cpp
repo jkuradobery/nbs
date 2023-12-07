@@ -7,13 +7,13 @@
 #include <contrib/libs/protobuf/src/google/protobuf/util/json_util.h>
 
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/protos/services.pb.h>
+#include <ydb/core/util/yverify_stream.h>
 
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/util/memory_track.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/util/memory_track.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/map.h>
@@ -311,7 +311,7 @@ public:
         }
 
         TDescription& Merge(TDescription&& other) noexcept {
-            Y_ABORT_UNLESS(Owner == other.Owner);
+            Y_VERIFY(Owner == other.Owner);
 
             if (!Path) {
                 Path = other.Path;
@@ -435,10 +435,10 @@ public:
             const bool isDeletion = !IsFilled();
 
             if (!PathId) {
-                Y_ABORT_UNLESS(isDeletion);
+                Y_VERIFY(isDeletion);
                 notify = MakeHolder<TSchemeBoardEvents::TEvNotifyBuilder>(Path, isDeletion);
             } else if (!Path) {
-                Y_ABORT_UNLESS(isDeletion);
+                Y_VERIFY(isDeletion);
                 notify = MakeHolder<TSchemeBoardEvents::TEvNotifyBuilder>(PathId, isDeletion);
             } else {
                 notify = MakeHolder<TSchemeBoardEvents::TEvNotifyBuilder>(Path, PathId, isDeletion);
@@ -482,7 +482,7 @@ public:
 
         TSubscriberInfo& GetSubscriberInfo(const TActorId& subscriber) {
             auto it = Subscribers.find(subscriber);
-            Y_ABORT_UNLESS(it != Subscribers.end());
+            Y_VERIFY(it != Subscribers.end());
             return it->second;
         }
 
@@ -528,13 +528,16 @@ private:
     struct TPopulatorInfo {
         ui64 Generation = 0;
         ui64 PendingGeneration = 0;
-        bool IsCommited = false;
         TActorId PopulatorActor;
+
+        bool IsCommited() const {
+            return Generation && Generation == PendingGeneration;
+        }
     };
 
     bool IsPopulatorCommited(ui64 ownerId) const {
         auto it = Populators.find(ownerId);
-        if (it != Populators.end() && it->second.IsCommited) {
+        if (it != Populators.end() && it->second.IsCommited()) {
             return true;
         }
 
@@ -655,7 +658,7 @@ private:
     bool IsSingleSubscriberOnNode(const TActorId& subscriber) const {
         const ui32 nodeId = subscriber.NodeId();
         auto it = Subscribers.lower_bound(TActorId(nodeId, 0, 0, 0));
-        Y_ABORT_UNLESS(it != Subscribers.end());
+        Y_VERIFY(it != Subscribers.end());
 
         return ++it == Subscribers.end() || it->first.NodeId() != nodeId;
     }
@@ -663,7 +666,7 @@ private:
     template <typename TPath>
     void Subscribe(const TActorId& subscriber, const TPath& path, ui64 domainOwnerId, const TCapabilities& capabilities) {
         TDescription* desc = Descriptions.FindPtr(path);
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
 
         SBR_LOG_I("Subscribe"
             << ": subscriber# " << subscriber
@@ -674,14 +677,14 @@ private:
         desc->Subscribe(subscriber, path, domainOwnerId, capabilities);
 
         auto it = Subscribers.find(subscriber);
-        Y_DEBUG_ABORT_UNLESS(it == Subscribers.end() || std::holds_alternative<TPath>(it->second) && std::get<TPath>(it->second) == path);
+        Y_VERIFY_DEBUG(it == Subscribers.end() || std::holds_alternative<TPath>(it->second) && std::get<TPath>(it->second) == path);
         Subscribers.emplace(subscriber, path);
     }
 
     template <typename TPath>
     void Unsubscribe(const TActorId& subscriber, const TPath& path) {
         TDescription* desc = Descriptions.FindPtr(path);
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
 
         SBR_LOG_I("Unsubscribe"
             << ": subscriber# " << subscriber
@@ -747,8 +750,8 @@ private:
         const ui64 owner = record.GetOwner();
         const ui64 generation = record.GetGeneration();
 
-        Y_ABORT_UNLESS(Populators.contains(owner));
-        Y_ABORT_UNLESS(Populators.at(owner).PendingGeneration == generation);
+        Y_VERIFY(Populators.contains(owner));
+        Y_VERIFY(Populators.at(owner).PendingGeneration == generation);
 
         if (!record.GetNeedAck()) {
             return;
@@ -1003,7 +1006,6 @@ private:
             << ", generation# " << generation);
 
         info.Generation = info.PendingGeneration;
-        info.IsCommited = true;
         Send(ev->Sender, new TSchemeBoardEvents::TEvCommitResponse(owner, info.Generation), 0, ev->Cookie);
 
         if (WaitStrongNotifications.contains(owner)) {
@@ -1050,10 +1052,10 @@ private:
                 desc = Descriptions.FindPtr(*pathId);
             }
 
-            Y_ABORT_UNLESS(desc);
+            Y_VERIFY(desc);
             auto& info = desc->GetSubscriberInfo(subscriber);
 
-            Y_ABORT_UNLESS(info.GetDomainOwnerId() == owner);
+            Y_VERIFY(info.GetDomainOwnerId() == owner);
             if (info.IsNotifiedStrongly() || info.IsWaitForAck()) {
                 continue;
             }
@@ -1081,7 +1083,7 @@ private:
         if (record.HasPath()) {
             SubscribeBy(ev->Sender, record.GetPath(), domainOwnerId, capabilities);
         } else {
-            Y_ABORT_UNLESS(record.HasPathOwnerId() && record.HasLocalPathId());
+            Y_VERIFY(record.HasPathOwnerId() && record.HasLocalPathId());
             SubscribeBy(ev->Sender, TPathId(record.GetPathOwnerId(), record.GetLocalPathId()), domainOwnerId, capabilities);
         }
     }
@@ -1095,7 +1097,7 @@ private:
         if (record.HasPath()) {
             UnsubscribeBy(ev->Sender, record.GetPath());
         } else {
-            Y_ABORT_UNLESS(record.HasPathOwnerId() && record.HasLocalPathId());
+            Y_VERIFY(record.HasPathOwnerId() && record.HasLocalPathId());
             UnsubscribeBy(ev->Sender, TPathId(record.GetPathOwnerId(), record.GetLocalPathId()));
         }
     }
@@ -1119,7 +1121,7 @@ private:
             desc = Descriptions.FindPtr(*pathId);
         }
 
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
         auto& info = desc->GetSubscriberInfo(ev->Sender);
 
         const ui64 version = record.GetVersion();
@@ -1168,7 +1170,7 @@ private:
             desc = Descriptions.FindPtr(*pathId);
         }
 
-        Y_ABORT_UNLESS(desc);
+        Y_VERIFY(desc);
         auto& info = desc->GetSubscriberInfo(ev->Sender);
 
         if (!info.EnqueueSyncRequest(ev->Cookie) || info.IsWaitForAck()) {
@@ -1176,7 +1178,7 @@ private:
         }
 
         auto cookie = info.ProcessSyncRequest();
-        Y_ABORT_UNLESS(cookie && *cookie == ev->Cookie);
+        Y_VERIFY(cookie && *cookie == ev->Cookie);
 
         Send(ev->Sender, new TSchemeBoardEvents::TEvSyncVersionResponse(desc->GetVersion()), 0, *cookie);
     }
@@ -1272,14 +1274,14 @@ private:
     }
 
     void PassAway() override {
-        for (const auto& [_, info] : Populators) {
-            if (const auto& actorId = info.PopulatorActor) {
-                Send(actorId, new TEvStateStorage::TEvReplicaShutdown());
+        for (auto &xpair : Populators) {
+            if (const TActorId populator = xpair.second.PopulatorActor) {
+                Send(populator, new TEvStateStorage::TEvReplicaShutdown());
             }
         }
 
-        for (const auto& [actorId, _] : Subscribers) {
-            Send(actorId, new TEvStateStorage::TEvReplicaShutdown());
+        for (auto &xpair : Subscribers) {
+            Send(xpair.first, new TEvStateStorage::TEvReplicaShutdown());
         }
 
         TMonitorableActor::PassAway();

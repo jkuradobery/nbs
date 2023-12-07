@@ -16,7 +16,7 @@
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
 #include <ydb/library/yql/core/issue/protos/issue_id.pb.h>
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 
 #include <util/thread/factory.h>
 
@@ -149,7 +149,7 @@ Y_UNIT_TEST_SUITE(YdbYqlClient) {
                 );
             )___").ExtractValueSync();
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SCHEME_ERROR);
+            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);
         }
 
         {
@@ -161,7 +161,7 @@ Y_UNIT_TEST_SUITE(YdbYqlClient) {
                 );
             )___").ExtractValueSync();
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SCHEME_ERROR);
+            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);
         }
     }
 
@@ -237,6 +237,347 @@ Y_UNIT_TEST_SUITE(YdbYqlClient) {
         auto status = session.Close().ExtractValueSync();
         UNIT_ASSERT_EQUAL(status.IsTransportError(), false);
         UNIT_ASSERT_EQUAL(status.GetStatus(), EStatus::SUCCESS);
+    }
+
+    Y_UNIT_TEST(TestSessionPool) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        const TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        NYdb::NTable::TTableClient client(driver);
+        int count = 10;
+
+        THashSet<TString> sids;
+        while (count--) {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+            UNIT_ASSERT_EQUAL(sessionResponse.IsTransportError(), false);
+            auto session = sessionResponse.GetSession();
+            sids.insert(session.GetId());
+            auto result = session.ExecuteDataQuery("SELECT 42;",
+                TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
+
+            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+            UNIT_ASSERT_VALUES_EQUAL(result.GetEndpoint(), location);
+        }
+        // All requests used one session
+        UNIT_ASSERT_VALUES_EQUAL(sids.size(), 1);
+        // No more session captured by client
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+    }
+
+    Y_UNIT_TEST(TestMultipleSessions) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        NYdb::NTable::TTableClient client(driver);
+        int count = 10;
+
+        TVector<TSession> sids;
+        TVector<TAsyncDataQueryResult> results;
+        while (count--) {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+            UNIT_ASSERT_EQUAL(sessionResponse.IsTransportError(), false);
+            auto session = sessionResponse.GetSession();
+            sids.push_back(session);
+            results.push_back(session.ExecuteDataQuery("SELECT 42;",
+                TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()));
+        }
+
+        NThreading::WaitExceptionOrAll(results).Wait();
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 10);
+
+        for (auto& result : results) {
+            UNIT_ASSERT_EQUAL(result.GetValue().GetStatus(), EStatus::SUCCESS);
+        }
+        sids.clear();
+        results.clear();
+
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+    }
+
+    Y_UNIT_TEST(TestActiveSessionCountAfterBadSession) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        NYdb::NTable::TTableClient client(driver);
+        int count = 10;
+
+        TVector<TSession> sids;
+        TVector<TAsyncDataQueryResult> results;
+        while (count--) {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+            UNIT_ASSERT_EQUAL(sessionResponse.IsTransportError(), false);
+            auto session = sessionResponse.GetSession();
+            sids.push_back(session);
+            if (count == 0) {
+                // Force BAD session server response for ExecuteDataQuery
+                UNIT_ASSERT_EQUAL(session.Close().GetValueSync().GetStatus(), EStatus::SUCCESS);
+                results.push_back(session.ExecuteDataQuery("SELECT 42;",
+                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()));
+            } else {
+                results.push_back(session.ExecuteDataQuery("SELECT 42;",
+                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()));
+            }
+        }
+
+        NThreading::WaitExceptionOrAll(results).Wait();
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 10);
+
+        for (size_t i = 0; i < results.size(); i++) {
+            if (i == 9) {
+                UNIT_ASSERT_EQUAL(results[i].GetValue().GetStatus(), EStatus::BAD_SESSION);
+            } else {
+                UNIT_ASSERT_EQUAL(results[i].GetValue().GetStatus(), EStatus::SUCCESS);
+            }
+        }
+        sids.clear();
+        results.clear();
+
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+    }
+
+    Y_UNIT_TEST(TestActiveSessionCountAfterTransportError) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        NYdb::NTable::TTableClient client(driver);
+        int count = 100;
+
+        {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+            UNIT_ASSERT(sessionResponse.IsSuccess());
+            auto session = sessionResponse.GetSession();
+            auto result = session.ExecuteSchemeQuery(R"___(
+                CREATE TABLE `Root/Test` (
+                    Key Uint32,
+                    Value String,
+                    PRIMARY KEY (Key)
+                );
+            )___").ExtractValueSync();
+            UNIT_ASSERT(result.IsSuccess());
+            UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+        }
+
+        while (count--) {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+            UNIT_ASSERT_EQUAL(sessionResponse.IsTransportError(), false);
+            auto session = sessionResponse.GetSession();
+
+            // Assume 10us is too small to execute query and get response
+            auto res = session.ExecuteDataQuery("SELECT COUNT(*) FROM `Root/Test`;",
+                TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx(),
+                NYdb::NTable::TExecDataQuerySettings().ClientTimeout(TDuration::MicroSeconds(10))).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+        }
+
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        driver.Stop(true);
+    }
+
+    Y_UNIT_TEST(MultiThreadSync) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        NYdb::NTable::TTableClient client(driver);
+        const int nThreads = 10;
+        const int nRequests = 1000;
+        auto job = [client]() mutable {
+            for (int i = 0; i < nRequests; i++) {
+                auto sessionResponse = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_EQUAL(sessionResponse.GetStatus(), EStatus::SUCCESS);
+            }
+        };
+        IThreadFactory* pool = SystemThreadFactory();
+
+        TVector<TAutoPtr<IThreadFactory::IThread>> threads;
+        threads.resize(nThreads);
+        for (int i = 0; i < nThreads; i++) {
+            threads[i] = pool->Run(job);
+        }
+        for (int i = 0; i < nThreads; i++) {
+            threads[i]->Join();
+        }
+        UNIT_ASSERT_EQUAL(client.GetActiveSessionCount(), 0);
+        driver.Stop(true);
+    }
+
+    Y_UNIT_TEST(MultiThreadSessionPoolLimitSync) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        const int maxActiveSessions = 45;
+        NYdb::NTable::TTableClient client(driver,
+            TClientSettings()
+                .SessionPoolSettings(
+                    TSessionPoolSettings().MaxActiveSessions(maxActiveSessions)));
+
+        constexpr int nThreads = 100;
+        NYdb::EStatus statuses[nThreads];
+        TVector<TMaybe<NYdb::NTable::TSession>> sessions;
+        sessions.resize(nThreads);
+        TAtomic t = 0;
+        auto job = [client, &t, &statuses, &sessions]() mutable {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+            int i = AtomicIncrement(t);
+            statuses[--i] = sessionResponse.GetStatus();
+            if (statuses[i] == EStatus::SUCCESS) {
+                auto execStatus = sessionResponse.GetSession().ExecuteDataQuery("SELECT 42;",
+                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync().GetStatus();
+                UNIT_ASSERT_EQUAL(execStatus, EStatus::SUCCESS);
+                sessions[i] = sessionResponse.GetSession();
+            }
+        };
+        IThreadFactory* pool = SystemThreadFactory();
+
+        TVector<TAutoPtr<IThreadFactory::IThread>> threads;
+        threads.resize(nThreads);
+        for (int i = 0; i < nThreads; i++) {
+            threads[i] = pool->Run(job);
+        }
+        for (int i = 0; i < nThreads; i++) {
+            threads[i]->Join();
+        }
+
+        sessions.clear();
+
+        int successCount = 0;
+        int exhaustedCount = 0;
+        for (int i = 0; i < nThreads; i++) {
+            switch (statuses[i]) {
+                case EStatus::SUCCESS:
+                    successCount++;
+                    break;
+                case EStatus::CLIENT_RESOURCE_EXHAUSTED:
+                    exhaustedCount++;
+                    break;
+                default:
+                    UNIT_ASSERT(false);
+            }
+        }
+
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(successCount, maxActiveSessions);
+        UNIT_ASSERT_VALUES_EQUAL(exhaustedCount, nThreads - maxActiveSessions);
+        driver.Stop(true);
+    }
+
+    Y_UNIT_TEST(MultiThreadMultipleRequestsOnSharedSessions) {
+        TKikimrWithGrpcAndRootSchema server;
+        ui16 grpc = server.GetPort();
+
+        TString location = TStringBuilder() << "localhost:" << grpc;
+
+        auto driver = NYdb::TDriver(
+            TDriverConfig()
+                .SetEndpoint(location));
+
+        const int maxActiveSessions = 10;
+        NYdb::NTable::TTableClient client(driver,
+            TClientSettings()
+                .SessionPoolSettings(
+                    TSessionPoolSettings().MaxActiveSessions(maxActiveSessions)));
+
+        constexpr int nThreads = 20;
+        constexpr int nRequests = 50;
+        std::array<TVector<TAsyncDataQueryResult>, nThreads> results;
+        TAtomic t = 0;
+        TAtomic validSessions = 0;
+        auto job = [client, &t, &results, &validSessions]() mutable {
+            auto sessionResponse = client.GetSession().ExtractValueSync();
+
+            int i = AtomicIncrement(t);
+            TVector<TAsyncDataQueryResult>& r = results[--i];
+
+            if (sessionResponse.GetStatus() != EStatus::SUCCESS) {
+                return;
+            }
+            AtomicIncrement(validSessions);
+
+            for (int i = 0; i < nRequests; i++) {
+                r.push_back(sessionResponse.GetSession().ExecuteDataQuery("SELECT 42;",
+                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()));
+            }
+        };
+        IThreadFactory* pool = SystemThreadFactory();
+
+        TVector<TAutoPtr<IThreadFactory::IThread>> threads;
+        threads.resize(nThreads);
+        for (int i = 0; i < nThreads; i++) {
+            threads[i] = pool->Run(job);
+        }
+        for (int i = 0; i < nThreads; i++) {
+            threads[i]->Join();
+        }
+
+        for (auto& r : results) {
+            NThreading::WaitExceptionOrAll(r).Wait();
+        }
+        for (auto& r : results) {
+            if (!r.empty()) {
+                int ok = 0;
+                int bad = 0;
+                for (auto& asyncStatus : r) {
+                    auto res = asyncStatus.GetValue();
+                    if (res.IsSuccess()) {
+                        ok++;
+                    } else {
+                        UNIT_ASSERT_VALUES_EQUAL(res.GetStatus(), EStatus::SESSION_BUSY);
+                        bad++;
+                    }
+                }
+                //UNIT_ASSERT_VALUES_EQUAL(ok, 1);
+                //UNIT_ASSERT_VALUES_EQUAL(bad, nRequests - 1);
+            }
+        }
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), maxActiveSessions);
+        auto curExpectedActive = maxActiveSessions;
+        auto empty = 0;
+        for (auto& r : results) {
+            if (!r.empty()) {
+                r.clear();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), --curExpectedActive);
+            } else {
+                empty++;
+            }
+        }
+        UNIT_ASSERT_VALUES_EQUAL(empty, nThreads - maxActiveSessions);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        driver.Stop(true);
     }
 
     Y_UNIT_TEST(TestColumnOrder) {
@@ -1147,11 +1488,11 @@ R"___(<main>: Error: Transaction not found: , code: 2015
                 PRIMARY KEY (Key)
             );
         )___").ExtractValueSync();
-        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SCHEME_ERROR);
+        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::GENERIC_ERROR);
 
         auto ref = R"___(<main>: Error: Execution, code: 1060
     <main>:5:30: Error: Executing CREATE TABLE
-        <main>: Error: Column Key has wrong key type Double, code: 2003
+        <main>: Error: Scheme operation failed, status: ExecError, reason: Column Key has wrong key type Double
 )___";
         UNIT_ASSERT_NO_DIFF(result.GetIssues().ToString(), ref);
     }
@@ -1738,12 +2079,10 @@ R"___(<main>: Error: Transaction not found: , code: 2015
 
                 UNIT_ASSERT_VALUES_EQUAL(streamPart.IsSuccess(), true);
 
-                int readRows = 0;
                 auto rsParser = TResultSetParser(streamPart.ExtractPart());
                 while (rsParser.TryNextRow()) {
                     auto columns = rsParser.ColumnsCount();
                     const auto& expRow = expected[row++];
-                    ++readRows;
                     TString tmp = "[";
                     for (size_t c = 0; c < columns; c++) {
                         auto colYson = FormatValueYson(rsParser.GetValue(c));
@@ -1753,9 +2092,6 @@ R"___(<main>: Error: Transaction not found: , code: 2015
                     }
                     tmp += "]";
                     UNIT_ASSERT_VALUES_EQUAL(tmp, expRow);
-                }
-                if (rowLimit) {
-                    UNIT_ASSERT(readRows <= 1);
                 }
             }
         }
@@ -1768,101 +2104,6 @@ R"___(<main>: Error: Transaction not found: , code: 2015
 
     Y_UNIT_TEST(TestReadTableMultiShardWithDescribeAndRowLimit) {
         TestReadTableMultiShardWithDescribe(true);
-    }
-
-
-    void TestReadTable(TSession& session, int rowsTotalCount, int batchLimitBytes, int batchLimitRows) {
-        int row = 0;
-        TReadTableSettings readTableSettings;
-        readTableSettings.Ordered(true);
-        readTableSettings.BatchLimitBytes(batchLimitBytes);
-        readTableSettings.BatchLimitRows(batchLimitRows);
-
-        auto it = session.ReadTable("Root/Test", readTableSettings).ExtractValueSync();
-
-        TStringStream out;
-        while (true) {
-            TReadTableResultPart streamPart = it.ReadNext().GetValueSync();
-
-            if (streamPart.EOS()) {
-                break;
-            }
-
-            UNIT_ASSERT_VALUES_EQUAL(streamPart.IsSuccess(), true);
-
-            auto rsParser = TResultSetParser(streamPart.ExtractPart());
-            i64 batchRows = 0;
-            out << "---- batch start ----" << Endl;
-            while (rsParser.TryNextRow()) {
-                auto columns = rsParser.ColumnsCount();
-                ++row;
-                ++batchRows;
-                TString tmp = "[";
-                for (size_t c = 0; c < columns; c++) {
-                    auto colYson = FormatValueYson(rsParser.GetValue(c));
-                    tmp += colYson;
-                    if (c != columns - 1)
-                        tmp += ";";
-                }
-                tmp += "]";
-                out << tmp << Endl;
-            }
-            out << "---- batch end ----" << Endl;
-            UNIT_ASSERT(!batchLimitRows || batchRows <= batchLimitRows);
-        }
-        Cerr << out.Str();
-        UNIT_ASSERT_VALUES_EQUAL(row, rowsTotalCount);
-    }
-
-    Y_UNIT_TEST(TestReadTableBatchLimits) {
-        TKikimrWithGrpcAndRootSchema server;
-        ui16 grpc = server.GetPort();
-
-        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::GRPC_SERVER, NLog::PRI_TRACE);
-        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::READ_TABLE_API, NLog::PRI_TRACE);
-        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
-
-        TString location = TStringBuilder() << "localhost:" << grpc;
-
-        auto connection = NYdb::TDriver(
-            TDriverConfig()
-                .SetEndpoint(location));
-        NYdb::NTable::TTableClient client(connection);
-        auto session = client.CreateSession().ExtractValueSync().GetSession();
-
-        auto tableBuilder = client.GetTableBuilder();
-        tableBuilder
-            .AddNullableColumn("Key", EPrimitiveType::Uint32)
-            .AddNullableColumn("Key2", EPrimitiveType::Uint32)
-            .AddNullableColumn("Value", EPrimitiveType::String);
-        tableBuilder.SetPrimaryKeyColumns(TVector<TString>{"Key", "Key2"});
-
-        TCreateTableSettings createTableSettings =
-            TCreateTableSettings()
-                .PartitioningPolicy(TPartitioningPolicy().UniformPartitions(10));
-
-        auto result = session.CreateTable("Root/Test", tableBuilder.Build(), createTableSettings).ExtractValueSync();
-        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-
-        int rowsTotalCount = 100;
-        TStringStream query;
-        query << R"_(  UPSERT INTO `Root/Test` (Key, Key2, Value) VALUES )_";
-        for (int i = 0; i < rowsTotalCount; ++i) {
-            query << Sprintf(R"_( (%d, %d, "A")%s)_", i, 2 * i, i + 1 < rowsTotalCount ? "," : ";");
-        }
-        result = session.ExecuteDataQuery(query.Str(),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-
-        UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-
-        // all limits disabled
-        TestReadTable(session, rowsTotalCount, 0, 0);
-        for (int i = 1; i <= rowsTotalCount; i *= 2) {
-            // test BatchLimitRows
-            TestReadTable(session, rowsTotalCount, 0, i);
-        }
-        // test BatchLimitBytes == 1 returns not more than one row
-        TestReadTable(session, rowsTotalCount, 1, 1);
     }
 
     Y_UNIT_TEST(TestReadWrongTable) {
@@ -1939,7 +2180,7 @@ R"___(<main>: Error: Transaction not found: , code: 2015
         UNIT_ASSERT_VALUES_EQUAL(lastPart.EOS(), true);
     }
 
-    Y_UNIT_TEST(RetryOperationTemplate) {
+    Y_UNIT_TEST(RetryOperation) {
         TKikimrWithGrpcAndRootSchema server;
         NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
         NYdb::NTable::TTableClient client(driver);
@@ -1987,162 +2228,6 @@ R"___(<main>: Error: Transaction not found: , code: 2015
 
         TResultSetParser parser(*selectResult);
         UNIT_ASSERT(parser.TryNextRow());
-        driver.Stop(true);
-    }
-
-    void CheckRetryResult(const TStatus& status, const TVector<TResultSet>& resultSets, bool expectSuccess)
-    {
-        if (expectSuccess) {
-            UNIT_ASSERT_C(status.IsSuccess(), status);
-            UNIT_ASSERT_VALUES_EQUAL(resultSets.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(resultSets[0].ColumnsCount(), 3);
-        } else {
-            UNIT_ASSERT_C(!status.IsSuccess(), status);
-        }
-    }
-
-    void TestRetryOperationAsync(NYdb::NTable::TTableClient& client,
-        const TVector<EStatus>& retriableStatuses, bool expectSuccess,
-        TRetryOperationSettings settings = TRetryOperationSettings())
-    {
-        size_t retryNumber = 0;
-        TVector<TResultSet> resultSets;
-        auto operation = [&retryNumber, &resultSets, &retriableStatuses] (TSession session) -> TAsyncStatus {
-            // iterate over all providen statuses and return TStatus to emulate error
-            if (retryNumber < retriableStatuses.size()) {
-                TStatus status(retriableStatuses[retryNumber++], {});
-                return NThreading::MakeFuture<TStatus>(status);
-            }
-            auto queryStatus = session.ExecuteDataQuery(
-                "SELECT 1, 2, 3", TTxControl::BeginTx().CommitTx()).GetValueSync();
-            resultSets = queryStatus.GetResultSets();
-            return NThreading::MakeFuture<TStatus>(queryStatus);
-        };
-        auto operationWithoutSession = [&operation] (TTableClient client) -> TAsyncStatus {
-            auto session = client.CreateSession().GetValueSync().GetSession();
-            return operation(session);
-        };
-
-        const auto retrySettings = settings.MaxRetries(retriableStatuses.size()).Verbose(true);
-        auto result = client.RetryOperation(operation, retrySettings);
-        CheckRetryResult(result.GetValueSync(), resultSets, expectSuccess);
-
-        retryNumber = 0;
-        auto resultWithoutSession = client.RetryOperation(operationWithoutSession, retrySettings);
-        CheckRetryResult(resultWithoutSession.GetValueSync(), resultSets, expectSuccess);
-    }
-
-    void TestRetryOperationSync(NYdb::NTable::TTableClient& client,
-        const TVector<EStatus>& retriableStatuses, bool expectSuccess,
-        TRetryOperationSettings settings = TRetryOperationSettings())
-    {
-        size_t retryNumber = 0;
-        TVector<TResultSet> resultSets;
-        auto operation = [&retryNumber, &resultSets, &retriableStatuses] (TSession session) -> TStatus {
-            // iterate over all providen statuses and return TStatus to emulate error
-            if (retryNumber < retriableStatuses.size()) {
-                TStatus status(retriableStatuses[retryNumber++], {});
-                return status;
-            }
-            auto queryStatus = session.ExecuteDataQuery(
-                "SELECT 1, 2, 3", TTxControl::BeginTx().CommitTx()).GetValueSync();
-            resultSets = queryStatus.GetResultSets();
-            return TStatus(queryStatus);
-        };
-        auto operationWithoutSession = [&operation] (TTableClient client) -> TStatus {
-            auto session = client.CreateSession().GetValueSync().GetSession();
-            return operation(session);
-        };
-
-        const auto retrySettings = settings.MaxRetries(retriableStatuses.size()).Verbose(true);
-        auto result = client.RetryOperationSync(operation, retrySettings);
-        CheckRetryResult(result, resultSets, expectSuccess);
-
-        retryNumber = 0;
-        auto resultWithoutSession = client.RetryOperationSync(operationWithoutSession, retrySettings);
-        CheckRetryResult(resultWithoutSession, resultSets, expectSuccess);
-    }
-
-    TVector<EStatus> GetRetriableAlwaysStatuses() {
-        return {EStatus::OVERLOADED, EStatus::CLIENT_RESOURCE_EXHAUSTED, EStatus::UNAVAILABLE,
-            EStatus::BAD_SESSION, EStatus::SESSION_BUSY};
-    }
-
-    TVector<EStatus> GetRetriableOnOptionStatuses() {
-        return {EStatus::NOT_FOUND, EStatus::UNDETERMINED, EStatus::TRANSPORT_UNAVAILABLE};
-    }
-
-    Y_UNIT_TEST(RetryOperationAsync) {
-        TKikimrWithGrpcAndRootSchema server;
-        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
-        NYdb::NTable::TTableClient client(driver);
-
-        TestRetryOperationAsync(client, GetRetriableAlwaysStatuses(), true);
-        TestRetryOperationAsync(client, {EStatus::NOT_FOUND}, true, TRetryOperationSettings().RetryNotFound(true));
-        TestRetryOperationAsync(client, {EStatus::UNDETERMINED}, true, TRetryOperationSettings().Idempotent(true));
-        TestRetryOperationAsync(client, {EStatus::TRANSPORT_UNAVAILABLE}, true, TRetryOperationSettings().Idempotent(true));
-        TestRetryOperationAsync(client, {EStatus::NOT_FOUND}, false, TRetryOperationSettings().RetryNotFound(false));
-        TestRetryOperationAsync(client, {EStatus::UNDETERMINED}, false, TRetryOperationSettings().Idempotent(false));
-        TestRetryOperationAsync(client, {EStatus::TRANSPORT_UNAVAILABLE}, false, TRetryOperationSettings().Idempotent(false));
-
-        driver.Stop(true);
-    }
-
-    Y_UNIT_TEST(RetryOperationSync) {
-        TKikimrWithGrpcAndRootSchema server;
-        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
-        NYdb::NTable::TTableClient client(driver);
-
-        TestRetryOperationSync(client, GetRetriableAlwaysStatuses(), true);
-        TestRetryOperationSync(client, {EStatus::NOT_FOUND}, true, TRetryOperationSettings().RetryNotFound(true));
-        TestRetryOperationSync(client, {EStatus::UNDETERMINED}, true, TRetryOperationSettings().Idempotent(true));
-        TestRetryOperationSync(client, {EStatus::TRANSPORT_UNAVAILABLE}, true, TRetryOperationSettings().Idempotent(true));
-        TestRetryOperationSync(client, {EStatus::NOT_FOUND}, false, TRetryOperationSettings().RetryNotFound(false));
-        TestRetryOperationSync(client, {EStatus::UNDETERMINED}, false, TRetryOperationSettings().Idempotent(false));
-        TestRetryOperationSync(client, {EStatus::TRANSPORT_UNAVAILABLE}, false, TRetryOperationSettings().Idempotent(false));
-
-        driver.Stop(true);
-    }
-
-    Y_UNIT_TEST(RetryOperationLimitedDuration) {
-        TKikimrWithGrpcAndRootSchema server;
-        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
-        NYdb::NTable::TTableClient client(driver);
-
-        const size_t MaxRetries = 3; // OVERLOADED error has slow backoff policy, 2 retries takes about 2 sec
-        const double MaxDurationSec = 0.5; // Less than 2 sec, should be enough to fail on retry with duration limit
-        const auto retrySettings = TRetryOperationSettings().MaxRetries(MaxRetries).Verbose(true);
-        const auto retrySettingsLimited = TRetryOperationSettings(retrySettings).MaxTimeout(TDuration::Seconds(MaxDurationSec));
-        size_t retryNumber = 0;
-
-        // Asynchronous version
-        auto operation = [&retryNumber] (TSession /*session*/) -> TAsyncStatus {
-            if (retryNumber++ < MaxRetries) {
-                return NThreading::MakeFuture(TStatus(EStatus::OVERLOADED, {}));
-            }
-            return NThreading::MakeFuture(TStatus(EStatus::SUCCESS, {}));
-        };
-
-        retryNumber = 0;
-        UNIT_ASSERT(client.RetryOperation(operation, retrySettings).GetValueSync().IsSuccess());
-
-        retryNumber = 0;
-        UNIT_ASSERT(!client.RetryOperation(operation, retrySettingsLimited).GetValueSync().IsSuccess());
-
-        // Synchronous version
-        auto operationSync = [&retryNumber] (TSession /*session*/) -> TStatus {
-            if (retryNumber++ < MaxRetries) {
-                return TStatus(EStatus::OVERLOADED, {});
-            }
-            return TStatus(EStatus::SUCCESS, {});
-        };
-
-        retryNumber = 0;
-        UNIT_ASSERT(client.RetryOperationSync(operationSync, retrySettings).IsSuccess());
-
-        retryNumber = 0;
-        UNIT_ASSERT(!client.RetryOperationSync(operationSync, retrySettingsLimited).IsSuccess());
-
         driver.Stop(true);
     }
 
@@ -2200,6 +2285,291 @@ R"___(<main>: Error: Transaction not found: , code: 2015
         )___", TTxControl::BeginTx().CommitTx(), std::move(params)).ExtractValueSync();
         result.GetIssues().PrintTo(Cerr);
         UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::BAD_REQUEST);
+    }
+
+    Y_UNIT_TEST(SessionsServerLimit) {
+        NKikimrConfig::TAppConfig appConfig;
+        auto& tableServiceConfig = *appConfig.MutableTableServiceConfig();
+        tableServiceConfig.SetSessionsLimitPerNode(2);
+
+        TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+        NYdb::NTable::TTableClient client(driver);
+        auto sessionResult = client.CreateSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+        auto session1 = sessionResult.GetSession();
+
+        sessionResult = client.CreateSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+        auto session2 = sessionResult.GetSession();
+
+        sessionResult = client.CreateSession().ExtractValueSync();
+        sessionResult.GetIssues().PrintTo(Cerr);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::OVERLOADED);
+
+        auto status = session1.Close().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(status.IsTransportError(), false);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(status.GetStatus(), EStatus::SUCCESS);
+
+        auto result = session2.ExecuteDataQuery(R"___(
+            SELECT 1;
+        )___", TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        sessionResult = client.CreateSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+
+        sessionResult = client.CreateSession().ExtractValueSync();
+        sessionResult.GetIssues().PrintTo(Cerr);
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::OVERLOADED);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+    }
+
+    Y_UNIT_TEST(SessionsServerLimitWithSessionPool) {
+        NKikimrConfig::TAppConfig appConfig;
+        auto& tableServiceConfig = *appConfig.MutableTableServiceConfig();
+        tableServiceConfig.SetSessionsLimitPerNode(2);
+
+        TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+        NYdb::NTable::TTableClient client(driver);
+        auto sessionResult1 = client.GetSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult1.GetStatus(), EStatus::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+        auto session1 = sessionResult1.GetSession();
+
+        auto sessionResult2 = client.GetSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult2.GetStatus(), EStatus::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 2);
+        auto session2 = sessionResult2.GetSession();
+
+        {
+            auto sessionResult3 = client.GetSession().ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(sessionResult3.GetStatus(), EStatus::OVERLOADED);
+            UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 3);
+        }
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 2);
+
+        auto status = session1.Close().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(status.IsTransportError(), false);
+        UNIT_ASSERT_VALUES_EQUAL(status.GetStatus(), EStatus::SUCCESS);
+
+        // Close doesnt free session from user perspective,
+        // the value of ActiveSessionsCounter will be same after Close() call.
+        // Probably we want to chenge this contract
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 2);
+
+        auto result = session2.ExecuteDataQuery(R"___(
+            SELECT 1;
+        )___", TTxControl::BeginTx().CommitTx()).ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
+
+        sessionResult1 = client.GetSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult1.GetStatus(), EStatus::SUCCESS);
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult1.GetSession().GetId().empty(), false);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 3);
+
+        auto sessionResult3 = client.GetSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult3.GetStatus(), EStatus::OVERLOADED);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 4);
+
+        auto tmp = client.GetSession().ExtractValueSync();
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 5);
+        sessionResult1 = tmp; // here we reset previous created session object,
+                              // so perform close rpc call implicitly and delete it
+        UNIT_ASSERT_VALUES_EQUAL(sessionResult1.GetStatus(), EStatus::OVERLOADED);
+        UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 4);
+    }
+
+    Y_UNIT_TEST(CloseSessionAfterDriverDtorWithoutSessionPool) {
+        NKikimrConfig::TAppConfig appConfig;
+
+        TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        TVector<TString> sessionIds;
+        int iterations = 50;
+
+        while (iterations--) {
+            NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+            NYdb::NTable::TTableClient client(driver);
+            auto sessionResult = client.CreateSession().ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+            UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+            auto session1 = sessionResult.GetSession();
+            sessionIds.push_back(session1.GetId());
+        }
+
+        std::shared_ptr<grpc::Channel> channel;
+        channel = grpc::CreateChannel("localhost:" + ToString(server.GetPort()), grpc::InsecureChannelCredentials());
+        auto stub = Ydb::Table::V1::TableService::NewStub(channel);
+        for (const auto& sessionId : sessionIds) {
+            grpc::ClientContext context;
+            Ydb::Table::KeepAliveRequest request;
+            request.set_session_id(sessionId);
+            Ydb::Table::KeepAliveResponse response;
+            auto status = stub->KeepAlive(&context, request, &response);
+            UNIT_ASSERT(status.ok());
+            auto deferred = response.operation();
+            UNIT_ASSERT(deferred.ready() == true);
+            UNIT_ASSERT_VALUES_EQUAL(deferred.status(), Ydb::StatusIds::BAD_SESSION);
+        }
+    }
+
+    Y_UNIT_TEST(CloseSessionWithSessionPoolExplicit) {
+        NKikimrConfig::TAppConfig appConfig;
+
+        TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        TVector<TString> sessionIds;
+        int iterations = 100;
+
+        while (iterations--) {
+            NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+            NYdb::NTable::TTableClient client(driver);
+            //TODO: remove this scope after session tracker implementation
+            {
+                auto sessionResult = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+                UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+                auto session1 = sessionResult.GetSession();
+                sessionIds.push_back(session1.GetId());
+
+                sessionResult = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 2);
+                UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+                // Here previous created session will be returnet to session pool
+                session1 = sessionResult.GetSession();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+                sessionIds.push_back(session1.GetId());
+            }
+
+            if (RandomNumber<ui32>(10) == 5) {
+                client.Stop().Apply([client](NThreading::TFuture<void> future){
+                    UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 0);
+                    return future;
+                }).Wait();
+            } else {
+                client.Stop().Wait();
+            }
+
+            if (iterations & 4) {
+                driver.Stop(true);
+            }
+        }
+
+        std::shared_ptr<grpc::Channel> channel;
+        channel = grpc::CreateChannel("localhost:" + ToString(server.GetPort()), grpc::InsecureChannelCredentials());
+        auto stub = Ydb::Table::V1::TableService::NewStub(channel);
+        for (const auto& sessionId : sessionIds) {
+            grpc::ClientContext context;
+            Ydb::Table::KeepAliveRequest request;
+            request.set_session_id(sessionId);
+            Ydb::Table::KeepAliveResponse response;
+            auto status = stub->KeepAlive(&context, request, &response);
+            UNIT_ASSERT(status.ok());
+            auto deferred = response.operation();
+            UNIT_ASSERT(deferred.ready() == true);
+            UNIT_ASSERT(deferred.status() == Ydb::StatusIds::BAD_SESSION);
+        }
+    }
+
+    Y_UNIT_TEST(CloseSessionWithSessionPoolExplicitDriverStopOnly) {
+        NKikimrConfig::TAppConfig appConfig;
+
+        TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        TVector<TString> sessionIds;
+        int iterations = 100;
+
+        while (iterations--) {
+            NYdb::TDriver driver(TDriverConfig().SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+            NYdb::NTable::TTableClient client(driver);
+            //TODO: remove this scope after session tracker implementation
+            {
+                auto sessionResult = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+                UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+                auto session1 = sessionResult.GetSession();
+                sessionIds.push_back(session1.GetId());
+
+                sessionResult = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 2);
+                UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+                // Here previous created session will be returnet to session pool
+                session1 = sessionResult.GetSession();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+                sessionIds.push_back(session1.GetId());
+            }
+            driver.Stop(true);
+        }
+
+        std::shared_ptr<grpc::Channel> channel;
+        channel = grpc::CreateChannel("localhost:" + ToString(server.GetPort()), grpc::InsecureChannelCredentials());
+        auto stub = Ydb::Table::V1::TableService::NewStub(channel);
+        for (const auto& sessionId : sessionIds) {
+            grpc::ClientContext context;
+            Ydb::Table::KeepAliveRequest request;
+            request.set_session_id(sessionId);
+            Ydb::Table::KeepAliveResponse response;
+            auto status = stub->KeepAlive(&context, request, &response);
+            UNIT_ASSERT(status.ok());
+            auto deferred = response.operation();
+            UNIT_ASSERT(deferred.ready() == true);
+            UNIT_ASSERT(deferred.status() == Ydb::StatusIds::BAD_SESSION);
+        }
+    }
+
+    Y_UNIT_TEST(CloseSessionWithSessionPoolFromDtors) {
+        NKikimrConfig::TAppConfig appConfig;
+
+        TKikimrWithGrpcAndRootSchema server(appConfig);
+
+        TVector<TString> sessionIds;
+        int iterations = 100;
+
+        while (iterations--) {
+            NYdb::TDriver driver(TDriverConfig()
+                .SetEndpoint(TStringBuilder() << "localhost:" << server.GetPort()));
+            NYdb::NTable::TTableClient client(driver);
+            //TODO: remove this scope after session tracker implementation
+            {
+                auto sessionResult = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+                UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+                auto session1 = sessionResult.GetSession();
+                sessionIds.push_back(session1.GetId());
+
+                sessionResult = client.GetSession().ExtractValueSync();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 2);
+                UNIT_ASSERT_VALUES_EQUAL(sessionResult.GetStatus(), EStatus::SUCCESS);
+                // Here previous created session will be returnet to session pool
+                session1 = sessionResult.GetSession();
+                UNIT_ASSERT_VALUES_EQUAL(client.GetActiveSessionCount(), 1);
+                sessionIds.push_back(session1.GetId());
+            }
+        }
+
+        std::shared_ptr<grpc::Channel> channel;
+        channel = grpc::CreateChannel("localhost:" + ToString(server.GetPort()), grpc::InsecureChannelCredentials());
+        auto stub = Ydb::Table::V1::TableService::NewStub(channel);
+        for (const auto& sessionId : sessionIds) {
+            grpc::ClientContext context;
+            Ydb::Table::KeepAliveRequest request;
+            request.set_session_id(sessionId);
+            Ydb::Table::KeepAliveResponse response;
+            auto status = stub->KeepAlive(&context, request, &response);
+            UNIT_ASSERT(status.ok());
+            auto deferred = response.operation();
+            UNIT_ASSERT(deferred.ready() == true);
+            UNIT_ASSERT(deferred.status() == Ydb::StatusIds::BAD_SESSION);
+        }
     }
 
     Y_UNIT_TEST(DeleteTableWithDeletedIndex) {
@@ -2442,20 +2812,10 @@ R"___(<main>: Error: Transaction not found: , code: 2015
             auto settings = NYdb::NTable::TAlterTableSettings()
                 .AppendAddIndexes({TIndexDescription("NewIndex", {"Value"})});
 
-            // Check that forget_after is not supported
-            {
-                auto settingsWithForgetAfter = settings;
-                settingsWithForgetAfter.ForgetAfter(TDuration::Hours(1));
-                auto result = session.AlterTableLong("/Root/Test", settingsWithForgetAfter).ExtractValueSync();
-                UNIT_ASSERT(!result.Status().IsSuccess());
-                UNIT_ASSERT_C(result.Ready(), result.Status().GetIssues().ToString());
-                UNIT_ASSERT_VALUES_EQUAL_C(result.Status().GetStatus(), NYdb::EStatus::UNSUPPORTED, result.Status().GetIssues().ToString());
-            }
-
             auto result = session.AlterTableLong("/Root/Test", settings).ExtractValueSync();
 
             // Build index is async operation
-            UNIT_ASSERT_C(!result.Ready(), result.Status().GetIssues().ToString());
+            UNIT_ASSERT(!result.Ready());
 
             NYdb::NOperation::TOperationClient operationClient(driver);
 

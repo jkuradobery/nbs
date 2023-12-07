@@ -8,7 +8,6 @@
 #include "yql_constraint.h"
 #include "yql_pos_handle.h"
 
-#include <ydb/library/yql/core/url_lister/interface/url_lister_manager.h>
 #include <ydb/library/yql/utils/yql_panic.h>
 #include <ydb/library/yql/public/issue/yql_issue_manager.h>
 #include <ydb/library/yql/public/udf/udf_data_type.h>
@@ -46,9 +45,9 @@
     #define ENSURE_NOT_FROZEN_CTX \
         YQL_ENSURE(!Frozen, "Change in frozen expr context.");
 #else
-    #define ENSURE_NOT_DELETED Y_DEBUG_ABORT_UNLESS(!Dead(), "Access to dead node # %lu: %d '%s'", UniqueId_, (int)Type_, TString(ContentUnchecked()).data());
-    #define ENSURE_NOT_FROZEN Y_DEBUG_ABORT_UNLESS(!Frozen());
-    #define ENSURE_NOT_FROZEN_CTX Y_DEBUG_ABORT_UNLESS(!Frozen);
+    #define ENSURE_NOT_DELETED Y_VERIFY_DEBUG(!Dead(), "Access to dead node # %lu: %d '%s'", UniqueId_, (int)Type_, TString(ContentUnchecked()).data());
+    #define ENSURE_NOT_FROZEN Y_VERIFY_DEBUG(!Frozen());
+    #define ENSURE_NOT_FROZEN_CTX Y_VERIFY_DEBUG(!Frozen);
 #endif
 
 namespace NYql {
@@ -81,6 +80,7 @@ class TFlowExprType;
 class TEmptyListExprType;
 class TEmptyDictExprType;
 class TBlockExprType;
+class TChunkedBlockExprType;
 class TScalarExprType;
 
 const size_t DefaultMistypeDistance = 3;
@@ -115,6 +115,7 @@ struct TTypeAnnotationVisitor {
     virtual void Visit(const TEmptyListExprType& type) = 0;
     virtual void Visit(const TEmptyDictExprType& type) = 0;
     virtual void Visit(const TBlockExprType& type) = 0;
+    virtual void Visit(const TChunkedBlockExprType& type) = 0;
     virtual void Visit(const TScalarExprType& type) = 0;
 };
 
@@ -133,7 +134,6 @@ enum ETypeAnnotationFlags : ui32 {
     TypeHasNestedOptional = 0x800,
     TypeNonPresortable = 0x1000,
     TypeHasDynamicSize = 0x2000,
-    TypeNonComparableInternal = 0x4000,
 };
 
 const ui64 TypeHashMagic = 0x10000;
@@ -215,10 +215,6 @@ public:
         return IsPersistable() && (GetFlags() & TypeNonComparable) == 0;
     }
 
-    bool IsComparableInternal() const {
-        return IsPersistable() && (GetFlags() & TypeNonComparableInternal) == 0;
-    }
-
     bool HasNull() const {
         return (GetFlags() & TypeHasNull) != 0;
     }
@@ -241,15 +237,8 @@ public:
     }
 
     bool IsBlockOrScalar() const {
-        return IsBlock() || IsScalar();
-    }
-
-    bool IsBlock() const {
-        return GetKind() == ETypeAnnotationKind::Block;
-    }
-
-    bool IsScalar() const {
-        return GetKind() == ETypeAnnotationKind::Scalar;
+        auto kind = GetKind();
+        return kind == ETypeAnnotationKind::Block || kind == ETypeAnnotationKind::Scalar;
     }
 
     bool HasFixedSizeRepr() const {
@@ -501,7 +490,7 @@ public:
     }
 
     static ui64 MakeHash(const TVector<const TItemExprType*>& items) {
-        Y_DEBUG_ABORT_UNLESS(IsSorted(items.begin(), items.end(), TItemLess()));
+        Y_VERIFY_DEBUG(IsSorted(items.begin(), items.end(), TItemLess()));
         ui64 hash = TypeHashMagic | (ui64)ETypeAnnotationKind::Struct;
         hash = StreamHash(items.size(), hash);
         for (const auto& item : items) {
@@ -561,20 +550,6 @@ public:
         }
 
         return true;
-    }
-
-
-    TString ToString() const {
-        TStringBuilder sb;
-
-        for (std::size_t i = 0; i < Items.size(); i++) {
-            sb << i << ": " << Items[i]->GetName() << "(" << FormatType(Items[i]->GetItemType()) << ")";
-            if (i != Items.size() - 1) {
-                sb << ", ";
-            }
-        }
-
-        return sb;
     }
 
 private:
@@ -689,6 +664,33 @@ private:
     const TTypeAnnotationNode* ItemType;
 };
 
+class TChunkedBlockExprType : public TTypeAnnotationNode {
+public:
+    static constexpr ETypeAnnotationKind KindValue = ETypeAnnotationKind::ChunkedBlock;
+
+    TChunkedBlockExprType(ui64 hash, const TTypeAnnotationNode* itemType)
+        : TTypeAnnotationNode(KindValue, itemType->GetFlags() | TypeNonPersistable, hash)
+        , ItemType(itemType)
+    {
+    }
+
+    static ui64 MakeHash(const TTypeAnnotationNode* itemType) {
+        ui64 hash = TypeHashMagic | (ui64)ETypeAnnotationKind::ChunkedBlock;
+        return StreamHash(itemType->GetHash(), hash);
+    }
+
+    const TTypeAnnotationNode* GetItemType() const {
+        return ItemType;
+    }
+
+    bool operator==(const TChunkedBlockExprType& other) const {
+        return GetItemType() == other.GetItemType();
+    }
+
+private:
+    const TTypeAnnotationNode* ItemType;
+};
+
 class TScalarExprType : public TTypeAnnotationNode {
 public:
     static constexpr ETypeAnnotationKind KindValue = ETypeAnnotationKind::Scalar;
@@ -739,7 +741,6 @@ public:
 
         if (!(props & NUdf::CanCompare)) {
             ret |= TypeNonComparable;
-            ret |= TypeNonComparableInternal;
         }
 
         if (slot == NUdf::EDataSlot::Yson) {
@@ -1400,6 +1401,9 @@ inline bool TTypeAnnotationNode::Equals(const TTypeAnnotationNode& node) const {
     case ETypeAnnotationKind::Block:
         return static_cast<const TBlockExprType&>(*this) == static_cast<const TBlockExprType&>(node);
 
+    case ETypeAnnotationKind::ChunkedBlock:
+        return static_cast<const TChunkedBlockExprType&>(*this) == static_cast<const TChunkedBlockExprType&>(node);
+
     case ETypeAnnotationKind::Scalar:
         return static_cast<const TScalarExprType&>(*this) == static_cast<const TScalarExprType&>(node);
 
@@ -1462,6 +1466,8 @@ inline void TTypeAnnotationNode::Accept(TTypeAnnotationVisitor& visitor) const {
         return visitor.Visit(static_cast<const TMultiExprType&>(*this));
     case ETypeAnnotationKind::Block:
         return visitor.Visit(static_cast<const TBlockExprType&>(*this));
+    case ETypeAnnotationKind::ChunkedBlock:
+        return visitor.Visit(static_cast<const TChunkedBlockExprType&>(*this));
     case ETypeAnnotationKind::Scalar:
         return visitor.Visit(static_cast<const TScalarExprType&>(*this));
     case ETypeAnnotationKind::LastType:
@@ -1664,16 +1670,6 @@ public:
     bool IsComplete() const {
         YQL_ENSURE(HasLambdaScope);
         return !OuterLambda;
-    }
-
-    bool IsLiteralList() const {
-        YQL_ENSURE(IsList());
-        return LiteralList;
-    }
-
-    void SetLiteralList(bool literal) {
-        YQL_ENSURE(IsList());
-        LiteralList = literal;
     }
 
     void Ref() {
@@ -1985,7 +1981,7 @@ public:
     }
 
     ui64 GetHash() const {
-        Y_DEBUG_ABORT_UNLESS(HashAbove == HashBelow);
+        Y_VERIFY_DEBUG(HashAbove == HashBelow);
         return HashAbove;
     }
 
@@ -2026,7 +2022,7 @@ public:
     }
 
     void SetDependencyScope(const TExprNode* outerLambda, const TExprNode* innerLambda) {
-        Y_DEBUG_ABORT_UNLESS(outerLambda == innerLambda || outerLambda->GetLambdaLevel() < innerLambda->GetLambdaLevel(), "Wrong scope of closures.");
+        Y_VERIFY_DEBUG(outerLambda == innerLambda || outerLambda->GetLambdaLevel() < innerLambda->GetLambdaLevel(), "Wrong scope of closures.");
         HasLambdaScope = 1;
         OuterLambda = outerLambda;
         InnerLambda = innerLambda;
@@ -2056,9 +2052,9 @@ public:
     }
 
     ~TExprNode() {
-        Y_ABORT_UNLESS(Dead(), "Node (id: %lu, type: %s, content: '%s') not dead on destruction.",
+        Y_VERIFY(Dead(), "Node (id: %lu, type: %s, content: '%s') not dead on destruction.",
             UniqueId_, ToString(Type_).data(),  TString(ContentUnchecked()).data());
-        Y_ABORT_UNLESS(!UseCount(), "Node (id: %lu, type: %s, content: '%s') has non-zero use count on destruction.",
+        Y_VERIFY(!UseCount(), "Node (id: %lu, type: %s, content: '%s') has non-zero use count on destruction.",
             UniqueId_, ToString(Type_).data(),  TString(ContentUnchecked()).data());
     }
 
@@ -2088,7 +2084,6 @@ private:
         , UsedInDependsOn(0)
         , UnordChildren(0)
         , ShallBeDisclosed(0)
-        , LiteralList(0)
     {}
 
     TExprNode(const TExprNode&) = delete;
@@ -2155,7 +2150,6 @@ private:
         ui8 UsedInDependsOn : 1;
         ui8 UnordChildren   : 1;
         ui8 ShallBeDisclosed: 1;
-        ui8 LiteralList     : 1;
     };
 };
 
@@ -2196,10 +2190,10 @@ using TModulesTable = THashMap<TString, TExportTable>;
 class IModuleResolver {
 public:
     typedef std::shared_ptr<IModuleResolver> TPtr;
-    virtual bool AddFromFile(const std::string_view& file, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos = {}) = 0;
-    virtual bool AddFromUrl(const std::string_view& file, const std::string_view& url, const std::string_view& tokenName, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos = {}) = 0;
-    virtual bool AddFromMemory(const std::string_view& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos = {}) = 0;
-    virtual bool AddFromMemory(const std::string_view& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TPosition pos, TString& moduleName, std::vector<TString>* exports = nullptr, std::vector<TString>* imports = nullptr) = 0;
+    virtual bool AddFromFile(const TStringBuf& file, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion) = 0;
+    virtual bool AddFromUrl(const TStringBuf& file, const TStringBuf& url, const TStringBuf& tokenName, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion) = 0;
+    virtual bool AddFromMemory(const TStringBuf& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion) = 0;
+    virtual bool AddFromMemory(const TStringBuf& file, const TString& body, TExprContext& ctx, ui16 syntaxVersion, ui32 packageVersion, TString& moduleName, std::vector<TString>* exports = nullptr, std::vector<TString>* imports = nullptr) = 0;
     virtual bool Link(TExprContext& ctx) = 0;
     virtual void UpdateNextUniqueId(TExprContext& ctx) const = 0;
     virtual ui64 GetNextUniqueId() const = 0;
@@ -2211,8 +2205,6 @@ public:
     Parent resolver should be alive while using child due to raw data sharing.
     */
     virtual IModuleResolver::TPtr CreateMutableChild() const = 0;
-    virtual void SetFileAliasPrefix(TString&& prefix) = 0;
-    virtual TString GetFileAliasPrefix() const = 0;
     virtual ~IModuleResolver() = default;
 };
 
@@ -2403,6 +2395,11 @@ struct TMakeTypeImpl<TBlockExprType> {
 };
 
 template <>
+struct TMakeTypeImpl<TChunkedBlockExprType> {
+    static const TChunkedBlockExprType* Make(TExprContext& ctx, const TTypeAnnotationNode* itemType);
+};
+
+template <>
 struct TMakeTypeImpl<TScalarExprType> {
     static const TScalarExprType* Make(TExprContext& ctx, const TTypeAnnotationNode* itemType);
 };
@@ -2543,13 +2540,6 @@ struct TExprContext : private TNonCopyable {
         return node;
     }
 
-    TExprNode::TPtr NewAtom(TPositionHandle pos, ui32 index) {
-        ++NodeAllocationCounter;
-        const auto node = TExprNode::NewAtom(AllocateNextUniqueId(), pos, GetIndexAsString(index), TNodeFlags::Default);
-        ExprNodes.emplace_back(node.Get());
-        return node;
-    }
-
     TExprNode::TPtr NewArgument(TPositionHandle pos, const TStringBuf& name) {
         ++NodeAllocationCounter;
         const auto node = TExprNode::NewArgument(AllocateNextUniqueId(), pos, AppendString(name));
@@ -2608,10 +2598,6 @@ struct TExprContext : private TNonCopyable {
 
     TExprNode::TPtr NewAtom(TPosition pos, const TStringBuf& content, ui32 flags = TNodeFlags::ArbitraryContent) {
         return NewAtom(AppendPosition(pos), content, flags);
-    }
-
-    TExprNode::TPtr NewAtom(TPosition pos, ui32 index) {
-        return NewAtom(AppendPosition(pos), index);
     }
 
     TExprNode::TPtr NewArgument(TPosition pos, const TStringBuf& name) {
@@ -2744,12 +2730,10 @@ private:
 };
 
 bool CompileExpr(TAstNode& astRoot, TExprNode::TPtr& exprRoot, TExprContext& ctx,
-    IModuleResolver* resolver, IUrlListerManager* urlListerManager,
-    bool hasAnnotations = false, ui32 typeAnnotationIndex = Max<ui32>(), ui16 syntaxVersion = 0);
+    IModuleResolver* resolver, bool hasAnnotations = false, ui32 typeAnnotationIndex = Max<ui32>(), ui16 syntaxVersion = 0);
 
 bool CompileExpr(TAstNode& astRoot, TExprNode::TPtr& exprRoot, TExprContext& ctx,
-    IModuleResolver* resolver, IUrlListerManager* urlListerManager,
-    ui32 annotationFlags, ui16 syntaxVersion = 0);
+    IModuleResolver* resolver, ui32 annotationFlags, ui16 syntaxVersion = 0);
 
 struct TLibraryCohesion {
     TExportTable Exports;
@@ -2791,8 +2775,6 @@ TString SubstParameters(const TString& str, const TMaybe<NYT::TNode>& params, TS
 
 const TTypeAnnotationNode* GetSeqItemType(const TTypeAnnotationNode* seq);
 const TTypeAnnotationNode& GetSeqItemType(const TTypeAnnotationNode& seq);
-
-const TTypeAnnotationNode& RemoveOptionality(const TTypeAnnotationNode& type);
 
 } // namespace NYql
 

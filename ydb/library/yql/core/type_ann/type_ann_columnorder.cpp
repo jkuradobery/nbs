@@ -42,42 +42,30 @@ void AddPrefix(TVector<TString>& columnOrder, const TString& prefix) {
 IGraphTransformer::TStatus OrderForPgSetItem(const TExprNode::TPtr& node, TExprNode::TPtr& output, TExtContext& ctx) {
     Y_UNUSED(output);
     TVector<TString> columnOrder;
-    if (auto targetColumnsOption = GetSetting(node->Tail(), "target_columns")) {
-        TExprNode::TPtr targetColumns = targetColumnsOption->Child(1);
-        for (const auto& targetColumn : targetColumns->ChildrenList()) {
-            columnOrder.emplace_back(targetColumn->Content());
-        }
-    } else {
-        auto result = GetSetting(node->Tail(), "result");
-        auto emitPgStar = GetSetting(node->Tail(), "emit_pg_star");
-        if (result) {
-            for (size_t i = 0; i < result->Tail().ChildrenSize(); i++) {
-                auto col = result->Tail().Child(i);
-                if (col->Head().IsAtom()) {
-                    auto alias = TString(col->Head().Content());
-                    YQL_ENSURE(!alias.empty());
-                    if (!emitPgStar) {
-                        columnOrder.push_back(alias);
-                    }
-                }
-                else {
-                    YQL_ENSURE(col->Head().IsList());
-                    for (const auto& x : col->Head().Children()) {
-                        auto alias = TString(x->Content());
-                        YQL_ENSURE(!alias.empty());
-                        columnOrder.push_back(alias);
-                    }
-                }
-            }
-        } else {
-            auto values = GetSetting(node->Tail(), "values");
-            YQL_ENSURE(values);
-            TExprNode::TPtr valuesList = values->Child(1);
-            for (size_t i = 0; i < valuesList->ChildrenSize(); i++) {
-                auto alias = TString(valuesList->Child(i)->Content());
+    auto result = GetSetting(node->Tail(), "result");
+    if (result) {
+        for (auto& col : result->Tail().ChildrenList()) {
+            if (col->Head().IsAtom()) {
+                auto alias = TString(col->Head().Content());
                 YQL_ENSURE(!alias.empty());
                 columnOrder.push_back(alias);
             }
+            else {
+                YQL_ENSURE(col->Head().IsList());
+                for (const auto& x : col->Head().Children()) {
+                    auto alias = TString(x->Content());
+                    YQL_ENSURE(!alias.empty());
+                    columnOrder.push_back(alias);
+                }
+            }
+        }
+    } else {
+        auto values = GetSetting(node->Tail(), "values");
+        YQL_ENSURE(values);
+        for (const auto& x : values->Child(1)->Children()) {
+            auto alias = TString(x->Content());
+            YQL_ENSURE(!alias.empty());
+            columnOrder.push_back(alias);
         }
     }
 
@@ -268,29 +256,6 @@ IGraphTransformer::TStatus OrderForEquiJoin(const TExprNode::TPtr& node, TExprNo
 
     return ctx.Types.SetColumnOrder(*node, resultColumnOrder, ctx.Expr);
 };
-
-IGraphTransformer::TStatus OrderForCalcOverWindow(const TExprNode::TPtr& node, TExprNode::TPtr& output, TExtContext& ctx) {
-    Y_UNUSED(output);
-
-    auto inputOrder = ctx.Types.LookupColumnOrder(node->Head());
-    if (!inputOrder) {
-        return IGraphTransformer::TStatus::Ok;
-    }
-
-    const TStructExprType* inputType = node->Head().GetTypeAnn()->Cast<TListExprType>()->GetItemType()->Cast<TStructExprType>();
-    const TStructExprType* outputType = node->GetTypeAnn()->Cast<TListExprType>()->GetItemType()->Cast<TStructExprType>();
-
-    // we simply add new CalcOverWindow columns after original input columns
-    TVector<TString> resultOrder = *inputOrder;
-    for (auto& item : outputType->GetItems()) {
-        auto col = item->GetName();
-        if (!inputType->FindItem(col)) {
-            resultOrder.emplace_back(col);
-        }
-    }
-
-    return ctx.Types.SetColumnOrder(*node, resultOrder, ctx.Expr);
-}
 
 IGraphTransformer::TStatus OrderFromFirst(const TExprNode::TPtr& node, TExprNode::TPtr& output, TExtContext& ctx) {
     Y_UNUSED(output);

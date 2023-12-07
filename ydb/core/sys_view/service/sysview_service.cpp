@@ -7,16 +7,13 @@
 #include <ydb/core/sys_view/common/events.h>
 #include <ydb/core/base/path.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tablet/tablet_counters_aggregator.h>
 #include <ydb/core/tx/scheme_cache/scheme_cache.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <library/cpp/time_provider/time_provider.h>
-
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 using namespace NActors;
 
@@ -385,6 +382,7 @@ public:
     }
 
     STFUNC(StateWork) {
+        Y_UNUSED(ctx);
         switch(ev->GetTypeRewrite()) {
             hFunc(TEvSysView::TEvCollectQueryStats, Handle);
             hFunc(TEvSysView::TEvGetQueryStats, Handle);
@@ -945,7 +943,7 @@ private:
         using TNavigate = NSchemeCache::TSchemeCacheNavigate;
 
         THolder<TNavigate> request(ev->Get()->Request.Release());
-        Y_ABORT_UNLESS(request->ResultSet.size() == 1);
+        Y_VERIFY(request->ResultSet.size() == 1);
         auto& entry = request->ResultSet.back();
 
         if (entry.RequestType == TNavigate::TEntry::ERequestType::ByTableId) {
@@ -1214,14 +1212,14 @@ private:
     static constexpr TDuration ProcessCountersInterval = TDuration::Seconds(5);
 };
 
-THolder<NActors::IActor> CreateSysViewService(
+THolder<IActor> CreateSysViewService(
     TExtCountersConfig&& config, bool hasExternalCounters)
 {
     return MakeHolder<TSysViewService>(
         std::move(config), hasExternalCounters, EProcessorMode::MINUTE);
 }
 
-THolder<NActors::IActor> CreateSysViewServiceForTests() {
+THolder<IActor> CreateSysViewServiceForTests() {
     return MakeHolder<TSysViewService>(
         TExtCountersConfig(), true, EProcessorMode::FAST);
 }

@@ -3,14 +3,14 @@
 #include "appdata.h"
 #include "tablet.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <ydb/core/cms/cms.h>
 #include <ydb/core/cms/console/console.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/map.h>
 #include <util/generic/hash_set.h>
@@ -125,8 +125,8 @@ public:
         , BoardInfo(board)
         , SchemeBoardInfo(schemeBoard)
     {
-        Y_ABORT_UNLESS(GroupId == board->StateStorageGroup);
-        Y_ABORT_UNLESS(GroupId == schemeBoard->StateStorageGroup);
+        Y_VERIFY(GroupId == board->StateStorageGroup);
+        Y_VERIFY(GroupId == schemeBoard->StateStorageGroup);
     }
 
     void Bootstrap()

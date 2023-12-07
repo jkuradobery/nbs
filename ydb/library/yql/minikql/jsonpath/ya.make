@@ -31,7 +31,6 @@ PEERDIR(
     ydb/library/yql/minikql/dom
     ydb/library/yql/public/issue
     ydb/library/yql/public/udf
-    ydb/library/yql/ast
     ydb/library/yql/utils
     ydb/library/yql/core/issue/protos
     ydb/library/yql/parser/proto_ast
@@ -52,10 +51,6 @@ SRCS(
 GENERATE_ENUM_SERIALIZATION(ast_nodes.h)
 
 END()
-
-RECURSE(
-    benchmark
-)
 
 RECURSE_FOR_TESTS(
     ut

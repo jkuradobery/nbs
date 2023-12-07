@@ -1,140 +1,175 @@
-#include "filter.h"
 #include "defs.h"
-#include "reader/read_metadata.h"
-
-#include <ydb/core/formats/arrow/arrow_helpers.h>
-#include <ydb/core/formats/arrow/custom_registry.h>
-#include <ydb/core/formats/arrow/program.h>
+#include "filter.h"
+#include "indexed_read_data.h"
+#include <ydb/core/formats/arrow_helpers.h>
 
 namespace NKikimr::NOlap {
 
-template <class TArrayView>
-class TChunkedArrayIterator {
-private:
-    const arrow::ArrayVector* Chunks;
-    const typename TArrayView::value_type* RawView;
-    arrow::ArrayVector::const_iterator CurrentChunkIt;
-    ui32 CurrentChunkPosition = 0;
-public:
-    TChunkedArrayIterator(const std::shared_ptr<arrow::ChunkedArray>& chunks)
-    {
-        AFL_VERIFY(!!chunks);
-        Chunks = &chunks->chunks();
-        AFL_VERIFY(Chunks->size());
-        CurrentChunkIt = Chunks->begin();
-        Y_ABORT_UNLESS(chunks->type()->id() == arrow::TypeTraits<typename TArrayView::TypeClass>::type_singleton()->id());
-        if (IsValid()) {
-            RawView = std::static_pointer_cast<TArrayView>(*CurrentChunkIt)->raw_values();
+std::vector<bool> MakeSnapshotFilter(std::shared_ptr<arrow::Table> table,
+                                     std::shared_ptr<arrow::Schema> snapSchema,
+                                     ui64 planStep, ui64 txId) {
+    Y_VERIFY(table);
+    Y_VERIFY(snapSchema);
+    Y_VERIFY(snapSchema->num_fields() == 2);
+
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> snapColumns;
+    snapColumns.reserve(snapSchema->num_fields());
+    for (auto& field : snapSchema->fields()) {
+        snapColumns.push_back(table->GetColumnByName(field->name()));
+        Y_VERIFY(snapColumns.back());
+    }
+
+    bool alwaysTrue = true;
+    std::vector<bool> bits;
+    bits.reserve(snapColumns[0]->length());
+
+    for (int ch = 0; ch < snapColumns[0]->num_chunks(); ++ch) {
+        auto steps = snapColumns[0]->chunk(ch);
+        auto ids = snapColumns[1]->chunk(ch);
+        Y_VERIFY(steps->length() == ids->length());
+
+        const auto* rawSteps = std::static_pointer_cast<arrow::UInt64Array>(steps)->raw_values();
+        const auto* rawIds = std::static_pointer_cast<arrow::UInt64Array>(ids)->raw_values();
+
+        for (int i = 0; i < steps->length(); ++i) {
+            bool value = snapLessOrEqual(rawSteps[i], rawIds[i], planStep, txId);
+            alwaysTrue = alwaysTrue && value;
+            bits.push_back(value);
         }
     }
 
-    bool IsValid() const {
-        return CurrentChunkIt != Chunks->end() && CurrentChunkPosition < (*CurrentChunkIt)->length();
+    // Optimization: do not need filter if it's const true.
+    if (alwaysTrue) {
+        return {};
     }
+    return bits;
+}
 
-    typename TArrayView::value_type GetValue() const {
-        AFL_VERIFY_DEBUG(IsValid());
-        return RawView[CurrentChunkPosition];
-    }
+std::vector<bool> MakeReplaceFilter(std::shared_ptr<arrow::RecordBatch> batch,
+                                    THashSet<NArrow::TReplaceKey>& keys) {
+    bool alwaysTrue = true;
+    std::vector<bool> bits;
+    bits.reserve(batch->num_rows());
 
-    bool Next() {
-        AFL_VERIFY_DEBUG(IsValid());
-        ++CurrentChunkPosition;
-        while (CurrentChunkIt != Chunks->end() && (*CurrentChunkIt)->length() == CurrentChunkPosition) {
-            if (++CurrentChunkIt != Chunks->end()) {
-                CurrentChunkPosition = 0;
-                RawView = std::static_pointer_cast<TArrayView>(*CurrentChunkIt)->raw_values();
-            }
+    auto columns = std::make_shared<NArrow::TArrayVec>(batch->columns());
+
+    for (int i = 0; i < batch->num_rows(); ++i) {
+        NArrow::TReplaceKey key(columns, i);
+        bool keep = !keys.count(key);
+        if (keep) {
+            keys.emplace(key);
         }
-        return CurrentChunkIt != Chunks->end();
-    }
-};
 
-class TTableSnapshotGetter {
-private:
-    const TSnapshot Snapshot;
-    mutable TChunkedArrayIterator<arrow::UInt64Array> Steps;
-    mutable TChunkedArrayIterator<arrow::UInt64Array> Ids;
-    mutable i64 CurrentIdx = -1;
-public:
-    TTableSnapshotGetter(const std::shared_ptr<arrow::ChunkedArray>& steps, const std::shared_ptr<arrow::ChunkedArray>& ids, const TSnapshot& snapshot)
-        : Snapshot(snapshot)
-        , Steps(steps)
-        , Ids(ids)
-    {
-        Y_ABORT_UNLESS(steps->length() == ids->length());
+        bits.push_back(keep);
+        alwaysTrue = alwaysTrue && keep;
     }
 
-    bool operator[](const ui32 idx) const {
-        AFL_VERIFY(CurrentIdx + 1 == idx)("current_idx", CurrentIdx)("idx", idx);
-        CurrentIdx = idx;
-        const bool result = std::less_equal<TSnapshot>()(TSnapshot(Steps.GetValue(), Ids.GetValue()), Snapshot);
-        const bool sNext = Steps.Next();
-        const bool idNext = Ids.Next();
-        AFL_VERIFY(sNext == idNext);
-        if (!idNext) {
-            CurrentIdx = -2;
+    // Optimization: do not need filter if it's const true.
+    if (alwaysTrue) {
+        return {};
+    }
+    return bits;
+}
+
+std::vector<bool> MakeReplaceFilterLastWins(std::shared_ptr<arrow::RecordBatch> batch,
+                                            THashSet<NArrow::TReplaceKey>& keys) {
+    if (!batch->num_rows()) {
+        return {};
+    }
+
+    bool alwaysTrue = true;
+    std::vector<bool> bits;
+    bits.resize(batch->num_rows());
+
+    auto columns = std::make_shared<NArrow::TArrayVec>(batch->columns());
+
+    for (int i = batch->num_rows() - 1; i >= 0; --i) {
+        NArrow::TReplaceKey key(columns, i);
+        bool keep = !keys.count(key);
+        if (keep) {
+            keys.emplace(key);
         }
-        return result;
-    }
-};
 
-template <class TGetter, class TData>
-NArrow::TColumnFilter MakeSnapshotFilterImpl(const std::shared_ptr<TData>& batch, const TSnapshot& snapshot) {
-    Y_ABORT_UNLESS(batch);
-    auto steps = batch->GetColumnByName(TIndexInfo::SPEC_COL_PLAN_STEP);
-    auto ids = batch->GetColumnByName(TIndexInfo::SPEC_COL_TX_ID);
-    NArrow::TColumnFilter result = NArrow::TColumnFilter::BuildAllowFilter();
-    TGetter getter(steps, ids, snapshot);
-    result.Reset(steps->length(), std::move(getter));
-    return result;
-}
-
-NArrow::TColumnFilter MakeSnapshotFilter(const std::shared_ptr<arrow::Table>& batch,
-    const TSnapshot& snapshot) {
-    return MakeSnapshotFilterImpl<TTableSnapshotGetter>(batch, snapshot);
-}
-
-class TSnapshotGetter {
-private:
-    const arrow::UInt64Array::value_type* RawSteps;
-    const arrow::UInt64Array::value_type* RawIds;
-    const TSnapshot Snapshot;
-public:
-    TSnapshotGetter(std::shared_ptr<arrow::Array> steps, std::shared_ptr<arrow::Array> ids, const TSnapshot& snapshot)
-        : Snapshot(snapshot)
-    {
-        Y_ABORT_UNLESS(steps);
-        Y_ABORT_UNLESS(ids);
-        Y_ABORT_UNLESS(steps->length() == ids->length());
-        Y_ABORT_UNLESS(steps->type() == arrow::uint64());
-        Y_ABORT_UNLESS(ids->type() == arrow::uint64());
-        RawSteps = std::static_pointer_cast<arrow::UInt64Array>(steps)->raw_values();
-        RawIds = std::static_pointer_cast<arrow::UInt64Array>(ids)->raw_values();
+        bits[i] = keep;
+        alwaysTrue = alwaysTrue && keep;
     }
 
-    bool operator[](const ui32 idx) const {
-        return std::less_equal<TSnapshot>()(TSnapshot(RawSteps[idx], RawIds[idx]), Snapshot);
+    // Optimization: do not need filter if it's const true.
+    if (alwaysTrue) {
+        return {};
     }
-};
-
-NArrow::TColumnFilter MakeSnapshotFilter(const std::shared_ptr<arrow::RecordBatch>& batch,
-                                     const TSnapshot& snapshot) {
-    return MakeSnapshotFilterImpl<TSnapshotGetter>(batch, snapshot);
+    return bits;
 }
 
-NArrow::TColumnFilter FilterPortion(const std::shared_ptr<arrow::Table>& portion, const TReadMetadata& readMetadata, const bool useSnapshotFilter) {
-    Y_ABORT_UNLESS(portion);
-    NArrow::TColumnFilter result = readMetadata.GetPKRangesFilter().BuildFilter(portion);
-    if (readMetadata.GetSnapshot().GetPlanStep() && useSnapshotFilter) {
-        result = result.And(MakeSnapshotFilter(portion, readMetadata.GetSnapshot()));
+std::shared_ptr<arrow::RecordBatch> FilterPortion(std::shared_ptr<arrow::Table> portion,
+                                                  const TReadMetadata& readMetadata) {
+    Y_VERIFY(portion);
+    std::vector<bool> snapFilter;
+    if (readMetadata.PlanStep) {
+        auto snapSchema = TIndexInfo::ArrowSchemaSnapshot();
+        snapFilter = MakeSnapshotFilter(portion, snapSchema, readMetadata.PlanStep, readMetadata.TxId);
     }
 
-    return result;
+    std::vector<bool> less;
+    if (readMetadata.LessPredicate) {
+        auto cmpType = readMetadata.LessPredicate->Inclusive ?
+            NArrow::ECompareType::LESS_OR_EQUAL : NArrow::ECompareType::LESS;
+        less = NArrow::MakePredicateFilter(portion, readMetadata.LessPredicate->Batch, cmpType);
+    }
+
+    std::vector<bool> greater;
+    if (readMetadata.GreaterPredicate) {
+        auto cmpType = readMetadata.GreaterPredicate->Inclusive ?
+            NArrow::ECompareType::GREATER_OR_EQUAL : NArrow::ECompareType::GREATER;
+        greater = NArrow::MakePredicateFilter(portion, readMetadata.GreaterPredicate->Batch, cmpType);
+    }
+
+    std::vector<bool> bits = NArrow::CombineFilters(std::move(snapFilter),
+                                                    NArrow::CombineFilters(std::move(less), std::move(greater)));
+    if (bits.size()) {
+        auto res = arrow::compute::Filter(portion, NArrow::MakeFilter(bits));
+        Y_VERIFY_S(res.ok(), res.status().message());
+        Y_VERIFY((*res).kind() == arrow::Datum::TABLE);
+        portion = (*res).table();
+    }
+
+    Y_VERIFY(portion);
+    if (!portion->num_rows()) {
+        // TableBatchReader return nullptr in case of empty table. We need a valid batch with 0 rows.
+        return NArrow::MakeEmptyBatch(portion->schema());
+    }
+
+    auto res = portion->CombineChunks();
+    Y_VERIFY(res.ok());
+
+    arrow::TableBatchReader reader(*portion);
+    auto result = reader.Next();
+    Y_VERIFY(result.ok());
+    auto batch = *result;
+    result = reader.Next();
+    Y_VERIFY(result.ok() && !(*result));
+    return batch;
 }
 
-NArrow::TColumnFilter FilterNotIndexed(const std::shared_ptr<arrow::Table>& batch, const TReadMetadata& readMetadata) {
-    return readMetadata.GetPKRangesFilter().BuildFilter(batch);
+void ReplaceDupKeys(std::shared_ptr<arrow::RecordBatch>& batch,
+                    const std::shared_ptr<arrow::Schema>& replaceSchema, bool lastWins) {
+    THashSet<NArrow::TReplaceKey> replaces;
+
+    auto keyBatch = NArrow::ExtractColumns(batch, replaceSchema);
+
+    std::vector<bool> bits;
+    if (lastWins) {
+        bits = MakeReplaceFilterLastWins(keyBatch, replaces);
+    } else {
+        bits = MakeReplaceFilter(keyBatch, replaces);
+    }
+    if (!bits.empty()) {
+        auto res = arrow::compute::Filter(batch, NArrow::MakeFilter(bits));
+        Y_VERIFY_S(res.ok(), res.status().message());
+        Y_VERIFY((*res).kind() == arrow::Datum::RECORD_BATCH);
+        batch = (*res).record_batch();
+        Y_VERIFY(batch);
+    }
 }
 
 }

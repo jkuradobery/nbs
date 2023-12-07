@@ -7,9 +7,6 @@ namespace NConsoleClient {
 
 void PrintSchemeEntry(IOutputStream& o, const NScheme::TSchemeEntry& entry, NColorizer::TColors colors) {
     switch (entry.Type) {
-    case NScheme::ESchemeEntryType::ColumnStore:
-        o << colors.LightGrayColor();
-        break;
     case NScheme::ESchemeEntryType::Directory:
         o << colors.LightBlueColor();
         break;
@@ -35,10 +32,7 @@ void PrintSchemeEntry(IOutputStream& o, const NScheme::TSchemeEntry& entry, NCol
     case NScheme::ESchemeEntryType::CoordinationNode:
         o << colors.YellowColor();
         break;
-    case NScheme::ESchemeEntryType::ExternalTable:
-    case NScheme::ESchemeEntryType::ExternalDataSource:
-        o << colors.LightWhite();
-        break;
+
     default:
         o << colors.RedColor();
     }
@@ -72,11 +66,6 @@ TString FormatTime(TInstant time) {
     }
 };
 
-TString FormatDuration(TDuration duration) {
-    return Sprintf("%.02f seconds",(duration.MilliSeconds() * 0.001));
-};
-
-
 TString EntryTypeToString(NScheme::ESchemeEntryType entry) {
     switch (entry) {
     case NScheme::ESchemeEntryType::Directory:
@@ -85,8 +74,6 @@ TString EntryTypeToString(NScheme::ESchemeEntryType entry) {
         return "table";
     case NScheme::ESchemeEntryType::ColumnTable:
         return "column-table";
-    case NScheme::ESchemeEntryType::ColumnStore:
-        return "column-store";
     case NScheme::ESchemeEntryType::PqGroup:
     case NScheme::ESchemeEntryType::Topic:
         return "topic";
@@ -98,10 +85,6 @@ TString EntryTypeToString(NScheme::ESchemeEntryType entry) {
         return "block-store-volume";
     case NScheme::ESchemeEntryType::CoordinationNode:
         return "coordination-node";
-    case NScheme::ESchemeEntryType::ExternalDataSource:
-        return "external-data-source";
-    case NScheme::ESchemeEntryType::ExternalTable:
-        return "external-table";
     case NScheme::ESchemeEntryType::Unknown:
     case NScheme::ESchemeEntryType::Sequence:
     case NScheme::ESchemeEntryType::Replication:

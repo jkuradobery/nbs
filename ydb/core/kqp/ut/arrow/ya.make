@@ -1,9 +1,16 @@
 UNITTEST_FOR(ydb/core/kqp)
 
 FORK_SUBTESTS()
+SPLIT_FACTOR(50)
 
-SPLIT_FACTOR(5)
-SIZE(MEDIUM)
+IF (WITH_VALGRIND)
+    TIMEOUT(3600)
+    SIZE(LARGE)
+    TAG(ya:fat)
+ELSE()
+    TIMEOUT(600)
+    SIZE(MEDIUM)
+ENDIF()
 
 SRCS(
     kqp_arrow_in_channels_ut.cpp

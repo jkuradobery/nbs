@@ -3,10 +3,8 @@
 
 #include "blobstorage_pdisk.h"
 #include "blobstorage_pdisk_logreader_base.h"
-#include "blobstorage_pdisk_tools.h"
 
 #include <ydb/core/util/metrics.h>
-#include <ydb/core/debug_tools/operation_log.h>
 
 namespace NKikimr {
 namespace NPDisk {
@@ -57,27 +55,17 @@ struct TOwnerData {
         VDISK_STATUS_READING_LOG = 3,
         VDISK_STATUS_LOGGED = 4,
     };
-    struct TLogEndPosition {
-        ui32 ChunkIdx;
-        ui32 SectorIdx;
-        
-        explicit TLogEndPosition(ui32 chunkIdx, ui32 sectorIdx) : ChunkIdx(chunkIdx), SectorIdx(sectorIdx) {}
-    };
     TMap<TLogSignature, NPDisk::TLogRecord> StartingPoints;
     TVDiskID VDiskId = TVDiskID::InvalidId;
     EVDiskStatus Status = VDISK_STATUS_DEFAULT;
     ui64 CurrentFirstLsnToKeep = 0;
     ui64 LastWrittenCommitLsn = 0;
     TActorId CutLogId;
-    TLogEndPosition LogEndPosition {0, 0};
     TActorId WhiteboardProxyId;
     ui64 LogRecordsInitiallyRead = 0;
     ui64 LogRecordsConsequentlyRead = 0;
     TOwnerRound OwnerRound = 0;
     TInstant AskedToCutLogAt;
-    ui64 AskedFreeUpToLsn = 0;
-    size_t LogChunkCountBeforeCut = 0;
-    size_t AskedLogChunkToCut = 0;
     TInstant CutLogAt;
     ui64 LastSeenLsn = 0;
     bool HasAlreadyLoggedThisIncarnation = false;
@@ -91,8 +79,6 @@ struct TOwnerData {
     TIntrusivePtr<TOwnerInflight> InFlight;
 
     bool OnQuarantine = false;
-
-    TOperationLog<8> OperationLog;
 
     TOwnerData()
       : InFlight(new TOwnerInflight)
@@ -153,67 +139,11 @@ struct TOwnerData {
     }
 
     bool HaveRequestsInFlight() const {
-        return LogReader || InFlight->ChunkWrites.load() || InFlight->ChunkReads.load() || InFlight->LogWrites.load();
-    }
-
-    TString ToString() const {
-        TStringStream str;
-        str << "TOwnerData {";
-        str << "VDiskId# " << VDiskId.ToString();
-        str << " Status# " << RenderStatus(Status);
-        str << " CurrentFirstLsnToKeep# " << CurrentFirstLsnToKeep;
-        str << " LastWrittenCommitLsn# " << LastWrittenCommitLsn;
-        str << " LogRecordsInitiallyRead# " << LogRecordsInitiallyRead;
-        str << " LogRecordsConsequentlyRead# " << LogRecordsConsequentlyRead;
-        str << " OwnerRound# " << OwnerRound;
-        str << " AskedToCutLogAt# " << AskedToCutLogAt;
-        str << " AskedFreeUpToLsn# " << AskedFreeUpToLsn;
-        str << " CutLogAt# " << CutLogAt;
-        str << " LastSeenLsn# " << LastSeenLsn;
-        if (HasAlreadyLoggedThisIncarnation) {
-            str << " HasAlreadyLoggedThisIncarnation";
-        }
-        if (HasReadTheWholeLog) {
-            str << " HasReadTheWholeLog";
-        }
-        str << " VDiskSlotId# " << VDiskSlotId;
-        if (InFlight) {
-            str << " Inflight {";
-            str << " ChunkWrites# " << InFlight->ChunkWrites.load();
-            str << " ChunkReads# " << InFlight->ChunkReads.load();
-            str << " LogWrites# " << InFlight->LogWrites.load();
-            str << " }";
-        }
-        str << "}";
-
-        return str.Str();
+        return LogReader || InFlight->ChunkWrites || InFlight->ChunkReads || InFlight->LogWrites;
     }
 
     void Reset(bool quarantine = false) {
-        StartingPoints.clear();
-        VDiskId = TVDiskID::InvalidId;
-        Status = EVDiskStatus::VDISK_STATUS_DEFAULT;
-        CurrentFirstLsnToKeep = 0;
-        LastWrittenCommitLsn = 0;
-        CutLogId = TActorId();
-        WhiteboardProxyId = TActorId();
-        LogRecordsInitiallyRead = 0;
-        LogRecordsConsequentlyRead = 0;
-        OwnerRound = 0;
-        AskedToCutLogAt = TInstant();
-        CutLogAt = TInstant();
-        LastSeenLsn = 0;
-        HasAlreadyLoggedThisIncarnation = false;
-        HasReadTheWholeLog = false;
-        LogStartPosition = TLogPosition{0, 0};
-        ReadThroughput = NMetrics::TDecayingAverageValue<ui64, NMetrics::DurationPerMinute, NMetrics::DurationPerSecond>();
-        WriteThroughput = NMetrics::TDecayingAverageValue<ui64, NMetrics::DurationPerMinute, NMetrics::DurationPerSecond>();
-        VDiskSlotId = 0;
-
-        if (!quarantine) {
-            LogReader.Reset();
-            InFlight.Reset(TIntrusivePtr<TOwnerInflight>(new TOwnerInflight));
-        }
+        *this = TOwnerData{};
         OnQuarantine = quarantine;
     }
 };

@@ -3,7 +3,7 @@ LIBRARY()
 OWNER(g:kikimr)
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     library/cpp/logger
 )
 

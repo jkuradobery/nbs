@@ -3,7 +3,7 @@
 
 #include <ydb/library/yql/providers/common/provider/yql_provider_names.h>
 #include <ydb/library/yql/providers/dq/expr_nodes/dqs_expr_nodes.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
+#include <ydb/library/yql/providers/dq/interface/yql_dq_integration.h>
 #include <ydb/library/yql/core/expr_nodes/yql_expr_nodes.h>
 #include <ydb/library/yql/core/yql_expr_optimize.h>
 #include <ydb/library/yql/core/yql_graph_transformer.h>
@@ -12,7 +12,6 @@
 #include <ydb/library/yql/ast/yql_expr.h>
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/dq/opt/dq_opt.h>
-#include <ydb/library/yql/dq/opt/dq_opt_log.h>
 #include <ydb/library/yql/minikql/mkql_program_builder.h>
 
 #include <util/generic/scope.h>
@@ -26,11 +25,13 @@ namespace {
 
 const THashSet<TStringBuf> VALID_SOURCES = {DqProviderName, ConfigProviderName, YtProviderName, ClickHouseProviderName, YdbProviderName, S3ProviderName};
 const THashSet<TStringBuf> VALID_SINKS = {ResultProviderName, YtProviderName, S3ProviderName};
+const THashSet<TStringBuf> UNSUPPORTED_CALLABLE = { TCoForwardList::CallableName() };
 
 }
 
 namespace NDq {
     bool CheckJoinColumns(const TExprBase& node);
+    bool CheckJoinLinkSettings(const TExprBase& node);
 } // namespace NDq
 
 class TDqsRecaptureTransformer : public TSyncTransformerBase {
@@ -78,9 +79,17 @@ public:
 
             Statistics_["DqAnalyzerOn"]++;
 
+            ui64 dataSize = 0;
             bool good = true;
+            bool hasJoin = false;
             TNodeSet visited;
-            Scan(*input, ctx, good, visited);
+            Scan(*input, ctx, good, dataSize, visited, hasJoin);
+
+            if (good && hasJoin && dataSize > State_->Settings->MaxDataSizePerQuery.Get().GetOrElse(10_GB)) {
+                Statistics_["DqAnalyzerBigJoin"]++;
+                AddInfo(ctx, TStringBuilder() << "too big join input: " << dataSize);
+                good = false;
+            }
 
             if (good) {
                 Statistics_["DqAnalyzerOk"]++;
@@ -91,15 +100,33 @@ public:
             if (!good) {
                 YQL_CLOG(DEBUG, ProviderDq) << "abort hidden";
                 State_->AbortHidden();
+                YQL_CLOG(DEBUG, ProviderDq) << "good: " << good << " hasJoin: " << hasJoin << " dataSize: " << dataSize;
                 return TStatus::Ok;
             }
         }
 
-        State_->TypeCtx->DqFallbackPolicy = State_->Settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default);
+        State_->TypeCtx->DqFallbackPolicy = State_->Settings->FallbackPolicy.Get().GetOrElse("default");
 
-        IGraphTransformer::TStatus status = NDq::DqWrapRead(input, output, ctx, *State_->TypeCtx, *State_->Settings);
+        auto status = OptimizeExpr(input, output, [&](const TExprNode::TPtr& node, TExprContext& ctx) {
+            if (auto maybeRead = TMaybeNode<TCoRight>(node).Input()) {
+                if (maybeRead.Raw()->ChildrenSize() > 1 && TCoDataSource::Match(maybeRead.Raw()->Child(1))) {
+                    auto dataSourceName = maybeRead.Raw()->Child(1)->Child(0)->Content();
+                    auto dataSource = State_->TypeCtx->DataSourceMap.FindPtr(dataSourceName);
+                    YQL_ENSURE(dataSource);
+                    if (auto dqIntegration = (*dataSource)->GetDqIntegration()) {
+                        auto newRead = dqIntegration->WrapRead(*State_->Settings, maybeRead.Cast().Ptr(), ctx);
+                        if (newRead.Get() != maybeRead.Raw()) {
+                            return newRead;
+                        }
+                    }
+                }
+            }
+
+            return node;
+        }, ctx, TOptimizeExprSettings{State_->TypeCtx});
+
         if (input != output) {
-            YQL_CLOG(INFO, ProviderDq) << "DqsRecapture";
+            YQL_CLOG(DEBUG, ProviderDq) << "DqsRecapture";
             // TODO: Add before/after recapture transformers
             State_->TypeCtx->DqCaptured = true;
             // TODO: drop this after implementing DQS ConstraintTransformer
@@ -119,18 +146,30 @@ private:
         ctx.IssueManager.RaiseIssue(info);
     }
 
-    void Scan(const TExprNode& node, TExprContext& ctx, bool& good, TNodeSet& visited) const {
+    void Scan(const TExprNode& node, TExprContext& ctx, bool& good, ui64& dataSize, TNodeSet& visited, bool& hasJoin) const {
         if (!visited.insert(&node).second) {
             return;
         }
 
         TExprBase expr(&node);
+        if (TMaybeNode<TCoEquiJoin>(&node)) {
+            hasJoin = true;
+        }
+
 
         if (TCoCommit::Match(&node)) {
             for (size_t i = 0; i != node.ChildrenSize() && good; ++i) {
                 if (i != TCoCommit::idx_DataSink) {
-                    Scan(*node.Child(i), ctx, good, visited);
+                    Scan(*node.Child(i), ctx, good, dataSize, visited, hasJoin);
                 }
+            }
+        } else if (node.IsCallable(UNSUPPORTED_CALLABLE)) {
+            AddInfo(ctx, TStringBuilder() << "unsupported callable '" << node.Content() << "'");
+            good = false;
+        } else if (node.IsCallable(TCoCollect::CallableName())) {
+            if (ETypeAnnotationKind::List != node.Head().GetTypeAnn()->GetKind()) {
+                AddInfo(ctx, TStringBuilder() << "unsupported callable '" << node.Content() << "' over stream/flow");
+                good = false;
             }
         } else if (auto datasource = TMaybeNode<TCoDataSource>(&node).Category()) {
             if (!VALID_SOURCES.contains(datasource.Cast().Value())) {
@@ -152,10 +191,11 @@ private:
                 YQL_ENSURE(datasource);
                 auto dqIntegration = (*datasource)->GetDqIntegration();
                 if (dqIntegration) {
-                    bool pragmas = dqIntegration->CheckPragmas(node, ctx, false);
-                    bool canRead = pragmas && dqIntegration->CanRead(node, ctx, /*skipIssues = */ false);
-
-                    if (!pragmas || !canRead) {
+                    TMaybe<ui64> size;
+                    bool pragmas = true;
+                    if ((pragmas = dqIntegration->CheckPragmas(node, ctx, false)) && (size = dqIntegration->CanRead(*State_->Settings, node, ctx, /*skipIssues = */ false))) {
+                        dataSize += *size;
+                    } else {
                         good = false;
                         if (!pragmas) {
                             State_->TypeCtx->PureResultDataSource.clear();
@@ -170,7 +210,7 @@ private:
             }
 
             if (good) {
-                Scan(node.Head(), ctx,good, visited);
+                Scan(node.Head(), ctx,good, dataSize, visited, hasJoin);
             }
         } else if (node.GetTypeAnn()->GetKind() == ETypeAnnotationKind::World
             && !TCoCommit::Match(&node)
@@ -180,7 +220,7 @@ private:
             auto dataSink = State_->TypeCtx->DataSinkMap.FindPtr(dataSinkName);
             YQL_ENSURE(dataSink);
             if (auto dqIntegration = dataSink->Get()->GetDqIntegration()) {
-                if (auto canWrite = dqIntegration->CanWrite(node, ctx)) {
+                if (auto canWrite = dqIntegration->CanWrite(*State_->Settings, node, ctx)) {
                     if (!canWrite.GetRef()) {
                         good = false;
                     } else if (!State_->Settings->EnableInsert.Get().GetOrElse(false)) {
@@ -191,24 +231,30 @@ private:
             }
             if (good) {
                 for (size_t i = 0; i != node.ChildrenSize() && good; ++i) {
-                    Scan(*node.Child(i), ctx, good, visited);
+                    Scan(*node.Child(i), ctx, good, dataSize, visited, hasJoin);
                 }
             }
         }
         else if (TCoScriptUdf::Match(&node)) {
-            if (good && TCoScriptUdf::Match(&node) && NKikimr::NMiniKQL::IsSystemPython(NKikimr::NMiniKQL::ScriptTypeFromStr(node.Head().Content()))) {
+            if (!State_->TypeCtx->UdfSupportsYield) {
+                if (IsCallableTypeHasStreams(node.GetTypeAnn()->Cast<TCallableExprType>())) {
+                    AddInfo(ctx, TStringBuilder() << "script udf with streams");
+                    good = false;
+                }
+            }
+            if (NKikimr::NMiniKQL::IsSystemPython(NKikimr::NMiniKQL::ScriptTypeFromStr(node.Head().Content()))) {
                 AddInfo(ctx, TStringBuilder() << "system python udf");
                 good = false;
             }
             if (good) {
                 for (size_t i = 0; i != node.ChildrenSize() && good; ++i) {
-                    Scan(*node.Child(i), ctx, good, visited);
+                    Scan(*node.Child(i), ctx, good, dataSize, visited, hasJoin);
                 }
             }
         }
         else {
             for (size_t i = 0; i != node.ChildrenSize() && good; ++i) {
-                Scan(*node.Child(i), ctx, good, visited);
+                Scan(*node.Child(i), ctx, good, dataSize, visited, hasJoin);
             }
         }
     }

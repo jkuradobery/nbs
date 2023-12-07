@@ -478,19 +478,6 @@ Y_UNIT_TEST(TestFieldNameMode) {
         UNIT_ASSERT_EQUAL(proto.Getdef_lower(), 4);
     }
 
-    // UseJsonName with UseJsonEnumValue
-    {
-        TString modelStr(R"_({"json_enum" : "enum_1"})_");
-
-        TCustomJsonEnumValue proto;
-        TJson2ProtoConfig config;
-        config.SetUseJsonName(true);
-        config.SetUseJsonEnumValue(true);
-
-        UNIT_ASSERT_NO_EXCEPTION(proto = Json2Proto<TCustomJsonEnumValue>(modelStr, config));
-        UNIT_ASSERT_EQUAL(proto.GetJsonEnum(), EJsonEnum::J_1);
-    }
-
     // FieldNameMode with UseJsonName
     {
         TJson2ProtoConfig config;
@@ -1156,10 +1143,6 @@ Y_UNIT_TEST(TestAllowComments) {
     UNIT_ASSERT_NO_EXCEPTION(Json2Proto(json, proto, config));
     UNIT_ASSERT_VALUES_EQUAL(proto.GetI32(), 4);
     UNIT_ASSERT_VALUES_EQUAL(proto.GetI64(), 3423);
-    proto = TFlatOptional();
-    UNIT_ASSERT_NO_EXCEPTION(proto = Json2Proto<TFlatOptional>(json, config));
-    UNIT_ASSERT_VALUES_EQUAL(proto.GetI32(), 4);
-    UNIT_ASSERT_VALUES_EQUAL(proto.GetI64(), 3423);
 } // TestAllowComments
 
 Y_UNIT_TEST(TestSimplifiedDuration) {
@@ -1184,6 +1167,7 @@ Y_UNIT_TEST(TestSimplifiedTimestamp) {
     json["Timestamp"] = "2014-08-26T15:52:15Z";
     NProtobufJson::Json2Proto(json, simpleTimestamp, NProtobufJson::TJson2ProtoConfig().SetAllowString2TimeConversion(true));
     UNIT_ASSERT_EQUAL(NProtoInterop::CastFromProto(simpleTimestamp.GetTimestamp()), TInstant::ParseIso8601("2014-08-26T15:52:15Z"));
+
 } // TestSimplifiedTimestamp
 
 } // TJson2ProtoTest

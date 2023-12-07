@@ -1,4 +1,4 @@
-YQL_UDF_CONTRIB(datetime_udf)
+YQL_UDF(datetime_udf)
 
 YQL_ABI_VERSION(
     2
@@ -16,7 +16,3 @@ PEERDIR(
 )
 
 END()
-
-RECURSE_FOR_TESTS(
-    test
-)

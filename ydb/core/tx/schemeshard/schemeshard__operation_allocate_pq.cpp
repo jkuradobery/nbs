@@ -144,14 +144,6 @@ public:
             return result;
         }
 
-        if (allocateDesc.HasPQTabletConfig() && allocateDesc.GetPQTabletConfig().HasPartitionStrategy()) {
-            const auto strategy = allocateDesc.GetPQTabletConfig().GetPartitionStrategy();
-            if (strategy.GetMaxPartitionCount() < strategy.GetMinPartitionCount()) {
-                errStr = Sprintf("Invalid min and max partition count specified: %u > %u", strategy.GetMinPartitionCount(), strategy.GetMaxPartitionCount());
-                return nullptr;
-            }
-        }
-
         pqGroupInfo->TotalPartitionCount = allocateDesc.PartitionsSize();
         if (pqGroupInfo->TotalPartitionCount != pqGroupInfo->TotalGroupCount) {
             auto errStr = TStringBuilder() << "not all partitions has beed described, there is only: " << pqGroupInfo->TotalPartitionCount;
@@ -220,15 +212,15 @@ public:
             auto prevShardId = TLocalShardIdx(partition.GetShardId());
 
             if (adoptedTablets.contains(tabletId)) {
-                Y_ABORT_UNLESS(adoptedTablets.at(tabletId).PrevOwner == prevOwnerId);
-                Y_ABORT_UNLESS(adoptedTablets.at(tabletId).PrevShardIdx == prevShardId);
+                Y_VERIFY(adoptedTablets.at(tabletId).PrevOwner == prevOwnerId);
+                Y_VERIFY(adoptedTablets.at(tabletId).PrevShardIdx == prevShardId);
             } else {
                 adoptedTablets[tabletId] = TAdoptedShard{prevOwnerId, prevShardId};
             }
 
             partitionToGroupAndTablet[partId] = std::make_pair(gId, tabletId);
         }
-        Y_ABORT_UNLESS(pqGroupInfo->TotalGroupCount == partitionToGroupAndTablet.size());
+        Y_VERIFY(pqGroupInfo->TotalGroupCount == partitionToGroupAndTablet.size());
 
         if (pqGroupInfo->ExpectedShardCount() != adoptedTablets.size()) {
             auto errStr = TStringBuilder() << "Invalid tablet count expectation: " << pqGroupInfo->ExpectedShardCount()
@@ -368,33 +360,20 @@ public:
             pqGroupInfo->Shards[idx] = pqShard;
         }
 
-        for (auto& partition : allocateDesc.GetPartitions()) {
-            const auto& p = partitionToGroupAndTablet[partition.GetPartitionId()];
-
-            ui64 partId = partition.GetPartitionId();
-            ui64 groupId = p.first;
-            auto tabletId = p.second;
+        for (const auto& item: partitionToGroupAndTablet) {
+            ui64 partId = item.first;
+            ui64 groupId = item.second.first;
+            auto tabletId = item.second.second;
 
             auto idx = context.SS->TabletIdToShardIdx.at(tabletId);
+            TTopicTabletInfo::TPtr pqShard = pqGroupInfo->Shards.at(idx);
 
-            auto pqInfo = MakeHolder<TTopicTabletInfo::TTopicPartitionInfo>();
-            pqInfo->PqId = partId;
-            pqInfo->GroupId = groupId;
-            pqInfo->AlterVersion = pqGroupInfo->AlterVersion;
-
-            pqInfo->Status = partition.GetStatus();
-            for (const auto parent : partition.GetParentPartitionIds()) {
-                pqInfo->ParentPartitionIds.emplace(parent);
-            }
-            if (partition.HasKeyRange()) {
-                pqInfo->KeyRange.ConstructInPlace();
-                (*pqInfo->KeyRange).DeserializeFromProto(partition.GetKeyRange());
-            }
-
-            pqGroupInfo->AddPartition(idx, pqInfo.Release());
+            TTopicTabletInfo::TTopicPartitionInfo pqInfo;
+            pqInfo.PqId = partId;
+            pqInfo.GroupId = groupId;
+            pqInfo.AlterVersion = pqGroupInfo->AlterVersion;
+            pqShard->Partitions.push_back(pqInfo);
         }
-
-        pqGroupInfo->InitSplitMergeGraph();
 
         {
             const auto balancerIdx = context.SS->NextShardIdx(startShardIdx, shardsToCreate-1);
@@ -404,7 +383,7 @@ public:
             txState.Shards.emplace_back(balancerIdx, ETabletType::PersQueueReadBalancer, TTxState::CreateParts);
             pqGroupInfo->BalancerTabletID = TTabletId(allocateDesc.GetBalancerTabletID());
             pqGroupInfo->BalancerShardIdx = balancerIdx;
-            Y_ABORT_UNLESS(!context.SS->AdoptedShards.contains(balancerIdx));
+            Y_VERIFY(!context.SS->AdoptedShards.contains(balancerIdx));
             context.SS->AdoptedShards[balancerIdx] = TAdoptedShard{allocateDesc.GetBalancerOwnerId(), TLocalShardIdx(allocateDesc.GetBalancerShardId())};
             context.SS->ShardInfos[balancerIdx].TabletID = pqGroupInfo->BalancerTabletID;
             context.SS->TabletIdToShardIdx[pqGroupInfo->BalancerTabletID] = balancerIdx;
@@ -415,7 +394,7 @@ public:
         for (auto& shard : pqGroupInfo->Shards) {
             auto shardIdx = shard.first;
             for (const auto& pqInfo : shard.second->Partitions) {
-                context.SS->PersistPersQueue(db, pathId, shardIdx, *pqInfo);
+                context.SS->PersistPersQueue(db, pathId, shardIdx, pqInfo);
             }
         }
 
@@ -432,14 +411,14 @@ public:
         context.SS->PersistAddPersQueueGroupAlter(db, pathId, pqGroupInfo);
 
         for (auto shard : txState.Shards) {
-            Y_ABORT_UNLESS(shard.Operation == TTxState::CreateParts);
+            Y_VERIFY(shard.Operation == TTxState::CreateParts);
             auto tabletId = context.SS->ShardInfos[shard.Idx].TabletID;
             context.SS->PersistShardMapping(db, shard.Idx, tabletId, pathId, OperationId.GetTxId(), shard.TabletType);
             context.SS->PersistChannelsBinding(db, shard.Idx, context.SS->ShardInfos[shard.Idx].BindedChannels);
             context.SS->PersistAdoptedShardMapping(db, shard.Idx, tabletId, context.SS->AdoptedShards[shard.Idx].PrevOwner, context.SS->AdoptedShards[shard.Idx].PrevShardIdx);
         }
 
-        Y_ABORT_UNLESS(txState.Shards.size() == shardsToCreate);
+        Y_VERIFY(txState.Shards.size() == shardsToCreate);
         context.SS->TabletCounters->Simple()[COUNTER_PQ_SHARD_COUNT].Add(shardsToCreate-1);
         context.SS->TabletCounters->Simple()[COUNTER_PQ_RB_SHARD_COUNT].Add(1);
 
@@ -491,7 +470,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreatePQ");
+        Y_FAIL("no AbortPropose for TCreatePQ");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -509,12 +488,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateAllocatePQ(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateAllocatePQ(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TAllocatePQ>(id, tx);
 }
 
-ISubOperation::TPtr CreateAllocatePQ(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateAllocatePQ(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TAllocatePQ>(id, state);
 }
 

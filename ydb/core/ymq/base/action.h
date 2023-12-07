@@ -70,8 +70,6 @@ EAction GetNonBatchAction(EAction action);
             default_case;                                           \
     }
 
-
-
 // Actions with proxy
 #define ENUMERATE_PROXY_ACTIONS(macro)      \
         macro(ChangeMessageVisibility)      \

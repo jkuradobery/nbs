@@ -1,7 +1,5 @@
 GTEST(unittester-library-string)
 
-INCLUDE(${ARCADIA_ROOT}/library/cpp/yt/ya_cpp.make.inc)
-
 SRCS(
     enum_ut.cpp
     format_ut.cpp

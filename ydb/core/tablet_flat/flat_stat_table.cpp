@@ -6,40 +6,29 @@
 namespace NKikimr {
 namespace NTable {
 
-bool BuildStats(const TSubset& subset, TStats& stats, ui64 rowCountResolution, ui64 dataSizeResolution, IPages* env) {
+void BuildStats(const TSubset& subset, TStats& stats, ui64 rowCountResolution, ui64 dataSizeResolution, const IPages* env) {
+    Y_UNUSED(env);
+
     stats.Clear();
 
-    TPartDataStats stIterStats = { };
     TStatsIterator stIter(subset.Scheme->Keys);
 
     // Make index iterators for all parts
-    bool started = true;
     for (auto& pi : subset.Flatten) {
-        stats.IndexSize.Add(pi->IndexesRawSize, pi->Label.Channel());
-        TAutoPtr<TScreenedPartIndexIterator> iter = new TScreenedPartIndexIterator(pi, env, subset.Scheme->Keys, pi->Small, pi->Large);
-        auto ready = iter->Start();
-        if (ready == EReady::Page) {
-            started = false;
-        } else if (ready == EReady::Data) {
+        TAutoPtr<TScreenedPartIndexIterator> iter = new TScreenedPartIndexIterator(pi, subset.Scheme->Keys, pi->Small);
+        if (iter->IsValid()) {
             stIter.Add(iter);
         }
-    }
-    if (!started) {
-        return false;
     }
 
     ui64 prevRows = 0;
     ui64 prevSize = 0;
-    while (true) {
-        auto ready = stIter.Next(stIterStats);
-        if (ready == EReady::Page) {
-            return false;
-        } else if (ready == EReady::Gone) {
-            break;
-        }
+    for (; stIter.IsValid(); stIter.Next()) {
+        stats.RowCount = stIter.GetCurrentRowCount();
+        stats.DataSize = stIter.GetCurrentDataSize();
 
-        const bool nextRowsBucket = (stIterStats.RowCount >= prevRows + rowCountResolution);
-        const bool nextSizeBucket = (stIterStats.DataSize.Size >= prevSize + dataSizeResolution);
+        const bool nextRowsBucket = (stats.RowCount >= prevRows + rowCountResolution);
+        const bool nextSizeBucket = (stats.DataSize >= prevSize + dataSizeResolution);
 
         if (!nextRowsBucket && !nextSizeBucket)
             continue;
@@ -48,20 +37,18 @@ bool BuildStats(const TSubset& subset, TStats& stats, ui64 rowCountResolution, u
         TString serializedKey = TSerializedCellVec::Serialize(TConstArrayRef<TCell>(currentKey.Columns, currentKey.ColumnCount));
 
         if (nextRowsBucket) {
-            prevRows = stIterStats.RowCount;
-            stats.RowCountHistogram.push_back({serializedKey, prevRows});
+            stats.RowCountHistogram.push_back({serializedKey, stats.RowCount});
+            prevRows = stats.RowCount;
         }
 
         if (nextSizeBucket) {
-            prevSize = stIterStats.DataSize.Size;
-            stats.DataSizeHistogram.push_back({serializedKey, prevSize});
+            stats.DataSizeHistogram.push_back({serializedKey, stats.DataSize});
+            prevSize = stats.DataSize;
         }
     }
 
-    stats.RowCount = stIterStats.RowCount;
-    stats.DataSize = std::move(stIterStats.DataSize);
-
-    return true;
+    stats.RowCount = stIter.GetCurrentRowCount();
+    stats.DataSize = stIter.GetCurrentDataSize();
 }
 
 void GetPartOwners(const TSubset& subset, THashSet<ui64>& partOwners) {

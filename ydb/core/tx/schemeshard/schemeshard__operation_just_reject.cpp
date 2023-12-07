@@ -7,7 +7,7 @@ namespace {
 using namespace NKikimr;
 using namespace NSchemeShard;
 
-class TReject: public ISubOperation {
+class TReject: public ISubOperationBase {
     const TOperationId OperationId;
     THolder<TProposeResponse> Response;
 
@@ -36,7 +36,7 @@ public:
     }
 
     THolder<TProposeResponse> Propose(const TString&, TOperationContext& context) override {
-        Y_ABORT_UNLESS(Response);
+        Y_VERIFY(Response);
 
         const auto ssId = context.SS->SelfTabletId();
 
@@ -52,15 +52,15 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TReject");
+        Y_FAIL("no AbortPropose for TReject");
     }
 
-    bool ProgressState(TOperationContext&) override {
-        Y_ABORT("no ProgressState for TReject");
+    void ProgressState(TOperationContext&) override {
+        Y_FAIL("no ProgressState for TReject");
     }
 
     void AbortUnsafe(TTxId, TOperationContext&) override {
-        Y_ABORT("no AbortUnsafe for TReject");
+        Y_FAIL("no AbortUnsafe for TReject");
     }
 };
 
@@ -68,11 +68,11 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateReject(TOperationId id, THolder<TProposeResponse> response) {
+ISubOperationBase::TPtr CreateReject(TOperationId id, THolder<TProposeResponse> response) {
     return new TReject(id, std::move(response));
 }
 
-ISubOperation::TPtr CreateReject(TOperationId id, NKikimrScheme::EStatus status, const TString& message) {
+ISubOperationBase::TPtr CreateReject(TOperationId id, NKikimrScheme::EStatus status, const TString& message) {
     return new TReject(id, status, message);
 }
 

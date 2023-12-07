@@ -7,7 +7,7 @@
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/appdata.h>
 
-#include <ydb/library/actors/core/event_pb.h>
+#include <library/cpp/actors/core/event_pb.h>
 
 namespace NKikimr {
 struct TEvTxProxy {
@@ -16,15 +16,11 @@ struct TEvTxProxy {
         EvAcquireReadStep,
         EvSubscribeReadStep,
         EvUnsubscribeReadStep,
-        EvSubscribeLastStep,
-        EvUnsubscribeLastStep,
-        EvRequirePlanSteps,
 
         EvProposeTransactionStatus = EvProposeTransaction + 1 * 512,
         EvAcquireReadStepResult,
         EvSubscribeReadStepResult,
         EvSubscribeReadStepUpdate,
-        EvUpdatedLastStep,
 
         EvEnd
     };
@@ -32,11 +28,6 @@ struct TEvTxProxy {
     static_assert(EvEnd < EventSpaceEnd(TKikimrEvents::ES_TX_PROXY), "expect EvEnd < EventSpaceEnd(TKikimrEvents::ES_TX_PROXY)");
 
     struct TEvProposeTransaction : public TEventPB<TEvProposeTransaction, NKikimrTx::TEvProposeTransaction, EvProposeTransaction> {
-        static constexpr ui32 FlagVolatile = NKikimrTx::TProxyTransaction::FLAG_VOLATILE;
-
-        static constexpr ui32 AffectedRead = NKikimrTx::TProxyTransaction::FLAG_AFFECTED_READ;
-        static constexpr ui32 AffectedWrite = NKikimrTx::TProxyTransaction::FLAG_AFFECTED_WRITE;
-
         TEvProposeTransaction() = default;
 
         TEvProposeTransaction(ui64 coordinator, ui64 txId, ui8 execLevel, ui64 minStep, ui64 maxStep);
@@ -62,7 +53,7 @@ struct TEvTxProxy {
         TEvProposeTransactionStatus(EStatus status, ui64 txid, ui64 stepId);
 
         EStatus GetStatus() const {
-            Y_DEBUG_ABORT_UNLESS(Record.HasStatus());
+            Y_VERIFY_DEBUG(Record.HasStatus());
             return static_cast<EStatus>(Record.GetStatus());
         }
     };
@@ -132,59 +123,6 @@ struct TEvTxProxy {
             Record.SetCoordinatorID(coordinator);
             Record.SetSeqNo(seqNo);
             Record.SetNextAcquireStep(nextAcquireStep);
-        }
-    };
-
-    struct TEvSubscribeLastStep
-        : public TEventPB<TEvSubscribeLastStep, NKikimrTx::TEvSubscribeLastStep, EvSubscribeLastStep>
-    {
-        TEvSubscribeLastStep() = default;
-
-        TEvSubscribeLastStep(ui64 coordinator, ui64 seqNo) {
-            Record.SetCoordinatorID(coordinator);
-            Record.SetSeqNo(seqNo);
-        }
-    };
-
-    struct TEvUnsubscribeLastStep
-        : public TEventPB<TEvUnsubscribeLastStep, NKikimrTx::TEvUnsubscribeLastStep, EvUnsubscribeLastStep>
-    {
-        TEvUnsubscribeLastStep() = default;
-
-        TEvUnsubscribeLastStep(ui64 coordinator, ui64 seqNo) {
-            Record.SetCoordinatorID(coordinator);
-            Record.SetSeqNo(seqNo);
-        }
-    };
-
-    struct TEvUpdatedLastStep
-        : public TEventPB<TEvUpdatedLastStep, NKikimrTx::TEvUpdatedLastStep, EvUpdatedLastStep>
-    {
-        TEvUpdatedLastStep() = default;
-
-        TEvUpdatedLastStep(ui64 coordinator, ui64 seqNo, ui64 lastStep) {
-            Record.SetCoordinatorID(coordinator);
-            Record.SetSeqNo(seqNo);
-            Record.SetLastStep(lastStep);
-        }
-    };
-
-    struct TEvRequirePlanSteps
-        : public TEventPB<TEvRequirePlanSteps, NKikimrTx::TEvRequirePlanSteps, EvRequirePlanSteps>
-    {
-        TEvRequirePlanSteps() = default;
-
-        TEvRequirePlanSteps(ui64 coordinator, ui64 planStep) {
-            Record.SetCoordinatorID(coordinator);
-            Record.AddPlanSteps(planStep);
-        }
-
-        TEvRequirePlanSteps(ui64 coordinator, const std::set<ui64>& planSteps) {
-            Record.SetCoordinatorID(coordinator);
-            Record.MutablePlanSteps()->Reserve(planSteps.size());
-            for (ui64 planStep : planSteps) {
-                Record.AddPlanSteps(planStep);
-            }
         }
     };
 };

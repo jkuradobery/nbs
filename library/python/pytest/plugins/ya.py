@@ -2,6 +2,7 @@
 
 import base64
 import errno
+import re
 import sys
 import os
 import logging
@@ -14,6 +15,7 @@ import signal
 import inspect
 import warnings
 
+import attr
 import faulthandler
 import py
 import pytest
@@ -65,7 +67,6 @@ _pytest.main.EXIT_NOTESTSCOLLECTED = 0
 SHUTDOWN_REQUESTED = False
 
 pytest_config = None
-
 
 def configure_pdb_on_demand():
     import signal
@@ -184,7 +185,6 @@ def pytest_addoption(parser):
 def from_ya_test():
     return "YA_TEST_RUNNER" in os.environ
 
-
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     global pytest_config
@@ -292,12 +292,6 @@ def pytest_configure(config):
     if hasattr(signal, "SIGUSR2"):
         signal.signal(signal.SIGUSR2, _graceful_shutdown)
 
-    # register custom markers
-    config.addinivalue_line(
-        "markers", "xfaildiff: Allows to mark test which is expected to have a diff with canonical data"
-    )
-
-
 session_should_exit = False
 
 
@@ -344,11 +338,8 @@ def _collect_test_rusage(item):
         def add_metric(attr_name, metric_name=None, modifier=None):
             if not metric_name:
                 metric_name = attr_name
-
             if not modifier:
-                def modifier(x):
-                    return x
-
+                modifier = lambda x: x
             if hasattr(item.rusage, attr_name):
                 ya_inst.set_metric_value(metric_name, modifier(getattr(finish_rusage, attr_name) - getattr(item.rusage, attr_name)))
 
@@ -405,7 +396,7 @@ def pytest_runtest_setup(item):
     yatest_logger.info(separator)
     yatest_logger.info("Test setup")
 
-    test_item = CrashedTestItem(item.nodeid, item.location[0], pytest_config.option.test_suffix)
+    test_item = CrashedTestItem(item.nodeid, pytest_config.option.test_suffix)
     pytest_config.ya_trace_reporter.on_start_test_class(test_item)
     pytest_config.ya_trace_reporter.on_start_test_case(test_item)
 
@@ -423,20 +414,20 @@ def pytest_deselected(items):
     config = pytest_config
     if config.option.report_deselected:
         for item in items:
-            deselected_item = DeselectedTestItem(item.nodeid, item.location[0], config.option.test_suffix)
+            deselected_item = DeselectedTestItem(item.nodeid, config.option.test_suffix)
             config.ya_trace_reporter.on_start_test_class(deselected_item)
             config.ya_trace_reporter.on_finish_test_case(deselected_item)
             config.ya_trace_reporter.on_finish_test_class(deselected_item)
 
 
-@pytest.hookimpl(trylast=True)
+@pytest.mark.trylast
 def pytest_collection_modifyitems(items, config):
 
     def filter_items(filters):
         filtered_items = []
         deselected_items = []
         for item in items:
-            canonical_node_id = str(CustomTestItem(item.nodeid, item.location[0], pytest_config.option.test_suffix))
+            canonical_node_id = str(CustomTestItem(item.nodeid, pytest_config.option.test_suffix))
             matched = False
             for flt in filters:
                 if "::" not in flt and "*" not in flt:
@@ -501,14 +492,14 @@ def pytest_collection_modifyitems(items, config):
 
     if config.option.mode == yatest_lib.ya.RunMode.Run:
         for item in items:
-            test_item = NotLaunchedTestItem(item.nodeid, item.location[0], config.option.test_suffix)
+            test_item = NotLaunchedTestItem(item.nodeid, config.option.test_suffix)
             config.ya_trace_reporter.on_start_test_class(test_item)
             config.ya_trace_reporter.on_finish_test_case(test_item)
             config.ya_trace_reporter.on_finish_test_class(test_item)
     elif config.option.mode == yatest_lib.ya.RunMode.List:
         tests = []
         for item in items:
-            item = CustomTestItem(item.nodeid, item.location[0], pytest_config.option.test_suffix, item.keywords)
+            item = CustomTestItem(item.nodeid, pytest_config.option.test_suffix, item.keywords)
             record = {
                 "class": item.class_name,
                 "test": item.test_name,
@@ -525,13 +516,13 @@ def pytest_collection_modifyitems(items, config):
 def pytest_collectreport(report):
     if not report.passed:
         if hasattr(pytest_config, 'ya_trace_reporter'):
-            test_item = TestItem(report, None, None, pytest_config.option.test_suffix)
+            test_item = TestItem(report, None, pytest_config.option.test_suffix)
             pytest_config.ya_trace_reporter.on_error(test_item)
         else:
             sys.stderr.write(yatest_lib.tools.to_utf8(report.longrepr))
 
 
-@pytest.hookimpl(tryfirst=True)
+@pytest.mark.tryfirst
 def pytest_pyfunc_call(pyfuncitem):
     testfunction = pyfuncitem.obj
     iscoroutinefunction = getattr(inspect, "iscoroutinefunction", None)
@@ -551,8 +542,8 @@ def pytest_pyfunc_call(pyfuncitem):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    def logreport(report, result, call, markers):
-        test_item = TestItem(report, item.location[0], result, pytest_config.option.test_suffix, markers=markers)
+    def logreport(report, result, call):
+        test_item = TestItem(report, result, pytest_config.option.test_suffix)
         if not pytest_config.suite_metrics and context.Ctx.get("YA_PYTEST_START_TIMESTAMP"):
             pytest_config.suite_metrics["pytest_startup_duration"] = call.start - context.Ctx["YA_PYTEST_START_TIMESTAMP"]
             pytest_config.ya_trace_reporter.dump_suite_metrics()
@@ -586,10 +577,10 @@ def pytest_runtest_makereport(item, call):
     if hasattr(item, 'retval') and item.retval is not None:
         result = item.retval
         if not pytest_config.from_ya_test:
-            ti = TestItem(rep, item.location[0], result, pytest_config.option.test_suffix)
+            ti = TestItem(rep, result, pytest_config.option.test_suffix)
             tr = pytest_config.pluginmanager.getplugin('terminalreporter')
             tr.write_line("{} - Validating canonical data is not supported when running standalone binary".format(ti), yellow=True, bold=True)
-    logreport(rep, result, call, item.own_markers)
+    logreport(rep, result, call)
 
 
 def pytest_make_parametrize_id(config, val, argname):
@@ -626,24 +617,32 @@ def colorize(longrepr):
             return io.getvalue().strip()
         return yatest_lib.tools.to_utf8(longrepr)
 
-    # Use arcadia style colorization
     text = yatest_lib.tools.to_utf8(longrepr)
-    return tools.colorize_pytest_error(text)
+    pos = text.find("E   ")
+    if pos == -1:
+        return text
+
+    bt, error = text[:pos], text[pos:]
+    filters = [
+        # File path, line number and function name
+        (re.compile(r"^(.*?):(\d+): in (\S+)", flags=re.MULTILINE), r"[[unimp]]\1[[rst]]:[[alt2]]\2[[rst]]: in [[alt1]]\3[[rst]]"),
+    ]
+    for regex, substitution in filters:
+        bt = regex.sub(substitution, bt)
+    return "{}[[bad]]{}".format(bt, error)
 
 
 class TestItem(object):
 
-    def __init__(self, report, location, result, test_suffix, markers=None):
+    def __init__(self, report, result, test_suffix):
         self._result = result
         self.nodeid = report.nodeid
         self._class_name, self._test_name = tools.split_node_id(self.nodeid, test_suffix)
         self._error = ""
         self._status = None
-        self._location = location
+        self._process_report(report)
         self._duration = hasattr(report, 'duration') and report.duration or 0
         self._keywords = getattr(report, "keywords", {})
-        self._xfaildiff = any(m.name == 'xfaildiff' for m in (markers or []))
-        self._process_report(report)
 
     def _process_report(self, report):
         if report.longrepr:
@@ -657,7 +656,7 @@ class TestItem(object):
 
         if report_teststatus == 'xfailed':
             self._status = 'xfail'
-            self.set_error(report.wasxfail or 'test was marked as xfail', 'imp')
+            self.set_error(report.wasxfail, 'imp')
         elif report_teststatus == 'xpassed':
             self._status = 'xpass'
             self.set_error("Test unexpectedly passed")
@@ -665,10 +664,7 @@ class TestItem(object):
             self._status = 'skipped'
             self.set_error(yatest_lib.tools.to_utf8(report.longrepr[-1]))
         elif report.passed:
-            if self._xfaildiff:
-                self._status = 'xfaildiff'
-            else:
-                self._status = 'good'
+            self._status = 'good'
         else:
             self._status = 'fail'
 
@@ -691,12 +687,7 @@ class TestItem(object):
     def error(self):
         return self._error
 
-    @property
-    def location(self):
-        return self._location
-
     def set_error(self, entry, marker='bad'):
-        assert entry != ""
         if isinstance(entry, _pytest.reports.BaseReport):
             self._error = get_formatted_error(entry)
         else:
@@ -722,10 +713,9 @@ class TestItem(object):
 
 class CustomTestItem(TestItem):
 
-    def __init__(self, nodeid, location, test_suffix, keywords=None):
+    def __init__(self, nodeid, test_suffix, keywords=None):
         self._result = None
         self.nodeid = nodeid
-        self._location = location
         self._class_name, self._test_name = tools.split_node_id(nodeid, test_suffix)
         self._duration = 0
         self._error = ""
@@ -734,22 +724,22 @@ class CustomTestItem(TestItem):
 
 class NotLaunchedTestItem(CustomTestItem):
 
-    def __init__(self, nodeid, location, test_suffix):
-        super(NotLaunchedTestItem, self).__init__(nodeid, location, test_suffix)
+    def __init__(self, nodeid, test_suffix):
+        super(NotLaunchedTestItem, self).__init__(nodeid, test_suffix)
         self._status = "not_launched"
 
 
 class CrashedTestItem(CustomTestItem):
 
-    def __init__(self, nodeid, location, test_suffix):
-        super(CrashedTestItem, self).__init__(nodeid, location, test_suffix)
+    def __init__(self, nodeid, test_suffix):
+        super(CrashedTestItem, self).__init__(nodeid, test_suffix)
         self._status = "crashed"
 
 
 class DeselectedTestItem(CustomTestItem):
 
-    def __init__(self, nodeid, location, test_suffix):
-        super(DeselectedTestItem, self).__init__(nodeid, location, test_suffix)
+    def __init__(self, nodeid, test_suffix):
+        super(DeselectedTestItem, self).__init__(nodeid, test_suffix)
         self._status = "deselected"
 
 
@@ -813,9 +803,11 @@ class TraceReportGenerator(object):
         pytest_config.ya.set_test_item_node_id(test_item.nodeid)
         class_name = test_item.class_name.decode('utf-8') if sys.version_info[0] < 3 else test_item.class_name
         self._current_test = (class_name, None)
+        self.trace('test-started', {'class': class_name})
 
     def on_finish_test_class(self, test_item):
         pytest_config.ya.set_test_item_node_id(test_item.nodeid)
+        self.trace('test-finished', {'class': test_item.class_name.decode('utf-8') if sys.version_info[0] < 3 else test_item.class_name})
 
     def on_start_test_case(self, test_item):
         class_name = yatest_lib.tools.to_utf8(test_item.class_name)
@@ -824,9 +816,6 @@ class TraceReportGenerator(object):
             'class': class_name,
             'subtest': subtest_name,
         }
-        # Enable when CI is ready, see YA-465
-        if False and test_item.location:  # noqa PLR1727
-            message['path'] = test_item.location
         if test_item.nodeid in pytest_config.test_logs:
             message['logs'] = pytest_config.test_logs[test_item.nodeid]
         pytest_config.ya.set_test_item_node_id(test_item.nodeid)
@@ -860,9 +849,6 @@ class TraceReportGenerator(object):
                 'is_diff_test': 'diff_test' in test_item.keywords,
                 'tags': _get_item_tags(test_item),
             }
-            # Enable when CI is ready, see YA-465
-            if False and test_item.location:  # noqa PLR1727
-                message['path'] = test_item.location
             if test_item.nodeid in pytest_config.test_logs:
                 message['logs'] = pytest_config.test_logs[test_item.nodeid]
 
@@ -885,14 +871,10 @@ class TraceReportGenerator(object):
             self._test_duration[test_item.nodeid] = test_item._duration
 
     @staticmethod
-    def _get_comment(test_item, limit=8*1024):
+    def _get_comment(test_item):
         msg = yatest_lib.tools.to_utf8(test_item.error)
         if not msg:
             return ""
-
-        if len(msg) > limit:
-            msg = msg[:limit - 3] + "..."
-
         return msg + "[[rst]]"
 
     def _dump_trace(self, name, value):

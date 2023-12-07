@@ -5,7 +5,7 @@
 #include "restore.h"
 #include "modification.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NMetadata::NModifications {
 
@@ -55,7 +55,7 @@ protected:
     typename TProcessingController<TObject>::TPtr InternalController;
     IAlterController::TPtr ExternalController;
     typename IObjectOperationsManager<TObject>::TPtr Manager;
-    const IOperationsManager::TInternalModificationContext Context;
+    const IOperationsManager::TModificationContext Context;
     std::vector<NInternal::TTableRecord> Patches;
     NInternal::TTableRecords RestoreObjectIds;
     const NACLib::TUserToken UserToken = NACLib::TSystemUsers::Metadata();
@@ -67,7 +67,7 @@ public:
     TModificationActorImpl(NInternal::TTableRecord&& patch,
         IAlterController::TPtr controller,
         typename IObjectOperationsManager<TObject>::TPtr manager,
-        const IOperationsManager::TInternalModificationContext& context)
+        const IOperationsManager::TModificationContext& context)
         : ExternalController(controller)
         , Manager(manager)
         , Context(context) {
@@ -76,7 +76,7 @@ public:
 
     TModificationActorImpl(const NInternal::TTableRecord& patch, IAlterController::TPtr controller,
         typename IObjectOperationsManager<TObject>::TPtr manager,
-        const IOperationsManager::TInternalModificationContext& context)
+        const IOperationsManager::TModificationContext& context)
         : ExternalController(controller)
         , Manager(manager)
         , Context(context) {
@@ -85,7 +85,7 @@ public:
 
     TModificationActorImpl(std::vector<NInternal::TTableRecord>&& patches, IAlterController::TPtr controller,
         typename IObjectOperationsManager<TObject>::TPtr manager,
-        const IOperationsManager::TInternalModificationContext& context)
+        const IOperationsManager::TModificationContext& context)
         : ExternalController(controller)
         , Manager(manager)
         , Context(context)
@@ -95,7 +95,7 @@ public:
 
     TModificationActorImpl(const std::vector<NInternal::TTableRecord>& patches, IAlterController::TPtr controller,
         typename IObjectOperationsManager<TObject>::TPtr manager,
-        const IOperationsManager::TInternalModificationContext& context)
+        const IOperationsManager::TModificationContext& context)
         : ExternalController(controller)
         , Manager(manager)
         , Context(context)
@@ -135,7 +135,7 @@ public:
         Ydb::Table::CreateSessionResult session;
         currentFullReply.operation().result().UnpackTo(&session);
         SessionId = session.session_id();
-        Y_ABORT_UNLESS(SessionId);
+        Y_VERIFY(SessionId);
 
         InternalController = std::make_shared<TProcessingController<TObject>>(TBase::SelfId());
         TBase::Register(new TRestoreObjectsActor<TObject>(RestoreObjectIds, UserToken, InternalController, SessionId));
@@ -143,7 +143,7 @@ public:
 
     void Handle(typename TEvRestoreFinished<TObject>::TPtr& ev) {
         TransactionId = ev->Get()->GetTransactionId();
-        Y_ABORT_UNLESS(TransactionId);
+        Y_VERIFY(TransactionId);
         std::vector<TObject> objects = std::move(ev->Get()->MutableObjects());
         if (!PrepareRestoredObjects(objects)) {
             TBase::PassAway();
@@ -192,7 +192,7 @@ private:
 protected:
     using TBase::Manager;
     virtual void InitState() override {
-        TBase::UnsafeBecome(&TModificationActor<TObject>::StateMain);
+        TBase::Become(&TModificationActor<TObject>::StateMain);
     }
 
     virtual bool BuildRestoreObjectIds() override {
@@ -215,7 +215,7 @@ public:
             hFunc(TEvModificationFinished, Handle);
             hFunc(TEvModificationProblem, Handle);
             default:
-                TBase::StateMain(ev);
+                TBase::StateMain(ev, ctx);
         }
     }
 

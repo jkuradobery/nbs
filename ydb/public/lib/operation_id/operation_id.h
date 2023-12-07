@@ -25,8 +25,5 @@ void AddOptionalValue(Ydb::TOperationId& proto, const TString& key, const TStrin
 void AddOptionalValue(Ydb::TOperationId& proto, const TString& key, const char* value, size_t size);
 Ydb::TOperationId::EKind ParseKind(const TStringBuf value);
 
-TString FormatPreparedQueryIdCompat(const TString& str);
-bool DecodePreparedQueryIdCompat(const TString& in, TString& out);
-
 } // namespace NOperationId
 } // namespace NKikimr

@@ -123,18 +123,6 @@ bool IsValidValue(NUdf::EDataSlot type, const NUdf::TUnboxedValuePod& value) {
     case NUdf::EDataSlot::Interval:
         return bool(value) && (ui64)std::abs(value.Get<i64>()) < NUdf::MAX_TIMESTAMP;
 
-    case NUdf::EDataSlot::Date32:
-        return bool(value) && value.Get<i32>() >= NUdf::MIN_DATE32 && value.Get<i32>() <= NUdf::MAX_DATE32;
-
-    case NUdf::EDataSlot::Datetime64:
-        return bool(value) && value.Get<i64>() >= NUdf::MIN_DATETIME64 && value.Get<i64>() <= NUdf::MAX_DATETIME64;
-
-    case NUdf::EDataSlot::Timestamp64:
-        return bool(value) && value.Get<i64>() >= NUdf::MIN_TIMESTAMP64 && value.Get<i64>() <= NUdf::MAX_TIMESTAMP64;
-
-    case NUdf::EDataSlot::Interval64:
-        return bool(value) && (ui64)std::abs(value.Get<i64>()) <= NUdf::MAX_INTERVAL64;
-
     case NUdf::EDataSlot::TzDate:
         return bool(value) && value.Get<ui16>() < NUdf::MAX_DATE && value.GetTimezoneId() < NUdf::GetTimezones().size();
 
@@ -613,7 +601,7 @@ public:
 
         for (ui16 date = 0; date < Days_.size(); ++date) {
             ui32 year, month, day;
-            Y_ABORT_UNLESS(SplitDateUncached(date, year, month, day));
+            Y_VERIFY(SplitDateUncached(date, year, month, day));
 
             ++dayOfYear;
             if (++dayOfWeek > 7) {
@@ -1583,10 +1571,6 @@ bool IsValidStringValue(NUdf::EDataSlot type, NUdf::TStringRef buf) {
     case NUdf::EDataSlot::TzDate:
     case NUdf::EDataSlot::TzDatetime:
     case NUdf::EDataSlot::TzTimestamp:
-    case NUdf::EDataSlot::Date32:
-    case NUdf::EDataSlot::Datetime64:
-    case NUdf::EDataSlot::Timestamp64:
-    case NUdf::EDataSlot::Interval64:
         return bool(ValueFromString(type, buf));
 
     default:
@@ -1704,22 +1688,6 @@ NUdf::TUnboxedValuePod ValueFromString(NUdf::EDataSlot type, NUdf::TStringRef bu
         return MakeString(TStringBuf(binaryJson->Data(), binaryJson->Size()));
     }
 
-    case NUdf::EDataSlot::Date32:
-        //TODO
-        return {};
-
-    case NUdf::EDataSlot::Datetime64:
-        //TODO
-        return {};
-
-    case NUdf::EDataSlot::Timestamp64:
-        //TODO
-        return {};
-
-    case NUdf::EDataSlot::Interval64:
-        //TODO
-        return {};
-
     case NUdf::EDataSlot::Decimal:
     default:
         break;
@@ -1794,11 +1762,7 @@ NUdf::TUnboxedValuePod SimpleValueFromYson(NUdf::EDataSlot type, NUdf::TStringRe
         case NUdf::EDataSlot::TzTimestamp:
         case NUdf::EDataSlot::Decimal:
         case NUdf::EDataSlot::Uuid:
-        case NUdf::EDataSlot::Date32:
-        case NUdf::EDataSlot::Datetime64:
-        case NUdf::EDataSlot::Timestamp64:
-        case NUdf::EDataSlot::Interval64:
-            Y_ABORT("TODO");
+            Y_FAIL("TODO");
 
         default:
             ;
@@ -1909,11 +1873,7 @@ NUdf::TUnboxedValuePod SimpleValueFromYson(NUdf::EDataSlot type, NUdf::TStringRe
     case NUdf::EDataSlot::Uuid:
     case NUdf::EDataSlot::DyNumber:
     case NUdf::EDataSlot::JsonDocument:
-    case NUdf::EDataSlot::Date32:
-    case NUdf::EDataSlot::Datetime64:
-    case NUdf::EDataSlot::Timestamp64:
-    case NUdf::EDataSlot::Interval64:
-        Y_ABORT("TODO");
+        Y_FAIL("TODO");
     }
 
     MKQL_ENSURE(false, "SimpleValueFromYson: Incorrect typeid: " << type);

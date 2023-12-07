@@ -76,9 +76,7 @@
                 {"Index": 2, "Name": "Table", "Type": "TCoAtom"},
                 {"Index": 3, "Name": "Input", "Type": "TExprBase"},
                 {"Index": 4, "Name": "Mode", "Type": "TCoAtom"},
-                {"Index": 5, "Name": "Settings", "Type": "TCoNameValueTupleList"},
-                {"Index": 6, "Name": "ReturningColumns", "Type": "TCoAtomList"},
-                {"Index": 7, "Name": "ReturningStar", "Type": "TCoAtom"}
+                {"Index": 5, "Name": "Settings", "Type": "TCoNameValueTupleList"}
             ]
         },
         {
@@ -90,9 +88,7 @@
                 {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
                 {"Index": 2, "Name": "Table", "Type": "TCoAtom"},
                 {"Index": 3, "Name": "Filter", "Type": "TCoLambda"},
-                {"Index": 4, "Name": "Update", "Type": "TCoLambda"},
-                {"Index": 5, "Name": "ReturningColumns", "Type": "TCoAtomList"},
-                {"Index": 6, "Name": "ReturningStar", "Type": "TCoAtom"}
+                {"Index": 4, "Name": "Update", "Type": "TCoLambda"}
             ]
         },
         {
@@ -122,11 +118,7 @@
                 {"Index": 8, "Name": "ColumnFamilies", "Type": "TExprList"},
                 {"Index": 9, "Name": "TableSettings", "Type": "TCoNameValueTupleList"},
                 {"Index": 10, "Name": "Changefeeds", "Type": "TCoChangefeedList"},
-                {"Index": 11, "Name": "TableType", "Type": "TCoAtom"},
-                {"Index": 12, "Name": "NotNullColumns", "Type": "TCoAtomList"},
-                {"Index": 13, "Name": "SerialColumns", "Type": "TCoAtomList"},
-                {"Index": 14, "Name": "Temporary", "Type": "TCoAtom"},
-                {"Index": 15, "Name": "ExistingOk", "Type": "TCoAtom"}
+                {"Index": 11, "Name": "TableType", "Type": "TCoAtom"}
             ]
         },
         {
@@ -150,47 +142,7 @@
                 {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
                 {"Index": 2, "Name": "Table", "Type": "TCoAtom"},
                 {"Index": 3, "Name": "Settings", "Type": "TCoNameValueTupleList"},
-                {"Index": 4, "Name": "TableType", "Type": "TCoAtom"},
-                {"Index": 5, "Name": "MissingOk", "Type": "TCoAtom"}
-            ]
-        },
-        {
-            "Name": "TKiCreateTopic",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "KiCreateTopic!"},
-            "Children": [
-                {"Index": 0, "Name": "World", "Type": "TExprBase"},
-                {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
-                {"Index": 2, "Name": "Topic", "Type": "TCoAtom"},
-                {"Index": 3, "Name": "Consumers", "Type": "TCoTopicConsumerList"},
-                {"Index": 4, "Name": "TopicSettings", "Type": "TCoNameValueTupleList"},
-                {"Index": 5, "Name": "Settings", "Type": "TCoNameValueTupleList"}
-            ]
-        },
-        {
-            "Name": "TKiAlterTopic",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "KiAlterTopic!"},
-            "Children": [
-                {"Index": 0, "Name": "World", "Type": "TExprBase"},
-                {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
-                {"Index": 2, "Name": "Topic", "Type": "TCoAtom"},
-                {"Index": 3, "Name": "AddConsumers", "Type": "TCoTopicConsumerList"},
-                {"Index": 4, "Name": "AlterConsumers", "Type": "TCoTopicConsumerList"},
-                {"Index": 5, "Name": "DropConsumers", "Type": "TCoAtomList"},
-                {"Index": 6, "Name": "TopicSettings", "Type": "TCoNameValueTupleList"},
-                {"Index": 7, "Name": "Settings", "Type": "TCoNameValueTupleList"}
-            ]
-        },
-        {
-            "Name": "TKiDropTopic",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "KiDropTopic!"},
-            "Children": [
-                {"Index": 0, "Name": "World", "Type": "TExprBase"},
-                {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
-                {"Index": 2, "Name": "Topic", "Type": "TCoAtom"},
-                {"Index": 3, "Name": "Settings", "Type": "TCoNameValueTupleList"}
+                {"Index": 4, "Name": "TableType", "Type": "TCoAtom"}
             ]
         },
         {
@@ -224,18 +176,6 @@
                 {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
                 {"Index": 2, "Name": "UserName", "Type": "TCoAtom"},
                 {"Index": 3, "Name": "Settings", "Type": "TCoNameValueTupleList"}
-            ]
-        },
-        {
-            "Name": "TKiUpsertObject",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "KiUpsertObject!"},
-            "Children": [
-                {"Index": 0, "Name": "World", "Type": "TExprBase"},
-                {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
-                {"Index": 2, "Name": "ObjectId", "Type": "TCoAtom"},
-                {"Index": 3, "Name": "TypeId", "Type": "TCoAtom"},
-                {"Index": 4, "Name": "Features", "Type": "TCoNameValueTupleList"}
             ]
         },
         {
@@ -366,31 +306,6 @@
                 {"Index": 2, "Name": "QueryBlocks", "Type": "TKiDataQueryBlocks"},
                 {"Index": 3, "Name": "Settings", "Type": "TCoNameValueTupleList"},
                 {"Index": 4, "Name": "Ast", "Type": "TExprBase"}
-            ]
-        },
-        {
-            "Name": "TKiModifyPermissions",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "KiModifyPermissions!"},
-            "Children": [
-                {"Index": 0, "Name": "World", "Type": "TExprBase"},
-                {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
-                {"Index": 2, "Name": "Action", "Type": "TCoAtom"},
-                {"Index": 3, "Name": "Permissions", "Type": "TCoAtomList"},
-                {"Index": 4, "Name": "Pathes", "Type": "TCoAtomList"},
-                {"Index": 5, "Name": "Roles", "Type": "TCoAtomList"}
-            ]
-        },
-        {
-            "Name": "TPgDropObject",
-            "Base": "TCallable",
-            "Match": {"Type": "Callable", "Name": "PgDropObject!"},
-            "Children": [
-                {"Index": 0, "Name": "World", "Type": "TExprBase"},
-                {"Index": 1, "Name": "DataSink", "Type": "TKiDataSink"},
-                {"Index": 2, "Name": "ObjectId", "Type": "TCoAtom"},
-                {"Index": 3, "Name": "TypeId", "Type": "TCoAtom"},
-                {"Index": 4, "Name": "MissingOk", "Type": "TCoAtom"}
             ]
         }
     ]

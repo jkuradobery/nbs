@@ -14,8 +14,6 @@
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 
-#include <library/cpp/threading/future/async.h>
-
 namespace NKikimr {
 namespace NKqp {
 
@@ -72,6 +70,35 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
         runtime.GrabEdgeEventRethrow<NSchemeShard::TEvSchemeShard::TEvNotifyTxCompletionResult>(sender);
     }
 
+    NKikimrScheme::TEvDescribeSchemeResult DescribeTable(Tests::TServer* server,
+                                                        TActorId sender,
+                                                        const TString &path)
+    {
+        auto &runtime = *server->GetRuntime();
+        TAutoPtr<IEventHandle> handle;
+        TVector<ui64> shards;
+
+        auto request = MakeHolder<TEvTxUserProxy::TEvNavigate>();
+        request->Record.MutableDescribePath()->SetPath(path);
+        request->Record.MutableDescribePath()->MutableOptions()->SetShowPrivateTable(true);
+        runtime.Send(new IEventHandle(MakeTxProxyID(), sender, request.Release()));
+        auto reply = runtime.GrabEdgeEventRethrow<NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult>(handle);
+
+        return *reply->MutableRecord();
+    }
+
+    TVector<ui64> GetTableShards(Tests::TServer* server,
+                                TActorId sender,
+                                const TString &path)
+    {
+        TVector<ui64> shards;
+        auto lsResult = DescribeTable(server, sender, path);
+        for (auto &part : lsResult.GetPathDescription().GetTablePartitions())
+            shards.push_back(part.GetDatashardId());
+
+        return shards;
+    }
+
     i64 SetSplitMergePartCountLimit(TTestActorRuntime* runtime, i64 val) {
         TAtomic prev;
         runtime->GetAppData().Icb->SetValue("SchemeShard_SplitMergePartCountLimit", val, prev);
@@ -98,7 +125,7 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
         }
 
         void Handle(TAutoPtr<IEventHandle> ev) {
-            Forward(ev, Client);
+            Send(Client, ev->ReleaseBase());
         }
 
         void Handle(TEvDataShard::TEvReadResult::TPtr& ev) {
@@ -184,7 +211,8 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
             SetupCapture(std::numeric_limits<i64>::max(), 0);
         }
 
-        void State(TAutoPtr<::NActors::IEventHandle> &ev) {
+        void State(TAutoPtr<::NActors::IEventHandle> &ev, const ::NActors::TActorContext &ctx) {
+            Y_UNUSED(ctx);
             if (ev->GetTypeRewrite() == TEvPipeCache::TEvForward::EventType) {
                 auto* forw = reinterpret_cast<TEvPipeCache::TEvForward::TPtr*>(&ev);
                 auto readtype = TEvDataShard::TEvRead::EventType;
@@ -215,7 +243,7 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
                 }
             }
             auto id = pipe->SelfId();
-            TActor<TReadActorPipeCacheStub>::Forward(ev, id);
+            Send(id, ev->ReleaseBase());
         }
 
         void SendCaptured(NActors::TTestActorRuntime* runtime, bool sendResults = true) {
@@ -265,47 +293,6 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
         return res;
     }
 
-    THolder<NKqp::TEvKqp::TEvQueryRequest> MakeSQLRequest(const TString &sql, bool dml) {
-        auto request = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>();
-        if (dml) {
-            request->Record.MutableRequest()->MutableTxControl()->mutable_begin_tx()->mutable_serializable_read_write();
-            request->Record.MutableRequest()->MutableTxControl()->set_commit_tx(true);
-        }
-        request->Record.SetRequestType("_document_api_request");
-        request->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
-        request->Record.MutableRequest()->SetType(dml
-                                                  ? NKikimrKqp::QUERY_TYPE_SQL_DML
-                                                  : NKikimrKqp::QUERY_TYPE_SQL_DDL);
-        request->Record.MutableRequest()->SetQuery(sql);
-        request->Record.MutableRequest()->SetUsePublicResponseDataFormat(true);
-        return request;
-    }
-
-    void SendSQL(Tests::TServer::TPtr server,
-                 TActorId sender,
-                 const TString &sql,
-                 bool dml)
-    {
-        auto &runtime = *server->GetRuntime();
-        auto request = MakeSQLRequest(sql, dml);
-        runtime.Send(new IEventHandle(NKqp::MakeKqpProxyID(runtime.GetNodeId()), sender, request.Release()));
-    }
-
-    void ExecSQL(Tests::TServer::TPtr server,
-                 TActorId sender,
-                 const TString &sql,
-                 bool dml = true,
-                 Ydb::StatusIds::StatusCode code = Ydb::StatusIds::SUCCESS)
-    {
-        auto &runtime = *server->GetRuntime();
-        TAutoPtr<IEventHandle> handle;
-
-        auto request = MakeSQLRequest(sql, dml);
-        runtime.Send(new IEventHandle(NKqp::MakeKqpProxyID(runtime.GetNodeId()), sender, request.Release()));
-        auto ev = runtime.GrabEdgeEventRethrow<NKqp::TEvKqp::TEvQueryResponse>(sender);
-        UNIT_ASSERT_VALUES_EQUAL(ev->Get()->Record.GetRef().GetYdbStatus(), code);
-    }
-
     void SendScanQuery(TTestActorRuntime* runtime, TActorId kqpProxy, TActorId sender, const TString& queryText) {
         auto ev = std::make_unique<NKqp::TEvKqp::TEvQueryRequest>();
         ev->Record.MutableRequest()->SetAction(NKikimrKqp::QUERY_ACTION_EXECUTE);
@@ -317,7 +304,7 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
     };
 
     void CollectKeysTo(TVector<ui64>* collectedKeys, TTestActorRuntime* runtime, TActorId sender) {
-        auto captureEvents = [=](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
+        auto captureEvents =  [=](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) {
             if (ev->GetTypeRewrite() == NKqp::TEvKqpExecuter::TEvStreamData::EventType) {
                 auto& record = ev->Get<NKqp::TEvKqpExecuter::TEvStreamData>()->Record;
                 for (auto& row : record.resultset().rows()) {
@@ -386,25 +373,22 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
     void TTestCase##N<OPT>::Execute_(NUnitTest::TTestContext& ut_context Y_DECLARE_UNUSED)
 
     struct TTestSetup {
-        TTestSetup(TString table = "/Root/KeyValueLargePartition", Tests::TServer* providedServer = nullptr)
+        TTestSetup(TString table = "/Root/KeyValueLargePartition")
             : Table(table)
         {
-            InterceptReadActorPipeCache(MakePipePeNodeCacheID(false));
-            if (providedServer) {
-                Server = providedServer;
-            } else {
-                TKikimrSettings settings;
-                NKikimrConfig::TAppConfig appConfig;
-                appConfig.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
-                appConfig.MutableTableServiceConfig()->SetEnableKqpScanQueryStreamLookup(false);
-                appConfig.MutableTableServiceConfig()->SetEnablePredicateExtractForScanQueries(true);
-                settings.SetDomainRoot(KikimrDefaultUtDomainRoot);
-                settings.SetAppConfig(appConfig);
+            TKikimrSettings settings;
+            NKikimrConfig::TAppConfig appConfig;
+            appConfig.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
+            appConfig.MutableTableServiceConfig()->SetEnableKqpScanQueryStreamLookup(false);
+            appConfig.MutableTableServiceConfig()->SetEnablePredicateExtractForScanQueries(true);
+            settings.SetDomainRoot(KikimrDefaultUtDomainRoot);
+            settings.SetAppConfig(appConfig);
 
-                Kikimr.ConstructInPlace(settings);
-                Server = &Kikimr->GetTestServer();
-            }
+            Kikimr.ConstructInPlace(settings);
 
+            auto db = Kikimr->GetTableClient();
+
+            Server = &Kikimr->GetTestServer();
             Runtime = Server->GetRuntime();
             KqpProxy = MakeKqpProxyID(Runtime->GetNodeId(0));
 
@@ -416,10 +400,6 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
             }
 
             Sender = Runtime->AllocateEdgeActor();
-
-            if (providedServer) {
-                InitRoot(Server, Sender);
-            }
 
             CollectKeysTo(&CollectedKeys, Runtime, Sender);
 
@@ -516,7 +496,7 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
             or (Key >= 601 and Key <= 603) \
             or (Key >= 702 and Key <= 801) \
             ";
-
+    
     Y_UNIT_TEST_SORT(AfterResultMultiRange, Order) {
         TTestSetup s;
         NKikimrTxDataShard::TEvRead evread;
@@ -646,6 +626,27 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
         UNIT_ASSERT_VALUES_EQUAL(Format(Canonize(s.CollectedKeys, Order)), ALL);
     }
 
+    Y_UNIT_TEST_SORT(AfterResolvePoints, Order) {
+        TTestSetup s;
+        auto shards = s.Shards();
+
+        auto* shim = new TReadActorPipeCacheStub();
+        InterceptReadActorPipeCache(s.Runtime->Register(shim));
+        shim->SetupCapture(0, 5);
+        s.SendScanQuery(
+            "PRAGMA Kikimr.OptEnablePredicateExtract=\"false\"; SELECT Key FROM `/Root/KeyValueLargePartition` where Key in (103, 302, 402, 502, 703)" + OrderBy(Order));
+
+        shim->ReadsReceived.WaitI();
+        Cerr << "starting split -----------------------------------------------------------" << Endl;
+        s.Split(shards.at(0), 400);
+        Cerr << "resume evread -----------------------------------------------------------" << Endl;
+        shim->SkipAll();
+        shim->SendCaptured(s.Runtime);
+
+        s.AssertSuccess();
+        UNIT_ASSERT_VALUES_EQUAL(Format(Canonize(s.CollectedKeys, Order)), ",103,302,402,502,703");
+    }
+
     Y_UNIT_TEST_SORT(IntersectionLosesRange, Order) {
         TTestSetup s;
         auto shards = s.Shards();
@@ -664,107 +665,6 @@ Y_UNIT_TEST_SUITE(KqpSplit) {
         s.AssertSuccess();
         UNIT_ASSERT_VALUES_EQUAL(Format(Canonize(s.CollectedKeys, Order)), ",101,202,203,701,702,703");
     }
-
-    Y_UNIT_TEST(UndeliveryOnFinishedRead) {
-        TPortManager pm;
-        Tests::TServerSettings serverSettings(pm.GetPort(2134));
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableKqpScanQuerySourceRead(true);
-        appConfig.MutableTableServiceConfig()->SetEnableKqpScanQueryStreamLookup(false);
-        appConfig.MutableTableServiceConfig()->SetEnablePredicateExtractForScanQueries(true);
-        serverSettings.SetDomainName("Root")
-            .SetUseRealThreads(false)
-            .SetAppConfig(appConfig);
-
-        Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
-
-        server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_YQL, NActors::NLog::PRI_DEBUG);
-        server->GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPUTE, NActors::NLog::PRI_DEBUG);
-        TTestSetup s("/Root/Test", server.Get());
-
-        NThreading::TPromise<bool> captured = NThreading::NewPromise<bool>();
-        TVector<THolder<IEventHandle>> evts;
-        std::atomic<bool> captureNotify = true;
-        s.Runtime->SetObserverFunc(
-            [&](TAutoPtr<IEventHandle>& ev) -> TTestActorRuntimeBase::EEventAction {
-                if (!captureNotify.load()) {
-                    return TTestActorRuntime::EEventAction::PROCESS;
-                }
-                switch (ev->GetTypeRewrite()) {
-                    case NYql::NDq::IDqComputeActorAsyncInput::TEvNewAsyncInputDataArrived::EventType: {
-                        Cerr << "captured newasyncdataarrived" << Endl;
-                        evts.push_back(THolder<IEventHandle>(ev.Release()));
-                        if (!captured.HasValue()) {
-                            captured.SetValue(true);
-                        }
-                        return TTestActorRuntime::EEventAction::DROP;
-                    }
-                }
-                return TTestActorRuntime::EEventAction::PROCESS;
-            });
-
-        ExecSQL(server, s.Sender, R"(
-            CREATE TABLE `/Root/Test` (
-                Key Uint64,
-                Value String,
-                PRIMARY KEY (Key)
-            );
-            )",
-            false);
-
-        ExecSQL(server, s.Sender, R"(
-            REPLACE INTO `/Root/Test` (Key, Value) VALUES
-                (201u, "Value1"),
-                (202u, "Value2"),
-                (203u, "Value3"),
-                (803u, "Value3");
-            )",
-            true);
-
-        auto shards = s.Shards();
-        UNIT_ASSERT_EQUAL(shards.size(), 1);
-
-        s.SendScanQuery("SELECT Key FROM `/Root/Test` where Key = 202");
-
-        s.Runtime->WaitFuture(captured.GetFuture());
-
-        for (auto& ev : evts) {
-            auto undelivery = MakeHolder<TEvPipeCache::TEvDeliveryProblem>(shards[0], true);
-
-            s.Runtime->Send(ev->Sender, s.Sender, undelivery.Release());
-        }
-
-        captureNotify.store(false);
-
-        for (auto& ev : evts) {
-            s.Runtime->Send(ev.Release());
-        }
-
-        s.AssertSuccess();
-        UNIT_ASSERT_VALUES_EQUAL(Format(s.CollectedKeys), ",202");
-    }
-
-    // TODO: rework test for stream lookups
-    //Y_UNIT_TEST_SORT(AfterResolvePoints, Order) {
-    //    TTestSetup s;
-    //    auto shards = s.Shards();
-
-    //    auto* shim = new TReadActorPipeCacheStub();
-    //    InterceptReadActorPipeCache(s.Runtime->Register(shim));
-    //    shim->SetupCapture(0, 5);
-    //    s.SendScanQuery(
-    //        "PRAGMA Kikimr.OptEnablePredicateExtract=\"false\"; SELECT Key FROM `/Root/KeyValueLargePartition` where Key in (103, 302, 402, 502, 703)" + OrderBy(Order));
-
-    //    shim->ReadsReceived.WaitI();
-    //    Cerr << "starting split -----------------------------------------------------------" << Endl;
-    //    s.Split(shards.at(0), 400);
-    //    Cerr << "resume evread -----------------------------------------------------------" << Endl;
-    //    shim->SkipAll();
-    //    shim->SendCaptured(s.Runtime);
-
-    //    s.AssertSuccess();
-    //    UNIT_ASSERT_VALUES_EQUAL(Format(Canonize(s.CollectedKeys, Order)), ",103,302,402,502,703");
-    //}
 }
 
 

@@ -67,7 +67,6 @@ namespace NKikimr {
                     PARAM(Duration, End - Start);
                     PARAM_V(KeyPos);
                     PARAM_V(Eof);
-                    PARAM_V(UnrecoveredNonphantomBlobs);
                     PARAM_V(DonorVDiskId);
                     PARAM_V(DropDonor);
                     GROUP("Plan Generation Stats") {
@@ -164,14 +163,12 @@ namespace NKikimr {
         TQueueActorMapPtr QueueActorMapPtr;
         TBlobIdQueuePtr BlobsToReplicatePtr;
         TBlobIdQueuePtr UnreplicatedBlobsPtr = std::make_shared<TBlobIdQueue>();
-        TUnreplicatedBlobRecords UnreplicatedBlobRecords;
         TActorId ReplJobActorId;
         std::list<std::optional<TDonorQueueItem>> DonorQueue;
         std::deque<std::pair<TVDiskID, TActorId>> Donors;
         std::set<TVDiskID> ConnectedPeerDisks, ConnectedDonorDisks;
         TEvResumeForce *ResumeForceToken = nullptr;
         TInstant ReplicationEndTime;
-        bool UnrecoveredNonphantomBlobs = false;
 
         friend class TActorBootstrapped<TReplScheduler>;
 
@@ -188,7 +185,7 @@ namespace NKikimr {
         }
 
         void Transition(EState current, EState next) {
-            Y_ABORT_UNLESS(State == current, "State# %s Expected# %s", StateToStr(State), StateToStr(current));
+            Y_VERIFY(State == current, "State# %s Expected# %s", StateToStr(State), StateToStr(current));
             State = next;
         }
 
@@ -255,11 +252,10 @@ namespace NKikimr {
 
             LastReplStart = TAppData::TimeProvider->Now();
             ReplCtx->MonGroup.ReplUnreplicatedVDisks() = 1;
-            ReplCtx->MonGroup.ReplWorkUnitsRemaining() = 0;
+            ReplCtx->MonGroup.ReplWorkUnitsRemaining() = -1;
             ReplCtx->MonGroup.ReplWorkUnitsDone() = 0;
-            ReplCtx->MonGroup.ReplItemsRemaining() = 0;
+            ReplCtx->MonGroup.ReplItemsRemaining() = -1;
             ReplCtx->MonGroup.ReplItemsDone() = 0;
-            UnrecoveredNonphantomBlobs = false;
 
             Become(&TThis::StateRepl);
 
@@ -270,7 +266,7 @@ namespace NKikimr {
         }
 
         void Handle(TEvReplStarted::TPtr& ev) {
-            Y_ABORT_UNLESS(ReplJobActorId == ev->Sender);
+            Y_VERIFY(ReplJobActorId == ev->Sender);
 
             switch (State) {
                 case Plan:
@@ -287,7 +283,7 @@ namespace NKikimr {
                     break;
 
                 default:
-                    Y_ABORT("unexpected State# %s", StateToStr(State));
+                    Y_FAIL("unexpected State# %s", StateToStr(State));
             }
         }
 
@@ -331,11 +327,11 @@ namespace NKikimr {
         }
 
         void Handle(TEvReplFinished::TPtr &ev) {
-            Y_ABORT_UNLESS(ev->Sender == ReplJobActorId);
+            Y_VERIFY(ev->Sender == ReplJobActorId);
             ReplJobActorId = {};
 
             // replication can be finished only from the following states
-            Y_ABORT_UNLESS(State == Plan || State == Replication, "State# %s", StateToStr(State));
+            Y_VERIFY(State == Plan || State == Replication, "State# %s", StateToStr(State));
 
             TEvReplFinished *msg = ev->Get();
             TEvReplFinished::TInfoPtr info = msg->Info;
@@ -343,23 +339,11 @@ namespace NKikimr {
             STLOG(PRI_DEBUG, BS_REPL, BSVR16, VDISKP(ReplCtx->VCtx->VDiskLogPrefix, "QUANTUM COMPLETED"), (Info, *info));
             LastReplQuantumEnd = now;
 
-            UnrecoveredNonphantomBlobs |= info->UnrecoveredNonphantomBlobs;
-            UnreplicatedBlobRecords = std::move(info->UnreplicatedBlobRecords);
-
             bool finished = false;
 
             if (info->Eof) { // when it is the last quantum for some donor, rotate the blob sets
-                BlobsToReplicatePtr = std::exchange(UnreplicatedBlobsPtr, std::make_shared<TBlobIdQueue>());
-
-#ifndef NDEBUG
-                Y_VERIFY_DEBUG_S(BlobsToReplicatePtr->size() == UnreplicatedBlobRecords.size(),
-                    "BlobsToReplicatePtr->size# " << BlobsToReplicatePtr->size()
-                    << " UnreplicatedBlobRecords.size# " << UnreplicatedBlobRecords.size());
-                for (const TLogoBlobID& id : *BlobsToReplicatePtr) {
-                    Y_DEBUG_ABORT_UNLESS(UnreplicatedBlobRecords.contains(id));
-                }
-#endif
-
+                BlobsToReplicatePtr = std::move(UnreplicatedBlobsPtr);
+                UnreplicatedBlobsPtr = std::make_shared<TBlobIdQueue>();
                 if (BlobsToReplicatePtr->empty()) {
                     // no more blobs to replicate -- consider replication finished
                     finished = true;
@@ -371,7 +355,7 @@ namespace NKikimr {
                 }
                 if (!finished) {
                     if (info->DropDonor) {
-                        Y_ABORT_UNLESS(!DonorQueue.empty() && DonorQueue.front());
+                        Y_VERIFY(!DonorQueue.empty() && DonorQueue.front());
                         DropDonor(*DonorQueue.front());
                         DonorQueue.pop_front();
                     } else {
@@ -382,6 +366,31 @@ namespace NKikimr {
             }
 
             History.Push(info);
+            
+#ifndef NDEBUG
+            // validate history -- work units must decrease consistently with work units processed
+            TEvReplFinished::TInfoPtr prev = nullptr;
+            for (auto it = History.Begin(); it != History.End(); ++it) {
+                TEvReplFinished::TInfoPtr cur = *it;
+                if (prev) {
+                    Y_VERIFY_DEBUG_S(
+                        cur->WorkUnitsTotal <= prev->WorkUnitsTotal - prev->WorkUnitsPerformed &&
+                        cur->ItemsTotal <= prev->ItemsTotal - prev->ItemsRecovered - prev->ItemsPhantom,
+                        "cur.WorkUnits# " << cur->WorkUnits()
+                        << " prev.WorkUnits# " << prev->WorkUnits()
+                        << " cur.Items# " << cur->Items()
+                        << " prev.Items# " << prev->Items());
+                }
+                Y_VERIFY_DEBUG_S(
+                    cur->WorkUnitsPlanned <= cur->WorkUnitsTotal &&
+                    cur->WorkUnitsPerformed <= cur->WorkUnitsPlanned &&
+                    cur->ItemsPlanned <= cur->ItemsTotal &&
+                    cur->ItemsPlanned == cur->ItemsRecovered + cur->ItemsNotRecovered + cur->ItemsException +
+                        cur->ItemsPartiallyRecovered + cur->ItemsPhantom + cur->ItemsNonPhantom,
+                    "WorkUnits# " << cur->WorkUnits() << " Items# " << cur->Items());
+                prev = cur;
+            }
+#endif
 
             TDuration timeRemaining;
 
@@ -400,11 +409,6 @@ namespace NKikimr {
                     // try again for unreplicated blobs in some future
                     State = Relaxation;
                     Schedule(ReplCtx->VDiskCfg->ReplTimeInterval, new TEvents::TEvWakeup);
-                    if (!UnrecoveredNonphantomBlobs) {
-                        // semi-finished replication -- we have only phantom-like unreplicated blobs
-                        TActivationContext::Send(new IEventHandle(TEvBlobStorage::EvReplDone, 0, ReplCtx->SkeletonId,
-                            SelfId(), nullptr, 1));
-                    }
                 } else {
                     // no more blobs to replicate; replication will not resume
                     State = Finished;
@@ -430,14 +434,14 @@ namespace NKikimr {
 
         void RunRepl(const TLogoBlobID& from) {
             LastReplQuantumStart = TAppData::TimeProvider->Now();
-            Y_ABORT_UNLESS(!ReplJobActorId);
+            Y_VERIFY(!ReplJobActorId);
             const auto& donor = DonorQueue.front();
             STLOG(PRI_DEBUG, BS_REPL, BSVR32, VDISKP(ReplCtx->VCtx->VDiskLogPrefix, "TReplScheduler::RunRepl"),
                 (From, from), (Donor, donor ? TString(TStringBuilder() << "{VDiskId# " << donor->VDiskId << " VSlotId# " <<
                 donor->NodeId << ":" << donor->PDiskId << ":" << donor->VSlotId << "}") : "generic"));
             ReplJobActorId = Register(CreateReplJobActor(ReplCtx, SelfId(), from, QueueActorMapPtr,
                 BlobsToReplicatePtr, UnreplicatedBlobsPtr, donor ? std::make_optional(std::make_pair(
-                donor->VDiskId, donor->QueueActorId)) : std::nullopt, std::move(UnreplicatedBlobRecords)));
+                donor->VDiskId, donor->QueueActorId)) : std::nullopt));
         }
 
         template<typename Iter>
@@ -486,7 +490,8 @@ namespace NKikimr {
             const TInstant timeAtEnd = last->End;
 
             if (workAtBegin < workAtEnd || timeAtEnd < timeAtBegin) {
-                return {}; // can't evaluate
+                Y_VERIFY_DEBUG(false);
+                return {};
             }
 
             const double workPerSecond = (workAtBegin - workAtEnd) / (timeAtEnd - timeAtBegin).SecondsFloat();
@@ -495,7 +500,7 @@ namespace NKikimr {
         }
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev) {
-            Y_DEBUG_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::ReplId);
+            Y_VERIFY_DEBUG(ev->Get()->SubRequestId == TDbMon::ReplId);
 
             TStringStream str;
             unsigned historySize = HistorySize;
@@ -559,21 +564,11 @@ namespace NKikimr {
 
         void Handle(TEvents::TEvActorDied::TPtr ev) {
             const size_t num = DonorQueryActors.erase(ev->Sender);
-            Y_ABORT_UNLESS(num);
+            Y_VERIFY(num);
         }
 
         void Ignore()
         {}
-
-        void Handle(TEvReplInvoke::TPtr ev) {
-            if (ReplJobActorId) {
-                const TActorId selfId = SelfId();
-                TActivationContext::Send(new IEventHandle(ReplJobActorId, ev->Sender, ev->Release().Release(), 0, ev->Cookie,
-                    &selfId));
-            } else {
-                ev->Get()->Callback(UnreplicatedBlobRecords, TString());
-            }
-        }
 
         STRICT_STFUNC(StateRelax,
             cFunc(TEvents::TSystem::Wakeup, StartReplication)
@@ -585,7 +580,6 @@ namespace NKikimr {
             hFunc(TEvBlobStorage::TEvEnrichNotYet, Handle)
             hFunc(TEvents::TEvActorDied, Handle)
             cFunc(TEvBlobStorage::EvCommenceRepl, StartReplication)
-            hFunc(TEvReplInvoke, Handle)
         )
 
         void PassAway() override {
@@ -626,7 +620,6 @@ namespace NKikimr {
             hFunc(TEvBlobStorage::TEvEnrichNotYet, Handle)
             hFunc(TEvents::TEvActorDied, Handle)
             cFunc(TEvBlobStorage::EvCommenceRepl, Ignore)
-            hFunc(TEvReplInvoke, Handle)
         )
 
     public:

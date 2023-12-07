@@ -359,10 +359,9 @@ namespace {
             WriteNewline();
         }
 
-        template<typename T>
-        void VisitTupleLike(T& node, std::string_view name) {
+        void Visit(TTupleType& node) override {
             WriteIndentation();
-            Out << "Type (" << name << ") with " << node.GetElementsCount() << " elements {";
+            Out << "Type (Tuple) with " << node.GetElementsCount() << " elements {";
             WriteNewline();
 
             {
@@ -386,14 +385,6 @@ namespace {
             WriteIndentation();
             Out << "}";
             WriteNewline();
-        }
-
-        void Visit(TTupleType& node) override {
-            VisitTupleLike(node, "Tuple");
-        }
-
-        void Visit(TMultiType& node) override {
-            VisitTupleLike(node, "Multi");
         }
 
         void Visit(TResourceType& node) override {

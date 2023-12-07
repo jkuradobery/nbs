@@ -11,7 +11,7 @@
 
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 using namespace NYql::NDqs;
 using namespace NActors;
@@ -76,12 +76,12 @@ public:
 
     STRICT_STFUNC(Handler, {
         cFunc(NActors::TEvents::TEvPoison::EventType, TTaskRunnerActor::PassAway);
-        hFunc(TEvTaskRunnerCreate, OnDqTask);
-        hFunc(TEvContinueRun, OnContinueRun);
-        hFunc(TEvPop, OnChannelPop);
-        hFunc(TEvPush, OnChannelPush);
-        hFunc(TEvSinkPop, OnSinkPop);
-        hFunc(TEvSinkPopFinished, OnSinkPopFinished);
+        HFunc(TEvTaskRunnerCreate, OnDqTask);
+        HFunc(TEvContinueRun, OnContinueRun);
+        HFunc(TEvPop, OnChannelPop);
+        HFunc(TEvPush, OnChannelPush);
+        HFunc(TEvSinkPop, OnSinkPop);
+        HFunc(TEvSinkPopFinished, OnSinkPopFinished);
     })
 
 private:
@@ -97,7 +97,7 @@ private:
 
         bool fallback = false;
         bool retry = false;
-        for (TStringBuf line: StringSplitter(input).SplitByString("\n")) {
+        for (TStringBuf line: StringSplitter(input).SplitByString("\n").SkipEmpty()) {
             if (line.Contains("mlockall failed")) {
                 // skip
             } else {
@@ -107,15 +107,6 @@ private:
                         fallback = true;
                     } else if (line.Contains("embedded:Len")) {
                         // YQL-14763
-                        fallback = true;
-                    } else if (line.Contains("No such transaction")) {
-                        // YQL-15542
-                        fallback = true;
-                    } else if (line.Contains("(NYT::TErrorException) Request timed out")) {
-                        // RPC reader fallback to YT
-                        fallback = true;
-                    } else if (line.Contains("Transaction") && line.Contains("aborted")) {
-                        // YQL-15542
                         fallback = true;
                     } else if (line.Contains("Container killed by OOM")) {
                         // temporary workaround for YQL-12066
@@ -186,7 +177,7 @@ private:
                 issue.AddSubIssue(MakeIntrusive<TIssue>(YqlIssue(parsedPos.GetOrElse(TPosition()), TIssuesIds::DQ_GATEWAY_ERROR, TString{terminationMessage})));
             }
         }
-        Y_ABORT_UNLESS(queryStatus != NYql::NDqProto::StatusIds::SUCCESS);
+        Y_VERIFY(queryStatus != NYql::NDqProto::StatusIds::SUCCESS);
         return MakeHolder<NDq::TEvDq::TEvAbortExecution>(queryStatus, TVector<TIssue>{issue});
     }
 
@@ -200,27 +191,30 @@ private:
         TActor<TTaskRunnerActor>::PassAway();
     }
 
-    void OnContinueRun(TEvContinueRun::TPtr& ev) {
-        Run(ev);
+    void OnContinueRun(TEvContinueRun::TPtr& ev, const TActorContext& ctx) {
+        Run(ev, ctx);
     }
 
-    void OnChannelPush(TEvPush::TPtr& ev) {
-        auto* actorSystem = TActivationContext::ActorSystem();
+    void OnChannelPush(TEvPush::TPtr& ev, const NActors::TActorContext& ctx) {
+        auto* actorSystem = ctx.ExecutorThread.ActorSystem;
         auto replyTo = ev->Sender;
         auto selfId = SelfId();
         auto hasData = ev->Get()->HasData;
         auto finish = ev->Get()->Finish;
+        auto askFreeSpace = ev->Get()->AskFreeSpace;
         auto channelId = ev->Get()->ChannelId;
         auto cookie = ev->Cookie;
         auto data = ev->Get()->Data;
-        Invoker->Invoke([hasData, selfId, cookie, finish, channelId, taskRunner=TaskRunner, data, actorSystem, replyTo, settings=Settings, stageId=StageId] () mutable {
+        Invoker->Invoke([hasData, selfId, cookie, askFreeSpace, finish, channelId, taskRunner=TaskRunner, data, actorSystem, replyTo, settings=Settings, stageId=StageId] () mutable {
             try {
                 // todo:(whcrc) finish output channel?
                 ui64 freeSpace = 0;
                 if (hasData) {
                     // auto guard = taskRunner->BindAllocator(); // only for local mode
                     taskRunner->GetInputChannel(channelId)->Push(std::move(data));
-                    freeSpace = taskRunner->GetInputChannel(channelId)->GetFreeSpace();
+                    if (askFreeSpace) {
+                        freeSpace = taskRunner->GetInputChannel(channelId)->GetFreeSpace();
+                    }
                 }
                 if (finish) {
                     taskRunner->GetInputChannel(channelId)->Finish();
@@ -231,7 +225,7 @@ private:
                     new IEventHandle(
                         replyTo,
                         selfId,
-                        new TEvPushFinished(channelId, freeSpace),
+                        new TEvContinueRun(channelId, freeSpace),
                         /*flags=*/0,
                         cookie));
             } catch (...) {
@@ -250,24 +244,25 @@ private:
     void AsyncInputPush(
         ui64 cookie,
         ui64 index,
-        NKikimr::NMiniKQL::TUnboxedValueBatch&& batch,
+        NKikimr::NMiniKQL::TUnboxedValueVector&& batch,
         i64 space,
         bool finish) override
     {
         auto* actorSystem = NActors::TlsActivationContext->ExecutorThread.ActorSystem;
         auto selfId = SelfId();
 
-        YQL_ENSURE(!batch.IsWide());
+        TVector<TString> strings;
+        for (auto& row : batch) {
+            strings.emplace_back(row.AsStringRef());
+        }
 
-        auto* source = TaskRunner->GetSource(index);
-        TDqDataSerializer dataSerializer(TaskRunner->GetTypeEnv(), TaskRunner->GetHolderFactory(), DataTransportVersion);
-        TDqSerializedBatch serialized = dataSerializer.Serialize(batch, source->GetInputType());
-
-        Invoker->Invoke([serialized=std::move(serialized), taskRunner=TaskRunner, actorSystem, selfId, cookie, parentId=ParentId, space, finish, index, settings=Settings, stageId=StageId]() mutable {
+        Invoker->Invoke([strings=std::move(strings),taskRunner=TaskRunner, actorSystem, selfId, cookie, parentId=ParentId, space, finish, index, settings=Settings, stageId=StageId]() mutable {
             try {
                 // auto guard = taskRunner->BindAllocator(); // only for local mode
-                auto* source = taskRunner->GetSource(index);
-                source->Push(std::move(serialized), space);
+                auto source = taskRunner->GetSource(index);
+                if (!strings.empty()) {
+                    (static_cast<NTaskRunnerProxy::IStringSource*>(source.Get()))->PushString(std::move(strings), space);
+                }
                 if (finish) {
                     source->Finish();
                 }
@@ -275,7 +270,7 @@ private:
                     new IEventHandle(
                         parentId,
                         selfId,
-                        new TEvAsyncInputPushFinished(index, source->GetFreeSpace()),
+                        new TEvAsyncInputPushFinished(index),
                         /*flags=*/0,
                         cookie));
             } catch (...) {
@@ -291,8 +286,8 @@ private:
         });
     }
 
-    void OnChannelPop(TEvPop::TPtr& ev) {
-        auto* actorSystem = TActivationContext::ActorSystem();
+    void OnChannelPop(TEvPop::TPtr& ev, const NActors::TActorContext& ctx) {
+        auto* actorSystem = ctx.ExecutorThread.ActorSystem;
         auto replyTo = ev->Sender;
         auto selfId = SelfId();
         auto cookie = ev->Cookie;
@@ -315,18 +310,18 @@ private:
                     maxChunks = 1;
                 }
 
-                TVector<TDqSerializedBatch> chunks;
+                TVector<NDqProto::TData> chunks;
                 NDqProto::TPopResponse response;
                 for (;maxChunks && remain > 0 && !isFinished && hasData; maxChunks--, remain -= dataSize) {
-                    TDqSerializedBatch data;
-                    const auto lastPop = std::move(channel->Pop(data));
+                    NDqProto::TData data;
+                    const auto lastPop = std::move(channel->Pop(data, remain));
 
                     for (auto& metric : lastPop.GetMetric()) {
                         *response.AddMetric() = metric;
                     }
 
                     hasData = lastPop.GetResult();
-                    dataSize = data.Size();
+                    dataSize = data.GetRaw().size();
                     isFinished = !hasData && channel->IsFinished();
                     response.SetResult(response.GetResult() || hasData);
                     changed = changed || hasData || (isFinished != wasFinished);
@@ -363,13 +358,13 @@ private:
         });
     }
 
-    void OnSinkPopFinished(TEvSinkPopFinished::TPtr& ev) {
+    void OnSinkPopFinished(TEvSinkPopFinished::TPtr& ev, const NActors::TActorContext& ctx) {
+        Y_UNUSED(ctx);
         auto guard = TaskRunner->BindAllocator();
-        NKikimr::NMiniKQL::TUnboxedValueBatch batch;
-        auto sink = TaskRunner->GetSink(ev->Get()->Index);
-        TDqDataSerializer dataSerializer(TaskRunner->GetTypeEnv(), TaskRunner->GetHolderFactory(), (NDqProto::EDataTransportVersion)ev->Get()->Batch.Proto.GetTransportVersion());
-        dataSerializer.Deserialize(std::move(ev->Get()->Batch), sink->GetOutputType(), batch);
-
+        NKikimr::NMiniKQL::TUnboxedValueVector batch;
+        for (auto& row: ev->Get()->Strings) {
+            batch.emplace_back(NKikimr::NMiniKQL::MakeString(row));
+        }
         Parent->SinkSend(
             ev->Get()->Index,
             std::move(batch),
@@ -380,9 +375,9 @@ private:
             ev->Get()->Changed);
     }
 
-    void OnSinkPop(TEvSinkPop::TPtr& ev) {
+    void OnSinkPop(TEvSinkPop::TPtr& ev, const NActors::TActorContext& ctx) {
         auto selfId = SelfId();
-        auto* actorSystem = TActivationContext::ActorSystem();
+        auto* actorSystem = ctx.ExecutorThread.ActorSystem;
 
         Invoker->Invoke([taskRunner=TaskRunner, selfId, actorSystem, ev=std::move(ev), settings=Settings, stageId=StageId] {
             auto cookie = ev->Cookie;
@@ -391,13 +386,13 @@ private:
             try {
                 // auto guard = taskRunner->BindAllocator(); // only for local mode
                 auto sink = taskRunner->GetSink(ev->Get()->Index);
-                NDq::TDqSerializedBatch batch;
+                TVector<TString> batch;
                 NDqProto::TCheckpoint checkpoint;
                 TMaybe<NDqProto::TCheckpoint> maybeCheckpoint;
                 i64 size = 0;
                 i64 checkpointSize = 0;
                 if (ev->Get()->Size > 0) {
-                    size = sink->Pop(batch, ev->Get()->Size);
+                    size = (static_cast<NTaskRunnerProxy::IStringSink*>(sink.Get()))->PopString(batch, ev->Get()->Size);
                 }
                 bool hasCheckpoint = sink->Pop(checkpoint);
                 if (hasCheckpoint) {
@@ -409,7 +404,7 @@ private:
                 auto event = MakeHolder<TEvSinkPopFinished>(
                     ev->Get()->Index,
                     std::move(maybeCheckpoint), size, checkpointSize, finished, changed);
-                event->Batch = std::move(batch);
+                event->Strings = std::move(batch);
                 // repack data and forward
                 actorSystem->Send(
                     new IEventHandle(
@@ -431,7 +426,7 @@ private:
         });
     }
 
-    void OnDqTask(TEvTaskRunnerCreate::TPtr& ev) {
+    void OnDqTask(TEvTaskRunnerCreate::TPtr& ev, const NActors::TActorContext& ctx) {
         auto replyTo = ev->Sender;
         auto selfId = SelfId();
         auto cookie = ev->Cookie;
@@ -452,42 +447,36 @@ private:
         ParentId = ev->Sender;
 
         try {
+            TaskRunner = Factory->GetOld(ev->Get()->Task, TraceId);
+        } catch (...) {
+            TString message = "Could not create TaskRunner for " + ToString(taskId) + " on node " + ToString(replyTo.NodeId()) + ", error: " + CurrentExceptionMessage();
+            Send(replyTo, MakeHolder<TEvDqFailure>(NYql::NDqProto::StatusIds::INTERNAL_ERROR, message), 0, cookie);
+            return;
+        }
+
+        auto* actorSystem = ctx.ExecutorThread.ActorSystem;
+        {
             Yql::DqsProto::TTaskMeta taskMeta;
             ev->Get()->Task.GetMeta().UnpackTo(&taskMeta);
             Settings->Dispatch(taskMeta.GetSettings());
             Settings->FreezeDefaults();
-            DataTransportVersion = Settings->GetDataTransportVersion();
             StageId = taskMeta.GetStageId();
-
-            NDq::TDqTaskSettings settings(&ev->Get()->Task);
-            TaskRunner = Factory->GetOld(settings, TraceId);
-        } catch (...) {
-            TString message = "Could not create TaskRunner for " + ToString(taskId) + " on node " + ToString(replyTo.NodeId()) + ", error: " + CurrentExceptionMessage();
-            Send(replyTo, TEvDq::TEvAbortExecution::InternalError(message), 0, cookie);
-            return;
         }
-
-        auto* actorSystem = TActivationContext::ActorSystem();
         Invoker->Invoke([taskRunner=TaskRunner, replyTo, selfId, cookie, actorSystem, settings=Settings, stageId=StageId, startTime, clusterName = ClusterName](){
             try {
                 //auto guard = taskRunner->BindAllocator(); // only for local mode
-                NDq::TDqTaskRunnerMemoryLimits limits;
-                limits.ChannelBufferSize = settings->ChannelBufferSize.Get().GetOrElse(TDqSettings::TDefault::ChannelBufferSize);
-                limits.OutputChunkMaxSize = settings->OutputChunkMaxSize.Get().GetOrElse(TDqSettings::TDefault::OutputChunkMaxSize);
-                limits.ChunkSizeLimit = settings->ChunkSizeLimit.Get().GetOrElse(TDqSettings::TDefault::ChunkSizeLimit);
-                auto result = taskRunner->Prepare(limits);
+                auto result = taskRunner->Prepare();
                 auto sensors = GetSensors(result);
                 auto sensorName = TCounters::GetCounterName(
                     "Actor",
                     {{"ClusterName", clusterName}},
-                    "ProcessInitUs");
-                i64 val = (TInstant::Now()-startTime).MicroSeconds();
+                    "ProcessInit");
+                i64 val = (TInstant::Now()-startTime).MilliSeconds();
                 sensors.push_back({sensorName, val, val, val, val, 1});
 
                 auto event = MakeHolder<TEvTaskRunnerCreateFinished>(
                     taskRunner->GetSecureParams(),
                     taskRunner->GetTaskParams(),
-                    taskRunner->GetReadRanges(),
                     taskRunner->GetTypeEnv(),
                     taskRunner->GetHolderFactory(),
                     sensors);
@@ -507,8 +496,8 @@ private:
         });
     }
 
-    void Run(TEvContinueRun::TPtr& ev) {
-        auto* actorSystem = TActivationContext::ActorSystem();
+    void Run(TEvContinueRun::TPtr& ev, const TActorContext& ctx) {
+        auto* actorSystem = ctx.ExecutorThread.ActorSystem;
         auto replyTo = ev->Sender;
         auto selfId = SelfId();
         auto cookie = ev->Cookie;
@@ -525,8 +514,8 @@ private:
                 auto response = taskRunner->Run();
                 auto res = static_cast<NDq::ERunStatus>(response.GetResult());
 
-                THashMap<ui32, i64> inputChannelFreeSpace;
-                THashMap<ui32, i64> sourcesFreeSpace;
+                THashMap<ui32, ui64> inputChannelFreeSpace;
+                THashMap<ui32, ui64> sourcesFreeSpace;
                 if (res == ERunStatus::PendingInput) {
                     for (auto& channelId : inputMap) {
                         inputChannelFreeSpace[channelId] = taskRunner->GetInputChannel(channelId)->GetFreeSpace();
@@ -580,7 +569,6 @@ private:
     THashSet<ui32> Inputs;
     THashSet<ui32> Sources;
     TIntrusivePtr<TDqConfiguration> Settings;
-    NDqProto::EDataTransportVersion DataTransportVersion;
     ui64 StageId;
     TWorkerRuntimeData* RuntimeData;
     TString ClusterName;

@@ -8,10 +8,6 @@
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_defs.h>
 #include <ydb/core/blobstorage/pdisk/drivedata_serializer.h>
 
-namespace NKikimrBlobStorage {
-    class TStorageConfig;
-}
-
 namespace NKikimr {
 
     struct TEvBlobStorage::TEvControllerUpdateDiskStatus : TEventPB<
@@ -262,7 +258,6 @@ namespace NKikimr {
         NKikimrBlobStorage::TEvControllerConfigRequest, TEvBlobStorage::EvControllerConfigRequest>
     {
         bool SelfHeal = false;
-        bool GroupLayoutSanitizer = false;
 
         TEvControllerConfigRequest() = default;
     };
@@ -340,7 +335,7 @@ namespace NKikimr {
         }
 
         TEvVStatusResult(NKikimrProto::EReplyStatus status, const NKikimrBlobStorage::TVDiskID &vdisk) {
-            Y_ABORT_UNLESS(status != NKikimrProto::OK);
+            Y_VERIFY(status != NKikimrProto::OK);
             Record.SetStatus(status);
             Record.SetJoinedGroup(false);
             Record.SetReplicated(false);
@@ -416,9 +411,10 @@ namespace NKikimr {
         std::vector<std::unique_ptr<IEventHandle>> Bunch;
 
         void Process(IActor *actor) {
+            const TActorContext& ctx = TActivationContext::AsActorContext();
             for (auto& ev : Bunch) {
                 TAutoPtr<IEventHandle> handle(ev.release());
-                actor->Receive(handle);
+                actor->Receive(handle, ctx);
             }
         }
     };
@@ -428,19 +424,6 @@ namespace NKikimr {
 
         TEvAskRestartPDisk(const ui32& pdiskId)
             : PDiskId(pdiskId)
-        {}
-    };
-
-    struct TEvBlobStorage::TEvAskRestartVDisk : TEventLocal<TEvAskRestartVDisk, EvAskRestartVDisk> {
-        const ui32 PDiskId;
-        const TVDiskID VDiskId;
-
-        TEvAskRestartVDisk(
-            const ui32 pDiskId,
-            const TVDiskID& vDiskId
-        )
-            : PDiskId(pDiskId)
-            , VDiskId(vDiskId)
         {}
     };
 
@@ -555,14 +538,6 @@ namespace NKikimr {
             NKikimrBlobStorage::TEvControllerGroupMetricsExchange, EvControllerGroupMetricsExchange>
     {};
 
-    struct TEvBlobStorage::TEvPutVDiskToReadOnly : TEventLocal<TEvPutVDiskToReadOnly, EvPutVDiskToReadOnly> {
-        const TVDiskID VDiskId;
-
-        TEvPutVDiskToReadOnly(TVDiskID vDiskId)
-            : VDiskId(std::move(vDiskId))
-        {}
-    };
-
     struct TEvNodeWardenQueryGroupInfo : TEventPB<TEvNodeWardenQueryGroupInfo, NKikimrBlobStorage::TEvNodeWardenQueryGroupInfo,
             TEvBlobStorage::EvNodeWardenQueryGroupInfo> {
         TEvNodeWardenQueryGroupInfo() = default;
@@ -586,35 +561,13 @@ namespace NKikimr {
         ui32 PDiskId;
         ui32 VSlotId;
         NKikimrBlobStorage::EVDiskStatus Status;
-        bool OnlyPhantomsRemain;
 
-        TEvStatusUpdate(ui32 nodeId, ui32 pdiskId, ui32 vslotId, NKikimrBlobStorage::EVDiskStatus status,
-                bool onlyPhantomsRemain)
+        TEvStatusUpdate(ui32 nodeId, ui32 pdiskId, ui32 vslotId, NKikimrBlobStorage::EVDiskStatus status)
             : NodeId(nodeId)
             , PDiskId(pdiskId)
             , VSlotId(vslotId)
             , Status(status)
-            , OnlyPhantomsRemain(onlyPhantomsRemain)
         {}
-    };
-
-    struct TEvNodeWardenQueryStorageConfig
-        : TEventLocal<TEvNodeWardenQueryStorageConfig, TEvBlobStorage::EvNodeWardenQueryStorageConfig>
-    {
-        bool Subscribe = false;
-
-        TEvNodeWardenQueryStorageConfig(bool subscribe)
-            : Subscribe(subscribe)
-        {}
-    };
-
-    struct TEvNodeWardenStorageConfig
-        : TEventLocal<TEvNodeWardenStorageConfig, TEvBlobStorage::EvNodeWardenStorageConfig>
-    {
-        std::unique_ptr<NKikimrBlobStorage::TStorageConfig> Config;
-
-        TEvNodeWardenStorageConfig(const NKikimrBlobStorage::TStorageConfig& config);
-        ~TEvNodeWardenStorageConfig();
     };
 
 } // NKikimr

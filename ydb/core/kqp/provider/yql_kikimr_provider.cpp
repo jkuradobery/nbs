@@ -2,11 +2,10 @@
 
 #include <ydb/library/yql/providers/common/proto/gateways_config.pb.h>
 #include <ydb/core/base/path.h>
-#include <ydb/core/tx/schemeshard/schemeshard_utils.h>
-
 #include <ydb/library/yql/parser/pg_wrapper/interface/type_desc.h>
 #include <ydb/library/yql/providers/result/provider/yql_result_provider.h>
 #include <ydb/library/yql/providers/common/schema/expr/yql_expr_schema.h>
+
 #include <ydb/public/lib/scheme_types/scheme_type_id.h>
 
 namespace NYql {
@@ -44,14 +43,9 @@ struct TKikimrData {
         DataSinkNames.insert(TKiCreateTable::CallableName());
         DataSinkNames.insert(TKiAlterTable::CallableName());
         DataSinkNames.insert(TKiDropTable::CallableName());
-        DataSinkNames.insert(TKiCreateTopic::CallableName());
-        DataSinkNames.insert(TKiAlterTopic::CallableName());
-        DataSinkNames.insert(TKiDropTopic::CallableName());
         DataSinkNames.insert(TKiCreateUser::CallableName());
-        DataSinkNames.insert(TKiModifyPermissions::CallableName());
         DataSinkNames.insert(TKiAlterUser::CallableName());
         DataSinkNames.insert(TKiDropUser::CallableName());
-        DataSinkNames.insert(TKiUpsertObject::CallableName());
         DataSinkNames.insert(TKiCreateObject::CallableName());
         DataSinkNames.insert(TKiAlterObject::CallableName());
         DataSinkNames.insert(TKiDropObject::CallableName());
@@ -62,7 +56,6 @@ struct TKikimrData {
         DataSinkNames.insert(TKiDataQueryBlocks::CallableName());
         DataSinkNames.insert(TKiExecDataQuery::CallableName());
         DataSinkNames.insert(TKiEffects::CallableName());
-        DataSinkNames.insert(TPgDropObject::CallableName());
 
         CommitModes.insert(CommitModeFlush);
         CommitModes.insert(CommitModeRollback);
@@ -96,16 +89,12 @@ struct TKikimrData {
             TYdbOperation::CreateTable |
             TYdbOperation::DropTable |
             TYdbOperation::AlterTable |
-            TYdbOperation::CreateTopic |
-            TYdbOperation::AlterTopic |
-            TYdbOperation::DropTopic |
             TYdbOperation::CreateUser |
             TYdbOperation::AlterUser |
             TYdbOperation::DropUser |
             TYdbOperation::CreateGroup |
             TYdbOperation::AlterGroup |
-            TYdbOperation::DropGroup |
-            TYdbOperation::ModifyPermission;
+            TYdbOperation::DropGroup;
 
         SystemColumns = {
             {"_yql_partition_id", NKikimr::NUdf::EDataSlot::Uint64}
@@ -118,39 +107,25 @@ struct TKikimrData {
 const TKikimrTableDescription* TKikimrTablesData::EnsureTableExists(const TString& cluster,
     const TString& table, TPositionHandle pos, TExprContext& ctx) const
 {
-    auto tempTable = TempTables.FindPtr(table);
-
-    auto tablePath = table;
-    if (tempTable) {
-        tablePath = *tempTable;
-    }
-
-    auto desc = Tables.FindPtr(std::make_pair(cluster, tablePath));
+    auto desc = Tables.FindPtr(std::make_pair(cluster, table));
     if (desc && (desc->GetTableType() != ETableType::Table || desc->DoesExist())) {
         return desc;
     }
 
     ctx.AddError(YqlIssue(ctx.GetPosition(pos), TIssuesIds::KIKIMR_SCHEME_ERROR, TStringBuilder()
-        << "Cannot find table '" << NCommon::FullTableName(cluster, tablePath)
+        << "Cannot find table '" << NCommon::FullTableName(cluster, table)
         << "' because it does not exist or you do not have access permissions."
         << " Please check correctness of table path and user permissions."));
     return nullptr;
 }
 
 TKikimrTableDescription& TKikimrTablesData::GetOrAddTable(const TString& cluster, const TString& database, const TString& table, ETableType tableType) {
-    auto tempTable = TempTables.FindPtr(table);
-
-    auto tablePath = table;
-    if (tempTable) {
-        tablePath = *tempTable;
-    }
-
-    if (!Tables.FindPtr(std::make_pair(cluster, tablePath))) {
-        auto& desc = Tables[std::make_pair(cluster, tablePath)];
+    if (!Tables.FindPtr(std::make_pair(cluster, table))) {
+        auto& desc = Tables[std::make_pair(cluster, table)];
 
         TString error;
         std::pair<TString, TString> pathPair;
-        if (NKikimr::TrySplitPathByDb(tablePath, database, pathPair, error)) {
+        if (NKikimr::TrySplitPathByDb(table, database, pathPair, error)) {
             desc.RelativePath = pathPair.second;
         }
         desc.SetTableType(tableType);
@@ -158,18 +133,11 @@ TKikimrTableDescription& TKikimrTablesData::GetOrAddTable(const TString& cluster
         return desc;
     }
 
-    return Tables[std::make_pair(cluster, tablePath)];
+    return Tables[std::make_pair(cluster, table)];
 }
 
 TKikimrTableDescription& TKikimrTablesData::GetTable(const TString& cluster, const TString& table) {
-    auto tempTable = TempTables.FindPtr(table);
-
-    auto tablePath = table;
-    if (tempTable) {
-        tablePath = *tempTable;
-    }
-
-    auto desc = Tables.FindPtr(std::make_pair(cluster, tablePath));
+    auto desc = Tables.FindPtr(std::make_pair(cluster, table));
     YQL_ENSURE(desc, "Unexpected empty metadata, cluster '" << cluster << "', table '" << table << "'");
 
     return *desc;
@@ -178,15 +146,7 @@ TKikimrTableDescription& TKikimrTablesData::GetTable(const TString& cluster, con
 const TKikimrTableDescription& TKikimrTablesData::ExistingTable(const TStringBuf& cluster,
     const TStringBuf& table) const
 {
-    auto tempTable = TempTables.FindPtr(table);
-
-    auto tablePath = table;
-
-    if (tempTable) {
-        tablePath = *tempTable;
-    }
-
-    auto desc = Tables.FindPtr(std::make_pair(TString(cluster), TString(tablePath)));
+    auto desc = Tables.FindPtr(std::make_pair(TString(cluster), TString(table)));
     YQL_ENSURE(desc);
     YQL_ENSURE(desc->DoesExist());
 
@@ -216,7 +176,6 @@ bool TKikimrTableDescription::Load(TExprContext& ctx, bool withSystemColumns) {
                 type = ctx.MakeType<TPgExprType>(NKikimr::NPg::PgTypeIdFromTypeDesc(column.TypeInfo.GetTypeDesc()));
             }
         }
-
         if (!column.NotNull && column.TypeInfo.GetTypeId() != NKikimr::NScheme::NTypeIds::Pg) {
             type = ctx.MakeType<TOptionalExprType>(type);
         }
@@ -387,21 +346,6 @@ bool TKikimrKey::Extract(const TExprNode& key) {
         KeyType = Type::Object;
         Target = key.Child(0)->Child(1)->Child(0)->Content();
         ObjectType = key.Child(1)->Child(1)->Child(0)->Content();
-    } else if (tagName == "topic") {
-        KeyType = Type::Topic;
-        const TExprNode* nameNode = key.Child(0)->Child(1);
-        if (!nameNode->IsCallable("String")) {
-            Ctx.AddError(TIssue(Ctx.GetPosition(key.Pos()), "Expected String as topic key."));
-            return false;
-        }
-        Target = nameNode->Child(0)->Content();
-    } else if(tagName == "permission") {
-        KeyType = Type::Permission;
-        Target = key.Child(0)->Child(1)->Child(0)->Content();
-    } else if (tagName == "pgObject") {
-        KeyType = Type::PGObject;
-        Target = key.Child(0)->Child(1)->Child(0)->Content();
-        ObjectType = key.Child(0)->Child(2)->Child(0)->Content();
     } else {
         Ctx.AddError(TIssue(Ctx.GetPosition(key.Child(0)->Pos()), TString("Unexpected tag for kikimr key: ") + tagName));
         return false;
@@ -412,10 +356,6 @@ bool TKikimrKey::Extract(const TExprNode& key) {
             auto tag = key.Child(i)->Child(0);
             if (tag->Content() == TStringBuf("view")) {
                 const TExprNode* viewNode = key.Child(i)->Child(1);
-                if (viewNode->ChildrenSize() == 0 && viewNode->IsList()) {
-                    View = {"", true};
-                    continue;
-                }
                 if (!viewNode->IsCallable("String")) {
                     Ctx.AddError(TIssue(Ctx.GetPosition(viewNode->Pos()), "Expected String"));
                     return false;
@@ -429,20 +369,8 @@ bool TKikimrKey::Extract(const TExprNode& key) {
                     Ctx.AddError(TIssue(Ctx.GetPosition(viewNode->Child(0)->Pos()), "Secondary index name must not be empty"));
                     return false;
                 }
+                View = viewNode->Child(0)->Content();
 
-                if (View) {
-                    Ctx.AddError(TIssue(Ctx.GetPosition(tag->Pos()), "Incosistent view tags"));
-                    return false;
-                }
-
-                View = TViewDescription{TString(viewNode->Child(0)->Content())};
-            } else if (tag->Content() == TStringBuf("primary_view")) {
-                if (View) {
-                    Ctx.AddError(TIssue(Ctx.GetPosition(tag->Pos()), "Incosistent view tags"));
-                    return false;
-                }
-
-                View = TViewDescription{"", true};
             } else {
                 Ctx.AddError(TIssue(Ctx.GetPosition(tag->Pos()), TStringBuilder() << "Unexpected tag for kikimr key child: " << tag->Content()));
                 return false;
@@ -515,149 +443,6 @@ TVector<NKqpProto::TKqpTableOp> TableOperationsToProto(const TKiOperationList& o
     }
 
     return protoOps;
-}
-
-template<typename TProto>
-void FillLiteralProtoImpl(const NNodes::TCoDataCtor& literal, TProto& proto) {
-    auto type = literal.Ref().GetTypeAnn();
-
-    // TODO: support pg types
-    YQL_ENSURE(type->GetKind() != ETypeAnnotationKind::Pg, "pg types are not supported");
-
-    auto slot = type->Cast<TDataExprType>()->GetSlot();
-    auto typeId = NKikimr::NUdf::GetDataTypeInfo(slot).TypeId;
-
-    YQL_ENSURE(NKikimr::NScheme::NTypeIds::IsYqlType(typeId) &&
-        NKikimr::NSchemeShard::IsAllowedKeyType(NKikimr::NScheme::TTypeInfo(typeId)));
-
-    auto& protoType = *proto.MutableType();
-    auto& protoValue = *proto.MutableValue();
-
-    protoType.SetKind(NKikimrMiniKQL::ETypeKind::Data);
-    protoType.MutableData()->SetScheme(typeId);
-
-    auto value = literal.Literal().Value();
-
-    switch (slot) {
-        case EDataSlot::Bool:
-            protoValue.SetBool(FromString<bool>(value));
-            break;
-        case EDataSlot::Uint8:
-        case EDataSlot::Uint32:
-        case EDataSlot::Date:
-        case EDataSlot::Datetime:
-            protoValue.SetUint32(FromString<ui32>(value));
-            break;
-        case EDataSlot::Int32:
-            protoValue.SetInt32(FromString<i32>(value));
-            break;
-        case EDataSlot::Int64:
-        case EDataSlot::Interval:
-            protoValue.SetInt64(FromString<i64>(value));
-            break;
-        case EDataSlot::Uint64:
-        case EDataSlot::Timestamp:
-            protoValue.SetUint64(FromString<ui64>(value));
-            break;
-        case EDataSlot::String:
-        case EDataSlot::DyNumber:
-            protoValue.SetBytes(value.Data(), value.Size());
-            break;
-        case EDataSlot::Utf8:
-            protoValue.SetText(ToString(value));
-            break;
-        case EDataSlot::Decimal: {
-            const auto paramsDataType = type->Cast<TDataExprParamsType>();
-            auto precision = FromString<ui8>(paramsDataType->GetParamOne());
-            auto scale = FromString<ui8>(paramsDataType->GetParamTwo());
-            protoType.MutableData()->MutableDecimalParams()->SetPrecision(precision);
-            protoType.MutableData()->MutableDecimalParams()->SetScale(scale);
-
-            auto v = NDecimal::FromString(literal.Cast<TCoDecimal>().Literal().Value(), precision, scale);
-            const auto p = reinterpret_cast<ui8*>(&v);
-            protoValue.SetLow128(*reinterpret_cast<ui64*>(p));
-            protoValue.SetHi128(*reinterpret_cast<ui64*>(p + 8));
-            break;
-        }
-
-        default:
-            YQL_ENSURE(false, "Unexpected type slot " << slot);
-    }
-}
-
-void FillLiteralProto(const NNodes::TCoDataCtor& literal, NKqpProto::TKqpPhyLiteralValue& proto) {
-    FillLiteralProtoImpl(literal, proto);
-}
-
-void FillLiteralProto(const NNodes::TCoDataCtor& literal, NKikimrMiniKQL::TResult& proto) {
-    FillLiteralProtoImpl(literal, proto);
-}
-
-void FillLiteralProto(const NNodes::TCoDataCtor& literal, Ydb::TypedValue& proto)
-{
-    auto type = literal.Ref().GetTypeAnn();
-
-    // TODO: support pg types
-    YQL_ENSURE(type->GetKind() != ETypeAnnotationKind::Pg, "pg types are not supported");
-
-    auto slot = type->Cast<TDataExprType>()->GetSlot();
-    auto typeId = NKikimr::NUdf::GetDataTypeInfo(slot).TypeId;
-
-    YQL_ENSURE(NKikimr::NScheme::NTypeIds::IsYqlType(typeId) &&
-        NKikimr::NSchemeShard::IsAllowedKeyType(NKikimr::NScheme::TTypeInfo(typeId)));
-
-    auto& protoType = *proto.mutable_type();
-    auto& protoValue = *proto.mutable_value();
-
-    protoType.set_type_id((Ydb::Type::PrimitiveTypeId)typeId);
-
-    auto value = literal.Literal().Value();
-
-    switch (slot) {
-        case EDataSlot::Bool:
-            protoValue.set_bool_value(FromString<bool>(value));
-            break;
-        case EDataSlot::Uint8:
-        case EDataSlot::Uint32:
-        case EDataSlot::Date:
-        case EDataSlot::Datetime:
-            protoValue.set_uint32_value(FromString<ui32>(value));
-            break;
-        case EDataSlot::Int32:
-            protoValue.set_int32_value(FromString<i32>(value));
-            break;
-        case EDataSlot::Int64:
-        case EDataSlot::Interval:
-            protoValue.set_int64_value(FromString<i64>(value));
-            break;
-        case EDataSlot::Uint64:
-        case EDataSlot::Timestamp:
-            protoValue.set_uint64_value(FromString<ui64>(value));
-            break;
-        case EDataSlot::String:
-        case EDataSlot::DyNumber:
-            protoValue.set_bytes_value(value.Data(), value.Size());
-            break;
-        case EDataSlot::Utf8:
-            protoValue.set_text_value(ToString(value));
-            break;
-        case EDataSlot::Decimal: {
-            const auto paramsDataType = type->Cast<TDataExprParamsType>();
-            auto precision = FromString<ui8>(paramsDataType->GetParamOne());
-            auto scale = FromString<ui8>(paramsDataType->GetParamTwo());
-            protoType.mutable_decimal_type()->set_precision(precision);
-            protoType.mutable_decimal_type()->set_scale(scale);
-
-            auto v = NDecimal::FromString(literal.Cast<TCoDecimal>().Literal().Value(), precision, scale);
-            const auto p = reinterpret_cast<ui8*>(&v);
-            protoValue.set_low_128(*reinterpret_cast<ui64*>(p));
-            protoValue.set_high_128(*reinterpret_cast<ui64*>(p + 8));
-            break;
-        }
-
-        default:
-            YQL_ENSURE(false, "Unexpected type slot " << slot);
-    }   
 }
 
 template<class OutputIterator>
@@ -769,18 +554,15 @@ bool ValidateTableHasIndex(TKikimrTableMetadataPtr metadata, TExprContext& ctx, 
 }
 
 bool AddDmlIssue(const TIssue& issue, TExprContext& ctx) {
-    auto newIssue = AddDmlIssue(issue);
-    ctx.AddError(newIssue);
-    return false;
-}
-
-TIssue AddDmlIssue(const TIssue& issue) {
     TIssue newIssue;
     newIssue.SetCode(issue.GetCode(), ESeverity::TSeverityIds_ESeverityId_S_ERROR);
     newIssue.SetMessage("Detected violation of logical DML constraints. YDB transactions don't see their own"
         " changes, make sure you perform all table reads before any modifications.");
+
     newIssue.AddSubIssue(new TIssue(issue));
-    return newIssue;
+
+    ctx.AddError(newIssue);
+    return false;
 }
 
 TKiDataQueryBlockSettings TKiDataQueryBlockSettings::Parse(const NNodes::TKiDataQueryBlock& node) {

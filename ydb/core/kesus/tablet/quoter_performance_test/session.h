@@ -24,6 +24,7 @@ public:
     }
 
     STFUNC(StateFunc) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvKesus::TEvSubscribeOnResourcesResult, Handle);
             hFunc(TEvKesus::TEvResourcesAllocated, Handle);
@@ -81,11 +82,11 @@ public:
     }
 
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr&) {
-        Y_ABORT();
+        Y_FAIL();
     }
 
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr& ev) {
-        Y_ABORT_UNLESS(ev->Get()->Status == NKikimrProto::OK);
+        Y_VERIFY(ev->Get()->Status == NKikimrProto::OK);
     }
 
 private:

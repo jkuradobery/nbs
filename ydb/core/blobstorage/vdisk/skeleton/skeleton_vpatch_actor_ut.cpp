@@ -57,8 +57,8 @@ namespace NKikimr {
         }
 
         bool DoBeforeSending(TAutoPtr<IEventHandle> &ev) override {
-            if (ev->HasEvent()) {
-                Cerr << "Send " << ev->GetTypeName() << Endl;
+            if (ev->GetBase()) {
+                Cerr << "Send " << TypeName(*ev->GetBase()) << Endl;
             } else {
                 Cerr << "Send " << ev->Type << Endl;
             }
@@ -76,8 +76,8 @@ namespace NKikimr {
                 PassAway();
                 return false;
             }
-            if (ev->HasEvent()) {
-                Cerr << "Recv " << ev->GetTypeName() << Endl;
+            if (ev->GetBase()) {
+                Cerr << "Recv " << TypeName(*ev->GetBase()) << Endl;
             } else {
                 Cerr << "Recv " << ev->Type << Endl;
             }
@@ -275,7 +275,7 @@ namespace NKikimr {
             for (ui8 partId : foundParts) {
                 evVGetRangeResult->Record.MutableResult(0)->AddParts(partId);
             }
-            handle = new IEventHandle(vPatchActorId, edgeActor, evVGetRangeResult.release());
+            handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, evVGetRangeResult.release());
             runtime.Send(handle.Release());
 
             auto evVPatchFoundParts = runtime.GrabEdgeEventRethrow<TEvBlobStorage::TEvVPatchFoundParts>(handle);
@@ -319,19 +319,19 @@ namespace NKikimr {
             TAutoPtr<IEventHandle> handle;
             if (!isKilled) {
                 std::unique_ptr<TEvBlobStorage::TEvVPatchDiff> diff = testData.CreateForceEndVPatchDiff(1, 0);
-                handle = new IEventHandle(vPatchActorId, edgeActor, diff.release());
+                handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, diff.release());
                 testData.Runtime.Send(handle.Release());
 
                 auto result = testData.Runtime.GrabEdgeEventRethrow<TEvBlobStorage::TEvVPatchResult>(handle);
                 UNIT_ASSERT(result->Record.GetStatus() == NKikimrProto::OK);
                 auto diyngRequest = testData.Runtime.GrabEdgeEventRethrow<TEvVPatchDyingRequest>(handle);
                 UNIT_ASSERT(diyngRequest->PatchedBlobId == testData.PatchedBlobId);
-                handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+                handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
                 testData.Runtime.Send(handle.Release());
             } else {
                 auto diyngRequest = testData.Runtime.GrabEdgeEventRethrow<TEvVPatchDyingRequest>(handle);
                 UNIT_ASSERT(diyngRequest->PatchedBlobId == testData.PatchedBlobId);
-                handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+                handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
                 testData.Runtime.Send(handle.Release());
             }
 
@@ -419,7 +419,7 @@ namespace NKikimr {
 
             auto dyingRequest = runtime.GrabEdgeEventRethrow<TEvVPatchDyingRequest>(handle);
             UNIT_ASSERT_VALUES_EQUAL(dyingRequest->PatchedBlobId, testData.PatchedBlobId);
-            handle = new IEventHandle(actorId, edgeActor, new TEvVPatchDyingConfirm);
+            handle = MakeHolder<IEventHandle>(actorId, edgeActor, new TEvVPatchDyingConfirm);
             testData.Runtime.Send(handle.Release());
             testData.WaitEndTest();
         }
@@ -440,7 +440,7 @@ namespace NKikimr {
             std::unique_ptr<TEvBlobStorage::TEvVGetResult> evVGetResult = std::make_unique<TEvBlobStorage::TEvVGetResult>(
                     vGetStatus, testData.VDiskIds[nodeId], testData.Now, evVGet->GetCachedByteSize(), &evVGet->Record,
                     nullptr, nullptr, nullptr, evVGet->Record.GetCookie(), vGetHandle->GetChannel(), 0);
-            evVGetResult->AddResult(NKikimrProto::OK, blob.BlobId, 0, TRope(blob.Buffer));
+            evVGetResult->AddResult(NKikimrProto::OK, blob.BlobId, 0, blob.Buffer.data(), blob.Buffer.size());
 
             std::unique_ptr<IEventHandle> handle = std::make_unique<IEventHandle>(vPatchActorId, edgeActor, evVGetResult.release());
             runtime.Send(handle.release());
@@ -470,7 +470,7 @@ namespace NKikimr {
                     vPutStatus, blobId, testData.VDiskIds[nodeId], &cookie, oos, testData.Now,
                     0, &record, nullptr, nullptr, nullptr, vPut->GetBufferBytes(), 0, "");
 
-            handle = new IEventHandle(vPatchActorId, edgeActor, vPutResult.release());
+            handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, vPutResult.release());
             runtime.Send(handle.Release());
             return true;
         }
@@ -501,7 +501,7 @@ namespace NKikimr {
             std::unique_ptr<TEvBlobStorage::TEvVPatchDiff> diff = testData.CreateVPatchDiff(pullingPart, false, {}, 0);
             TAutoPtr<IEventHandle> handle;
 
-            handle = new IEventHandle(vPatchActorId, edgeActor, diff.release());
+            handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, diff.release());
             runtime.Send(handle.Release());
             TBlob pullingBlob(testData.OriginalBlobId, pullingPart, partSize);
 
@@ -509,7 +509,7 @@ namespace NKikimr {
             if (isKilled) {
                 auto result = runtime.GrabEdgeEventRethrow<TEvBlobStorage::TEvVPatchResult>(handle);
                 UNIT_ASSERT(result->Record.GetStatus() == NKikimrProto::ERROR);
-                handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+                handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
                 runtime.Send(handle.Release());
                 testData.WaitEndTest();
                 return;
@@ -529,7 +529,7 @@ namespace NKikimr {
 
             auto diyngRequest = testData.Runtime.GrabEdgeEventRethrow<TEvVPatchDyingRequest>(handle);
             UNIT_ASSERT(diyngRequest->PatchedBlobId == testData.PatchedBlobId);
-            handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+            handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
             testData.Runtime.Send(handle.Release());
             testData.WaitEndTest();
         }
@@ -651,12 +651,12 @@ namespace NKikimr {
                 TAutoPtr<IEventHandle> handle;
                 testData.Runtime.GrabEdgeEventRethrow<TEvBlobStorage::TEvVPatchXorDiffResult>(handle);
                 ReceiveVPatchResult(testData, status);
-                handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+                handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
                 runtime.Send(handle.Release());
 
                 auto diyngRequest = testData.Runtime.GrabEdgeEventRethrow<TEvVPatchDyingRequest>(handle);
                 UNIT_ASSERT(diyngRequest->PatchedBlobId == testData.PatchedBlobId);
-                handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+                handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
                 testData.Runtime.Send(handle.Release());
 
                 testData.WaitEndTest();
@@ -769,7 +769,7 @@ namespace NKikimr {
                     TAutoPtr<IEventHandle> handle;
                     auto diyngRequest = testData.Runtime.GrabEdgeEventRethrow<TEvVPatchDyingRequest>(handle);
                     UNIT_ASSERT(diyngRequest->PatchedBlobId == testData.PatchedBlobId);
-                    handle = new IEventHandle(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
+                    handle = MakeHolder<IEventHandle>(vPatchActorId, edgeActor, new TEvVPatchDyingConfirm);
                     testData.Runtime.Send(handle.Release());
                 }
             }

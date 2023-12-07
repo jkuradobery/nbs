@@ -1,8 +1,7 @@
 UNITTEST_FOR(ydb/core/pgproxy)
 
 PEERDIR(
-    ydb/library/actors/testlib
-    ydb/core/protos
+    library/cpp/actors/testlib
 )
 
 SRCS(

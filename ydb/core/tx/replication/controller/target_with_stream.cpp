@@ -1,13 +1,12 @@
 #include "private_events.h"
 #include "stream_creator.h"
-#include "stream_remover.h"
 #include "target_with_stream.h"
 
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/events.h>
 
-namespace NKikimr::NReplication::NController {
-
-const TString ReplicationConsumerName = "replicationConsumer";
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 void TTargetWithStream::Progress(ui64 schemeShardId, const TActorId& proxy, const TActorContext& ctx) {
     switch (GetStreamState()) {
@@ -16,18 +15,12 @@ void TTargetWithStream::Progress(ui64 schemeShardId, const TActorId& proxy, cons
             ctx.Send(ctx.SelfID, new TEvPrivate::TEvAssignStreamName(GetReplicationId(), GetTargetId()));
             NameAssignmentInProcess = true;
         } else if (!StreamCreator) {
-            StreamCreator = ctx.Register(CreateStreamCreator(ctx.SelfID, proxy,
-                GetReplicationId(), GetTargetId(), GetTargetKind(), GetSrcPath(), GetStreamName()));
+            StreamCreator = ctx.Register(CreateStreamCreator(ctx.SelfID, GetReplicationId(), GetTargetId(), proxy));
         }
         return;
     case EStreamState::Removing:
-        if (!StreamRemover) {
-            StreamRemover = ctx.Register(CreateStreamRemover(ctx.SelfID, proxy,
-                GetReplicationId(), GetTargetId(), GetTargetKind(), GetSrcPath(), GetStreamName()));
-        }
-        return;
+        return; // TODO
     case EStreamState::Ready:
-    case EStreamState::Removed:
     case EStreamState::Error:
         break;
     }
@@ -36,8 +29,8 @@ void TTargetWithStream::Progress(ui64 schemeShardId, const TActorId& proxy, cons
 }
 
 void TTargetWithStream::Shutdown(const TActorContext& ctx) {
-    for (auto* x : TVector<TActorId*>{&StreamCreator, &StreamRemover}) {
-        if (auto actorId = std::exchange(*x, {})) {
+    for (auto& x : TVector<TActorId>{StreamCreator, StreamRemover}) {
+        if (auto actorId = std::exchange(x, {})) {
             ctx.Send(actorId, new TEvents::TEvPoison());
         }
     }
@@ -45,4 +38,6 @@ void TTargetWithStream::Shutdown(const TActorContext& ctx) {
     TTargetBase::Shutdown(ctx);
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

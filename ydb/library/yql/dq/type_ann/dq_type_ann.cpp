@@ -49,42 +49,6 @@ const TTypeAnnotationNode* GetDqConnectionType(const TDqConnection& node, TExprC
     return GetDqOutputType(node.Output(), ctx);
 }
 
-const TTypeAnnotationNode* GetColumnType(const TDqConnection& node, const TStructExprType& structType, TStringBuf name, TPositionHandle pos, TExprContext& ctx) {
-    TDqStageSettings settings = TDqStageSettings::Parse(node.Output().Stage());
-    if (settings.WideChannels) {
-        auto multiType = node.Output().Stage().Program().Ref().GetTypeAnn()->Cast<TStreamExprType>()->GetItemType()->Cast<TMultiExprType>();
-        ui32 idx;
-        if (!TryFromString(name, idx)) {
-            ctx.AddError(TIssue(ctx.GetPosition(pos),
-                TStringBuilder() << "Expecting integer as column name, but got '" << name << "'"));
-            return nullptr;
-        }
-        const bool isBlock = AnyOf(multiType->GetItems(), [](const TTypeAnnotationNode* item) { return item->IsBlockOrScalar(); });
-        const ui32 width = isBlock ? (multiType->GetSize() - 1) : multiType->GetSize();
-        if (idx >= width) {
-            ctx.AddError(TIssue(ctx.GetPosition(pos),
-                TStringBuilder() << "Column index too big: " << name << " >= " << width));
-            return nullptr;
-        }
-
-        auto itemType = multiType->GetItems()[idx];
-        if (isBlock) {
-            itemType = itemType->IsBlock() ? itemType->Cast<TBlockExprType>()->GetItemType() :
-                                             itemType->Cast<TScalarExprType>()->GetItemType();
-        }
-        return itemType;
-    }
-
-    auto result = structType.FindItemType(name);
-    if (!result) {
-        ctx.AddError(TIssue(ctx.GetPosition(pos),
-            TStringBuilder() << "Missing column '" << name << "'"));
-        return nullptr;
-    }
-
-    return result;
-}
-
 template <typename TStage>
 TStatus AnnotateStage(const TExprNode::TPtr& stage, TExprContext& ctx) {
     if (!EnsureMinMaxArgsCount(*stage, 3, 4, ctx)) {
@@ -93,13 +57,23 @@ TStatus AnnotateStage(const TExprNode::TPtr& stage, TExprContext& ctx) {
 
     auto* inputsTuple = stage->Child(TDqStageBase::idx_Inputs);
     auto& programLambda = stage->ChildRef(TDqStageBase::idx_Program);
+    auto* settingsTuple = stage->Child(TDqPhyStage::idx_Settings);
 
     if (!EnsureTuple(*inputsTuple, ctx)) {
         return TStatus::Error;
     }
 
-    if (!TDqStageSettings::Validate(*stage, ctx)) {
+    if (!EnsureTuple(*settingsTuple, ctx)) {
         return TStatus::Error;
+    }
+
+    for (auto& setting: settingsTuple->Children()) {
+        if (!EnsureTupleMinSize(*setting, 1, ctx)) {
+            return TStatus::Error;
+        }
+        if (!EnsureAtom(*setting->Child(0), ctx)) {
+            return TStatus::Error;
+        }
     }
 
     if (!EnsureLambda(*programLambda, ctx)) {
@@ -133,13 +107,6 @@ TStatus AnnotateStage(const TExprNode::TPtr& stage, TExprContext& ctx) {
                                         << *itemType));
                     ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), "Persistable required. Atom, type, key, world, datasink, datasource, callable, resource, stream and lambda are not persistable"));
                     return TStatus::Error;
-                }
-            }
-
-            if (TDqConnection::Match(input.Get())) {
-                TDqConnection conn(input);
-                if (TDqStageSettings::Parse(conn.Output().Stage()).WideChannels) {
-                    argType = conn.Output().Stage().Program().Ref().GetTypeAnn();
                 }
             }
         }
@@ -194,48 +161,9 @@ TStatus AnnotateStage(const TExprNode::TPtr& stage, TExprContext& ctx) {
         }
     }
 
-    const TDqStageSettings settings = TDqStageSettings::Parse(TDqStageBase(stage));
-    if (settings.WideChannels) {
-        if (!EnsureWideStreamType(*programLambda, ctx)) {
-            ctx.AddError(TIssue(ctx.GetPosition(programLambda->Pos()),TStringBuilder() << "Wide channel stage requires exactly one output, but got " << programResultTypesTuple.size()));
-            return TStatus::Error;
-        }
-        YQL_ENSURE(programResultTypesTuple.size() == 1);
-        auto multiType = programLambda->GetTypeAnn()->Cast<TStreamExprType>()->GetItemType()->Cast<TMultiExprType>();
-        const bool isBlock = AnyOf(multiType->GetItems(), [](const TTypeAnnotationNode* item) { return item->IsBlockOrScalar(); });
-        TTypeAnnotationNode::TListType blockItemTypes;
-        if (isBlock && !EnsureWideStreamBlockType(*programLambda, blockItemTypes, ctx)) {
-            return TStatus::Error;
-        }
-
-        const ui32 width = isBlock ? (blockItemTypes.size() - 1) : multiType->GetSize();
-        if (width != settings.OutputNarrowType->GetSize()) {
-            ctx.AddError(TIssue(ctx.GetPosition(programLambda->Pos()),TStringBuilder() << "Wide/narrow types has different number of items: " <<
-                width << " vs " << settings.OutputNarrowType->GetSize()));
-            return TStatus::Error;
-        }
-
-        for (size_t i = 0; i < settings.OutputNarrowType->GetSize(); ++i) {
-            auto structItem = settings.OutputNarrowType->GetItems()[i];
-            auto wideItem = isBlock ? blockItemTypes[i] : multiType->GetItems()[i];
-            if (!IsSameAnnotation(*structItem->GetItemType(), *wideItem)) {
-                ctx.AddError(TIssue(ctx.GetPosition(programLambda->Pos()),TStringBuilder() << "Wide/narrow types mismatch for column '" <<
-                    structItem->GetName() << "' : " << *wideItem << " vs " << *structItem->GetItemType()));
-                return TStatus::Error;
-            }
-        }
-
-        programResultTypesTuple[0] = ctx.MakeType<TListExprType>(settings.OutputNarrowType);
-    }
-
     TVector<const TTypeAnnotationNode*> stageResultTypes;
     if (TDqStageBase::idx_Outputs < stage->ChildrenSize()) {
         YQL_ENSURE(stage->Child(TDqStageBase::idx_Outputs)->ChildrenSize() != 0, "Stage.Outputs list exists but empty, stage: " << stage->Dump());
-
-        if (settings.WideChannels) {
-            ctx.AddError(TIssue(ctx.GetPosition(programLambda->Pos()),TStringBuilder() << "Wide channel stage is incompatible with Sink/Transform"));
-            return TStatus::Error;
-        }
 
         auto outputsNumber = programResultTypesTuple.size();
         TVector<TExprNode::TPtr> transforms;
@@ -301,7 +229,7 @@ ParseJoinInputType(const TStructExprType& rowType, TStringBuf tableLabel, TExprC
         if (optional && !memberType->IsOptionalOrNull()) {
             memberType = ctx.MakeType<TOptionalExprType>(memberType);
         }
-        if (!tableLabel.empty()) {
+        if (!(tableLabel.empty() || isSystemKeyColumn)) {
             result[tableLabel][member->GetName()] = memberType;
         } else {
             result[label][column] = memberType;
@@ -364,18 +292,14 @@ const TStructExprType* GetDqJoinResultType(TPositionHandle pos, const TStructExp
             return nullptr;
         }
 
-        auto maybeLeftKeyType = leftType[leftKeyLabel].FindPtr(leftKeyColumn);
-        if (!maybeLeftKeyType && leftKeyColumn.starts_with("_yql_dq_key_left"))
-            maybeLeftKeyType = leftType[""].FindPtr(leftKeyColumn);
+        auto maybeLeftKeyType = leftType[leftKeyColumn.starts_with("_yql_dq_key_left_") ? "" : leftKeyLabel].FindPtr(leftKeyColumn);
         if (!maybeLeftKeyType) {
             ctx.AddError(TIssue(ctx.GetPosition(pos), TStringBuilder()
                 << "Left key " << leftKeyLabel << "." << leftKeyColumn << " not found"));
             return nullptr;
         }
 
-        auto maybeRightKeyType = rightType[rightKeyLabel].FindPtr(rightKeyColumn);
-        if (!maybeRightKeyType && rightKeyColumn.starts_with("_yql_dq_key_right"))
-            maybeRightKeyType = rightType[""].FindPtr(rightKeyColumn);
+        auto maybeRightKeyType = rightType[rightKeyColumn.starts_with("_yql_dq_key_right_") ? "" : rightKeyLabel].FindPtr(rightKeyColumn);
         if (!maybeRightKeyType) {
             ctx.AddError(TIssue(ctx.GetPosition(pos), TStringBuilder()
                 << "Right key " << rightKeyLabel << "." << rightKeyColumn << " not found"));
@@ -397,7 +321,7 @@ const TStructExprType* GetDqJoinResultType(TPositionHandle pos, const TStructExp
     {
         for (const auto& it : type) {
             for (const auto& it2 : it.second) {
-                const auto memberName = it.first.empty() ? TString(it2.first) : FullColumnName(it.first, it2.first);
+                auto memberName = FullColumnName(it.first, it2.first);
                 if (makeOptional && !it2.second->IsOptionalOrNull()) {
                     result->emplace_back(ctx.MakeType<TItemExprType>(memberName, ctx.MakeType<TOptionalExprType>(it2.second)));
                 } else {
@@ -421,7 +345,7 @@ const TStructExprType* GetDqJoinResultType(TPositionHandle pos, const TStructExp
 
 template <bool IsMapJoin>
 const TStructExprType* GetDqJoinResultType(const TExprNode::TPtr& input, bool stream, TExprContext& ctx) {
-    if (!EnsureMinMaxArgsCount(*input, 6, 7, ctx)) {
+    if (!EnsureArgsCount(*input, 6, ctx)) {
         return nullptr;
     }
 
@@ -494,15 +418,6 @@ const TStructExprType* GetDqJoinResultType(const TExprNode::TPtr& input, bool st
     auto rightTableLabel = join.RightLabel().Maybe<TCoAtom>()
         ? join.RightLabel().Cast<TCoAtom>().Value()
         : TStringBuf("");
-
-    if (input->ChildrenSize() > 6U) {
-        for (auto i = 0U; i < input->Tail().ChildrenSize(); ++i) {
-            if (const auto& flag = *input->Tail().Child(i); !flag.IsAtom({"LeftAny", "RightAny"})) {
-                ctx.AddError(TIssue(ctx.GetPosition(flag.Pos()), TStringBuilder() << "Unsupported DQ join option: " << flag.Content()));
-                return nullptr;
-            }
-        }
-    }
 
     return GetDqJoinResultType<IsMapJoin>(join.Pos(), *leftStructType, leftTableLabel, *rightStructType,
         rightTableLabel, join.JoinType(), join.JoinKeys(), ctx);
@@ -607,12 +522,13 @@ TStatus AnnotateDqCnMerge(const TExprNode::TPtr& node, TExprContext& ctx) {
         {
             return TStatus::Error;
         }
-
-        auto colType = GetColumnType(TDqConnection(node), *structType, column.Column().Value(), column.Pos(), ctx);
-        if (!colType) {
+        TMaybe<ui32> colIndex = structType->FindItem(column.Column().StringValue());
+        if (!colIndex) {
+            ctx.AddError(TIssue(ctx.GetPosition(column.Pos()),
+                TStringBuilder() << "Missing sort column: " << column.Column().StringValue()));
             return TStatus::Error;
         }
-
+        const TTypeAnnotationNode* colType = (structType->GetItems())[*colIndex]->GetItemType();
         if (colType->GetKind() == ETypeAnnotationKind::Optional) {
             colType = colType->Cast<TOptionalExprType>()->GetItemType();
         }
@@ -666,12 +582,12 @@ TStatus AnnotateDqCnHashShuffle(const TExprNode::TPtr& input, TExprContext& ctx)
         if (!EnsureAtom(*column, ctx)) {
             return TStatus::Error;
         }
-        auto ty = GetColumnType(TDqConnection(input), *structType, column->Content(), column->Pos(), ctx);
-        if (!ty) {
+        if (!structType->FindItem(column->Content())) {
+            ctx.AddError(TIssue(ctx.GetPosition(column->Pos()),
+                TStringBuilder() << "Missing key column: " << column->Content()));
             return TStatus::Error;
         }
-
-        if (!ty->IsHashable()) {
+        if (const auto ty = structType->FindItemType(column->Content()); !ty->IsHashable()) {
             ctx.AddError(TIssue(ctx.GetPosition(column->Pos()),
                 TStringBuilder() << "Non-hashable key column: " << column->Content()));
             return TStatus::Error;
@@ -1078,10 +994,6 @@ bool IsTypeSupportedInMergeCn(EDataSlot type) {
         case EDataSlot::TzDatetime:
         case EDataSlot::TzTimestamp:
         case EDataSlot::JsonDocument:
-        case EDataSlot::Date32:
-        case EDataSlot::Datetime64:
-        case EDataSlot::Timestamp64:
-        case EDataSlot::Interval64:
             return false;
     }
     return false;
@@ -1103,152 +1015,6 @@ bool IsMergeConnectionApplicable(const TVector<const TTypeAnnotationNode*>& sort
     }
     return true;
 }
-
-TDqStageSettings TDqStageSettings::Parse(const TDqStageBase& node) {
-    TDqStageSettings settings{};
-
-    for (const auto& tuple : node.Settings()) {
-        if (const auto name = tuple.Name().Value(); name == IdSettingName) {
-            YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
-            settings.Id = tuple.Value().Cast<TCoAtom>().Value();
-        } else if (name == LogicalIdSettingName) {
-            YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
-            settings.LogicalId = FromString<ui64>(tuple.Value().Cast<TCoAtom>().Value());
-        } else if (name == PartitionModeSettingName) {
-            YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
-            settings.PartitionMode = FromString<EPartitionMode>(tuple.Value().Cast<TCoAtom>().Value());
-        } else if (name == WideChannelsSettingName) {
-            settings.WideChannels = true;
-            settings.OutputNarrowType = tuple.Value().Ref().GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TStructExprType>();
-        } else if (name == BlockStatusSettingName) {
-            YQL_ENSURE(tuple.Value().Maybe<TCoAtom>());
-            settings.BlockStatus = FromString<EBlockStatus>(tuple.Value().Cast<TCoAtom>().Value());
-        }
-    }
-
-    return settings;
-}
-
-bool TDqStageSettings::Validate(const TExprNode& stage, TExprContext& ctx) {
-    auto& settings = *stage.Child(TDqStageBase::idx_Settings);
-    if (!EnsureTuple(settings, ctx)) {
-        return false;
-    }
-
-    for (auto& setting: settings.Children()) {
-        if (!EnsureTupleMinSize(*setting, 1, ctx)) {
-            return false;
-        }
-
-        if (!EnsureAtom(*setting->Child(0), ctx)) {
-            return false;
-        }
-
-        TStringBuf name = setting->Head().Content();
-        if (name == IdSettingName || name == LogicalIdSettingName || name == BlockStatusSettingName || name == PartitionModeSettingName) {
-            if (setting->ChildrenSize() != 2) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting->Pos()), TStringBuilder() << "Setting " << name << " should contain single value"));
-                return false;
-            }
-            auto value = setting->Child(1);
-            if (!EnsureAtom(*value, ctx)) {
-                return false;
-            }
-
-            if (name == LogicalIdSettingName && !TryFromString<ui64>(value->Content())) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting->Pos()), TStringBuilder() << "Setting " << name << " should contain ui64 value, but got: " << value->Content()));
-                return false;
-            }
-            if (name == BlockStatusSettingName && !TryFromString<EBlockStatus>(value->Content())) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting->Pos()), TStringBuilder() << "Unsupported " << name << " value: " << value->Content()));
-                return false;
-            }
-            if (name == PartitionModeSettingName && !TryFromString<EPartitionMode>(value->Content())) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting->Pos()), TStringBuilder() << "Unsupported " << name << " value: " << value->Content()));
-                return false;
-            }
-        } else if (name == WideChannelsSettingName) {
-            if (setting->ChildrenSize() != 2) {
-                ctx.AddError(TIssue(ctx.GetPosition(setting->Pos()), TStringBuilder() << "Setting " << name << " should contain single value"));
-                return false;
-            }
-            auto value = setting->Child(1);
-            if (!EnsureType(*value, ctx)) {
-                return false;
-            }
-
-            auto valueType  = value->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-            if (!EnsureStructType(value->Pos(), *valueType, ctx)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-TDqStageSettings TDqStageSettings::New(const NNodes::TDqStageBase& node) {
-    auto settings = Parse(node);
-
-    if (!settings.Id) {
-        settings.Id = CreateGuidAsString();
-    }
-
-    return settings;
-}
-
-TDqStageSettings TDqStageSettings::New() {
-    TDqStageSettings s;
-    s.Id = CreateGuidAsString();
-    return s;
-}
-
-NNodes::TCoNameValueTupleList TDqStageSettings::BuildNode(TExprContext& ctx, TPositionHandle pos) const {
-    TVector<TCoNameValueTuple> settings;
-    auto logicalId = LogicalId;
-    if (!logicalId) {
-        logicalId = ctx.NextUniqueId;
-    }
-
-    settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
-        .Name().Build(LogicalIdSettingName)
-        .Value<TCoAtom>().Build(logicalId)
-        .Done());
-
-    if (Id) {
-        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
-            .Name().Build(IdSettingName)
-            .Value<TCoAtom>().Build(Id)
-            .Done());
-    }
-
-    if (PartitionMode != EPartitionMode::Default) {
-        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
-            .Name().Build(PartitionModeSettingName)
-            .Value<TCoAtom>().Build(ToString(PartitionMode))
-            .Done());
-    }
-
-    if (WideChannels) {
-        YQL_ENSURE(OutputNarrowType);
-        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
-            .Name().Build(WideChannelsSettingName)
-            .Value(ExpandType(pos, *OutputNarrowType, ctx))
-            .Done());
-    }
-
-    if (BlockStatus.Defined()) {
-        settings.push_back(Build<TCoNameValueTuple>(ctx, pos)
-            .Name().Build(BlockStatusSettingName)
-            .Value<TCoAtom>().Build(ToString(*BlockStatus))
-            .Done());
-    }
-
-    return Build<TCoNameValueTupleList>(ctx, pos)
-        .Add(settings)
-        .Done();
-}
-
 
 TString PrintDqStageOnly(const TDqStageBase& stage, TExprContext& ctx) {
     if (stage.Inputs().Empty()) {

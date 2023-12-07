@@ -2,16 +2,15 @@
 #include "info_collector.h"
 
 #include <ydb/core/base/tablet_pipe.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/cms/console/configs_dispatcher.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/mind/tenant_pool.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
 
 #define LOG_T(stream) LOG_TRACE_S (*TlsActivationContext, NKikimrServices::CMS, "[InfoCollector] " << stream)
 #define LOG_D(stream) LOG_DEBUG_S (*TlsActivationContext, NKikimrServices::CMS, "[InfoCollector] " << stream)
@@ -74,7 +73,7 @@ private:
         default:
             LOG_E("Unexpected event"
                 << ": type# " << ev->GetTypeRewrite()
-                << ", event# " << ev->ToString());
+                << ", event# " << (ev->HasEvent() ? ev->GetBase()->ToString() : "serialized?"));
         }
     }
 
@@ -132,7 +131,7 @@ private:
 
 void TInfoCollector::ReplyAndDie() {
     auto ev = MakeHolder<TCms::TEvPrivate::TEvClusterInfo>();
-    ev->Success = BaseConfigReceived
+    ev->Success = BaseConfigReceived 
                   && BootstrapConfigReceived
                   && StateStorageInfoReceived;
 
@@ -164,7 +163,7 @@ void TInfoCollector::ReplyAndDie() {
 }
 
 void TInfoCollector::MaybeReplyAndDie() {
-    if (!BaseConfigReceived
+    if (!BaseConfigReceived 
         || !BootstrapConfigReceived
         || !StateStorageInfoReceived) {
         return;
@@ -216,11 +215,12 @@ void TInfoCollector::RequestBootstrapConfig() {
 void TInfoCollector::Handle(TEvConfigsDispatcher::TEvGetConfigResponse::TPtr& ev) {
     const auto& config  = ev->Get()->Config;
     const auto& initialBootstrapConfig = AppData()->BootstrapConfig;
+    const NKikimrConfig::TBootstrap* bootstrapConfig = nullptr;
 
     BootstrapConfigReceived = true;
     if (!config->HasBootstrapConfig()) {
         LOG_I("Couldn't collect bootstrap config from Console. Taking the local config");
-        Info->BootstrapConfig.CopyFrom(initialBootstrapConfig);
+        bootstrapConfig = &initialBootstrapConfig;
     } else {
         const auto& currentBootstrapConfig = config->GetBootstrapConfig();
 
@@ -232,15 +232,18 @@ void TInfoCollector::Handle(TEvConfigsDispatcher::TEvGetConfigResponse::TPtr& ev
             Info->IsLocalBootConfDiffersFromConsole = true;
         }
 
-        Info->BootstrapConfig.CopyFrom(currentBootstrapConfig);
+        bootstrapConfig = &currentBootstrapConfig;
     }
+
+    Y_VERIFY(bootstrapConfig);
+    Info->ApplySysTabletsInfo(*bootstrapConfig);
 
     MaybeReplyAndDie();
 }
 
 void TInfoCollector::RequestStateStorageConfig() {
     const auto& domains = AppData()->DomainsInfo->Domains;
-    Y_ABORT_UNLESS(domains.size() <= 1);
+    Y_VERIFY(domains.size() <= 1);
 
     for (const auto& domain : domains) {
         const auto ssProxyId = MakeStateStorageProxyID(domain.second->DefaultStateStorageGroup);
@@ -266,7 +269,7 @@ void TInfoCollector::RequestBaseConfig() {
     using namespace NTabletPipe;
 
     const auto& domains = AppData()->DomainsInfo->Domains;
-    Y_ABORT_UNLESS(domains.size() <= 1);
+    Y_VERIFY(domains.size() <= 1);
 
     for (const auto& domain : domains) {
         const auto bscId = MakeBSControllerID(domain.second->DefaultStateStorageGroup);
@@ -339,7 +342,7 @@ void TInfoCollector::SendNodeRequests(ui32 nodeId) {
     SendNodeEvent(nodeId, whiteBoardId, new TEvWhiteboard::TEvVDiskStateRequest(), TEvWhiteboard::EvVDiskStateResponse);
 
     const auto& domains = AppData()->DomainsInfo->Domains;
-    Y_ABORT_UNLESS(domains.size() <= 1);
+    Y_VERIFY(domains.size() <= 1);
 
     for (const auto& domain : domains) {
         const TActorId tenantPoolId = MakeTenantPoolID(nodeId, domain.second->DomainUid);

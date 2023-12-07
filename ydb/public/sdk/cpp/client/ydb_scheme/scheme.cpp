@@ -2,7 +2,7 @@
 
 #define INCLUDE_YDB_INTERNAL_H
 #include <ydb/public/sdk/cpp/client/impl/ydb_internal/make_request/make.h>
-#include <ydb/public/sdk/cpp/client/impl/ydb_internal/scheme_helpers/helpers.h>
+#include <ydb/public/sdk/cpp/client/impl/ydb_internal/table_helpers/helpers.h>
 #undef INCLUDE_YDB_INTERNAL_H
 
 #include <ydb/public/api/grpc/ydb_scheme_v1.grpc.pb.h>
@@ -85,12 +85,6 @@ static ESchemeEntryType ConvertProtoEntryType(::Ydb::Scheme::Entry::Type entry) 
         return ESchemeEntryType::Replication;
     case ::Ydb::Scheme::Entry::TOPIC:
         return ESchemeEntryType::Topic;
-    case ::Ydb::Scheme::Entry::COLUMN_STORE:
-        return ESchemeEntryType::ColumnStore;
-    case ::Ydb::Scheme::Entry::EXTERNAL_TABLE:
-        return ESchemeEntryType::ExternalTable;
-    case ::Ydb::Scheme::Entry::EXTERNAL_DATA_SOURCE:
-        return ESchemeEntryType::ExternalDataSource;
     default:
         return ESchemeEntryType::Unknown;
     }

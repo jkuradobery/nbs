@@ -1,7 +1,7 @@
 UNITTEST_FOR(ydb/core/kqp)
 
 FORK_SUBTESTS()
-SPLIT_FACTOR(100)
+SPLIT_FACTOR(50)
 
 IF (WITH_VALGRIND)
     TIMEOUT(3600)
@@ -20,8 +20,6 @@ PEERDIR(
     ydb/core/kqp
     ydb/core/kqp/ut/common
     ydb/library/yql/sql/pg_dummy
-    ydb/core/tx/columnshard/hooks/testing
-    ydb/core/tx/datashard/ut_common
 )
 
 YQL_LAST_ABI_VERSION()

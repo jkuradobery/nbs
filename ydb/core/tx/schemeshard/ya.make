@@ -1,5 +1,5 @@
 RECURSE_FOR_TESTS(
-    ut_auditsettings
+    ut_async_index
     ut_backup
     ut_base
     ut_base_reboots
@@ -7,18 +7,12 @@ RECURSE_FOR_TESTS(
     ut_bsvolume_reboots
     ut_cdc_stream
     ut_cdc_stream_reboots
-    ut_column_build
     ut_compaction
     ut_export
     ut_export_reboots_s3
-    ut_external_data_source
-    ut_external_data_source_reboots
-    ut_external_table
-    ut_external_table_reboots
     ut_extsubdomain
     ut_extsubdomain_reboots
     ut_filestore_reboots
-    ut_index
     ut_index_build
     ut_index_build_reboots
     ut_login
@@ -26,6 +20,7 @@ RECURSE_FOR_TESTS(
     ut_move_reboots
     ut_olap
     ut_olap_reboots
+    ut_pq
     ut_pq_reboots
     ut_reboots
     ut_replication
@@ -37,20 +32,23 @@ RECURSE_FOR_TESTS(
     ut_sequence
     ut_sequence_reboots
     ut_serverless
-    ut_serverless_reboots
+    ut_stats
     ut_split_merge
     ut_split_merge_reboots
-    ut_stats
     ut_subdomain
     ut_subdomain_reboots
-    ut_topic_splitmerge
     ut_ttl
     ut_user_attributes
     ut_user_attributes_reboots
-    ut_view
 )
 
 LIBRARY()
+
+IF (KIKIMR_ALLOW_SHARDED_COMPACTION)
+    CFLAGS(
+        -DKIKIMR_ALLOW_SHARDED_COMPACTION=1
+    )
+ENDIF()
 
 SRCS(
     defs.h
@@ -101,8 +99,6 @@ SRCS(
     schemeshard__operation_copy_table.cpp
     schemeshard__operation_create_backup.cpp
     schemeshard__operation_create_bsv.cpp
-    schemeshard__operation_create_external_data_source.cpp
-    schemeshard__operation_create_external_table.cpp
     schemeshard__operation_create_extsubdomain.cpp
     schemeshard__operation_create_fs.cpp
     schemeshard__operation_create_index.cpp
@@ -119,10 +115,7 @@ SRCS(
     schemeshard__operation_create_solomon.cpp
     schemeshard__operation_create_subdomain.cpp
     schemeshard__operation_create_table.cpp
-    schemeshard__operation_create_view.cpp
     schemeshard__operation_drop_bsv.cpp
-    schemeshard__operation_drop_external_data_source.cpp
-    schemeshard__operation_drop_external_table.cpp
     schemeshard__operation_drop_extsubdomain.cpp
     schemeshard__operation_drop_fs.cpp
     schemeshard__operation_drop_indexed_table.cpp
@@ -137,7 +130,6 @@ SRCS(
     schemeshard__operation_drop_subdomain.cpp
     schemeshard__operation_drop_table.cpp
     schemeshard__operation_drop_unsafe.cpp
-    schemeshard__operation_drop_view.cpp
     schemeshard__operation_mkdir.cpp
     schemeshard__operation_modify_acl.cpp
     schemeshard__operation_move_index.cpp
@@ -182,7 +174,6 @@ SRCS(
     schemeshard_identificators.cpp
     schemeshard_info_types.cpp
     schemeshard_info_types.h
-    schemeshard_olap_types.cpp
     schemeshard_path_describer.cpp
     schemeshard_path_element.cpp
     schemeshard_path_element.h
@@ -195,6 +186,7 @@ SRCS(
     schemeshard_tables_storage.cpp
     schemeshard_types.cpp
     schemeshard_types.h
+    schemeshard_ui64id.cpp
     schemeshard_user_attr_limits.h
     schemeshard_utils.cpp
     schemeshard_utils.h
@@ -213,7 +205,6 @@ SRCS(
     schemeshard_import_flow_proposals.cpp
     schemeshard_import.cpp
     schemeshard_build_index.cpp
-    schemeshard_build_index_tx_base.cpp
     schemeshard_build_index__cancel.cpp
     schemeshard_build_index__forget.cpp
     schemeshard_build_index__list.cpp
@@ -222,7 +213,6 @@ SRCS(
     schemeshard_build_index__progress.cpp
     schemeshard_validate_ttl.cpp
     operation_queue_timer.h
-    user_attributes.cpp
 )
 
 GENERATE_ENUM_SERIALIZATION(schemeshard_info_types.h)
@@ -243,18 +233,14 @@ PEERDIR(
     ydb/core/blockstore/core
     ydb/core/engine
     ydb/core/engine/minikql
-    ydb/core/external_sources
     ydb/core/filestore/core
-    ydb/core/formats/arrow/compression
     ydb/core/kesus/tablet
     ydb/core/metering
-    ydb/core/persqueue
     ydb/core/persqueue/config
     ydb/core/persqueue/events
     ydb/core/persqueue/writer
     ydb/core/protos
     ydb/core/scheme
-    ydb/core/statistics
     ydb/core/sys_view/partition_stats
     ydb/core/tablet
     ydb/core/tablet_flat

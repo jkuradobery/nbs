@@ -6,10 +6,8 @@
 #include <ydb/core/wrappers/s3_wrapper.h>
 #include <ydb/public/api/protos/ydb_import.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-
-#include <google/protobuf/text_format.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/string/subst.h>
 
@@ -25,7 +23,7 @@ using namespace Aws;
 
 class TSchemeGetter: public TActorBootstrapped<TSchemeGetter> {
     static TString SchemeKeyFromSettings(const Ydb::Import::ImportFromS3Settings& settings, ui32 itemIdx) {
-        Y_ABORT_UNLESS(itemIdx < (ui32)settings.items_size());
+        Y_VERIFY(itemIdx < (ui32)settings.items_size());
         return TStringBuilder() << settings.items(itemIdx).source_prefix() << "/scheme.pb";
     }
 
@@ -71,7 +69,7 @@ class TSchemeGetter: public TActorBootstrapped<TSchemeGetter> {
             return;
         }
 
-        Y_ABORT_UNLESS(ItemIdx < ImportInfo->Items.size());
+        Y_VERIFY(ItemIdx < ImportInfo->Items.size());
         auto& item = ImportInfo->Items.at(ItemIdx);
 
         LOG_T("Trying to parse"

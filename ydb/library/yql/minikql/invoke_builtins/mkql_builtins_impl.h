@@ -144,7 +144,7 @@ struct TSimpleArithmeticUnary : public TArithmeticConstraintsSame<TInput, TOutpu
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* arg, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto val = GetterFor<TInput>(arg, context, block);
         const auto res = TImpl::Gen(val, ctx, block);
         const auto wide = SetterFor<TOutput>(res, context, block);
@@ -162,7 +162,7 @@ struct TSimpleArithmeticBinary : public TArithmeticConstraintsBinary<TLeft, TRig
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto lhs = StaticCast<TLeft, TOutput>(GetterFor<TLeft>(left, context, block), context, block);
         const auto rhs = StaticCast<TRight, TOutput>(GetterFor<TRight>(right, context, block), context, block);
         const auto res = TImpl::Gen(lhs, rhs, ctx, block);
@@ -181,7 +181,7 @@ struct TShiftArithmeticBinary : public TArithmeticConstraintsSame<TInput, TOutpu
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto lhs = GetterFor<TInput>(left, context, block);
         const auto rhs = CastInst::Create(Instruction::Trunc, right, Type::getInt8Ty(context), "bits", block);
         const auto res = TImpl::Gen(lhs, rhs, ctx, block);
@@ -421,16 +421,6 @@ void RegisterAggregateFunction(IBuiltinFunctionRegistry& registry, const std::st
 template <
     typename TType,
     template<typename> class TFunc,
-    template<typename, typename, bool> class TArgs
->
-void RegisterAggregateFunctionPoly(IBuiltinFunctionRegistry& registry, const std::string_view& name) {
-    RegisterFunctionImpl<TFunc<TType>, TArgs<TType, TType, false>, TBinaryWrap<false, false>>(registry, name);
-    RegisterFunctionImpl<TFunc<TType>, TArgs<TType, TType, true>, TAggregateWrap>(registry, name);
-}
-
-template <
-    typename TType,
-    template<typename> class TFunc,
     template<typename, typename, typename, bool, bool> class TArgs
 >
 void RegisterSameTypesFunction(IBuiltinFunctionRegistry& registry, const std::string_view& name) {
@@ -461,19 +451,6 @@ void RegisterFunctionBinOpt(IBuiltinFunctionRegistry& registry, const std::strin
     RegisterFunctionImpl<TFunc<typename TInput1::TLayout, typename TInput2::TLayout, typename TOutput::TLayout>, TArgs<TInput1, TInput2, TOutput, true, false>, TBinaryWrap<true, false>>(registry, name);
     RegisterFunctionImpl<TFunc<typename TInput1::TLayout, typename TInput2::TLayout, typename TOutput::TLayout>, TArgs<TInput1, TInput2, TOutput, true, true>, TBinaryWrap<true, true>>(registry, name);
 }
-
-template <
-    typename TInput1, typename TInput2, typename TOutput,
-    template<typename, typename, typename> class TFunc,
-    template<typename, typename, typename, bool, bool> class TArgs
->
-void RegisterFunctionBinPolyOpt(IBuiltinFunctionRegistry& registry, const std::string_view& name) {
-    RegisterFunctionImpl<TFunc<TInput1, TInput2, TOutput>, TArgs<TInput1, TInput2, TOutput, false, false>, TBinaryWrap<false, false>>(registry, name);
-    RegisterFunctionImpl<TFunc<TInput1, TInput2, TOutput>, TArgs<TInput1, TInput2, TOutput, false, true>, TBinaryWrap<false, true>>(registry, name);
-    RegisterFunctionImpl<TFunc<TInput1, TInput2, TOutput>, TArgs<TInput1, TInput2, TOutput, true, false>, TBinaryWrap<true, false>>(registry, name);
-    RegisterFunctionImpl<TFunc<TInput1, TInput2, TOutput>, TArgs<TInput1, TInput2, TOutput, true, true>, TBinaryWrap<true, true>>(registry, name);
-}
-
 
 template <
     template<typename, typename, typename> class TFunc,
@@ -875,13 +852,15 @@ struct TBinaryKernelExecsBase {
 };
 
 template<typename TInput1, typename TInput2, typename TOutput,
-         typename TFuncInstance, bool DefaultNulls>
+         template<typename, typename, typename> class TFunc, bool DefaultNulls>
 struct TBinaryKernelExecs;
 
 template<typename TInput1, typename TInput2, typename TOutput,
-        typename TFuncInstance>
-struct TBinaryKernelExecs<TInput1, TInput2, TOutput, TFuncInstance, true> : TBinaryKernelExecsBase<TBinaryKernelExecs<TInput1, TInput2, TOutput, TFuncInstance, true>>
+        template<typename, typename, typename> class TFunc>
+struct TBinaryKernelExecs<TInput1, TInput2, TOutput, TFunc, true> : TBinaryKernelExecsBase<TBinaryKernelExecs<TInput1, TInput2, TOutput, TFunc, true>>
 {
+    using TFuncInstance = TFunc<TInput1, TInput2, TOutput>;
+
     static arrow::Status ExecScalarScalar(arrow::compute::KernelContext*, const arrow::compute::ExecBatch& batch, arrow::Datum* res) {
         MKQL_ENSURE(batch.values.size() == 2, "Expected 2 args");
         const auto& arg1 = batch.values[0];
@@ -956,9 +935,11 @@ struct TBinaryKernelExecs<TInput1, TInput2, TOutput, TFuncInstance, true> : TBin
 };
 
 template<typename TInput1, typename TInput2, typename TOutput,
-        typename TFuncInstance>
-struct TBinaryKernelExecs<TInput1, TInput2, TOutput, TFuncInstance, false> : TBinaryKernelExecsBase<TBinaryKernelExecs<TInput1, TInput2, TOutput, TFuncInstance, false>>
+        template<typename, typename, typename> class TFunc>
+struct TBinaryKernelExecs<TInput1, TInput2, TOutput, TFunc, false> : TBinaryKernelExecsBase<TBinaryKernelExecs<TInput1, TInput2, TOutput, TFunc, false>>
 {
+    using TFuncInstance = TFunc<TInput1, TInput2, TOutput>;
+
     static arrow::Status ExecScalarScalar(arrow::compute::KernelContext*, const arrow::compute::ExecBatch& batch, arrow::Datum* res) {
         MKQL_ENSURE(batch.values.size() == 2, "Expected 2 args");
         const auto& arg1 = batch.values[0];
@@ -1003,7 +984,7 @@ struct TBinaryKernelExecs<TInput1, TInput2, TOutput, TFuncInstance, false> : TBi
                         continue;
                     }
                 }
-
+                
                 arrow::BitUtil::ClearBit(resValid, i + resArr.offset);
             }
         } else {
@@ -1106,26 +1087,7 @@ void AddBinaryKernel(TKernelFamilyBase& owner) {
     using TOutputLayout = typename TOutput::TLayout;
 
     using TFuncInstance = TFunc<TInput1Layout, TInput2Layout, TOutputLayout>;
-    using TExecs = TBinaryKernelExecs<TInput1Layout, TInput2Layout, TOutputLayout, TFuncInstance, TFuncInstance::DefaultNulls>;
-
-    std::vector<NUdf::TDataTypeId> argTypes({ TInput1::Id, TInput2::Id });
-    NUdf::TDataTypeId returnType = TOutput::Id;
-
-    arrow::compute::ScalarKernel k({ GetPrimitiveInputArrowType<TInput1Layout>(), GetPrimitiveInputArrowType<TInput2Layout>() },
-                                   GetPrimitiveOutputArrowType<TOutputLayout>(), &TExecs::Exec);
-    k.null_handling = owner.NullMode == TKernelFamily::ENullMode::Default ? arrow::compute::NullHandling::INTERSECTION : arrow::compute::NullHandling::COMPUTED_PREALLOCATE;
-    owner.Adopt(argTypes, returnType, std::make_unique<TPlainKernel>(owner, argTypes, returnType, k));
-}
-
-template<typename TInput1, typename TInput2, typename TOutput,
-    template<typename, typename, typename> class TFunc>
-void AddBinaryKernelPoly(TKernelFamilyBase& owner) {
-    using TInput1Layout = typename TInput1::TLayout;
-    using TInput2Layout = typename TInput2::TLayout;
-    using TOutputLayout = typename TOutput::TLayout;
-
-    using TFuncInstance = TFunc<TInput1, TInput2, TOutput>;
-    using TExecs = TBinaryKernelExecs<TInput1Layout, TInput2Layout, TOutputLayout, TFuncInstance, TFuncInstance::DefaultNulls>;
+    using TExecs = TBinaryKernelExecs<TInput1Layout, TInput2Layout, TOutputLayout, TFunc, TFuncInstance::DefaultNulls>;
 
     std::vector<NUdf::TDataTypeId> argTypes({ TInput1::Id, TInput2::Id });
     NUdf::TDataTypeId returnType = TOutput::Id;
@@ -1227,12 +1189,6 @@ void AddBinaryPredicateKernel(TKernelFamilyBase& owner) {
     AddBinaryKernel<TInput1, TInput2, NUdf::TDataType<bool>, TFunc>(owner);
 }
 
-template<typename TInput1, typename TInput2,
-    template<typename, typename, typename> class TFunc>
-void AddBinaryPredicateKernelPoly(TKernelFamilyBase& owner) {
-    AddBinaryKernelPoly<TInput1, TInput2, NUdf::TDataType<bool>, TFunc>(owner);
-}
-
 template<typename TLeft, template<typename, typename, typename> class TPred>
 void AddArithmeticComparisonKernels(TKernelFamilyBase& owner) {
     AddBinaryPredicateKernel<TLeft, NUdf::TDataType<ui8>, TPred>(owner);
@@ -1267,20 +1223,20 @@ void AddNumericComparisonKernels(TKernelFamilyBase& owner) {
 
 template<template<typename, typename, typename> class TPred>
 void AddDateComparisonKernels(TKernelFamilyBase& owner) {
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TDate>, TPred>(owner);
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TDatetime>, TPred>(owner);
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TTimestamp>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TDate>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TDatetime>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TDate>, NUdf::TDataType<NUdf::TTimestamp>, TPred>(owner);
 
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TDate>, TPred>(owner);
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TDatetime>, TPred>(owner);
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TTimestamp>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TDate>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TDatetime>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TDatetime>, NUdf::TDataType<NUdf::TTimestamp>, TPred>(owner);
 
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TDate>, TPred>(owner);
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TDatetime>, TPred>(owner);
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TTimestamp>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TDate>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TDatetime>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TTimestamp>, NUdf::TDataType<NUdf::TTimestamp>, TPred>(owner);
 
     // Interval can only be compared with itself
-    AddBinaryPredicateKernelPoly<NUdf::TDataType<NUdf::TInterval>, NUdf::TDataType<NUdf::TInterval>, TPred>(owner);
+    AddBinaryPredicateKernel<NUdf::TDataType<NUdf::TInterval>, NUdf::TDataType<NUdf::TInterval>, TPred>(owner);
 }
 
 }

@@ -55,10 +55,9 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
             UNIT_ASSERT_VALUES_EQUAL(fullPageSize, initialConf.Groups[0].PageSize);
 
             // Verify the last page contains a single row
-            TTestEnv env;
-            TPartIndexIt iter(initialPart, &env, { });
-            Y_ABORT_UNLESS(iter.SeekLast() == EReady::Data, "Unexpected failure to find the last index page");
-            auto count = iter.GetEndRowId() - iter.GetRowId();
+            auto lastPage = initialPart->Index->End();
+            UNIT_ASSERT_C(--lastPage, "Unexpected failure to find the last index page");
+            auto count = initialPart->Index.GetEndRowId() - lastPage->GetRowId();
             UNIT_ASSERT_C(count == 1, "Unexpected " << count << " rows on the last page");
         }
 
@@ -128,8 +127,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         const TMass mass(new TModelStd(false), 32 * 1025);
 
         auto initialConf = NPage::TConf{ };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.SmallEdge = 19;
         initialConf.LargeEdge = 29;
         initialConf.ByKeyFilter = true;
@@ -143,8 +140,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         const TMass mass(new TModelStd(false), 32 * 1025);
 
         auto initialConf = NPage::TConf{ };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.SmallEdge = 19;
         initialConf.LargeEdge = 29;
         initialConf.ByKeyFilter = true;
@@ -194,8 +189,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         }
 
         auto initialConf = NPage::TConf{ false, 2044 };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.ByKeyFilter = true;
         initialConf.MaxRows = rows.Size();
 
@@ -225,8 +218,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         }
 
         auto initialConf = NPage::TConf{ false, 2044 };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.ByKeyFilter = true;
         initialConf.MaxRows = rows.Size();
         initialConf.SmallEdge = 13;
@@ -257,8 +248,6 @@ Y_UNIT_TEST_SUITE(TCompactionMulti) {
         }
 
         auto initialConf = NPage::TConf{ false, 2044 };
-        // precise size estimation doesn't work with cut keys
-        initialConf.CutIndexKeys = false;
         initialConf.ByKeyFilter = true;
         initialConf.MaxRows = rows.Size();
         initialConf.LargeEdge = 13;

@@ -1,14 +1,8 @@
 #pragma once
 
-#include <ydb/library/yql/dq/common/dq_common.h>
 #include <ydb/library/yql/providers/common/config/yql_dispatch.h>
 #include <ydb/library/yql/providers/common/config/yql_setting.h>
-#include <ydb/library/yql/sql/settings/translation_settings.h>
-#include <ydb/core/protos/feature_flags.pb.h>
-
-namespace NKikimrConfig {
-    enum TTableServiceConfig_EIndexAutoChooseMode : int;
-}
+#include <ydb/core/protos/config.pb.h>
 
 namespace NYql {
 
@@ -36,7 +30,6 @@ struct TKikimrSettings {
     NCommon::TConfSetting<ui32, false> _KqpMaxComputeActors;
     NCommon::TConfSetting<bool, false> _KqpEnableSpilling;
     NCommon::TConfSetting<bool, false> _KqpDisableLlvmForUdfStages;
-    NCommon::TConfSetting<ui64, false> _KqpYqlCombinerMemoryLimit;
 
     /* No op just to avoid errors in Cloud Logging until they remove this from their queries */
     NCommon::TConfSetting<bool, false> KqpPushOlapProcess;
@@ -46,9 +39,7 @@ struct TKikimrSettings {
     NCommon::TConfSetting<TString, false> _DefaultCluster;
     NCommon::TConfSetting<ui32, false> _ResultRowsLimit;
     NCommon::TConfSetting<bool, false> EnableSystemColumns;
-    NCommon::TConfSetting<bool, false> UseLlvm;
     NCommon::TConfSetting<bool, false> EnableLlvm;
-    NCommon::TConfSetting<NDq::EHashJoinMode, false> HashJoinMode;
 
     /* Disable optimizer rules */
     NCommon::TConfSetting<bool, false> OptDisableJoinRewrite;
@@ -60,13 +51,7 @@ struct TKikimrSettings {
     NCommon::TConfSetting<bool, false> OptEnableInplaceUpdate;
     NCommon::TConfSetting<bool, false> OptEnablePredicateExtract;
     NCommon::TConfSetting<bool, false> OptEnableOlapPushdown;
-    NCommon::TConfSetting<bool, false> OptEnableOlapProvideComputeSharding;
     NCommon::TConfSetting<bool, false> OptUseFinalizeByKey;
-    NCommon::TConfSetting<bool, false> OptEnableCostBasedOptimization;
-    NCommon::TConfSetting<ui32, false> MaxDPccpDPTableSize;
-
-
-    NCommon::TConfSetting<ui32, false> MaxTasksPerStage;
 
     /* Runtime */
     NCommon::TConfSetting<bool, true> ScanQuery;
@@ -85,13 +70,9 @@ struct TKikimrSettings {
     bool HasOptDisableTopSort() const;
     bool HasOptDisableSqlInToJoin() const;
     bool HasOptEnableOlapPushdown() const;
-    bool HasOptEnableOlapProvideComputeSharding() const;
     bool HasOptUseFinalizeByKey() const;
-    bool HasOptEnableCostBasedOptimization() const;
-
     EOptionalFlag GetOptPredicateExtract() const;
-    EOptionalFlag GetUseLlvm() const;
-    NDq::EHashJoinMode GetHashJoinMode() const;
+    EOptionalFlag GetEnableLlvm() const;
 
     // WARNING: For testing purposes only, inplace update is not ready for production usage.
     bool HasOptEnableInplaceUpdate() const;
@@ -153,20 +134,9 @@ struct TKikimrConfiguration : public TKikimrSettings, public NCommon::TSettingDi
     bool EnableKqpScanQueryStreamLookup = false;
     bool EnableKqpDataQueryStreamLookup = false;
     bool EnableKqpScanQueryStreamIdxLookupJoin = false;
-    bool EnableKqpDataQueryStreamIdxLookupJoin = false;
     bool EnablePredicateExtractForScanQuery = true;
     bool EnablePredicateExtractForDataQuery = false;
-    bool PredicateExtract20 = false;
     bool EnableKqpImmediateEffects = false;
-    bool EnableSequentialReads = false;
-    bool EnablePreparedDdl = false;
-    bool EnableSequences = false;
-    bool EnableColumnsWithDefault = false;
-    NSQLTranslation::EBindingsMode BindingsMode = NSQLTranslation::EBindingsMode::ENABLED;
-    NKikimrConfig::TTableServiceConfig_EIndexAutoChooseMode IndexAutoChooserMode;
-    bool EnableAstCache = false;
-    bool EnablePgConstsToParams = false;
-    ui64 ExtractPredicateRangesLimit = 0;
 };
 
 }

@@ -5,14 +5,13 @@
 #include <ydb/library/yql/dq/actors/protos/dq_events.pb.h>
 #include <ydb/library/yql/dq/common/dq_common.h>
 #include <ydb/library/yql/dq/proto/dq_checkpoint.pb.h>
-#include <ydb/library/yql/dq/runtime/dq_async_stats.h>
 #include <ydb/library/yql/dq/runtime/dq_tasks_runner.h>
 #include <ydb/library/yql/dq/runtime/dq_transport.h>
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
 
 namespace NYql {
 namespace NDq {
@@ -21,15 +20,7 @@ struct TEvDqCompute {
     struct TEvState : public NActors::TEventPB<TEvState, NDqProto::TEvComputeActorState, TDqComputeEvents::EvState> {};
     struct TEvStateRequest : public NActors::TEventPB<TEvStateRequest, NDqProto::TEvComputeStateRequest, TDqComputeEvents::EvStateRequest> {};
 
-    struct TEvResumeExecution : public NActors::TEventLocal<TEvResumeExecution, TDqComputeEvents::EvResumeExecution> {
-        TEvResumeExecution(EResumeSource source) 
-            : Source(source)
-        { }
-
-        TEvResumeExecution() = default;
-
-        EResumeSource Source = EResumeSource::Default;
-    };
+    struct TEvResumeExecution : public NActors::TEventLocal<TEvResumeExecution, TDqComputeEvents::EvResumeExecution> {};
 
     struct TEvChannelsInfo : public NActors::TEventPB<TEvChannelsInfo, NDqProto::TEvChannelsInfo,
         TDqComputeEvents::EvChannelsInfo> {};
@@ -223,13 +214,6 @@ struct TReportStatsSettings {
     TDuration MaxInterval;
 };
 
-inline TCollectStatsLevel StatsModeToCollectStatsLevel(NDqProto::EDqStatsMode statsMode) {
-         if (statsMode >= NDqProto::DQ_STATS_MODE_PROFILE) return TCollectStatsLevel::Profile;
-    else if (statsMode >= NDqProto::DQ_STATS_MODE_FULL)    return TCollectStatsLevel::Full;
-    else if (statsMode >= NDqProto::DQ_STATS_MODE_BASIC)   return TCollectStatsLevel::Basic;
-    else                                                   return TCollectStatsLevel::None;
-}
-
 struct TComputeRuntimeSettings {
     TMaybe<TDuration> Timeout;
     NDqProto::EDqStatsMode StatsMode = NDqProto::DQ_STATS_MODE_NONE;
@@ -242,115 +226,15 @@ struct TComputeRuntimeSettings {
     ui32 ExtraMemoryAllocationPool = 0;
 
     bool FailOnUndelivery = true;
+    bool UseLLVM = false;
     bool UseSpilling = false;
 
     std::function<void(bool success, const TIssues& issues)> TerminateHandler;
     TMaybe<NDqProto::TRlPath> RlPath;
-
-    i64 AsyncInputPushLimit = std::numeric_limits<i64>::max();
-
-    inline bool CollectNone() const {
-        return StatsMode <= NDqProto::DQ_STATS_MODE_NONE;
-    }
-
-    inline bool CollectBasic() const {
-        return StatsMode >= NDqProto::DQ_STATS_MODE_BASIC;
-    }
-
-    inline bool CollectFull() const {
-        return StatsMode >= NDqProto::DQ_STATS_MODE_FULL;
-    }
-
-    inline bool CollectProfile() const {
-        return StatsMode >= NDqProto::DQ_STATS_MODE_PROFILE;
-    }
-
-    inline TCollectStatsLevel GetCollectStatsLevel() const {
-        return StatsModeToCollectStatsLevel(StatsMode);
-    }
 };
 
-struct TGuaranteeQuotaManager : public IMemoryQuotaManager {
-
-    TGuaranteeQuotaManager(ui64 limit, ui64 guarantee, ui64 step = 1_MB, ui64 quota = 0)
-        : Limit(limit), Guarantee(guarantee), Step(step), Quota(quota) {
-        Y_ABORT_UNLESS(Limit >= Guarantee);
-        Y_ABORT_UNLESS(Limit >= Quota);
-        Y_ABORT_UNLESS((Step ^ ~Step) + 1 == 0);
-        MaxMemorySize = Limit;
-    }
-
-    bool AllocateQuota(ui64 memorySize) override {
-        if (Quota + memorySize > Limit) {
-            ui64 delta = Quota + memorySize - Limit;
-            ui64 alignMask = Step - 1;
-            delta = (delta + alignMask) & ~alignMask;
-
-            if (!AllocateExtraQuota(delta)) {
-                return false;
-            }
-
-            Limit += delta;
-            if (MaxMemorySize < Limit) {
-                MaxMemorySize = Limit;
-            }
-        }
-
-        Quota += memorySize;
-        return true;
-    }
-
-    void FreeQuota(ui64 memorySize) override {
-        Y_ABORT_UNLESS(Quota >= memorySize);
-        Quota -= memorySize;
-        ui64 delta = Limit - std::max(Quota, Guarantee);
-        if (delta >= Step) {
-            ui64 alignMask = Step - 1;
-            delta &= ~alignMask;
-            FreeExtraQuota(delta);
-            Limit -= delta;
-        }
-    }
-
-    ui64 GetCurrentQuota() const override {
-        return Quota;
-    }
-
-    ui64 GetMaxMemorySize() const override {
-        return MaxMemorySize;
-    };
-
-    virtual bool AllocateExtraQuota(ui64) {
-        return false;
-    }
-
-    virtual void FreeExtraQuota(ui64) {
-    }
-
-    ui64 Limit;     // current consumption (Quota + leftover from allocation chunk)
-    ui64 Guarantee; // do not free memory below this value even if Quota == 0
-    ui64 Step;      // allocation chunk size
-    ui64 Quota;     // current value
-    ui64 MaxMemorySize; // usage peak for statistics
-};
-
-struct TChainedQuotaManager : public TGuaranteeQuotaManager {
-
-    TChainedQuotaManager(IMemoryQuotaManager::TPtr extraQuotaManager, ui64 limit, ui64 guarantee, ui64 step = 1_MB, ui64 quota = 0)
-    : TGuaranteeQuotaManager(limit, guarantee, step, quota)
-    , ExtraQuotaManager(extraQuotaManager) {
-    }
-
-    bool AllocateExtraQuota(ui64 memorySize) override {
-        return ExtraQuotaManager->AllocateQuota(memorySize);
-    }
-
-    void FreeExtraQuota(ui64 memorySize) override {
-        ExtraQuotaManager->FreeQuota(memorySize);
-    }
-
-    IMemoryQuotaManager::TPtr ExtraQuotaManager;
-};
+using TAllocateMemoryCallback = std::function<bool(const TTxId& txId, ui64 taskId, ui64 memory)>;
+using TFreeMemoryCallback = std::function<void(const TTxId& txId, ui64 taskId, ui64 memory)>;
 
 struct TComputeMemoryLimits {
     ui64 ChannelBufferSize = 0;
@@ -358,22 +242,20 @@ struct TComputeMemoryLimits {
     ui64 MkqlHeavyProgramMemoryLimit = 0; // Limit for heavy program.
     ui64 MkqlProgramHardMemoryLimit = 0; // Limit that stops program execution if reached.
 
+    TAllocateMemoryCallback AllocateMemoryFn = nullptr;
+    TFreeMemoryCallback FreeMemoryFn = nullptr;
     ui64 MinMemAllocSize = 30_MB;
     ui64 MinMemFreeSize = 30_MB;
-
-    IMemoryQuotaManager::TPtr MemoryQuotaManager;
 };
 
 using TTaskRunnerFactory = std::function<
-    TIntrusivePtr<IDqTaskRunner>(const TDqTaskSettings& task, NDqProto::EDqStatsMode statsMode, const TLogFunc& logFunc)
+    TIntrusivePtr<IDqTaskRunner>(const NDqProto::TDqTask& task, const TLogFunc& logFunc)
 >;
 
-void FillAsyncStats(NDqProto::TDqAsyncBufferStats& proto, TDqAsyncStats stats);
-
 void FillTaskRunnerStats(ui64 taskId, ui32 stageId, const TTaskRunnerStatsBase& taskStats,
-    NDqProto::TDqTaskStats* protoTask, TCollectStatsLevel level);
+    NDqProto::TDqTaskStats* protoTask, bool withProfileStats, const THashMap<ui64, ui64>& ingressBytesMap = {});
 
-NActors::IActor* CreateDqComputeActor(const NActors::TActorId& executerId, const TTxId& txId, NDqProto::TDqTask* task,
+NActors::IActor* CreateDqComputeActor(const NActors::TActorId& executerId, const TTxId& txId, NDqProto::TDqTask&& task,
     IDqAsyncIoFactory::TPtr asyncIoFactory,
     const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
     const TComputeRuntimeSettings& settings, const TComputeMemoryLimits& memoryLimits,

@@ -82,7 +82,7 @@ public:
             callable->SetState(TExprNode::EState::TypePending);
             TExprNode::TPtr callableOutput;
             auto status = CallableTransformer->ApplyAsyncChanges(callable, callableOutput, ctx);
-            Y_ABORT_UNLESS(callableOutput);
+            Y_VERIFY(callableOutput);
             YQL_ENSURE(status != TStatus::Async);
             YQL_ENSURE(callableOutput == callable);
             combinedStatus = combinedStatus.Combine(status);
@@ -194,7 +194,7 @@ private:
                         CurrentFunctions.top().second = true;
                     }
 
-                    str << "function: " << NormalizeCallableName(input->Content());
+                    str << "function: " << input->Content();
                     break;
                 case TExprNode::List:
                     if (CurrentFunctions.empty()) {
@@ -688,7 +688,7 @@ TExprNode::TPtr ParseAndAnnotate(
     }
 
     TExprNode::TPtr exprRoot;
-    if (!CompileExpr(*astRes.Root, exprRoot, exprCtx, nullptr, nullptr)) {
+    if (!CompileExpr(*astRes.Root, exprRoot, exprCtx, nullptr)) {
         return nullptr;
     }
 

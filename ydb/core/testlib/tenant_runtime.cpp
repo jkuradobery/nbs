@@ -24,10 +24,9 @@
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/sys_view/processor/processor.h>
 #include <ydb/core/persqueue/pq.h>
-#include <ydb/core/statistics/aggregator/aggregator.h>
 
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/interconnect/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/interconnect/interconnect.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/folder/dirut.h>
@@ -122,6 +121,7 @@ public:
     STFUNC(StateWork)
     {
         Y_UNUSED(ev);
+        Y_UNUSED(ctx);
     }
 };
 
@@ -169,20 +169,14 @@ class TFakeSchemeShard : public TActor<TFakeSchemeShard>, public TTabletExecuted
         } else {
             HoldResolve = false;
             for (auto &e : Queue)
-                StateWork(e);
+                StateWork(e, ctx);
             Queue.clear();
         }
-    }
-
-    void DefaultSignalTabletActive(const TActorContext &) override
-    {
-        // must be empty
     }
 
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
-        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -215,7 +209,7 @@ public:
 
     STFUNC(StateInit)
     {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork)
@@ -236,15 +230,9 @@ public:
 };
 
 class TFakeBSController : public TActor<TFakeBSController>, public TTabletExecutedFlat {
-    void DefaultSignalTabletActive(const TActorContext &) override
-    {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
-        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -266,25 +254,20 @@ public:
 
     STFUNC(StateInit)
     {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork)
     {
         Y_UNUSED(ev);
+        Y_UNUSED(ctx);
     }
 };
 
 class TFakeTenantSlotBroker : public TActor<TFakeTenantSlotBroker>, public TTabletExecutedFlat {
-    void DefaultSignalTabletActive(const TActorContext &) override
-    {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
-        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -326,7 +309,7 @@ public:
 
     STFUNC(StateInit)
     {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork)
@@ -335,7 +318,7 @@ public:
             HFunc(TEvTenantSlotBroker::TEvAlterTenant, Handle);
             HFunc(TEvTenantSlotBroker::TEvGetTenantState, Handle);
         default:
-            HandleDefaultEvents(ev, SelfId());
+            HandleDefaultEvents(ev, ctx);
         }
     }
 private:
@@ -452,8 +435,6 @@ class TFakeHive : public TActor<TFakeHive>, public TTabletExecutedFlat {
                 bootstrapperActorId = Boot(ctx, type, &NReplication::CreateController, DataGroupErasure);
             } else if (type == TTabletTypes::PersQueue) {
                 bootstrapperActorId = Boot(ctx, type, &NKikimr::CreatePersQueue, DataGroupErasure);
-            } else if (type == TTabletTypes::StatisticsAggregator) {
-                bootstrapperActorId = Boot(ctx, type, &NStat::CreateStatisticsAggregator, DataGroupErasure);
             } else {
                 status = NKikimrProto::ERROR;
             }
@@ -637,15 +618,9 @@ class TFakeHive : public TActor<TFakeHive>, public TTabletExecutedFlat {
         ctx.Send(Sender, new TEvTest::TEvHiveStateHit);
     }
 
-    void DefaultSignalTabletActive(const TActorContext &) override
-    {
-        // must be empty
-    }
-
     void OnActivateExecutor(const TActorContext &) override
     {
         Become(&TThis::StateWork);
-        SignalTabletActive(SelfId());
     }
 
     void OnDetach(const TActorContext &ctx) override
@@ -676,7 +651,7 @@ public:
 
     STFUNC(StateInit)
     {
-        StateInitImpl(ev, SelfId());
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork)
@@ -696,8 +671,8 @@ public:
             IgnoreFunc(TEvLocal::TEvSyncTablets);
 
         default:
-            if (!HandleDefaultEvents(ev, SelfId())) {
-                //Y_ABORT("TFakeHive::StateWork unexpected event type: %" PRIx32 " event: %s",
+            if (!HandleDefaultEvents(ev, ctx)) {
+                //Y_FAIL("TFakeHive::StateWork unexpected event type: %" PRIx32 " event: %s",
                 //       ev->GetTypeRewrite(), ev->HasEvent() ? ~ev->GetBase()->ToString() : "serialized?");
             }
         }
@@ -731,7 +706,7 @@ struct TWaitTenantSlotBrokerInitialization {
         : PoolCount(poolCount)
         , NodeInfoCount(0)
     {
-        Y_ABORT_UNLESS(PoolCount);
+        Y_VERIFY(PoolCount);
     }
 
     bool operator()(IEventHandle &ev) {
@@ -940,7 +915,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
                     UNIT_ASSERT_VALUES_EQUAL(event->Record.GetTxId(), 1);
                 }
             }
-            Y_ABORT_UNLESS(domain.Subdomains.empty(), "Pre-initialized subdomains are not supported for real SchemeShard");
+            Y_VERIFY(domain.Subdomains.empty(), "Pre-initialized subdomains are not supported for real SchemeShard");
         }
     }
 
@@ -1014,7 +989,7 @@ void TTenantTestRuntime::Setup(bool createTenantPools)
     }
 
     // Create Tenant Slot Pools
-    Y_ABORT_UNLESS(GetNodeCount() >= Config.Nodes.size());
+    Y_VERIFY(GetNodeCount() >= Config.Nodes.size());
     TMultiSet<std::pair<TString, TEvLocal::TEvTenantStatus::EStatus>> statuses;
 
     if (createTenantPools) {

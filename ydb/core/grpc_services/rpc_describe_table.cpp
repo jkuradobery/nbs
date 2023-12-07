@@ -5,7 +5,7 @@
 #include "rpc_scheme_base.h"
 
 #include "service_table.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 #include <ydb/core/ydb_convert/table_description.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
@@ -34,10 +34,10 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -154,8 +154,8 @@ private:
     }
 };
 
-void DoDescribeTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribeTableRPC(p.release()));
+void DoDescribeTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TDescribeTableRPC(p.release()));
 }
 
 } // namespace NKikimr

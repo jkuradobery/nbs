@@ -6,11 +6,11 @@
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_tools.h>
 #include <ydb/library/pdisk_io/aio.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/executor_pool_io.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
-#include <ydb/library/actors/protos/services_common.pb.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/executor_pool_io.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/protos/services_common.pb.h>
 
 #include <library/cpp/lwtrace/all.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
@@ -26,22 +26,13 @@
 class TFailInjector {
     TAtomic FailCounter = 0;
     TAutoEvent FailEvent;
-    TInstant Deadline = TInstant::Max();
 
 public:
-    void SetDeadline(TInstant deadline) {
-        Deadline = deadline;
-    }
-
     void SetFailCounter(ui32 failCounter) {
         AtomicSet(FailCounter, failCounter);
     }
 
-    void Inject(ui64 cookie) {
-        if (cookie == 2 && RandomNumber(10u) == 0) {
-            AtomicSet(FailCounter, 1 + RandomNumber(24u));
-        }
-
+    void Inject(ui64 /*cookie*/) {
         TAtomicBase result = AtomicDecrement(FailCounter);
         if (result < 0) {
             // overshoot, return one position back
@@ -58,7 +49,7 @@ public:
     }
 
     void WaitForFailure() {
-        FailEvent.WaitD(Deadline);
+        FailEvent.WaitI();
     }
 
 private:
@@ -95,10 +86,10 @@ ui32 GenerateFailCounter(bool frequentFails) {
 
     double p = (rng() % (1000 * 1000 * 1000)) / 1e9;
 
-    if (!frequentFails) {
+    if (frequentFails) {
         return p < 0.05 ? rng() % 10 + 1
-            : p < 0.10 ? rng() % 100 + 100 :
-            rng() % 1000 + 1000;
+            : p < 0.10 ? rng() % 1000 + 1000 :
+            rng() % 5000 + 5000;
     } else {
         return p < 0.9 ? rng() % 10 + 1
             : p < 0.99 ? rng() % 100 + 100 :
@@ -187,16 +178,16 @@ struct TPDiskFailureInjectionTest {
         setup->NodeId = 1;
         setup->ExecutorsCount = 4; // system, user, io, batch
         setup->Executors.Reset(new TAutoPtr<IExecutorPool>[setup->ExecutorsCount]);
-        setup->Executors[0] = new TBasicExecutorPool(AppData->SystemPoolId, 16, 10);
-        setup->Executors[1] = new TBasicExecutorPool(AppData->UserPoolId, 1, 10);
+        setup->Executors[0] = new TBasicExecutorPool(AppData->SystemPoolId, 8, 10);
+        setup->Executors[1] = new TBasicExecutorPool(AppData->UserPoolId, 8, 10);
         setup->Executors[2] = new TIOExecutorPool(AppData->IOPoolId, 10);
-        setup->Executors[3] = new TBasicExecutorPool(AppData->BatchPoolId, 1, 10);
+        setup->Executors[3] = new TBasicExecutorPool(AppData->BatchPoolId, 8, 10);
         setup->Scheduler = new TBasicSchedulerThread(TSchedulerConfig(512, 100));
 
         // initialize logger settings
         const TActorId loggerId(setup->NodeId, "logger");
 
-        TIntrusivePtr<NLog::TSettings> loggerSettings = new NLog::TSettings(loggerId, NActorsServices::LOGGER,
+        TIntrusivePtr<NLog::TSettings> loggerSettings = new NLog::TSettings(loggerId, NKikimrServices::LOGGER,
                 NActors::NLog::PRI_NOTICE, NActors::NLog::PRI_DEBUG, 0);
 
         loggerSettings->Append(
@@ -218,7 +209,7 @@ struct TPDiskFailureInjectionTest {
         // create/register logger actor
         auto logger = std::make_unique<TLoggerActor>(loggerSettings, CreateStderrBackend(),
                 Counters->GetSubgroup("logger", "counters"));
-        setup->LocalServices.emplace_back(loggerId, TActorSetupCmd(logger.release(), TMailboxType::Simple, AppData->IOPoolId));
+        setup->LocalServices.emplace_back(loggerId, TActorSetupCmd(logger.release(), TMailboxType::Simple, 0));
 
         // create and then initialize actor system
         ActorSystem = std::make_unique<TActorSystem>(setup, AppData.get(), loggerSettings);
@@ -256,7 +247,7 @@ struct TPDiskFailureInjectionTest {
 
                 int fds[2];
                 if (pipe(fds) != 0) {
-                    Y_ABORT("pipe failed");
+                    Y_FAIL("pipe failed");
                 }
 
                 pid_t pid = fork();
@@ -270,10 +261,6 @@ struct TPDiskFailureInjectionTest {
 
                     ui32 failCounter = GenerateFailCounter(frequentFails);
                     injector.SetFailCounter(failCounter);
-                    if (TestDuration) {
-                        injector.SetDeadline(startTime + *TestDuration);
-                    }
-
                     Cerr << "failCounter# " << failCounter << Endl;
 
                     SetupLWTrace(&injector);
@@ -319,7 +306,7 @@ struct TPDiskFailureInjectionTest {
                         ssize_t len = read(fds[0], buffer, sizeof(buffer));
                         if (len == -1) {
                             if (errno != EINTR) {
-                                Y_ABORT("unexpected error: %s", strerror(errno));
+                                Y_FAIL("unexpected error: %s", strerror(errno));
                             }
                             continue;
                         } else if (!len) {
@@ -335,13 +322,13 @@ struct TPDiskFailureInjectionTest {
                     // wait for child to terminate
                     int status = 0;
                     if (waitpid(pid, &status, 0) != pid) {
-                        Y_ABORT("waitpid failed with error: %s", strerror(errno));
+                        Y_FAIL("waitpid failed with error: %s", strerror(errno));
                     }
 
                     if (WIFSIGNALED(status)) {
                         int sig = WTERMSIG(status);
                         if (sig != SIGKILL) {
-                            Y_ABORT("unexpected termination signal: %d pid# %d", sig, (int)pid);
+                            Y_FAIL("unexpected termination signal: %d pid# %d", sig, (int)pid);
                         }
                     }
                 } else {

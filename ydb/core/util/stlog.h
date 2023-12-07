@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/actors/core/log.h>
+#include <ydb/core/protos/services.pb.h>
+#include <library/cpp/actors/core/log.h>
 #include <library/cpp/json/json_writer.h>
 #include <google/protobuf/text_format.h>
 
@@ -65,7 +65,7 @@ namespace NKikimr::NStLog {
         auto& ctx = (CTX); \
         const auto priority = [&]{ using namespace NActors::NLog; return (PRIO); }(); \
         const auto component = [&]{ using namespace NKikimrServices; using namespace NActorsServices; return (COMP); }(); \
-        if (IS_LOG_PRIORITY_ENABLED(priority, component)) { \
+        if (IS_LOG_PRIORITY_ENABLED(ctx, priority, component)) { \
             STLOG_STREAM(__stream, 0, __VA_ARGS__); \
             ::NActors::MemLogAdapter(ctx, priority, component, __stream.Str()); \
         }; \
@@ -78,7 +78,7 @@ namespace NKikimr::NStLog {
         auto& ctx = (CTX); \
         const auto priority = [&]{ using namespace NActors::NLog; return (PRIO); }(); \
         const auto component = [&]{ using namespace NKikimrServices; using namespace NActorsServices; return (COMP); }(); \
-        if (IS_LOG_PRIORITY_ENABLED(priority, component)) { \
+        if (IS_LOG_PRIORITY_ENABLED(ctx, priority, component)) { \
             STLOG_STREAM(__stream, 1, __VA_ARGS__); \
             ::NActors::MemLogAdapter(ctx, priority, component, __stream.Str()); \
         }; \

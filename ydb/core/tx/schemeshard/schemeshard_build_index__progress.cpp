@@ -9,7 +9,6 @@
 #include <ydb/public/api/protos/ydb_status_codes.pb.h>
 
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
-#include <ydb/core/ydb_convert/table_description.h>
 
 
 namespace NKikimr {
@@ -31,13 +30,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> LockPropose(
     auto& lockConfig = *modifyScheme.MutableLockConfig();
     lockConfig.SetName(path.LeafName());
 
-    if (buildInfo->IsBuildIndex()) {
-        buildInfo->SerializeToProto(ss, modifyScheme.MutableInitiateIndexBuild());
-    } else if (buildInfo->IsBuildColumn()) {
-        buildInfo->SerializeToProto(ss, modifyScheme.MutableInitiateColumnBuild());
-    } else {
-        Y_ABORT("Unknown operation kind while building LockPropose");
-    }
+    *modifyScheme.MutableInitiateIndexBuild() = buildInfo->SerializeToProto(ss);
 
     return propose;
 }
@@ -49,59 +42,14 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> InitiatePropose(
     propose->Record.SetFailOnExist(true);
 
     NKikimrSchemeOp::TModifyScheme& modifyScheme = *propose->Record.AddTransaction();
-    if (buildInfo->IsBuildIndex()) {
-        modifyScheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateIndexBuild);
-        modifyScheme.SetInternal(true);
+    modifyScheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateIndexBuild);
+    modifyScheme.SetInternal(true);
 
-        modifyScheme.SetWorkingDir(TPath::Init(buildInfo->DomainPathId, ss).PathString());
+    modifyScheme.SetWorkingDir(TPath::Init(buildInfo->DomainPathId, ss).PathString());
 
-        modifyScheme.MutableLockGuard()->SetOwnerTxId(ui64(buildInfo->LockTxId));
+    modifyScheme.MutableLockGuard()->SetOwnerTxId(ui64(buildInfo->LockTxId));
 
-        buildInfo->SerializeToProto(ss, modifyScheme.MutableInitiateIndexBuild());
-    } else if (buildInfo->IsBuildColumn()) {
-        modifyScheme.SetOperationType(NKikimrSchemeOp::ESchemeOpCreateColumnBuild);
-        modifyScheme.SetInternal(true);
-        modifyScheme.SetWorkingDir(TPath::Init(buildInfo->DomainPathId, ss).PathString());
-        modifyScheme.MutableLockGuard()->SetOwnerTxId(ui64(buildInfo->LockTxId));
-
-        buildInfo->SerializeToProto(ss, modifyScheme.MutableInitiateColumnBuild());
-    } else {
-        Y_ABORT("Unknown operation kind while building InitiatePropose");
-    }
-
-    return propose;
-}
-
-THolder<TEvSchemeShard::TEvModifySchemeTransaction> AlterMainTablePropose(
-    TSchemeShard* ss, const TIndexBuildInfo::TPtr buildInfo)
-{
-    auto propose = MakeHolder<TEvSchemeShard::TEvModifySchemeTransaction>(ui64(buildInfo->AlterMainTableTxId), ss->TabletID());
-    propose->Record.SetFailOnExist(true);
-
-    NKikimrSchemeOp::TModifyScheme& modifyScheme = *propose->Record.AddTransaction();
-    if (buildInfo->IsBuildColumn()) {
-        modifyScheme.SetOperationType(NKikimrSchemeOp::ESchemeOpAlterTable);
-        modifyScheme.SetInternal(true);
-        modifyScheme.SetWorkingDir(TPath::Init(buildInfo->TablePathId, ss).Parent().PathString());
-        modifyScheme.MutableAlterTable()->SetName(TPath::Init(buildInfo->TablePathId, ss).LeafName());
-        for(auto& colInfo : buildInfo->BuildColumns) {
-            auto col = modifyScheme.MutableAlterTable()->AddColumns();
-            NScheme::TTypeInfo typeInfo;
-            TString typeMod;
-            Ydb::StatusIds::StatusCode status;
-            TString error;
-            if (!ExtractColumnTypeInfo(typeInfo, typeMod, colInfo.DefaultFromLiteral.type(), status, error)) {
-                // todo gvit fix that
-                Y_ABORT("failed to extract column type info");
-            }
-
-            col->SetType(NScheme::TypeName(typeInfo, typeMod));
-            col->SetName(colInfo.ColumnName);
-        }
-
-    } else {
-        Y_ABORT("Unknown operation kind while building AlterMainTablePropose");
-    }
+    *modifyScheme.MutableInitiateIndexBuild() = buildInfo->SerializeToProto(ss);
 
     return propose;
 }
@@ -122,11 +70,7 @@ THolder<TEvSchemeShard::TEvModifySchemeTransaction> ApplyPropose(
 
     auto& indexBuild = *modifyScheme.MutableApplyIndexBuild();
     indexBuild.SetTablePath(TPath::Init(buildInfo->TablePathId, ss).PathString());
-
-    if (buildInfo->IsBuildIndex()) {
-        indexBuild.SetIndexName(buildInfo->IndexName);
-    }
-
+    indexBuild.SetIndexName(buildInfo->IndexName);
     indexBuild.SetSnaphotTxId(ui64(buildInfo->InitiateTxId));
     indexBuild.SetBuildIndexId(ui64(buildInfo->Id));
 
@@ -187,12 +131,17 @@ private:
 
 public:
     explicit TTxProgress(TSelf* self, TIndexBuildId id)
-        : TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , BuildId(id)
-    {}
+    {
+    }
+
+    TTxType GetTxType() const override {
+        return TXTYPE_PROGRESS_INDEX_BUILD;
+    }
 
     bool DoExecute(TTransactionContext& txc, const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(Self->IndexBuilds.contains(BuildId));
+        Y_VERIFY(Self->IndexBuilds.contains(BuildId));
         TIndexBuildInfo::TPtr buildInfo = Self->IndexBuilds.at(BuildId);
 
         LOG_I("TTxBuildProgress: Resume"
@@ -202,20 +151,7 @@ public:
 
         switch (buildInfo->State) {
         case TIndexBuildInfo::EState::Invalid:
-            Y_ABORT("Unreachable");
-
-        case TIndexBuildInfo::EState::AlterMainTable:
-            if (buildInfo->AlterMainTableTxId == InvalidTxId) {
-                Send(Self->TxAllocatorClient, MakeHolder<TEvTxAllocatorClient::TEvAllocate>(), 0, ui64(BuildId));
-            } else if (buildInfo->AlterMainTableTxStatus == NKikimrScheme::StatusSuccess) {
-                Send(Self->SelfId(), AlterMainTablePropose(Self, buildInfo), 0, ui64(BuildId));
-            } else if (!buildInfo->AlterMainTableTxDone) {
-                Send(Self->SelfId(), MakeHolder<TEvSchemeShard::TEvNotifyTxCompletion>(ui64(buildInfo->AlterMainTableTxId)));
-            } else {
-                ChangeState(BuildId, TIndexBuildInfo::EState::Locking);
-                Progress(BuildId);
-            }
-            break;
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Locking:
             if (buildInfo->LockTxId == InvalidTxId) {
@@ -286,23 +222,23 @@ public:
                         break;
                     case NKikimrTxDataShard::TEvBuildIndexProgressResponse::BUILD_ERROR:
                     case NKikimrTxDataShard::TEvBuildIndexProgressResponse::BAD_REQUEST:
-                        Y_ABORT("Unreachable");
+                        Y_FAIL("Unreachable");
                         break;
                     }
                 }
             }
 
             if (!buildInfo->SnapshotTxId || !buildInfo->SnapshotStep) {
-                Y_ABORT_UNLESS(Self->TablesWithSnapshots.contains(buildInfo->TablePathId));
-                Y_ABORT_UNLESS(Self->TablesWithSnapshots.at(buildInfo->TablePathId) == buildInfo->InitiateTxId);
+                Y_VERIFY(Self->TablesWithSnapshots.contains(buildInfo->TablePathId));
+                Y_VERIFY(Self->TablesWithSnapshots.at(buildInfo->TablePathId) == buildInfo->InitiateTxId);
 
                 buildInfo->SnapshotTxId = buildInfo->InitiateTxId;
-                Y_ABORT_UNLESS(buildInfo->SnapshotTxId);
+                Y_VERIFY(buildInfo->SnapshotTxId);
                 buildInfo->SnapshotStep = Self->SnapshotsStepIds.at(buildInfo->SnapshotTxId);
-                Y_ABORT_UNLESS(buildInfo->SnapshotStep);
+                Y_VERIFY(buildInfo->SnapshotStep);
             }
 
-            if (buildInfo->ImplTablePath.Empty() && buildInfo->IsBuildIndex()) {
+            if (buildInfo->ImplTablePath.Empty()) {
                 TPath implTable = TPath::Init(buildInfo->TablePathId, Self).Dive(buildInfo->IndexName).Dive("indexImplTable");
                 buildInfo->ImplTablePath = implTable.PathString();
 
@@ -326,23 +262,15 @@ public:
                 ev->Record.SetOwnerId(buildInfo->TablePathId.OwnerId);
                 ev->Record.SetPathId(buildInfo->TablePathId.LocalPathId);
 
-                if (buildInfo->IsBuildColumn()) {
-                    ev->Record.SetTargetName(TPath::Init(buildInfo->TablePathId, Self).PathString());
-                } else if (buildInfo->IsBuildIndex()) {
-                    ev->Record.SetTargetName(buildInfo->ImplTablePath);
-                }
+                ev->Record.SetTargetName(buildInfo->ImplTablePath);
 
-                if (buildInfo->IsBuildIndex()) {
-                    THashSet<TString> columns = buildInfo->ImplTableColumns.Columns;
-                    for (const auto& x: buildInfo->ImplTableColumns.Keys) {
-                        *ev->Record.AddIndexColumns() = x;
-                        columns.erase(x);
-                    }
-                    for (const auto& x: columns) {
-                        *ev->Record.AddDataColumns() = x;
-                    }
-                } else if (buildInfo->IsBuildColumn()) {
-                    buildInfo->SerializeToProto(Self, ev->Record.MutableColumnBuildSettings());
+                THashSet<TString> columns = buildInfo->ImplTableColumns.Columns;
+                for (const auto& x: buildInfo->ImplTableColumns.Keys) {
+                    *ev->Record.AddIndexColumns() = x;
+                    columns.erase(x);
+                }
+                for (const auto& x: columns) {
+                    *ev->Record.AddDataColumns() = x;
                 }
 
                 TIndexBuildInfo::TShardStatus& shardStatus = buildInfo->Shards.at(shardIdx);
@@ -372,7 +300,7 @@ public:
             if (buildInfo->InProgressShards.empty() && buildInfo->ToUploadShards.empty()
                 && buildInfo->DoneShards.size() == buildInfo->Shards.size()) {
                 // all done
-                Y_ABORT_UNLESS(0 == Self->IndexBuildPipes.CloseAll(BuildId, ctx));
+                Y_VERIFY(0 == Self->IndexBuildPipes.CloseAll(BuildId, ctx));
 
                 ChangeState(BuildId, TIndexBuildInfo::EState::Applying);
                 Progress(BuildId);
@@ -488,7 +416,7 @@ public:
         const TSerializedTableRange infiniteRange = InfiniteRange(tableColumns.Keys.size());
 
         for (const auto& x: table->GetPartitions()) {
-            Y_ABORT_UNLESS(Self->ShardInfos.contains(x.ShardIdx));
+            Y_VERIFY(Self->ShardInfos.contains(x.ShardIdx));
 
             buildInfo->Shards.emplace(x.ShardIdx, TIndexBuildInfo::TShardStatus(infiniteRange, ""));
             Self->PersistBuildIndexUploadInitiate(db, buildInfo, x.ShardIdx);
@@ -514,10 +442,14 @@ private:
 
 public:
     explicit TTxBilling(TSelf* self, TEvPrivate::TEvIndexBuildingMakeABill::TPtr& ev)
-        : TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , BuildIndexId(ev->Get()->BuildId)
         , ScheduledAt(ev->Get()->SendAt)
     {
+    }
+
+    TTxType GetTxType() const override {
+        return TXTYPE_MAKEBILL_INDEX_BUILD;
     }
 
     bool DoExecute(TTransactionContext& , const TActorContext& ctx) override {
@@ -559,33 +491,38 @@ private:
 
 public:
     explicit TTxReply(TSelf* self, TEvTxAllocatorClient::TEvAllocateResult::TPtr& allocateResult)
-        : TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , AllocateResult(allocateResult)
     {
     }
 
     explicit TTxReply(TSelf* self, TEvSchemeShard::TEvModifySchemeTransactionResult::TPtr& modifyResult)
-        : TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , ModifyResult(modifyResult)
     {
     }
 
     explicit TTxReply(TSelf* self, TTxId completedTxId)
-        : TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , CompletedTxId(completedTxId)
     {
     }
 
     explicit TTxReply(TSelf* self, TEvDataShard::TEvBuildIndexProgressResponse::TPtr& shardProgress)
-        : TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , ShardProgress(shardProgress)
     {
     }
 
     explicit TTxReply(TSelf* self, TIndexBuildId buildId, TTabletId tabletId)
-        : TSchemeShard::TIndexBuilder::TTxBase(self, TXTYPE_PROGRESS_INDEX_BUILD)
+        : TSchemeShard::TIndexBuilder::TTxBase(self)
         , PipeRetry({buildId, tabletId})
     {
+    }
+
+
+    TTxType GetTxType() const override {
+        return TXTYPE_PROGRESS_INDEX_BUILD;
     }
 
     bool DoExecute(TTransactionContext& txc, const TActorContext& ctx) override {
@@ -628,12 +565,11 @@ public:
               << ", TIndexBuildInfo: " << *buildInfo);
 
         switch (buildInfo->State) {
-        case TIndexBuildInfo::EState::AlterMainTable:
         case TIndexBuildInfo::EState::Invalid:
         case TIndexBuildInfo::EState::Locking:
         case TIndexBuildInfo::EState::GatheringStatistics:
         case TIndexBuildInfo::EState::Initiating:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         case TIndexBuildInfo::EState::Filling:
         {
             // reschedule shard
@@ -651,7 +587,7 @@ public:
         case TIndexBuildInfo::EState::Applying:
         case TIndexBuildInfo::EState::Unlocking:
         case TIndexBuildInfo::EState::Done:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         case TIndexBuildInfo::EState::Cancellation_Applying:
         case TIndexBuildInfo::EState::Cancellation_Unlocking:
         case TIndexBuildInfo::EState::Cancelled:
@@ -696,12 +632,11 @@ public:
         }
 
         switch (buildInfo->State) {
-        case TIndexBuildInfo::EState::AlterMainTable:
         case TIndexBuildInfo::EState::Invalid:
         case TIndexBuildInfo::EState::Locking:
         case TIndexBuildInfo::EState::GatheringStatistics:
         case TIndexBuildInfo::EState::Initiating:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         case TIndexBuildInfo::EState::Filling:
         {
             TIndexBuildInfo::TShardStatus& shardStatus = buildInfo->Shards.at(shardIdx);
@@ -715,7 +650,7 @@ public:
                       << ", TIndexBuildInfo: " << *buildInfo
                       << ", actual seqNo for the shard " << shardId << " (" << shardIdx << ") is: "  << Self->Generation() << ":" <<  shardStatus.SeqNoRound
                       << ", record: " << record.ShortDebugString());
-                Y_ABORT_UNLESS(actualSeqNo > recordSeqNo);
+                Y_VERIFY(actualSeqNo > recordSeqNo);
                 return true;
             }
 
@@ -765,7 +700,7 @@ public:
 
             switch (shardStatus.Status) {
             case  NKikimrTxDataShard::TEvBuildIndexProgressResponse::INVALID:
-                Y_ABORT("Unreachable");
+                Y_FAIL("Unreachable");
 
             case  NKikimrTxDataShard::TEvBuildIndexProgressResponse::ACCEPTED:
             case  NKikimrTxDataShard::TEvBuildIndexProgressResponse::INPROGRESS:
@@ -822,7 +757,7 @@ public:
         case TIndexBuildInfo::EState::Applying:
         case TIndexBuildInfo::EState::Unlocking:
         case TIndexBuildInfo::EState::Done:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         case TIndexBuildInfo::EState::Cancellation_Applying:
         case TIndexBuildInfo::EState::Cancellation_Unlocking:
         case TIndexBuildInfo::EState::Cancelled:
@@ -847,7 +782,7 @@ public:
         }
 
         const auto buildId = Self->TxIdToIndexBuilds.at(txId);
-        Y_ABORT_UNLESS(Self->IndexBuilds.contains(buildId));
+        Y_VERIFY(Self->IndexBuilds.contains(buildId));
 
         TIndexBuildInfo::TPtr buildInfo = Self->IndexBuilds.at(buildId);
         LOG_I("TTxReply : TEvNotifyTxCompletionResult"
@@ -859,21 +794,11 @@ public:
 
         switch (buildInfo->State) {
         case TIndexBuildInfo::EState::Invalid:
-            Y_ABORT("Unreachable");
-
-        case TIndexBuildInfo::EState::AlterMainTable:
-        {
-            Y_ABORT_UNLESS(txId == buildInfo->AlterMainTableTxId);
-
-            buildInfo->AlterMainTableTxDone = true;
-            NIceDb::TNiceDb db(txc.DB);
-            Self->PersistBuildIndexAlterMainTableTxDone(db, buildInfo);
-            break;
-        }
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Locking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->LockTxId);
+            Y_VERIFY(txId == buildInfo->LockTxId);
 
             buildInfo->LockTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -882,11 +807,11 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::GatheringStatistics:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Initiating:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->InitiateTxId);
+            Y_VERIFY(txId == buildInfo->InitiateTxId);
 
             buildInfo->InitiateTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -895,10 +820,10 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Filling:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         case TIndexBuildInfo::EState::Applying:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->ApplyTxId);
+            Y_VERIFY(txId == buildInfo->ApplyTxId);
 
             buildInfo->ApplyTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -908,7 +833,7 @@ public:
         }
         case TIndexBuildInfo::EState::Unlocking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->UnlockTxId);
+            Y_VERIFY(txId == buildInfo->UnlockTxId);
 
             buildInfo->UnlockTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -917,10 +842,10 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Done:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         case TIndexBuildInfo::EState::Cancellation_Applying:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->ApplyTxId);
+            Y_VERIFY(txId == buildInfo->ApplyTxId);
 
             buildInfo->ApplyTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -930,7 +855,7 @@ public:
         }
         case TIndexBuildInfo::EState::Cancellation_Unlocking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->UnlockTxId);
+            Y_VERIFY(txId == buildInfo->UnlockTxId);
 
             buildInfo->UnlockTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -939,11 +864,11 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Cancelled:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Rejection_Applying:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->ApplyTxId);
+            Y_VERIFY(txId == buildInfo->ApplyTxId);
 
             buildInfo->ApplyTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -953,7 +878,7 @@ public:
         }
         case TIndexBuildInfo::EState::Rejection_Unlocking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->UnlockTxId);
+            Y_VERIFY(txId == buildInfo->UnlockTxId);
 
             buildInfo->UnlockTxDone = true;
             NIceDb::TNiceDb db(txc.DB);
@@ -962,7 +887,7 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Rejected:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         }
 
         Progress(buildId);
@@ -1008,7 +933,7 @@ public:
         }
 
         const auto buildId = Self->TxIdToIndexBuilds.at(txId);
-        Y_ABORT_UNLESS(Self->IndexBuilds.contains(buildId));
+        Y_VERIFY(Self->IndexBuilds.contains(buildId));
 
         LOG_I("TTxReply : TEvModifySchemeTransactionResult"
               << ", BuildIndexId: " << buildId
@@ -1023,36 +948,11 @@ public:
 
         switch (buildInfo->State) {
         case TIndexBuildInfo::EState::Invalid:
-            Y_ABORT("Unreachable");
-
-        case TIndexBuildInfo::EState::AlterMainTable:
-        {
-            Y_ABORT_UNLESS(txId == buildInfo->AlterMainTableTxId);
-
-            buildInfo->AlterMainTableTxStatus = record.GetStatus();
-            NIceDb::TNiceDb db(txc.DB);
-            Self->PersistBuildIndexAlterMainTableTxStatus(db, buildInfo);
-
-            auto statusCode = TranslateStatusCode(record.GetStatus());
-
-            if (statusCode != Ydb::StatusIds::SUCCESS) {
-                buildInfo->Issue += TStringBuilder()
-                    << "At alter main table state got unsuccess propose result"
-                    << ", status: " << NKikimrScheme::EStatus_Name(buildInfo->AlterMainTableTxStatus)
-                    << ", reason: " << record.GetReason();
-                Self->PersistBuildIndexIssue(db, buildInfo);
-                NIceDb::TNiceDb db(txc.DB);
-                Self->PersistBuildIndexForget(db, buildInfo);
-                EraseBuildInfo(buildInfo);
-            }
-
-            ReplyOnCreation(buildInfo, statusCode);
-            break;            
-        }
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Locking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->LockTxId);
+            Y_VERIFY(txId == buildInfo->LockTxId);
 
             buildInfo->LockTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1078,11 +978,11 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::GatheringStatistics:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Initiating:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->InitiateTxId);
+            Y_VERIFY(txId == buildInfo->InitiateTxId);
 
             buildInfo->InitiateTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1091,7 +991,7 @@ public:
             if (record.GetStatus() == NKikimrScheme::StatusAccepted) {
                 // no op
             } else if (record.GetStatus() == NKikimrScheme::StatusAlreadyExists) {
-                Y_ABORT("NEED MORE TESTING");
+                Y_FAIL("NEED MORE TESTING");
                // no op
             } else {
                 buildInfo->Issue += TStringBuilder()
@@ -1105,11 +1005,11 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Filling:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Applying:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->ApplyTxId);
+            Y_VERIFY(txId == buildInfo->ApplyTxId);
 
             buildInfo->ApplyTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1118,7 +1018,7 @@ public:
             if (record.GetStatus() == NKikimrScheme::StatusAccepted) {
                 // no op
             } else if (record.GetStatus() == NKikimrScheme::StatusAlreadyExists) {
-                Y_ABORT("NEED MORE TESTING");
+                Y_FAIL("NEED MORE TESTING");
                 // no op
             } else {
                 buildInfo->Issue += TStringBuilder()
@@ -1133,7 +1033,7 @@ public:
         }
         case TIndexBuildInfo::EState::Unlocking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->UnlockTxId);
+            Y_VERIFY(txId == buildInfo->UnlockTxId);
 
             buildInfo->UnlockTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1155,11 +1055,11 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Done:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Cancellation_Applying:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->ApplyTxId);
+            Y_VERIFY(txId == buildInfo->ApplyTxId);
 
             buildInfo->ApplyTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1168,7 +1068,7 @@ public:
             if (record.GetStatus() == NKikimrScheme::StatusAccepted) {
                 // no op
             } else if (record.GetStatus() == NKikimrScheme::StatusAlreadyExists) {
-                Y_ABORT("NEED MORE TESTING");
+                Y_FAIL("NEED MORE TESTING");
                 // no op
             } else {
                 buildInfo->Issue += TStringBuilder()
@@ -1183,7 +1083,7 @@ public:
         }
         case TIndexBuildInfo::EState::Cancellation_Unlocking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->UnlockTxId);
+            Y_VERIFY(txId == buildInfo->UnlockTxId);
 
             buildInfo->UnlockTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1205,11 +1105,11 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Cancelled:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Rejection_Applying:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->ApplyTxId);
+            Y_VERIFY(txId == buildInfo->ApplyTxId);
 
             buildInfo->ApplyTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1218,7 +1118,7 @@ public:
             if (record.GetStatus() == NKikimrScheme::StatusAccepted) {
                 // no op
             } else if (record.GetStatus() == NKikimrScheme::StatusAlreadyExists) {
-                Y_ABORT("NEED MORE TESTING");
+                Y_FAIL("NEED MORE TESTING");
                 // no op
             } else {
                 buildInfo->Issue += TStringBuilder()
@@ -1233,7 +1133,7 @@ public:
         }
         case TIndexBuildInfo::EState::Rejection_Unlocking:
         {
-            Y_ABORT_UNLESS(txId == buildInfo->UnlockTxId);
+            Y_VERIFY(txId == buildInfo->UnlockTxId);
 
             buildInfo->UnlockTxStatus = record.GetStatus();
             NIceDb::TNiceDb db(txc.DB);
@@ -1255,7 +1155,7 @@ public:
             break;
         }
         case TIndexBuildInfo::EState::Rejected:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         }
 
         Progress(buildId);
@@ -1271,7 +1171,7 @@ public:
               << ", BuildIndexId: " << buildId
               << ", txId# " << txId);
 
-        Y_ABORT_UNLESS(Self->IndexBuilds.contains(buildId));
+        Y_VERIFY(Self->IndexBuilds.contains(buildId));
         TIndexBuildInfo::TPtr buildInfo = Self->IndexBuilds.at(buildId);
 
         LOG_D("TTxReply : TEvAllocateResult"
@@ -1279,16 +1179,7 @@ public:
 
         switch (buildInfo->State) {
         case TIndexBuildInfo::EState::Invalid:
-            Y_ABORT("Unreachable");
-
-        case TIndexBuildInfo::EState::AlterMainTable:
-            if (!buildInfo->AlterMainTableTxId) {
-                buildInfo->AlterMainTableTxId = txId;
-                NIceDb::TNiceDb db(txc.DB);
-                Self->PersistBuildIndexAlterMainTableTxId(db, buildInfo);
-        
-            }
-            break;
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Locking:
             if (!buildInfo->LockTxId) {
@@ -1299,7 +1190,7 @@ public:
             break;
 
         case TIndexBuildInfo::EState::GatheringStatistics:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Initiating:
             if (!buildInfo->InitiateTxId) {
@@ -1310,7 +1201,7 @@ public:
             break;
 
         case TIndexBuildInfo::EState::Filling:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Applying:
             if (!buildInfo->ApplyTxId) {
@@ -1329,7 +1220,7 @@ public:
             break;
 
         case TIndexBuildInfo::EState::Done:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Cancellation_Applying:
             if (!buildInfo->ApplyTxId) {
@@ -1348,7 +1239,7 @@ public:
             break;
 
         case TIndexBuildInfo::EState::Cancelled:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
 
         case TIndexBuildInfo::EState::Rejection_Applying:
             if (!buildInfo->ApplyTxId) {
@@ -1366,7 +1257,7 @@ public:
             break;
 
         case TIndexBuildInfo::EState::Rejected:
-            Y_ABORT("Unreachable");
+            Y_FAIL("Unreachable");
         }
 
         Progress(buildId);

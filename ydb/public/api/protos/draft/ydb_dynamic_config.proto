@@ -18,7 +18,6 @@ message SetConfigRequest {
     // Config in YAML format. metadata will be ignored
     string config = 2;
     bool dry_run = 3;
-    bool allow_unknown_fields = 4;
 }
 
 message SetConfigResponse {
@@ -30,7 +29,6 @@ message ReplaceConfigRequest {
     // Config in YAML format
     string config = 2;
     bool dry_run = 3;
-    bool allow_unknown_fields = 4;
 }
 
 message ReplaceConfigResponse {
@@ -159,7 +157,6 @@ message ResolveConfigRequest {
     string config = 2;
     // Additional configs which will be apended to selectors
     repeated VolatileConfig volatile_configs = 3;
-    // Target labels
     repeated YamlLabel labels = 4;
 }
 

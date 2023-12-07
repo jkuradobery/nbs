@@ -39,38 +39,12 @@ public:
     virtual ~TMemoryLimitExceededException() = default;
 };
 
-class TSystemMmap {
-public:
-    static void* Mmap(size_t size);
-    static int Munmap(void* addr, size_t size);
-};
-
-class TFakeAlignedMmap {
-public:
-    static std::function<void(size_t size)> OnMmap;
-    static std::function<void(void* addr, size_t size)> OnMunmap;
-
-    static void* Mmap(size_t size);
-    static int Munmap(void* addr, size_t size);
-};
-
-class TFakeUnalignedMmap {
-public:
-    static std::function<void(size_t size)> OnMmap;
-    static std::function<void(void* addr, size_t size)> OnMunmap;
-
-    static void* Mmap(size_t size);
-    static int Munmap(void* addr, size_t size);
-};
-
-template<typename TMmap = TSystemMmap>
-class TAlignedPagePoolImpl {
+class TAlignedPagePool {
 public:
     static constexpr ui64 POOL_PAGE_SIZE = 1ULL << 16; // 64k
     static constexpr ui64 PAGE_ADDR_MASK = ~(POOL_PAGE_SIZE - 1);
-    static constexpr ui64 ALLOC_AHEAD_PAGES = 31;
 
-    explicit TAlignedPagePoolImpl(const TSourceLocation& location,
+    explicit TAlignedPagePool(const TSourceLocation& location,
             const TAlignedPagePoolCounters& counters = TAlignedPagePoolCounters())
         : Counters(counters)
         , DebugInfo(TStringBuilder() << location)
@@ -80,13 +54,13 @@ public:
         }
     }
 
-    TAlignedPagePoolImpl(const TAlignedPagePoolImpl&) = delete;
-    TAlignedPagePoolImpl(TAlignedPagePoolImpl&& other) = delete;
+    TAlignedPagePool(const TAlignedPagePool&) = delete;
+    TAlignedPagePool(TAlignedPagePool&& other) = delete;
 
-    TAlignedPagePoolImpl& operator = (const TAlignedPagePoolImpl&) = delete;
-    TAlignedPagePoolImpl& operator = (TAlignedPagePoolImpl&& other) = delete;
+    TAlignedPagePool& operator = (const TAlignedPagePool&) = delete;
+    TAlignedPagePool& operator = (TAlignedPagePool&& other) = delete;
 
-    ~TAlignedPagePoolImpl();
+    ~TAlignedPagePool();
 
     inline size_t GetAllocated() const noexcept {
         return TotalAllocated;
@@ -112,7 +86,7 @@ public:
 
     void ReturnPage(void* addr) noexcept;
 
-    void Swap(TAlignedPagePoolImpl& other) {
+    void Swap(TAlignedPagePool& other) {
         DoSwap(FreePages, other.FreePages);
         DoSwap(AllPages, other.AllPages);
         DoSwap(ActiveBlocks, other.ActiveBlocks);
@@ -212,8 +186,6 @@ public:
         IncreaseMemoryLimitCallback = std::move(callback);
     }
 
-    static void ResetGlobalsUT();
-
 protected:
     void* Alloc(size_t size);
     void Free(void* ptr, size_t size) noexcept;
@@ -254,7 +226,5 @@ protected:
     TIncreaseMemoryLimitCallback IncreaseMemoryLimitCallback;
     TString DebugInfo;
 };
-
-using TAlignedPagePool = TAlignedPagePoolImpl<>;
 
 } // NKikimr

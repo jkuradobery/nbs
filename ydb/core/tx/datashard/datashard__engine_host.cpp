@@ -15,7 +15,7 @@
 #include <ydb/library/yql/minikql/mkql_string_util.h>
 #include <ydb/library/yql/minikql/mkql_node_cast.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/cast.h>
 
@@ -76,7 +76,7 @@ struct TRowResultInfo {
             ui32 colId = literal->AsValue().Get<ui32>();
 
             const TSysTables::TTableColumnInfo * colInfo = columns.FindPtr(colId);
-            Y_ABORT_UNLESS(colInfo && (colInfo->Id == colId), "No column info for column");
+            Y_VERIFY(colInfo && (colInfo->Id == colId), "No column info for column");
             ItemInfos.emplace_back(ItemInfo(colId, colInfo->PType, optType));
         }
     }
@@ -86,7 +86,7 @@ struct TRowResultInfo {
             return NUdf::TUnboxedValuePod();
         }
 
-        Y_ABORT_UNLESS(inRow.size() >= ItemInfos.size());
+        Y_VERIFY(inRow.size() >= ItemInfos.size());
 
         // reorder columns
         TVector<TCell> outRow(Reserve(ItemInfos.size()));
@@ -130,12 +130,12 @@ public:
         TRowResultInfo result(columnIds, Columns, returnType);
 
         auto lock = Self->SysLocksTable().GetLock(row);
-        Y_ABORT_UNLESS(!lock.IsError());
+        Y_VERIFY(!lock.IsError());
 
         if (TableId.PathId.LocalPathId == TSysTables::SysTableLocks2) {
             return result.CreateResult(lock.MakeRow(true), holderFactory);
         }
-        Y_ABORT_UNLESS(TableId.PathId.LocalPathId == TSysTables::SysTableLocks);
+        Y_VERIFY(TableId.PathId.LocalPathId == TSysTables::SysTableLocks);
         return result.CreateResult(lock.MakeRow(false), holderFactory);
     }
 
@@ -184,7 +184,7 @@ public:
         if (tableId.PathId.LocalPathId == TSysTables::SysTableLocks)
             return Locks;
 
-        Y_ABORT("unexpected sys table id");
+        Y_FAIL("unexpected sys table id");
     }
 };
 
@@ -193,11 +193,7 @@ TIntrusivePtr<TThrRefBase> InitDataShardSysTables(TDataShard* self) {
 }
 
 ///
-class TDataShardEngineHost final
-    : public TEngineHost
-    , public IDataShardUserDb
-    , public IDataShardChangeGroupProvider
-{
+class TDataShardEngineHost : public TEngineHost, public IDataShardUserDb {
 public:
     TDataShardEngineHost(TDataShard* self, TEngineBay& engineBay, NTable::TDatabase& db, TEngineHostCounters& counters, ui64& lockTxId, ui32& lockNodeId, TInstant now)
         : TEngineHost(db, counters,
@@ -249,7 +245,7 @@ public:
 
     TRowVersion GetWriteVersion(const TTableId& tableId) const override {
         Y_UNUSED(tableId);
-        Y_ABORT_UNLESS(!WriteVersion.IsMax(), "Cannot perform writes without WriteVersion set");
+        Y_VERIFY(!WriteVersion.IsMax(), "Cannot perform writes without WriteVersion set");
         return WriteVersion;
     }
 
@@ -259,7 +255,7 @@ public:
 
     TRowVersion GetReadVersion(const TTableId& tableId) const override {
         Y_UNUSED(tableId);
-        Y_ABORT_UNLESS(!ReadVersion.IsMin(), "Cannot perform reads without ReadVersion set");
+        Y_VERIFY(!ReadVersion.IsMin(), "Cannot perform reads without ReadVersion set");
         return ReadVersion;
     }
 
@@ -275,24 +271,6 @@ public:
         IsRepeatableSnapshot = true;
     }
 
-    std::optional<ui64> GetCurrentChangeGroup() const override {
-        return ChangeGroup;
-    }
-
-    ui64 GetChangeGroup() override {
-        if (!ChangeGroup) {
-            if (IsImmediateTx) {
-                NIceDb::TNiceDb db(DB);
-                ChangeGroup = Self->AllocateChangeRecordGroup(db);
-            } else {
-                // Distributed transactions have their group set to zero
-                ChangeGroup = 0;
-            }
-        }
-
-        return *ChangeGroup;
-    }
-
     IDataShardChangeCollector* GetChangeCollector(const TTableId& tableId) const override {
         auto it = ChangeCollectors.find(tableId.PathId);
         if (it != ChangeCollectors.end()) {
@@ -304,12 +282,7 @@ public:
             return it->second.Get();
         }
 
-        it->second.Reset(CreateChangeCollector(
-            *Self,
-            *const_cast<TDataShardEngineHost*>(this),
-            *const_cast<TDataShardEngineHost*>(this),
-            DB,
-            tableId.PathId.LocalPathId));
+        it->second.Reset(CreateChangeCollector(*Self, *const_cast<TDataShardEngineHost*>(this), DB, tableId.PathId.LocalPathId, IsImmediateTx));
         return it->second.Get();
     }
 
@@ -319,17 +292,6 @@ public:
 
         if (!DB.HasOpenTx(localTid, lockId)) {
             return;
-        }
-
-        if (auto lock = Self->SysLocksTable().GetRawLock(lockId, TRowVersion::Min()); lock && !VolatileCommitOrdered) {
-            lock->ForAllVolatileDependencies([this](ui64 txId) {
-                auto* info = Self->GetVolatileTxManager().FindByCommitTxId(txId);
-                if (info && info->State != EVolatileTxState::Aborting) {
-                    if (VolatileDependencies.insert(txId).second && !VolatileTxId) {
-                        VolatileTxId = EngineBay.GetTxId();
-                    }
-                }
-            });
         }
 
         if (VolatileTxId) {
@@ -348,7 +310,6 @@ public:
         LOG_TRACE_S(*TlsActivationContext, NKikimrServices::TX_DATASHARD,
             "Committing changes lockId# " << lockId << " in localTid# " << localTid << " shard# " << Self->TabletID());
         DB.CommitTx(localTid, lockId, writeVersion);
-        Self->GetConflictsCache().GetTableCache(localTid).RemoveUncommittedWrites(lockId, DB);
 
         if (!CommittedLockChanges.contains(lockId) && Self->HasLockChangeRecords(lockId)) {
             if (auto* collector = GetChangeCollector(tableId)) {
@@ -394,16 +355,17 @@ public:
         return commitTxIds;
     }
 
-    const absl::flat_hash_set<ui64>& GetVolatileDependencies() const {
-        return VolatileDependencies;
-    }
+    TVector<ui64> GetVolatileDependencies() const {
+        TVector<ui64> dependencies;
 
-    std::optional<ui64> GetVolatileChangeGroup() const {
-        return ChangeGroup;
-    }
+        if (!VolatileDependencies.empty()) {
+            dependencies.reserve(VolatileDependencies.size());
+            for (ui64 dependency : VolatileDependencies) {
+                dependencies.push_back(dependency);
+            }
+        }
 
-    bool GetVolatileCommitOrdered() const {
-        return VolatileCommitOrdered;
+        return dependencies;
     }
 
     bool IsValidKey(TKeyDesc& key, std::pair<ui64, ui64>& maxSnapshotTime) const override {
@@ -450,7 +412,7 @@ public:
         const TReadTarget& readTarget, ui64 itemsLimit, ui64 bytesLimit, bool reverse,
         std::pair<const TListLiteral*, const TListLiteral*> forbidNullArgs, const THolderFactory& holderFactory) override
     {
-        Y_ABORT_UNLESS(!TSysTables::IsSystemTable(tableId), "SelectRange no system table is not supported");
+        Y_VERIFY(!TSysTables::IsSystemTable(tableId), "SelectRange no system table is not supported");
 
         if (LockTxId) {
             Self->SysLocksTable().SetLock(tableId, range);
@@ -517,14 +479,6 @@ public:
         } else {
             TEngineHost::UpdateRow(tableId, row, commands);
         }
-
-        if (VolatileTxId) {
-            Self->GetConflictsCache().GetTableCache(LocalTableId(tableId)).AddUncommittedWrite(row, VolatileTxId, Db);
-        } else if (LockTxId) {
-            Self->GetConflictsCache().GetTableCache(LocalTableId(tableId)).AddUncommittedWrite(row, LockTxId, Db);
-        } else {
-            Self->GetConflictsCache().GetTableCache(LocalTableId(tableId)).RemoveUncommittedWrites(row, Db);
-        }
     }
 
     void EraseRow(const TTableId& tableId, const TArrayRef<const TCell>& row) override {
@@ -543,14 +497,6 @@ public:
 
         Self->SetTableUpdateTime(tableId, Now);
         TEngineHost::EraseRow(tableId, row);
-
-        if (VolatileTxId) {
-            Self->GetConflictsCache().GetTableCache(LocalTableId(tableId)).AddUncommittedWrite(row, VolatileTxId, Db);
-        } else if (LockTxId) {
-            Self->GetConflictsCache().GetTableCache(LocalTableId(tableId)).AddUncommittedWrite(row, LockTxId, Db);
-        } else {
-            Self->GetConflictsCache().GetTableCache(LocalTableId(tableId)).RemoveUncommittedWrites(row, Db);
-        }
     }
 
     // Returns whether row belong this shard.
@@ -599,7 +545,7 @@ public:
             return 0;
 
         if (VolatileTxId) {
-            Y_ABORT_UNLESS(!LockTxId);
+            Y_VERIFY(!LockTxId);
             if (VolatileCommitTxIds.insert(VolatileTxId).second) {
                 // Update TxMap to include the new commit
                 auto it = TxMaps.find(tableId.PathId);
@@ -740,7 +686,7 @@ public:
     };
 
     void AddReadConflict(ui64 txId) const {
-        Y_ABORT_UNLESS(LockTxId);
+        Y_VERIFY(LockTxId);
 
         // We have detected uncommitted changes in txId that could affect
         // our read result. We arrange a conflict that breaks our lock
@@ -749,7 +695,7 @@ public:
     }
 
     void CheckReadConflict(const TRowVersion& rowVersion) const {
-        Y_ABORT_UNLESS(LockTxId);
+        Y_VERIFY(LockTxId);
 
         if (rowVersion > ReadVersion) {
             // We are reading from snapshot at ReadVersion and should not normally
@@ -799,66 +745,38 @@ public:
         return false;
     }
 
-    void CheckWriteConflicts(const TTableId& tableId, TArrayRef<const TCell> keyCells) {
-        // When there are uncommitted changes (write locks) we must find which
-        // locks would break upon commit.
-        bool mustFindConflicts = Self->SysLocksTable().HasWriteLocks(tableId);
-
-        // When there are volatile changes (tx map) we try to find precise
-        // dependencies, but we may switch to total order on page faults.
-        const bool tryFindConflicts = mustFindConflicts ||
-            (!VolatileCommitOrdered && Self->GetVolatileTxManager().GetTxMap());
-
-        if (!tryFindConflicts) {
-            // We don't need to find conflicts
+    void CheckWriteConflicts(const TTableId& tableId, TArrayRef<const TCell> row) {
+        if (!Self->GetVolatileTxManager().GetTxMap() &&
+            !Self->SysLocksTable().HasWriteLocks(tableId))
+        {
+            // We don't have any uncommitted changes, so there's nothing we
+            // could possibly conflict with.
             return;
         }
 
         const auto localTid = LocalTableId(tableId);
-        Y_ABORT_UNLESS(localTid);
+        Y_VERIFY(localTid);
+        const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(localTid);
+        TSmallVec<TRawTypeValue> key;
+        ConvertTableKeys(Scheme, tableInfo, row, key, nullptr);
 
         ui64 skipCount = 0;
 
         NTable::ITransactionObserverPtr txObserver;
         if (LockTxId) {
-            // We cannot use cached conflicts since we need to find skip count
             txObserver = new TLockedWriteTxObserver(this, LockTxId, skipCount, localTid);
-            // Locked writes are immediate, increased latency is not critical
-            mustFindConflicts = true;
-        } else if (auto* cached = Self->GetConflictsCache().GetTableCache(localTid).FindUncommittedWrites(keyCells)) {
-            for (ui64 txId : *cached) {
-                BreakWriteConflict(txId);
-            }
-            return;
         } else {
             txObserver = new TWriteTxObserver(this);
-            // Prefer precise conflicts for non-distributed transactions
-            if (IsImmediateTx) {
-                mustFindConflicts = true;
-            }
         }
 
         // We are not actually interested in the row version, we only need to
         // detect uncommitted transaction skips on the path to that version.
         auto res = Db.SelectRowVersion(
-            localTid, keyCells, /* readFlags */ 0,
+            localTid, key, /* readFlags */ 0,
             nullptr, txObserver);
 
         if (res.Ready == NTable::EReady::Page) {
-            if (mustFindConflicts || LockTxId) {
-                // We must gather all conflicts
-                throw TNotReadyTabletException();
-            }
-
-            // Upgrade to volatile ordered commit and ignore the page fault
-            if (!VolatileCommitOrdered) {
-                if (!VolatileTxId) {
-                    VolatileTxId = EngineBay.GetTxId();
-                }
-                VolatileCommitOrdered = true;
-                VolatileDependencies.clear();
-            }
-            return;
+            throw TNotReadyTabletException();
         }
 
         if (LockTxId || VolatileTxId) {
@@ -953,9 +871,7 @@ public:
 
     void AddWriteConflict(ui64 txId) const {
         if (auto* info = Self->GetVolatileTxManager().FindByCommitTxId(txId)) {
-            if (info->State != EVolatileTxState::Aborting) {
-                Self->SysLocksTable().AddVolatileDependency(info->TxId);
-            }
+            Y_FAIL("TODO: add future lock dependency from %" PRIu64 " on %" PRIu64, LockTxId, info->TxId);
         } else {
             Self->SysLocksTable().AddWriteConflict(txId);
         }
@@ -971,7 +887,7 @@ public:
             // even though they may not be persistent yet, since this tx will
             // also perform writes, and either it fails, or future generation
             // could not have possibly committed it already.
-            if (info->State != EVolatileTxState::Aborting && !VolatileCommitOrdered) {
+            if (info->State != EVolatileTxState::Aborting) {
                 if (!VolatileTxId) {
                     // All further writes will use this VolatileTxId and will
                     // add it to VolatileCommitTxIds, forcing it to be committed
@@ -1011,8 +927,6 @@ private:
     mutable absl::flat_hash_map<TPathId, NTable::ITransactionObserverPtr> TxObservers;
     mutable absl::flat_hash_set<ui64> VolatileCommitTxIds;
     mutable absl::flat_hash_set<ui64> VolatileDependencies;
-    std::optional<ui64> ChangeGroup = std::nullopt;
-    bool VolatileCommitOrdered = false;
 };
 
 //
@@ -1075,7 +989,7 @@ TEngineBay::TEngineBay(TDataShard * self, TTransactionContext& txc, const TActor
     KqpExecCtx.ApplyCtx = KqpApplyCtx.Get();
     KqpExecCtx.Alloc = KqpAlloc.Get();
     KqpExecCtx.TypeEnv = KqpTypeEnv.Get();
-    if (auto rm = NKqp::TryGetKqpResourceManager()) {
+    if (auto* rm = NKqp::TryGetKqpResourceManager()) {
         KqpExecCtx.PatternCache = rm->GetPatternCache();
     }
 }
@@ -1140,7 +1054,7 @@ void TEngineBay::AddWriteRange(const TTableId& tableId, const TTableRange& range
 }
 
 TEngineBay::TSizes TEngineBay::CalcSizes(bool needsTotalKeysSize) const {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     TSizes outSizes;
     TVector<const TKeyDesc*> readKeys;
@@ -1172,52 +1086,52 @@ TEngineBay::TSizes TEngineBay::CalcSizes(bool needsTotalKeysSize) const {
 }
 
 void TEngineBay::SetWriteVersion(TRowVersion writeVersion) {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     host->SetWriteVersion(writeVersion);
 }
 
 void TEngineBay::SetReadVersion(TRowVersion readVersion) {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     host->SetReadVersion(readVersion);
 
-    Y_ABORT_UNLESS(ComputeCtx);
+    Y_VERIFY(ComputeCtx);
     ComputeCtx->SetReadVersion(readVersion);
 }
 
 void TEngineBay::SetVolatileTxId(ui64 txId) {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     host->SetVolatileTxId(txId);
 }
 
 void TEngineBay::SetIsImmediateTx() {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     host->SetIsImmediateTx();
 }
 
 void TEngineBay::SetIsRepeatableSnapshot() {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     host->SetIsRepeatableSnapshot();
 }
 
 void TEngineBay::CommitChanges(const TTableId& tableId, ui64 lockId, const TRowVersion& writeVersion) {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     host->CommitChanges(tableId, lockId, writeVersion);
 }
 
 TVector<IDataShardChangeCollector::TChange> TEngineBay::GetCollectedChanges() const {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     return host->GetCollectedChanges();
@@ -1229,31 +1143,17 @@ void TEngineBay::ResetCollectedChanges() {
 }
 
 TVector<ui64> TEngineBay::GetVolatileCommitTxIds() const {
-    Y_ABORT_UNLESS(EngineHost);
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     return host->GetVolatileCommitTxIds();
 }
 
-const absl::flat_hash_set<ui64>& TEngineBay::GetVolatileDependencies() const {
-    Y_ABORT_UNLESS(EngineHost);
+TVector<ui64> TEngineBay::GetVolatileDependencies() const {
+    Y_VERIFY(EngineHost);
 
     auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
     return host->GetVolatileDependencies();
-}
-
-std::optional<ui64> TEngineBay::GetVolatileChangeGroup() const {
-    Y_ABORT_UNLESS(EngineHost);
-
-    auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
-    return host->GetVolatileChangeGroup();
-}
-
-bool TEngineBay::GetVolatileCommitOrdered() const {
-    Y_ABORT_UNLESS(EngineHost);
-
-    auto* host = static_cast<TDataShardEngineHost*>(EngineHost.Get());
-    return host->GetVolatileCommitOrdered();
 }
 
 IEngineFlat * TEngineBay::GetEngine() {
@@ -1273,28 +1173,33 @@ void TEngineBay::SetLockTxId(ui64 lockTxId, ui32 lockNodeId) {
     }
 }
 
-NKqp::TKqpTasksRunner& TEngineBay::GetKqpTasksRunner(NKikimrTxDataShard::TKqpTransaction& tx) {
+NKqp::TKqpTasksRunner& TEngineBay::GetKqpTasksRunner(const NKikimrTxDataShard::TKqpTransaction& tx) {
     if (!KqpTasksRunner) {
         NYql::NDq::TDqTaskRunnerSettings settings;
 
         if (tx.HasRuntimeSettings() && tx.GetRuntimeSettings().HasStatsMode()) {
-            settings.StatsMode = tx.GetRuntimeSettings().GetStatsMode();
+            auto statsMode = tx.GetRuntimeSettings().GetStatsMode();
+            // Always collect basic stats for system views / request unit computation.
+            settings.CollectBasicStats = true;
+            settings.CollectProfileStats = statsMode >= NYql::NDqProto::DQ_STATS_MODE_PROFILE;
         } else {
-            settings.StatsMode = NYql::NDqProto::DQ_STATS_MODE_NONE;
+            settings.CollectBasicStats = false;
+            settings.CollectProfileStats = false;
         }
 
         settings.OptLLVM = "OFF";
         settings.TerminateOnError = false;
+        settings.AllowGeneratorsInUnboxedValues = false;
 
         KqpAlloc->SetLimit(10_MB);
-        KqpTasksRunner = NKqp::CreateKqpTasksRunner(std::move(*tx.MutableTasks()), KqpExecCtx, settings, KqpLogFunc);
+        KqpTasksRunner = NKqp::CreateKqpTasksRunner(tx.GetTasks(), KqpExecCtx, settings, KqpLogFunc);
     }
 
     return *KqpTasksRunner;
 }
 
 TKqpDatashardComputeContext& TEngineBay::GetKqpComputeCtx() {
-    Y_ABORT_UNLESS(ComputeCtx);
+    Y_VERIFY(ComputeCtx);
     return *ComputeCtx;
 }
 

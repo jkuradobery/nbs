@@ -1,7 +1,7 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/protos
+    library/cpp/actors/protos
     library/cpp/monlib/service/pages
     ydb/core/base
     ydb/core/blobstorage/vdisk/hulldb/base

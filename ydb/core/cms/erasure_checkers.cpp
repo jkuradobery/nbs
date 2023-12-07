@@ -2,16 +2,19 @@
 
 namespace NKikimr::NCms {
 
-bool TErasureCounterBase::IsDown(const TVDiskInfo &vdisk, TClusterInfoPtr info, TDuration &retryTime, TErrorInfo &error) {
-    const auto &node = info->Node(vdisk.NodeId);
-    const auto &pdisk = info->PDisk(vdisk.PDiskId);
+bool TErasureCounterBase::IsDown(const TVDiskInfo& vdisk,
+                                 TClusterInfoPtr info,
+                                 TDuration& retryTime,
+                                 TErrorInfo& error)
+{
+    const auto& node = info->Node(vdisk.NodeId);
+    const auto& pdisk = info->PDisk(vdisk.PDiskId);
     const auto defaultDeadline = TActivationContext::Now() + retryTime;
 
     // Check we received info for PDisk.
     if (!pdisk.NodeId) {
-        error.Code = TStatus::DISALLOW_TEMP;
-        error.Reason = TStringBuilder() << vdisk.PrettyItemName() << " has missing info for " << pdisk.PrettyItemName();
-        Down.emplace(vdisk.VDiskId, error.Reason);
+        ++Down;
+        error.Reason = TStringBuilder() << "Missing info for " << pdisk.ItemName();
         return false;
     }
 
@@ -20,17 +23,20 @@ bool TErasureCounterBase::IsDown(const TVDiskInfo &vdisk, TClusterInfoPtr info, 
         || vdisk.IsDown(error, defaultDeadline);
 }
 
-bool TErasureCounterBase::IsLocked(const TVDiskInfo &vdisk, TClusterInfoPtr info, TDuration &retryTime,
-        TDuration &duration, TErrorInfo &error)
+bool TErasureCounterBase::IsLocked(const TVDiskInfo& vdisk,
+                                   TClusterInfoPtr info,
+                                   TDuration& retryTime,
+                                   TDuration& duration,
+                                   TErrorInfo& error)
 {
-    const auto &node = info->Node(vdisk.NodeId);
-    const auto &pdisk = info->PDisk(vdisk.PDiskId);
+    const auto& node = info->Node(vdisk.NodeId);
+    const auto& pdisk = info->PDisk(vdisk.PDiskId);
 
     // Check we received info for VDisk.
     if (!vdisk.NodeId || !vdisk.PDiskId) {
+        ++Down;
         error.Code = TStatus::DISALLOW_TEMP;
-        error.Reason = TStringBuilder() << vdisk.PrettyItemName() << " has missing info";
-        Down.emplace(vdisk.VDiskId, error.Reason);
+        error.Reason = TStringBuilder() << "Missing info for " << vdisk.ItemName();
         return false;
     }
 
@@ -39,36 +45,16 @@ bool TErasureCounterBase::IsLocked(const TVDiskInfo &vdisk, TClusterInfoPtr info
         || vdisk.IsLocked(error, retryTime, TActivationContext::Now(), duration);
 }
 
-bool TErasureCounterBase::GroupAlreadyHasLockedDisks() const {
+bool TErasureCounterBase::GroupAlreadyHasLockedDisks() const
+{
     return HasAlreadyLockedDisks;
 }
 
-static TString DumpVDisksInfo(const THashMap<TVDiskID, TString>& vdisks, TClusterInfoPtr info) {
-    if (vdisks.empty()) {
-        return "<empty>";
-    }
-
-    TStringBuilder dump;
-
-    bool comma = false;
-    for (const auto& [vdisk, reason] : vdisks) {
-        if (comma) {
-            dump << ", ";
-        }
-        comma = true;
-
-        if (reason) {
-            dump << reason;
-        } else {
-            dump << info->VDisk(vdisk).PrettyItemName();
-        }
-    }
-
-    return dump;
-}
-
-bool TErasureCounterBase::CheckForMaxAvailability(TClusterInfoPtr info, TErrorInfo &error, TInstant &defaultDeadline, bool allowPartial) const {
-    if (Locked.size() + Down.size() > 1) {
+bool TErasureCounterBase::CheckForMaxAvailability(TErrorInfo& error,
+                                                  TInstant& defaultDeadline,
+                                                  bool allowPartial) const
+{
+    if (Locked + Down > 1) {
         if (HasAlreadyLockedDisks && !allowPartial) {
             error.Code = TStatus::DISALLOW;
             error.Reason = "The request is incorrect: too many disks from the one group. "
@@ -77,61 +63,47 @@ bool TErasureCounterBase::CheckForMaxAvailability(TClusterInfoPtr info, TErrorIn
         }
 
         error.Code = TStatus::DISALLOW_TEMP;
-        error.Reason = TStringBuilder() << "Issue in affected group with id '" << GroupId << "'"
-            << ": too many unavailable vdisks"
-            << ". Locked: " << DumpVDisksInfo(Locked, info)
-            << ". Down: " << DumpVDisksInfo(Down, info);
+        error.Reason = TStringBuilder() << "Issue in affected group " << GroupId
+                                        << ". " << "Too many locked and down vdisks: " << Locked + Down;
         error.Deadline = defaultDeadline;
         return false;
     }
-
     return true;
 }
 
-bool TErasureCounterBase::CountVDisk(const TVDiskInfo &vdisk, TClusterInfoPtr info, TDuration retryTime,
-        TDuration duration, TErrorInfo &error)
+void TDefaultErasureCounter::CountVDisk(const TVDiskInfo& vdisk,
+                                        TClusterInfoPtr info,
+                                        TDuration retryTime,
+                                        TDuration duration,
+                                        TErrorInfo& error)
 {
-    Y_DEBUG_ABORT_UNLESS(vdisk.VDiskId != VDisk.VDiskId);
+    Y_VERIFY_DEBUG(vdisk.VDiskId != VDisk.VDiskId);
 
     // Check locks.
     TErrorInfo err;
     if (IsLocked(vdisk, info, retryTime, duration, err)) {
-        Locked.emplace(vdisk.VDiskId, err.Reason);
+        ++Locked;
         error.Code = err.Code;
-        error.Reason = TStringBuilder() << "Issue in affected group with id '" << GroupId << "'"
-            << ": " << err.Reason;
+        error.Reason = TStringBuilder() << "Issue in affected group " << GroupId
+                                        << ". " << err.Reason;
         error.Deadline = Max(error.Deadline, err.Deadline);
-        return true;
+        return;
     }
 
     // Check if disk is down.
     if (IsDown(vdisk, info, retryTime, err)) {
-        Down.emplace(vdisk.VDiskId, err.Reason);
+        ++Down;
         error.Code = err.Code;
-        error.Reason = TStringBuilder() << "Issue in affected group with id '" << GroupId << "'"
-            << ": " << err.Reason;
+        error.Reason = TStringBuilder() << "Issue in affected group " << GroupId
+                                        << ". " << err.Reason;
         error.Deadline = Max(error.Deadline, err.Deadline);
-        return true;
     }
-
-    return false;
 }
 
-void TErasureCounterBase::CountGroupState(TClusterInfoPtr info, TDuration retryTime, TDuration duration, TErrorInfo &error) {
-    for (const auto &vdId : info->BSGroup(GroupId).VDisks) {
-        if (vdId != VDisk.VDiskId)
-            CountVDisk(info->VDisk(vdId), info, retryTime, duration, error);
-    }
-
-    if (Locked && error.Code == TStatus::DISALLOW) {
-        HasAlreadyLockedDisks = true;
-    }
-
-    Locked.emplace(VDisk.VDiskId, TStringBuilder() << VDisk.PrettyItemName() << " is locked by this request");
-}
-
-bool TDefaultErasureCounter::CheckForKeepAvailability(TClusterInfoPtr info, TErrorInfo &error,
-        TInstant &defaultDeadline, bool allowPartial) const
+bool TDefaultErasureCounter::CheckForKeepAvailability(TClusterInfoPtr info,
+                                                      TErrorInfo& error,
+                                                      TInstant& defaultDeadline,
+                                                      bool allowPartial) const
 {
     if (HasAlreadyLockedDisks && allowPartial) {
         error.Code = TStatus::DISALLOW_TEMP;
@@ -141,29 +113,29 @@ bool TDefaultErasureCounter::CheckForKeepAvailability(TClusterInfoPtr info, TErr
         return false;
     }
 
-    if (Down.size() + Locked.size() > info->BSGroup(GroupId).Erasure.ParityParts()) {
+    if (Down + Locked > info->BSGroup(GroupId).Erasure.ParityParts()) {
         if (HasAlreadyLockedDisks && !allowPartial) {
             error.Code = TStatus::DISALLOW;
             error.Reason = "The request is incorrect: too many disks from the one group. "
                            "Fix the request or set PartialPermissionAllowed to true";
             return false;
         }
-
         error.Code = TStatus::DISALLOW_TEMP;
-        error.Reason = TStringBuilder() << "Issue in affected group with id '" << GroupId << "'"
-            << ": too many unavailable vdisks"
-            << ". Locked: " << DumpVDisksInfo(Locked, info)
-            << ". Down: " << DumpVDisksInfo(Down, info);
+        error.Reason = TStringBuilder() << "Cannot lock disk " << VDisk.PrettyItemName()
+                                        << ". Too many locked nodes for group " << GroupId;
         error.Deadline = defaultDeadline;
         return false;
     }
-
     return true;
 }
 
-bool TMirror3dcCounter::CheckForKeepAvailability(TClusterInfoPtr info, TErrorInfo &error,
-        TInstant &defaultDeadline, bool allowPartial) const
+bool TMirror3dcCounter::CheckForKeepAvailability(TClusterInfoPtr info,
+                                                 TErrorInfo& error,
+                                                 TInstant& defaultDeadline,
+                                                 bool allowPartial) const
 {
+    Y_UNUSED(info);
+
     if (HasAlreadyLockedDisks && allowPartial) {
         error.Code = TStatus::DISALLOW_TEMP;
         error.Reason = "You cannot get two or more disks from the same group at the same time"
@@ -191,41 +163,77 @@ bool TMirror3dcCounter::CheckForKeepAvailability(TClusterInfoPtr info, TErrorInf
 
     if (DataCenterDisabledNodes.size() > 2) {
         error.Code = TStatus::DISALLOW_TEMP;
-        error.Reason = TStringBuilder() << "Issue in affected group with id '" << GroupId << "'"
-            << ": too many unavailable vdisks"
-            << ". Number of data centers with unavailable vdisks: " << DataCenterDisabledNodes.size()
-            << ". Locked: " << DumpVDisksInfo(Locked, info)
-            << ". Down: " << DumpVDisksInfo(Down, info);
+        error.Reason = TStringBuilder() << "Issue in affected group " << GroupId
+                                        << ". Too many data centers have unavailable vdisks: "
+                                        << DataCenterDisabledNodes.size();
         error.Deadline = defaultDeadline;
         return false;
     }
 
     error.Code = TStatus::DISALLOW_TEMP;
-    error.Reason = TStringBuilder() << "Issue in affected group with id '" << GroupId << "'"
-        << ": too many unavailable vdisks"
-        << ". Locked: " << DumpVDisksInfo(Locked, info)
-        << ". Down: " << DumpVDisksInfo(Down, info);
+    error.Reason = TStringBuilder() << "Issue in affected group " << GroupId
+                                    << ". Data centers have too many unavailable vdisks";
     error.Deadline = defaultDeadline;
 
     return false;
 }
 
-bool TMirror3dcCounter::CountVDisk(const TVDiskInfo &vdisk, TClusterInfoPtr info, TDuration retryTime,
-        TDuration duration, TErrorInfo &error)
+void TMirror3dcCounter::CountVDisk(const TVDiskInfo& vdisk,
+                                   TClusterInfoPtr info,
+                                   TDuration retryTime,
+                                   TDuration duration,
+                                   TErrorInfo& error)
 {
-    const bool disabled = TErasureCounterBase::CountVDisk(vdisk, info, retryTime, duration, error);
-    if (disabled) {
+    Y_VERIFY_DEBUG(vdisk.VDiskId != VDisk.VDiskId);
+
+    // Check locks.
+    TErrorInfo err;
+    if (IsLocked(vdisk, info, retryTime, duration, err)
+        || IsDown(vdisk, info, retryTime, err)) {
+        error.Code = err.Code;
+        error.Reason = TStringBuilder() << "Issue in affected group " << GroupId
+                                        << ". " << err.Reason;
+        error.Deadline = Max(error.Deadline, err.Deadline);
+        ++Locked;
         ++DataCenterDisabledNodes[vdisk.VDiskId.FailRealm];
     }
-    return disabled;
 }
 
-void TMirror3dcCounter::CountGroupState(TClusterInfoPtr info, TDuration retryTime, TDuration duration, TErrorInfo &error) {
-    TErasureCounterBase::CountGroupState(info, retryTime, duration, error);
+void TMirror3dcCounter::CountGroupState(TClusterInfoPtr info,
+                                        TDuration retryTime,
+                                        TDuration duration,
+                                        TErrorInfo &error)
+{
+    for (const auto &vdId : info->BSGroup(GroupId).VDisks) {
+        if (vdId != VDisk.VDiskId)
+            CountVDisk(info->VDisk(vdId), info, retryTime, duration, error);
+    }
+    ++Locked;
     ++DataCenterDisabledNodes[VDisk.VDiskId.FailRealm];
+
+    if (Locked && error.Code == TStatus::DISALLOW) {
+        HasAlreadyLockedDisks = true;
+    }
 }
 
-TSimpleSharedPtr<IErasureCounter> CreateErasureCounter(TErasureType::EErasureSpecies es, const TVDiskInfo &vdisk, ui32 groupId) {
+void TDefaultErasureCounter::CountGroupState(TClusterInfoPtr info,
+                                             TDuration retryTime,
+                                             TDuration duration,
+                                             TErrorInfo &error)
+{
+    for (const auto &vdId : info->BSGroup(GroupId).VDisks) {
+        if (vdId != VDisk.VDiskId)
+            CountVDisk(info->VDisk(vdId), info, retryTime, duration, error);
+    }
+    if (Locked && error.Code == TStatus::DISALLOW) {
+        HasAlreadyLockedDisks = true;
+    }
+    ++Locked;
+}
+
+TSimpleSharedPtr<IErasureCounter> CreateErasureCounter(TErasureType::EErasureSpecies es,
+                                                       const TVDiskInfo& vdisk, ui32 groupId)
+{
     switch (es) {
         case TErasureType::ErasureNone:
         case TErasureType::ErasureMirror3:
@@ -249,7 +257,7 @@ TSimpleSharedPtr<IErasureCounter> CreateErasureCounter(TErasureType::EErasureSpe
         case TErasureType::ErasureMirror3dc:
             return TSimpleSharedPtr<IErasureCounter>(new TMirror3dcCounter(vdisk, groupId));
         default:
-            Y_ABORT("Unknown erasure type: %d", es);
+            Y_FAIL("Unknown erasure type: %d", es);
     }
 }
 

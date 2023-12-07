@@ -13,7 +13,7 @@ TReadInitAndAuthActor::TReadInitAndAuthActor(
         const TActorContext& ctx, const TActorId& parentId, const TString& clientId, const ui64 cookie,
         const TString& session, const NActors::TActorId& metaCache, const NActors::TActorId& newSchemeCache,
         TIntrusivePtr<::NMonitoring::TDynamicCounters> counters, TIntrusiveConstPtr<NACLib::TUserToken> token,
-        const NPersQueue::TTopicsToConverter& topics, const TString& localCluster, bool skipReadRuleCheck
+        const NPersQueue::TTopicsToConverter& topics, const TString& localCluster
 )
     : ParentId(parentId)
     , Cookie(cookie)
@@ -22,7 +22,6 @@ TReadInitAndAuthActor::TReadInitAndAuthActor(
     , NewSchemeCache(newSchemeCache)
     , ClientId(clientId)
     , ClientPath(NPersQueue::ConvertOldConsumerName(ClientId, ctx))
-    , SkipReadRuleCheck(skipReadRuleCheck)
     , Token(token)
     , Counters(counters)
     , LocalCluster(localCluster)
@@ -47,7 +46,7 @@ void TReadInitAndAuthActor::DescribeTopics(const NActors::TActorContext& ctx, bo
     TVector<NPersQueue::TDiscoveryConverterPtr> topics;
     for (const auto& topic : Topics) {
         topics.push_back(topic.second.DiscoveryConverter);
-        Y_ABORT_UNLESS(topic.second.DiscoveryConverter->IsValid());
+        Y_VERIFY(topic.second.DiscoveryConverter->IsValid());
     }
 
     //LOG_DEBUG_S(ctx, NKikimrServices::PQ_READ_PROXY, PQ_LOG_PREFIX << " describe topics: " << JoinSeq(", ", topicNames));
@@ -92,7 +91,7 @@ bool TReadInitAndAuthActor::ProcessTopicSchemeCacheResponse(
         const NSchemeCache::TSchemeCacheNavigate::TEntry& entry, THashMap<TString, TTopicHolder>::iterator topicsIter,
         const TActorContext& ctx
 ) {
-    Y_ABORT_UNLESS(entry.PQGroupInfo); // checked at ProcessMetaCacheTopicResponse()
+    Y_VERIFY(entry.PQGroupInfo); // checked at ProcessMetaCacheTopicResponse()
     auto& pqDescr = entry.PQGroupInfo->Description;
     topicsIter->second.TabletID = pqDescr.GetBalancerTabletID();
     topicsIter->second.CloudId = pqDescr.GetPQTabletConfig().GetYcCloudId();
@@ -118,7 +117,7 @@ bool TReadInitAndAuthActor::ProcessTopicSchemeCacheResponse(
         AppData(ctx)->PQConfig.GetTestDatabaseRoot(),
         topicsIter->second.CdcStreamPath
     );
-    Y_ABORT_UNLESS(topicsIter->second.FullConverter->IsValid());
+    Y_VERIFY(topicsIter->second.FullConverter->IsValid());
     return CheckTopicACL(entry, topicsIter->first, ctx);
 }
 
@@ -132,10 +131,10 @@ void TReadInitAndAuthActor::HandleTopicsDescribeResponse(TEvDescribeTopicsRespon
     for (const auto& entry : ev->Get()->Result->ResultSet) {
         const auto& path = topicsRequested[i++]->GetOriginalPath();
         auto it = Topics.find(path);
-        Y_ABORT_UNLESS(it != Topics.end());
+        Y_VERIFY(it != Topics.end());
 
         if (entry.Kind == NSchemeCache::TSchemeCacheNavigate::KindCdcStream) {
-            Y_ABORT_UNLESS(entry.ListNodeEntry->Children.size() == 1);
+            Y_VERIFY(entry.ListNodeEntry->Children.size() == 1);
             const auto& topic = entry.ListNodeEntry->Children.at(0);
 
             // primary path used to re-describe
@@ -196,7 +195,7 @@ bool TReadInitAndAuthActor::CheckTopicACL(
     )) {
         return false;
     }
-    if (!SkipReadRuleCheck && (Token || AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen())) {
+    if (Token || AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen()) {
         bool found = false;
         for (auto& cons : pqDescr.GetPQTabletConfig().GetReadRules() ) {
             if (cons == ClientId) {
@@ -229,12 +228,12 @@ void TReadInitAndAuthActor::HandleClientSchemeCacheResponse(
     TEvTxProxySchemeCache::TEvNavigateKeySetResult* msg = ev->Get();
     const NSchemeCache::TSchemeCacheNavigate* navigate = msg->Request.Get();
 
-    Y_ABORT_UNLESS(navigate->ResultSet.size() == 1);
+    Y_VERIFY(navigate->ResultSet.size() == 1);
     auto& entry = navigate->ResultSet.front();
     auto path = "/" + JoinPath(entry.Path); // ToDo [migration] - through converter ?
     if (navigate->ErrorCount > 0) {
         const NSchemeCache::TSchemeCacheNavigate::EStatus status = navigate->ResultSet.front().Status;
-        CloseSession(TStringBuilder() << "Failed to read ACL for '" << path << "' Scheme cache error : " << status, PersQueue::ErrorCode::UNKNOWN_TOPIC, ctx);
+        CloseSession(TStringBuilder() << "Failed to read ACL for '" << path << "' Scheme cache error : " << status, PersQueue::ErrorCode::ERROR, ctx);
         return;
     }
 

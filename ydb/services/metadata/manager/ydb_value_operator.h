@@ -1,10 +1,6 @@
 #pragma once
 #include <ydb/public/api/protos/ydb_table.pb.h>
 #include <ydb/public/api/protos/ydb_value.pb.h>
-#include <ydb/public/lib/scheme_types/scheme_type_id.h>
-#include <ydb/core/scheme_types/scheme_type_info.h>
-#include <util/generic/vector.h>
-#include <contrib/libs/apache/arrow/cpp/src/arrow/type_fwd.h>
 
 namespace NKikimr::NMetadata::NInternal {
 
@@ -15,16 +11,6 @@ public:
     static Ydb::Column Boolean(const TString& columnId);
     static Ydb::Column UInt64(const TString& columnId);
     static Ydb::Column UInt32(const TString& columnId);
-};
-
-class TYDBType {
-public:
-    static Ydb::Type Primitive(const Ydb::Type::PrimitiveTypeId type);
-    static std::optional<NScheme::TTypeId> ConvertYDBToYQL(const Ydb::Type::PrimitiveTypeId type);
-    static std::optional<Ydb::Type::PrimitiveTypeId> ConvertYQLToYDB(const NScheme::TTypeId type);
-    static std::optional<Ydb::Type::PrimitiveTypeId> ConvertArrowToYDB(const arrow::Type::type type);
-
-    static std::optional<TVector<std::pair<TString, NScheme::TTypeInfo>>> ConvertYDBToYQL(const std::vector<std::pair<TString, Ydb::Type>>& input);
 };
 
 class TYDBValue {
@@ -42,7 +28,6 @@ public:
     static Ydb::Value Utf8(const TStringBuf& value);
     static Ydb::Value UInt64(const ui64 value);
     static Ydb::Value UInt32(const ui32 value);
-    static Ydb::Value Bool(const bool value);
 };
 
 }

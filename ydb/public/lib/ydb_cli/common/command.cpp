@@ -1,8 +1,6 @@
 #include "command.h"
 #include "normalize_path.h"
 
-#include <ydb/public/lib/ydb_cli/common/interactive.h>
-
 namespace NYdb {
 namespace NConsoleClient {
 
@@ -97,24 +95,7 @@ TClientCommand::TClientCommand(const TString& name, const std::initializer_list<
     HideOption("svnrevision");
     Opts.AddHelpOption('h');
     ChangeOptionDescription("help", "Print usage");
-    auto terminalWidth = GetTerminalWidth();
-    size_t lineLength = terminalWidth ? *terminalWidth : Max<size_t>();
-    Opts.SetWrap(Max(Opts.Wrap_, static_cast<ui32>(lineLength)));
-}
-
-ELogPriority TClientCommand::TConfig::VerbosityLevelToELogPriority(TClientCommand::TConfig::EVerbosityLevel lvl) {
-    switch (lvl) {
-        case TClientCommand::TConfig::EVerbosityLevel::NONE:
-            return ELogPriority::TLOG_EMERG;
-        case TClientCommand::TConfig::EVerbosityLevel::DEBUG:
-            return ELogPriority::TLOG_DEBUG;
-        case TClientCommand::TConfig::EVerbosityLevel::INFO:
-            return ELogPriority::TLOG_INFO;
-        case TClientCommand::TConfig::EVerbosityLevel::WARN:
-            return ELogPriority::TLOG_WARNING;
-        default:
-            return ELogPriority::TLOG_ERR;
-    }
+    Opts.SetWrap(Max(Opts.Wrap_, static_cast<ui32>(TermWidth())));
 }
 
 TClientCommand::TOptsParseOneLevelResult::TOptsParseOneLevelResult(TConfig& config) {
@@ -264,18 +245,29 @@ void TClientCommand::SetFreeArgTitle(size_t pos, const TString& title, const TSt
     Opts.SetFreeArgTitle(pos, title, help);
 }
 
-void TClientCommand::RenderOneCommandDescription(
+TString TClientCommand::Ends2Prefix(const std::basic_string<bool>& ends) {
+    TString prefix;
+    if (!ends.empty()) {
+        for (auto it = ends.begin();;) {
+            bool s = *it;
+            ++it;
+            if (it == ends.end()) {
+                prefix += s ? "└─ " : "├─ ";
+                break;
+            } else {
+                prefix += s ? "   " : "│  ";
+            }
+        }
+    }
+    return prefix;
+}
+
+void TClientCommand::RenderCommandsDescription(
     TStringStream& stream,
     const NColorizer::TColors& colors,
-    RenderEntryType type
+    const std::basic_string<bool>& ends
 ) {
-    TString prefix;
-    if (type == MIDDLE) {
-        prefix = "├─ ";
-    }
-    if (type == END) {
-        prefix = "└─ ";
-    }
+    TString prefix = Ends2Prefix(ends);
     TString line = prefix + Name;
     stream << prefix << colors.BoldColor() << Name << colors.OldColor();
     if (!Description.empty()) {
@@ -306,8 +298,8 @@ TClientCommandTree::TClientCommandTree(const TString& name, const std::initializ
 }
 
 void TClientCommandTree::AddCommand(std::unique_ptr<TClientCommand> command) {
-    for (const TString& alias : command->Aliases) {
-        Aliases[alias] = command->Name;
+    for (const TString& a : command->Aliases) {
+        Aliases[a] = command->Name;
     }
     command->Parent = this;
     SubCommands[command->Name] = std::move(command);
@@ -335,11 +327,6 @@ void TClientCommandTree::SaveParseResult(TConfig& config) {
 
 void TClientCommandTree::Parse(TConfig& config) {
     TClientCommand::Parse(config);
-
-    if (config.ParseResult->GetFreeArgs().empty()) {
-        return;
-    }
-
     TString cmd = config.ParseResult->GetFreeArgs().at(0);
     config.Tokens.push_back(cmd);
     size_t count = config.ParseResult->GetFreeArgsPos();
@@ -377,6 +364,8 @@ void TClientCommandTree::Prepare(TConfig& config) {
 
     if (SelectedCommand) {
         SelectedCommand->Prepare(config);
+    } else {
+        throw yexception() << "No child command to prepare";
     }
 }
 
@@ -395,12 +384,13 @@ bool TClientCommandTree::HasOptionsToShow() {
 
 void TClientCommandTree::RenderCommandsDescription(
     TStringStream& stream,
-    const NColorizer::TColors& colors
+    const NColorizer::TColors& colors,
+    const std::basic_string<bool>& ends
 ) {
-    TClientCommand::RenderOneCommandDescription(stream, colors, BEGIN);
+    TClientCommand::RenderCommandsDescription(stream, colors, ends);
     for (auto it = SubCommands.begin(); it != SubCommands.end(); ++it) {
         bool lastCommand = (std::next(it) == SubCommands.end());
-        it->second->RenderOneCommandDescription(stream, colors, lastCommand ? END : MIDDLE);
+        it->second->RenderCommandsDescription(stream, colors, ends + lastCommand);
     }
 }
 

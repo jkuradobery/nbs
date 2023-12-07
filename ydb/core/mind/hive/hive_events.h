@@ -1,7 +1,7 @@
 #pragma once
 
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/event_local.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/event_local.h>
 #include "hive.h"
 #include "tablet_info.h"
 #include "node_info.h"
@@ -24,9 +24,6 @@ struct TEvPrivate {
         EvProcessPendingOperations,
         EvRestartComplete,
         EvBalancerOut,
-        EvProcessIncomingEvent,
-        EvRefreshStorageInfo,
-        EvLogTabletMoves,
         EvEnd
     };
 
@@ -84,12 +81,6 @@ struct TEvPrivate {
     struct TEvProcessPendingOperations : TEventLocal<TEvProcessPendingOperations, EvProcessPendingOperations> {};
 
     struct TEvBalancerOut : TEventLocal<TEvBalancerOut, EvBalancerOut> {};
-
-    struct TEvProcessIncomingEvent : TEventLocal<TEvProcessIncomingEvent, EvProcessIncomingEvent> {};
-
-    struct TEvRefreshStorageInfo : TEventLocal<TEvRefreshStorageInfo, EvRefreshStorageInfo> {};
-
-    struct TEvLogTabletMoves : TEventLocal<TEvLogTabletMoves, EvLogTabletMoves> {};
 };
 
 } // NHive

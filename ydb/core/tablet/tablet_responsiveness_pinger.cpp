@@ -1,7 +1,5 @@
 #include "tablet_responsiveness_pinger.h"
 #include <ydb/core/base/appdata.h>
-#include <library/cpp/time_provider/time_provider.h>
-
 
 namespace NKikimr {
 
@@ -17,9 +15,9 @@ void TTabletResponsivenessPinger::Bootstrap(const TActorContext &ctx) {
     Become(&TThis::StateWait, ctx, PingInterval, new TEvents::TEvWakeup());
 }
 
-void TTabletResponsivenessPinger::OnAnyEvent() {
+void TTabletResponsivenessPinger::OnAnyEvent(const TActorContext &ctx) {
     if (SelfPingSentTime) {
-        const TInstant now = AppData()->TimeProvider->Now();
+        const TInstant now = AppData(ctx)->TimeProvider->Now();
         const TDuration responseTime = now - SelfPingSentTime;
         LastResponseTime = Max(LastResponseTime, responseTime);
         Counter.Set(LastResponseTime.MicroSeconds());

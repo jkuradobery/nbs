@@ -1,5 +1,5 @@
 #pragma once
-#include "ydb/core/scheme/scheme_pathid.h"
+#include "pathid.h"
 #include "statestorage.h"
 
 namespace NKikimr {
@@ -176,14 +176,6 @@ struct TEvStateStorage::TEvListStateStorageResult : public TEventLocal<TEvListSt
     {}
 };
 
-struct TEvStateStorage::TEvPublishActorGone : public TEventLocal<TEvPublishActorGone, EvPublishActorGone> {
-    TActorId Replica;
-
-    TEvPublishActorGone(const TActorId& replica)
-        : Replica(replica)
-    {}
-};
-
 struct TEvStateStorage::TEvReplicaLookup : public TEventPB<TEvStateStorage::TEvReplicaLookup, NKikimrStateStorage::TEvLookup, TEvStateStorage::EvReplicaLookup>{
     struct TActualityCounter : public TRefCounted<TActualityCounter, TAtomicCounter> {};
     using TActualityCounterPtr = TIntrusivePtr<TActualityCounter>;
@@ -300,9 +292,10 @@ struct TEvStateStorage::TEvReplicaBoardLookup : public TEventPB<TEvStateStorage:
     TEvReplicaBoardLookup()
     {}
 
-    TEvReplicaBoardLookup(const TString &path, bool sub)
+    TEvReplicaBoardLookup(const TString &path, TActorId owner, bool sub)
     {
         Record.SetPath(path);
+        ActorIdToProto(owner, Record.MutableOwner());
         Record.SetSubscribe(sub);
     }
 };
@@ -312,18 +305,12 @@ struct TEvStateStorage::TEvReplicaBoardCleanup : public TEventPB<TEvStateStorage
     {}
 };
 
-struct TEvStateStorage::TEvReplicaBoardUnsubscribe : public TEventPB<TEvStateStorage::TEvReplicaBoardUnsubscribe, NKikimrStateStorage::TEvReplicaBoardUnsubscribe, TEvStateStorage::EvReplicaBoardUnsubscribe> {
-    TEvReplicaBoardUnsubscribe()
-    {}
-};
-
 struct TEvStateStorage::TEvReplicaBoardPublishAck : public TEventPB<TEvStateStorage::TEvReplicaBoardPublishAck, NKikimrStateStorage::TEvReplicaBoardPublishAck, TEvStateStorage::EvReplicaBoardPublishAck> {
     TEvReplicaBoardPublishAck()
     {}
 };
 
 struct TEvStateStorage::TEvReplicaBoardInfo : public TEventPB<TEvStateStorage::TEvReplicaBoardInfo, NKikimrStateStorage::TEvReplicaBoardInfo, TEvStateStorage::EvReplicaBoardInfo> {
-
     TEvReplicaBoardInfo()
     {}
 
@@ -331,17 +318,6 @@ struct TEvStateStorage::TEvReplicaBoardInfo : public TEventPB<TEvStateStorage::T
     {
         Record.SetPath(path);
         Record.SetDropped(dropped);
-    }
-};
-
-struct TEvStateStorage::TEvReplicaBoardInfoUpdate : public TEventPB<TEvStateStorage::TEvReplicaBoardInfoUpdate, NKikimrStateStorage::TEvReplicaBoardInfoUpdate, TEvStateStorage::EvReplicaBoardInfoUpdate> {
-
-    TEvReplicaBoardInfoUpdate()
-    {}
-
-    TEvReplicaBoardInfoUpdate(const TString &path)
-    {
-        Record.SetPath(path);
     }
 };
 

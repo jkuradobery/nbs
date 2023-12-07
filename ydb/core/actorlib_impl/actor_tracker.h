@@ -1,9 +1,9 @@
 #pragma once
 
 #include "defs.h"
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/events.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/events.h>
 #include <util/generic/set.h>
 
 namespace NActors {
@@ -30,16 +30,12 @@ namespace NActors {
         // a set of registered child actors we are tracking
         TSet<TActorId> RegisteredActors;
 
-        // number of in flight TEvTrackActor messages coming to this->ActorContext()->CurrentContext()r, but not yet processed; high bit indicates if
+        // number of in flight TEvTrackActor messages coming to tracker, but not yet processed; high bit indicates if
         // we are stopping and can't register new actors
         TAtomic NumInFlightTracks = 0;
 
         // actor id for this tracker
         TActorId ActorId;
-
-        TActorContext ActorContext() const {
-            return TActivationContext::ActorContextFor(ActorId);
-        }
 
     public:
         void BindToActor(const TActorContext& ctx);
@@ -59,7 +55,7 @@ namespace NActors {
         // processing is finished.
         //
         // Since receiving TEvPoisonPill, the containing actor may continue to receive usual messages.
-        bool HandleTracking(TAutoPtr<IEventHandle>& ev);
+        bool HandleTracking(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx);
 
         // register subactor inside this tracker on a separate mailbox; should be called instead of ExecutorThread's
         // method
@@ -109,7 +105,7 @@ namespace NActors {
         virtual void AfterBootstrap(const TActorContext& ctx) = 0;
 
     private:
-        void InitialReceiveFunc(TAutoPtr<IEventHandle>& ev);
+        void InitialReceiveFunc(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx);
 
     private:
         friend class TActorTracker;

@@ -9,7 +9,6 @@ namespace NKqp {
 
 NYql::NDq::IDqOutputConsumer::TPtr KqpBuildOutputConsumer(const NYql::NDqProto::TTaskOutput& outputDesc,
     const NMiniKQL::TType* type, NUdf::IApplyContext* applyCtx, const NMiniKQL::TTypeEnvironment& typeEnv,
-    const NKikimr::NMiniKQL::THolderFactory& holderFactory,
     TVector<NYql::NDq::IDqOutput::TPtr>&& outputs);
 
 TIntrusivePtr<NYql::NDq::IDqTaskRunner> CreateKqpTaskRunner(const NYql::NDq::TDqTaskRunnerContext& execCtx,
@@ -18,7 +17,7 @@ TIntrusivePtr<NYql::NDq::IDqTaskRunner> CreateKqpTaskRunner(const NYql::NDq::TDq
 
 class TKqpTasksRunner : public TSimpleRefCount<TKqpTasksRunner>, private TNonCopyable {
 public:
-    TKqpTasksRunner(google::protobuf::RepeatedPtrField<NYql::NDqProto::TDqTask>&& tasks,
+    TKqpTasksRunner(const google::protobuf::RepeatedPtrField<NYql::NDqProto::TDqTask>& tasks,
                     const NYql::NDq::TDqTaskRunnerContext& execCtx, const NYql::NDq::TDqTaskRunnerSettings& settings,
                     const NYql::NDq::TLogFunc& logFunc);
 
@@ -35,11 +34,7 @@ public:
     NYql::NDq::IDqTaskRunner& GetTaskRunner(ui64 taskId);
     const NYql::NDq::IDqTaskRunner& GetTaskRunner(ui64 taskId) const;
 
-    const TMap<ui64, NYql::NDq::TDqTaskSettings>& GetTasks() const {
-        return Tasks;
-    }
-
-    const NYql::NDq::TDqTaskSettings& GetTask(ui64 taskId) const;
+    const NYql::NDqProto::TDqTask& GetTask(ui64 taskId) const;
 
     NYql::NDq::IDqInputChannel::TPtr GetInputChannel(ui64 taskId, ui64 channelId) {
         return GetTaskRunner(taskId).GetInputChannel(channelId);
@@ -55,10 +50,11 @@ public:
 
     ui64 GetAllocatedMemory() const { return Alloc->GetAllocated(); }
 
-    const TMap<ui64, const NYql::NDq::TDqTaskRunnerStats*> GetTasksStats() const { return Stats; }
+    const TMap<ui64, const NYql::NDq::TDqTaskRunnerStats*> GetTasksStats() const { return Stats; };
+
 private:
     TMap<ui64, TIntrusivePtr<NYql::NDq::IDqTaskRunner>> TaskRunners;
-    TMap<ui64, NYql::NDq::TDqTaskSettings> Tasks;
+    TMap<ui64, const NYql::NDqProto::TDqTask*> Tasks;
     TMap<ui64, const NYql::NDq::TDqTaskRunnerStats*> Stats;
     NYql::NDq::TLogFunc LogFunc;
     NMiniKQL::TScopedAlloc* Alloc;
@@ -74,7 +70,7 @@ private:
 };
 
 
-TIntrusivePtr<TKqpTasksRunner> CreateKqpTasksRunner(google::protobuf::RepeatedPtrField<NYql::NDqProto::TDqTask>&& tasks,
+TIntrusivePtr<TKqpTasksRunner> CreateKqpTasksRunner(const google::protobuf::RepeatedPtrField<NYql::NDqProto::TDqTask>& tasks,
     const NYql::NDq::TDqTaskRunnerContext& execCtx, const NYql::NDq::TDqTaskRunnerSettings& settings,
     const NYql::NDq::TLogFunc& logFunc);
 

@@ -1,8 +1,7 @@
 #include "sql.h"
-#include "source.h"
+#include "node.h"
 
 #include "context.h"
-#include "match_recognize.h"
 
 #include <ydb/library/yql/providers/common/provider/yql_provider_names.h>
 #include <ydb/library/yql/utils/yql_panic.h>
@@ -67,7 +66,7 @@ public:
     }
 
     TAstNode* Translate(TContext& ctx) const override {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -120,8 +119,10 @@ public:
             if (IsSubquery()) {
                 /// should be not used?
                 auto columnsPtr = Source->GetColumns();
-                if (columnsPtr && (columnsPtr->All || columnsPtr->QualifiedAll || columnsPtr->List.size() == 1)) {
+                if (columnsPtr && (columnsPtr->All || columnsPtr->QualifiedAll)) {
                     Node = Y("SingleMember", Y("SqlAccess", Q("dict"), Y("Take", Node, Y("Uint64", Q("1"))), Y("Uint64", Q("0"))));
+                } else if (columnsPtr && columnsPtr->List.size() == 1) {
+                    Node = Y("Member", Y("SqlAccess", Q("dict"), Y("Take", Node, Y("Uint64", Q("1"))), Y("Uint64", Q("0"))), Q(columnsPtr->List.front()));
                 } else {
                     ctx.Error(Pos) << "Source used in expression should contain one concrete column";
                     return false;
@@ -141,7 +142,7 @@ public:
     }
 
     TAstNode* Translate(TContext& ctx) const override {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -346,12 +347,12 @@ protected:
     {}
 
     void AllColumns() override {
-        Y_DEBUG_ABORT_UNLESS(Source);
+        Y_VERIFY_DEBUG(Source);
         return Source->AllColumns();
     }
 
     const TColumns* GetColumns() const override {
-        Y_DEBUG_ABORT_UNLESS(Source);
+        Y_VERIFY_DEBUG(Source);
         return Source->GetColumns();
     }
 
@@ -361,7 +362,7 @@ protected:
     }
 
     TMaybe<bool> AddColumn(TContext& ctx, TColumnNode& column) override {
-        Y_DEBUG_ABORT_UNLESS(Source);
+        Y_VERIFY_DEBUG(Source);
         const TString label(Source->GetLabel());
         Source->SetLabel(Label);
         const auto ret = Source->AddColumn(ctx, column);
@@ -374,17 +375,17 @@ protected:
     }
 
     bool IsStream() const override {
-        Y_DEBUG_ABORT_UNLESS(Source);
+        Y_VERIFY_DEBUG(Source);
         return Source->IsStream();
     }
 
     EOrderKind GetOrderKind() const override {
-        Y_DEBUG_ABORT_UNLESS(Source);
+        Y_VERIFY_DEBUG(Source);
         return Source->GetOrderKind();
     }
 
     TWriteSettings GetWriteSettings() const override {
-        Y_DEBUG_ABORT_UNLESS(Source);
+        Y_VERIFY_DEBUG(Source);
         return Source->GetWriteSettings();
     }
 
@@ -581,8 +582,10 @@ public:
         }
         if (src && Subquery->GetSource()->IsSelect()) {
             auto columnsPtr = &Columns;
-            if (columnsPtr && (columnsPtr->All || columnsPtr->QualifiedAll || columnsPtr->List.size() == 1)) {
+            if (columnsPtr && (columnsPtr->All || columnsPtr->QualifiedAll)) {
                 Node = Y("SingleMember", Y("SqlAccess", Q("dict"), Y("Take", Node, Y("Uint64", Q("1"))), Y("Uint64", Q("0"))));
+            } else if (columnsPtr && columnsPtr->List.size() == 1) {
+                Node = Y("Member", Y("SqlAccess", Q("dict"), Y("Take", Node, Y("Uint64", Q("1"))), Y("Uint64", Q("0"))), Q(columnsPtr->List.front()));
             } else {
                 ctx.Error(Pos) << "Source used in expression should contain one concrete column";
                 return false;
@@ -608,7 +611,7 @@ public:
             ESampleMode mode,
             TNodePtr samplingRate,
             TNodePtr samplingSeed) override {
-        if (mode == ESampleMode::System) {
+        if (mode != ESampleMode::Bernoulli) {
             ctx.Error(pos) << "only Bernoulli sampling mode is supported for subqueries";
             return false;
         }
@@ -628,7 +631,7 @@ public:
     }
 
     TAstNode* Translate(TContext& ctx) const override {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -1161,10 +1164,6 @@ public:
         return Settings;
     }
 
-    bool HasSelectResult() const final {
-        return !Settings.Discard;
-    }
-
     TPtr DoClone() const final {
         return new TReduceSource(Pos, Mode, Source->CloneSource(), CloneContainer(OrderBy),
             CloneContainer(Keys), CloneContainer(Args), SafeClone(Udf), SafeClone(Having), Settings,
@@ -1247,7 +1246,7 @@ public:
         Subselects = std::move(subselects);
         Grouping = std::move(grouping);
         GroupByExpr = std::move(groupByExpr);
-        Y_DEBUG_ABORT_UNLESS(Subselects.size() > 1);
+        Y_VERIFY_DEBUG(Subselects.size() > 1);
     }
 
     void GetInputTables(TTableList& tableList) const override {
@@ -1381,10 +1380,6 @@ public:
         return Settings;
     }
 
-    bool HasSelectResult() const override {
-        return !Settings.Discard;
-    }
-
     TNodePtr DoClone() const final {
         auto newSource = MakeIntrusive<TCompositeSelect>(Pos, Source->CloneSource(), OriginalSource->CloneSource(), Settings);
         newSource->SetSubselects(CloneContainer(Subselects), CloneContainer(Grouping), CloneContainer(GroupByExpr));
@@ -1450,9 +1445,7 @@ public:
         bool distinct,
         const TVector<TNodePtr>& without,
         bool selectStream,
-        const TWriteSettings& settings,
-        TColumnsSets&& uniqueSets,
-        TColumnsSets&& distinctSets
+        const TWriteSettings& settings
     )
         : IRealSource(pos)
         , Source(std::move(source))
@@ -1470,8 +1463,6 @@ public:
         , LegacyHoppingWindowSpec(legacyHoppingWindowSpec)
         , SelectStream(selectStream)
         , Settings(settings)
-        , UniqueSets(std::move(uniqueSets))
-        , DistinctSets(std::move(distinctSets))
     {
     }
 
@@ -1669,6 +1660,7 @@ public:
                 return false;
             }
         }
+
         return true;
     }
 
@@ -1678,20 +1670,8 @@ public:
             return nullptr;
         }
 
-        auto block(Y(Y("let", "core", input)));
-
-        if (Source->HasMatchRecognize()) {
-            if (auto matchRecognize = Source->BuildMatchRecognize(ctx, "core")) {
-                //use unique name match_recognize to find this block easily in unit tests
-                block = L(block, Y("let", "match_recognize", matchRecognize));
-                //then bind to the conventional name
-                block = L(block, Y("let", "core", "match_recognize"));
-            } else {
-                return nullptr;
-            }
-        }
-
         bool ordered = ctx.UseUnordered(*this);
+        auto block(Y(Y("let", "core", input)));
         if (PreFlattenMap) {
             block = L(block, Y("let", "core", Y(ordered ? "OrderedFlatMap" : "FlatMap", "core", BuildLambda(Pos, Y("row"), PreFlattenMap))));
         }
@@ -1773,10 +1753,6 @@ public:
         return true;
     }
 
-    bool HasSelectResult() const override {
-        return !Settings.Discard;
-    }
-
     bool IsStream() const override {
         return Source->IsStream();
     }
@@ -1833,7 +1809,7 @@ public:
         return new TSelectCore(Pos, Source->CloneSource(), CloneContainer(GroupByExpr),
                 CloneContainer(GroupBy), CompactGroupBy, GroupBySuffix, AssumeSorted, CloneContainer(OrderBy),
                 SafeClone(Having), newSpecs, SafeClone(LegacyHoppingWindowSpec),
-                CloneContainer(Terms), Distinct, Without, SelectStream, Settings, TColumnsSets(UniqueSets), TColumnsSets(DistinctSets));
+                CloneContainer(Terms), Distinct, Without, SelectStream, Settings);
     }
 
 private:
@@ -1890,7 +1866,7 @@ private:
                 } else if (column) {
                     label = isJoin && source && *source ? DotJoin(*source, *column) : *column;
                 } else {
-                    label = Columns.AddUnnamed();
+                    label = TStringBuilder() << "column" << Columns.List.size();
                     hasName = false;
                     if (ctx.WarnUnnamedColumns) {
                         ctx.Warning(term->GetPos(), TIssuesIds::YQL_UNNAMED_COLUMN)
@@ -1898,9 +1874,10 @@ private:
                     }
                 }
             }
-            if (hasName && !Columns.Add(&label, false, false, true)) {
+            if (!Columns.Add(&label, false, false, true, hasName)) {
                 ctx.Error(Pos) << "Duplicate column: " << label;
                 hasError = true;
+                continue;
             }
         }
 
@@ -1946,7 +1923,7 @@ private:
         if (Having && !Having->Init(ctx, src)) {
             hasError = true;
         }
-        if (!src->IsCompositeSource() && !Columns.All && src->HasAggregations()) {
+        if (!src->IsCompositeSource() && !Distinct && !Columns.All && src->HasAggregations()) {
             WarnIfAliasFromSelectIsUsedInGroupBy(ctx, Terms, GroupBy, GroupByExpr);
 
             /// verify select aggregation compatibility
@@ -2085,7 +2062,6 @@ private:
             }
 
             auto column = Columns.List.begin();
-            auto isNamedColumn = Columns.NamedColumns.begin();
             for (auto& term: Terms) {
                 auto sourceName = term->GetSourceName();
                 if (!term->IsAsterisk()) {
@@ -2101,12 +2077,9 @@ private:
                         lambdaPos = term->GetPos();
                         aliasPos = term->GetLabelPos() ? *term->GetLabelPos() : lambdaPos;
                     }
-                    auto projectItem = Y("SqlProjectItem", "projectCoreType", BuildQuotedAtom(aliasPos, *isNamedColumn ? *column : ""), BuildLambda(lambdaPos, Y("row"), body, "res"));
+                    auto projectItem = Y("SqlProjectItem", "projectCoreType", BuildQuotedAtom(aliasPos, *column), BuildLambda(lambdaPos, Y("row"), body, "res"));
                     if (term->IsImplicitLabel() && ctx.WarnOnAnsiAliasShadowing) {
                         projectItem = L(projectItem, Q(Y(Q(Y(Q("warnShadow"))))));
-                    }
-                    if (!*isNamedColumn) {
-                        projectItem = L(projectItem, Q(Y(Q(Y(Q("autoName"))))));
                     }
                     sqlProjectArgs = L(sqlProjectArgs, projectItem);
                 } else {
@@ -2137,7 +2110,6 @@ private:
                     sqlProjectArgs = L(sqlProjectArgs, Y("SqlProjectStarItem", "projectCoreType", BuildQuotedAtom(Pos, *sourceName), BuildLambda(Pos, Y("row"), terms, "res"), Q(options)));
                 }
                 ++column;
-                ++isNamedColumn;
             }
         }
 
@@ -2147,29 +2119,6 @@ private:
         }
 
         block = L(block, Y("let", "core", Y(ordered ? "OrderedSqlProject" : "SqlProject", "core", Q(sqlProjectArgs))));
-        if (!(UniqueSets.empty() && DistinctSets.empty())) {
-            block = L(block, Y("let", "core", Y("RemoveSystemMembers", "core")));
-            const auto MakeUniqueHint = [this](INode::TPtr& block, const TColumnsSets& sets, bool distinct) {
-                if (!sets.empty()) {
-                    auto assume = Y(distinct ? "AssumeDistinctHint" : "AssumeUniqueHint", "core");
-                    if (!sets.front().empty()) {
-                        for (const auto& columns : sets) {
-                            auto set = Y();
-                            for (const auto& column : columns) {
-                                set = L(set, Q(column));
-                            }
-
-                            assume = L(assume, Q(set));
-                        }
-                    }
-                    block = L(block, Y("let", "core", assume));
-                }
-            };
-
-            MakeUniqueHint(block, DistinctSets, true);
-            MakeUniqueHint(block, UniqueSets, false);
-        }
-
         return Y("block", Q(L(block, Y("return", "core"))));
     }
 
@@ -2198,7 +2147,6 @@ private:
     TLegacyHoppingWindowSpecPtr LegacyHoppingWindowSpec;
     const bool SelectStream;
     const TWriteSettings Settings;
-    const TColumnsSets UniqueSets, DistinctSets;
 };
 
 class TProcessSource: public IRealSource {
@@ -2265,7 +2213,7 @@ public:
         }
 
         auto processSource = fakeSource != nullptr ? fakeSource.Get() : src;
-        Y_DEBUG_ABORT_UNLESS(processSource != nullptr);
+        Y_VERIFY_DEBUG(processSource != nullptr);
         if (!With->Init(ctx, processSource)) {
             return false;
         }
@@ -2411,10 +2359,6 @@ public:
         return false;
     }
 
-    bool HasSelectResult() const override {
-        return !Settings.Discard;
-    }
-
     bool IsStream() const override {
         return Source->IsStream();
     }
@@ -2432,11 +2376,11 @@ private:
     TNodePtr BuildColumnsTerms(TContext& ctx) {
         Y_UNUSED(ctx);
         TNodePtr terms;
-        Y_DEBUG_ABORT_UNLESS(Terms.size() == 1);
+        Y_VERIFY_DEBUG(Terms.size() == 1);
         if (Columns.All) {
             terms = Y(Y("let", "res", Y("ToSequence", Terms.front())));
         } else {
-            Y_DEBUG_ABORT_UNLESS(Columns.List.size() == Terms.size());
+            Y_VERIFY_DEBUG(Columns.List.size() == Terms.size());
             terms = L(Y(), Y("let", "res",
                 L(Y("AsStructUnordered"), Q(Y(BuildQuotedAtom(Pos, Columns.List.front()), Terms.front())))));
             terms = L(terms, Y("let", "res", Y("Just", "res")));
@@ -2576,13 +2520,11 @@ TSourcePtr DoBuildSelectCore(
     bool distinct,
     TVector<TNodePtr>&& without,
     bool selectStream,
-    const TWriteSettings& settings,
-    TColumnsSets&& uniqueSets,
-    TColumnsSets&& distinctSets
+    const TWriteSettings& settings
 ) {
     if (groupBy.empty() || !groupBy.front()->ContentListPtr()) {
         return new TSelectCore(pos, std::move(source), groupByExpr, groupBy, compactGroupBy, groupBySuffix, assumeSorted,
-            orderBy, having, winSpecs, legacyHoppingWindowSpec, terms, distinct, without, selectStream, settings, std::move(uniqueSets), std::move(distinctSets));
+            orderBy, having, winSpecs, legacyHoppingWindowSpec, terms, distinct, without, selectStream, settings);
     }
     if (groupBy.size() == 1) {
         /// actualy no big idea to use grouping function in this case (result allways 0)
@@ -2590,7 +2532,7 @@ TSourcePtr DoBuildSelectCore(
         source = new TNestedProxySource(pos, *contentPtr, source);
         return DoBuildSelectCore(ctx, pos, originalSource, source, groupByExpr, *contentPtr, compactGroupBy, groupBySuffix,
             assumeSorted, orderBy, having, std::move(winSpecs),
-            legacyHoppingWindowSpec, std::move(terms), distinct, std::move(without), selectStream, settings, std::move(uniqueSets), std::move(distinctSets));
+            legacyHoppingWindowSpec, std::move(terms), distinct, std::move(without), selectStream, settings);
     }
     /// \todo some smart merge logic, generalize common part of grouping (expr, flatten, etc)?
     TIntrusivePtr<TCompositeSelect> compositeSelect = new TCompositeSelect(pos, std::move(source), originalSource->CloneSource(), settings);
@@ -2617,7 +2559,7 @@ TSourcePtr DoBuildSelectCore(
         totalGroups += contentPtr->size();
         TSelectCore* selectCore = new TSelectCore(pos, std::move(proxySource), CloneContainer(groupByExpr),
             CloneContainer(*contentPtr), compactGroupBy, groupBySuffix, assumeSorted, orderBy, SafeClone(having), winSpecs,
-            legacyHoppingWindowSpec, terms, distinct, without, selectStream, settings, TColumnsSets(uniqueSets), TColumnsSets(distinctSets));
+            legacyHoppingWindowSpec, terms, distinct, without, selectStream, settings);
         subselects.emplace_back(selectCore);
     }
     if (totalGroups > ctx.PragmaGroupByLimit) {
@@ -2647,21 +2589,17 @@ TSourcePtr BuildSelectCore(
     bool distinct,
     TVector<TNodePtr>&& without,
     bool selectStream,
-    const TWriteSettings& settings,
-    TColumnsSets&& uniqueSets,
-    TColumnsSets&& distinctSets
-)
+    const TWriteSettings& settings)
 {
     return DoBuildSelectCore(ctx, pos, source, source, groupByExpr, groupBy, compactGroupBy, groupBySuffix, assumeSorted, orderBy,
-        having, std::move(winSpecs), legacyHoppingWindowSpec, std::move(terms), distinct, std::move(without), selectStream, settings, std::move(uniqueSets), std::move(distinctSets));
+        having, std::move(winSpecs), legacyHoppingWindowSpec, std::move(terms), distinct, std::move(without), selectStream, settings);
 }
 
-class TUnion: public IRealSource {
+class TUnionAll: public IRealSource {
 public:
-    TUnion(TPosition pos, TVector<TSourcePtr>&& sources, bool quantifierAll, const TWriteSettings& settings)
+    TUnionAll(TPosition pos, TVector<TSourcePtr>&& sources, const TWriteSettings& settings)
         : IRealSource(pos)
         , Sources(std::move(sources))
-        , QuantifierAll(quantifierAll)
         , Settings(settings)
     {
     }
@@ -2687,7 +2625,7 @@ public:
             }
             if (!ctx.PositionalUnionAll || first) {
                 auto c = s->GetColumns();
-                Y_DEBUG_ABORT_UNLESS(c);
+                Y_VERIFY_DEBUG(c);
                 Columns.Merge(*c);
                 first = false;
             }
@@ -2696,13 +2634,7 @@ public:
     }
 
     TNodePtr Build(TContext& ctx) override {
-        TPtr res;
-        if (QuantifierAll) {
-            res = ctx.PositionalUnionAll ? Y("UnionAllPositional") : Y("UnionAll");
-        } else {
-            res = ctx.PositionalUnionAll ? Y("UnionPositional") : Y("Union");
-        }
-
+        auto res = ctx.PositionalUnionAll ? Y("UnionAllPositional") : Y("UnionAll");
         for (auto& s: Sources) {
             auto input = s->Build(ctx);
             if (!input) {
@@ -2724,15 +2656,11 @@ public:
     }
 
     TNodePtr DoClone() const final {
-        return MakeIntrusive<TUnion>(Pos, CloneContainer(Sources), QuantifierAll, Settings);
+        return MakeIntrusive<TUnionAll>(Pos, CloneContainer(Sources), Settings);
     }
 
     bool IsSelect() const override {
         return true;
-    }
-
-    bool HasSelectResult() const override {
-        return !Settings.Discard;
     }
 
     TWriteSettings GetWriteSettings() const override {
@@ -2741,17 +2669,11 @@ public:
 
 private:
     TVector<TSourcePtr> Sources;
-    bool QuantifierAll;
     const TWriteSettings Settings;
 };
 
-TSourcePtr BuildUnion(
-    TPosition pos, 
-    TVector<TSourcePtr>&& sources, 
-    bool quantifierAll,
-    const TWriteSettings& settings
-) {
-    return new TUnion(pos, std::move(sources), quantifierAll, settings);
+TSourcePtr BuildUnionAll(TPosition pos, TVector<TSourcePtr>&& sources, const TWriteSettings& settings) {
+    return new TUnionAll(pos, std::move(sources), settings);
 }
 
 class TOverWindowSource: public IProxySource {
@@ -2792,7 +2714,7 @@ public:
 
     TNodePtr Build(TContext& ctx) override {
         Y_UNUSED(ctx);
-        Y_ABORT("Unexpected call");
+        Y_FAIL("Unexpected call");
     }
 
     const TString* GetWindowName() const override {
@@ -2920,7 +2842,7 @@ public:
             ESampleMode mode,
             TNodePtr samplingRate,
             TNodePtr samplingSeed) override {
-        if (mode == ESampleMode::System) {
+        if (mode != ESampleMode::Bernoulli) {
             ctx.Error(pos) << "only Bernoulli sampling mode is supported for subqueries";
             return false;
         }
@@ -2933,10 +2855,6 @@ public:
 
     bool IsSelect() const override {
         return Source->IsSelect();
-    }
-
-    bool HasSelectResult() const override {
-        return Source->HasSelectResult();
     }
 
     TPtr DoClone() const final {
@@ -2972,10 +2890,6 @@ public:
 
     bool IsSelect() const override {
         return true;
-    }
-
-    bool HasSelectResult() const override {
-        return Source->HasSelectResult();
     }
 
     bool DoInit(TContext& ctx, ISource* src) override {
@@ -3027,15 +2941,11 @@ public:
         auto columns = Source->GetColumns();
         if (columns && !columns->All && !(columns->QualifiedAll && ctx.SimpleColumns)) {
             auto list = Y();
-            YQL_ENSURE(columns->List.size() == columns->NamedColumns.size());
-            for (size_t i = 0; i < columns->List.size(); ++i) {
-                auto& c = columns->List[i];
+            for (auto& c: columns->List) {
                 if (c.EndsWith('*')) {
                     list = L(list, Q(Y(Q("prefix"), BuildQuotedAtom(Pos, c.substr(0, c.size() - 1)))));
-                } else if (columns->NamedColumns[i]) {
-                    list = L(list, BuildQuotedAtom(Pos, c));
                 } else {
-                    list = L(list, Q(Y(Q("auto"))));
+                    list = L(list, BuildQuotedAtom(Pos, c));
                 }
             }
             settings = L(settings, Q(Y(Q("columns"), Q(list))));
@@ -3050,7 +2960,7 @@ public:
             return false;
         }
         node = L(node, Y("let", "output", output));
-        if (WriteResult || writeSettings.Discard) {
+        if (WriteResult) {
             if (EOrderKind::None == Source->GetOrderKind() && ctx.UseUnordered(*Source)) {
                 node = L(node, Y("let", "output", Y("Unordered", "output")));
             }

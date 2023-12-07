@@ -145,7 +145,7 @@ Y_UNIT_TEST_SUITE(VDiskAssimilation) {
 
                     UNIT_ASSERT(!lastBlob || *lastBlob < TLogoBlobID(raw));
                     lastBlob.emplace(raw);
-
+                    
                     TIngress ingress(item.GetIngress());
                     if (const auto& p = ingress.LocalParts(info->Type); !p.Empty()) {
                         aBlobs.emplace(*lastBlob);

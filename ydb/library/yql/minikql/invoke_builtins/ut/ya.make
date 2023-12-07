@@ -1,8 +1,8 @@
-UNITTEST_FOR(ydb/library/yql/minikql/invoke_builtins/llvm)
+UNITTEST_FOR(ydb/library/yql/minikql/invoke_builtins)
 
 FORK_SUBTESTS()
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(1800)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -12,14 +12,13 @@ ELSE()
 ENDIF()
 
 PEERDIR(
+    ydb/library/yql/minikql
     ydb/library/yql/public/udf
     ydb/library/yql/public/udf/service/exception_policy
     ydb/library/yql/sql/pg_dummy
 )
 
 YQL_LAST_ABI_VERSION()
-
-SRCDIR(ydb/library/yql/minikql/invoke_builtins)
 
 SRCS(
     mkql_builtins_ut.cpp

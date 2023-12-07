@@ -4,7 +4,6 @@
 #include "blobstorage_hullcompactworker.h"
 #include <ydb/core/blobstorage/vdisk/hullop/blobstorage_hullload.h>
 #include <ydb/core/blobstorage/vdisk/huge/blobstorage_hullhuge.h>
-#include <library/cpp/random_provider/random_provider.h>
 
 #include <util/generic/queue.h>
 
@@ -121,7 +120,7 @@ namespace NKikimr {
             // build handoff map (use LevelSnap by ref)
             auto hProxyAid = Hmp->BuildMap(ctx, LevelSnap, It, ctx.SelfID);
             if (hProxyAid) {
-                ActiveActors.Insert(hProxyAid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(hProxyAid);
             }
 
             // build gc map (use LevelSnap by ref)
@@ -285,7 +284,7 @@ namespace NKikimr {
             // chunks to commit
             msg->CommitChunks = IsAborting ? TVector<ui32>() : Worker.GetCommitChunks();
 
-            Y_ABORT_UNLESS(emptyWrite == msg->CommitChunks.empty()); // both empty or not
+            Y_VERIFY(emptyWrite == msg->CommitChunks.empty()); // both empty or not
 
             msg->SegVec = IsAborting ? nullptr : std::move(Result);
             msg->FreshSegment = IsAborting ? nullptr : FreshSegment;
@@ -330,8 +329,7 @@ namespace NKikimr {
                         ui64 firstLsn,
                         ui64 lastLsn,
                         TDuration restoreDeadline,
-                        std::optional<TKey> partitionKey,
-                        bool allowGarbageCollection)
+                        std::optional<TKey> partitionKey)
             : TActorBootstrapped<TThis>()
             , HullCtx(std::move(hullCtx))
             , PDiskCtx(rtCtx->PDiskCtx)
@@ -342,7 +340,7 @@ namespace NKikimr {
             , LevelSnap(std::move(levelSnap))
             , Hmp(CreateHandoffMap<TKey, TMemRec>(HullCtx, rtCtx->HandoffDelegate, rtCtx->RunHandoff,
                     rtCtx->SkeletonId))
-            , Gcmp(CreateGcMap<TKey, TMemRec>(HullCtx, mergeElementsApproximation, allowGarbageCollection))
+            , Gcmp(CreateGcMap<TKey, TMemRec>(HullCtx, mergeElementsApproximation))
             , It(it)
             , Worker(HullCtx, PDiskCtx, rtCtx->LevelIndex, it, (bool)FreshSegment, firstLsn, lastLsn, restoreDeadline,
                     partitionKey)

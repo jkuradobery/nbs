@@ -29,8 +29,6 @@ SRCS(
     impl.h
     indir.h
     init_scheme.cpp
-    layout_helpers.h
-    layout_helpers.cpp
     load_everything.cpp
     migrate.cpp
     monitoring.cpp
@@ -63,7 +61,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/actors/core
+    library/cpp/actors/core
     ydb/core/base
     ydb/core/base/services
     ydb/core/blobstorage

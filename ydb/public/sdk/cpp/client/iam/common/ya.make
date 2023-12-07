@@ -5,7 +5,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/http/simple
     library/cpp/json
     library/cpp/threading/atomic

@@ -48,22 +48,26 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto valTypePtr = PointerType::getUnqual(valType);
 
         const auto name = "DecimalMulAndDivNormalMultiplier";
-        ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DecimalMulAndDivNormalMultiplier));
-        const auto fnType = NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget() ?
-            FunctionType::get(valType, { valType, valType, valType }, false):
-            FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, valTypePtr, valTypePtr }, false);
-        const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType);
+        ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DecimalMulAndDivNormalMultiplier));
+        llvm::Value* func;
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+            const auto fnType = FunctionType::get(valType, { valType, valType, valType }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        } else {
+            const auto fnType = FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, valTypePtr, valTypePtr }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        }
 
         const auto left = GetNodeValue(Left, ctx, block);
         const auto right = GetNodeValue(Right, ctx, block);
 
-        if constexpr (IsLeftOptional || IsRightOptional) {
+        if (IsLeftOptional || IsRightOptional) {
             const auto test = IsLeftOptional && IsRightOptional ?
                 BinaryOperator::CreateAnd(left, right, "test", block):
                 IsLeftOptional ? left : right;
@@ -79,7 +83,7 @@ public:
             block = good;
 
             Value* muldiv;
-            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
                 muldiv = CallInst::Create(func, { GetterForInt128(left, block), NDecimal::GenConstant(Divider, context), GetterForInt128(right, block) }, "mul_and_div", block);
             } else {
                 const auto retPtr = new AllocaInst(valType, 0U, "ret_ptr", block);
@@ -90,7 +94,7 @@ public:
                 new StoreInst(NDecimal::GenConstant(Divider, context), arg2Ptr, block);
                 new StoreInst(GetterForInt128(right, block), arg3Ptr, block);
                 CallInst::Create(func, { retPtr, arg1Ptr, arg2Ptr, arg3Ptr }, "", block);
-                muldiv = new LoadInst(valType, retPtr, "res", block);
+                muldiv = new LoadInst(retPtr, "res", block);
             }
 
             const auto ok = NDecimal::GenInBounds(muldiv, NDecimal::GenConstant(-Bound, context), NDecimal::GenConstant(+Bound, context), block);
@@ -108,7 +112,7 @@ public:
             return result;
         } else {
             Value* muldiv;
-            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
                 muldiv = CallInst::Create(func, { GetterForInt128(left, block), NDecimal::GenConstant(Divider, context), GetterForInt128(right, block) }, "mul_and_div", block);
             } else {
                 const auto retPtr = new AllocaInst(valType, 0U, "ret_ptr", block);
@@ -119,7 +123,7 @@ public:
                 new StoreInst(NDecimal::GenConstant(Divider, context), arg2Ptr, block);
                 new StoreInst(GetterForInt128(right, block), arg3Ptr, block);
                 CallInst::Create(func, { retPtr, arg1Ptr, arg2Ptr, arg3Ptr }, "", block);
-                muldiv = new LoadInst(valType, retPtr, "res", block);
+                muldiv = new LoadInst(retPtr, "res", block);
             }
 
             const auto ok = NDecimal::GenInBounds(muldiv, NDecimal::GenConstant(-Bound, context), NDecimal::GenConstant(+Bound, context), block);
@@ -172,22 +176,27 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto valTypePtr = PointerType::getUnqual(valType);
 
+        const auto fnType = FunctionType::get(valType, {valType, valType}, false);
         const auto name = "DecimalDiv";
-        ctx.Codegen.AddGlobalMapping(name, reinterpret_cast<const void*>(&DecimalDiv));
-        const auto fnType = NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget() ?
-            FunctionType::get(valType, { valType, valType }, false):
-            FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, valTypePtr }, false);
-        const auto func = ctx.Codegen.GetModule().getOrInsertFunction(name, fnType);
+        ctx.Codegen->AddGlobalMapping(name, reinterpret_cast<const void*>(&DecimalDiv));
+        llvm::Value* func;
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
+            const auto fnType = FunctionType::get(valType, { valType, valType }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        } else {
+            const auto fnType = FunctionType::get(Type::getVoidTy(context), { valTypePtr, valTypePtr, valTypePtr }, false);
+            func = ctx.Codegen->GetModule().getOrInsertFunction(name, fnType).getCallee();
+        }
 
         const auto left = GetNodeValue(Left, ctx, block);
         const auto right = GetNodeValue(Right, ctx, block);
 
-        if constexpr (IsLeftOptional || IsRightOptional) {
+        if (IsLeftOptional || IsRightOptional) {
             const auto test = IsLeftOptional && IsRightOptional ?
                 BinaryOperator::CreateAnd(left, right, "test", block):
                 IsLeftOptional ? left : right;
@@ -207,7 +216,7 @@ public:
                 static_cast<CastInst*>(new ZExtInst(GetterFor<TRight>(right, context, block), valType, "zext", block));
 
             Value* div;
-            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
                 div = CallInst::Create(func, {GetterForInt128(left, block), cast}, "div", block);
             } else {
                 const auto retPtr = new AllocaInst(valType, 0U, "ret_ptr", block);
@@ -216,7 +225,7 @@ public:
                 new StoreInst(GetterForInt128(left, block), arg1Ptr, block);
                 new StoreInst(cast, arg2Ptr, block);
                 CallInst::Create(func, { retPtr, arg1Ptr, arg2Ptr }, "", block);
-                div = new LoadInst(valType, retPtr, "res", block);
+                div = new LoadInst(retPtr, "res", block);
             }
 
             result->addIncoming(SetterForInt128(div, block), block);
@@ -229,7 +238,7 @@ public:
                 static_cast<CastInst*>(new SExtInst(GetterFor<TRight>(right, context, block), valType, "sext", block)):
                 static_cast<CastInst*>(new ZExtInst(GetterFor<TRight>(right, context, block), valType, "zext", block));
             Value* div;
-            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+            if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
                 div = CallInst::Create(func, {GetterForInt128(left, block), cast}, "div", block);
             } else {
                 const auto retPtr = new AllocaInst(valType, 0U, "ret_ptr", block);
@@ -238,7 +247,7 @@ public:
                 new StoreInst(GetterForInt128(left, block), arg1Ptr, block);
                 new StoreInst(cast, arg2Ptr, block);
                 CallInst::Create(func, { retPtr, arg1Ptr, arg2Ptr }, "", block);
-                div = new LoadInst(valType, retPtr, "res", block);
+                div = new LoadInst(retPtr, "res", block);
             }
             return SetterForInt128(div, block);
         }
@@ -267,7 +276,7 @@ IComputationNode* WrapDecimalDiv(TCallable& callable, const TComputationNodeFact
     auto left = LocateNode(ctx.NodeLocator, callable, 0);
     auto right = LocateNode(ctx.NodeLocator, callable, 1);
 
-    switch (rightType->GetSchemeType()) {
+    switch(rightType->GetSchemeType()) {
         case NUdf::TDataType<NUdf::TDecimal>::Id:
             MKQL_ENSURE(static_cast<TDataDecimalType*>(rightType)->IsSameType(*leftType), "Operands type mismatch");
 
@@ -292,7 +301,7 @@ IComputationNode* WrapDecimalDiv(TCallable& callable, const TComputationNodeFact
         INTEGRAL_VALUE_TYPES(MAKE_PRIMITIVE_TYPE_DIV)
 #undef MAKE_PRIMITIVE_TYPE_DIV
         default:
-            Y_ABORT("Unupported type.");
+            Y_FAIL("Unupported type.");
     }
 }
 

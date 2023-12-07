@@ -1,8 +1,8 @@
-YQL_UDF_CONTRIB(topfreq_udf)
+YQL_UDF(topfreq_udf)
 
 YQL_ABI_VERSION(
     2
-    28
+    27
     0
 )
 
@@ -17,7 +17,5 @@ PEERDIR(
 END()
 
 RECURSE_FOR_TESTS(
-    test
     ut
 )
-

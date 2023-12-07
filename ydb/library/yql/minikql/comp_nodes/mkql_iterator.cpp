@@ -22,25 +22,25 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto value = GetNodeValue(List, ctx, block);
 
         const auto factory = ctx.GetFactory();
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::CreateIteratorOverList));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto signature = FunctionType::get(value->getType(), {factory->getType(), value->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            const auto output = CallInst::Create(signature, creator, {factory, value}, "output", block);
+            const auto output = CallInst::Create(creator, {factory, value}, "output", block);
             return output;
         } else {
             const auto place = new AllocaInst(value->getType(), 0U, "place", block);
             new StoreInst(value, place, block);
             const auto signature = FunctionType::get(Type::getVoidTy(context), {factory->getType(), place->getType(), place->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            CallInst::Create(signature, creator, {factory, place, place}, "", block);
-            const auto output = new LoadInst(value->getType(), place, "output", block);
+            CallInst::Create(creator, {factory, place, place}, "", block);
+            const auto output = new LoadInst(place, "output", block);
             return output;
         }
     }
@@ -68,25 +68,25 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto value = GetNodeValue(Stream, ctx, block);
 
         const auto factory = ctx.GetFactory();
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::CreateForwardList));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto signature = FunctionType::get(value->getType(), {factory->getType(), value->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            const auto output = CallInst::Create(signature, creator, {factory, value}, "output", block);
+            const auto output = CallInst::Create(creator, {factory, value}, "output", block);
             return output;
         } else {
             const auto place = new AllocaInst(value->getType(), 0U, "place", block);
             new StoreInst(value, place, block);
             const auto signature = FunctionType::get(Type::getVoidTy(context), {factory->getType(), place->getType(), place->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            CallInst::Create(signature, creator, {factory, place, place}, "", block);
-            const auto output = new LoadInst(value->getType(), place, "output", block);
+            CallInst::Create(creator, {factory, place, place}, "", block);
+            const auto output = new LoadInst(place, "output", block);
             return output;
         }
     }
@@ -178,24 +178,24 @@ private:
         this->DependsOn(Flow);
     }
 
-    [[noreturn]] static void Throw() {
+    [[noinline]] [[noreturn]] static void Throw() {
         UdfTerminate("Unexpected flow status.");
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
-    void GenerateFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void GenerateFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         NextFunc = GenerateNext(codegen);
-        codegen.ExportSymbol(NextFunc);
+        codegen->ExportSymbol(NextFunc);
     }
 
-    void FinalizeFunctions(NYql::NCodegen::ICodegen& codegen) final {
+    void FinalizeFunctions(const NYql::NCodegen::ICodegen::TPtr& codegen) final {
         if (NextFunc)
-            Next = reinterpret_cast<TCodegenIterator::TPtr>(codegen.GetPointerToFunction(NextFunc));
+            Next = reinterpret_cast<TCodegenIterator::TPtr>(codegen->GetPointerToFunction(NextFunc));
     }
 
-    Function* GenerateNext(NYql::NCodegen::ICodegen& codegen) const {
-        auto& module = codegen.GetModule();
-        auto& context = codegen.GetContext();
+    Function* GenerateNext(const NYql::NCodegen::ICodegen::TPtr& codegen) const {
+        auto& module = codegen->GetModule();
+        auto& context = codegen->GetContext();
 
         const auto& name = TBaseComputation::MakeName("Next");
         if (const auto f = module.getFunction(name.c_str()))
@@ -219,7 +219,7 @@ private:
         SafeUnRefUnboxed(valuePtr, ctx, block);
         GetNodeValue(valuePtr, Flow, ctx, block);
 
-        const auto value = new LoadInst(valueType, valuePtr, "value", block);
+        const auto value = new LoadInst(valuePtr, "value", block);
 
         const auto kill = BasicBlock::Create(context, "kill", ctx.Func);
         const auto good = BasicBlock::Create(context, "good", ctx.Func);
@@ -228,9 +228,8 @@ private:
 
         block = kill;
         const auto doThrow = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TFlowForwardListWrapper::Throw));
-        const auto doThrowType = FunctionType::get(Type::getVoidTy(context), {}, false);
-        const auto doThrowPtr = CastInst::Create(Instruction::IntToPtr, doThrow, PointerType::getUnqual(doThrowType), "thrower", block);
-        CallInst::Create(doThrowType, doThrowPtr, {}, "", block)->setTailCall();
+        const auto doThrowPtr = CastInst::Create(Instruction::IntToPtr, doThrow, PointerType::getUnqual(FunctionType::get(Type::getVoidTy(context), {}, false)), "thrower", block);
+        CallInst::Create(doThrowPtr, {}, "", block)->setTailCall();
         new UnreachableInst(context, block);
 
         block = good;

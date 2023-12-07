@@ -1,10 +1,57 @@
 #include <ydb/core/blobstorage/ut_blobstorage/lib/env.h>
 #include <ydb/core/blob_depot/events.h>
 
+#include <util/random/mersenne.h>
+#include <util/random/random.h>
+
 #include <algorithm>
 #include <random>
 
+#include "blob_depot_event_managers.h"
 #include "blob_depot_test_functions.h"
+#include "blob_depot_auxiliary_structures.h"
+
+void ConfigureEnvironment(ui32 numGroups, std::unique_ptr<TEnvironmentSetup>& envPtr, std::vector<ui32>& regularGroups, ui32& blobDepot, ui32 nodeCount, TBlobStorageGroupType erasure) {
+    envPtr = std::make_unique<TEnvironmentSetup>(TEnvironmentSetup::TSettings{
+        .NodeCount = nodeCount,
+        .Erasure = erasure,
+        .SetupHive = true,
+    });
+
+    envPtr->CreateBoxAndPool(1, numGroups);
+    envPtr->Sim(TDuration::Seconds(20));
+
+    regularGroups = envPtr->GetGroups();
+
+    NKikimrBlobStorage::TConfigRequest request;
+    TString virtualPool = "virtual_pool";
+    {
+        auto *cmd = request.AddCommand()->MutableDefineStoragePool();
+        cmd->SetBoxId(1);
+        cmd->SetName(virtualPool);
+        cmd->SetErasureSpecies("none");
+        cmd->SetVDiskKind("Default");
+    }
+    {
+        auto *cmd = request.AddCommand()->MutableAllocateVirtualGroup();
+        cmd->SetName("vg");
+        cmd->SetHiveId(envPtr->Runtime->GetAppData()->DomainsInfo->HivesByHiveUid.begin()->second);
+        cmd->SetStoragePoolName(virtualPool);
+        auto *prof = cmd->AddChannelProfiles();
+        prof->SetStoragePoolName(envPtr->StoragePoolName);
+        prof->SetCount(2);
+        prof = cmd->AddChannelProfiles();
+        prof->SetStoragePoolName(envPtr->StoragePoolName);
+        prof->SetChannelKind(NKikimrBlobDepot::TChannelKind::Data);
+        prof->SetCount(2);
+    }
+
+    auto response = envPtr->Invoke(request);
+    UNIT_ASSERT_C(response.GetSuccess(), response.GetErrorDescription());
+    blobDepot = response.GetStatus(1).GetGroupId(0);
+
+    envPtr->Sim(TDuration::Seconds(5)); // some time for blob depot to crank up
+}
 
 void DecommitGroup(TBlobDepotTestEnvironment& tenv, ui32 groupId) {
     TString blobDepotPool = "decommit_blob_depot_pool";
@@ -66,7 +113,7 @@ TLogoBlobID MaxBlobID(ui64 tablet) {
         NKikimr::TLogoBlobID::MaxCrcMode);
 }
 
-void TestBasicRange(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId) {
+void TestBasicRange(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId) { 
     std::vector<TBlobInfo> blobs;
     TBSState state;
     state[tabletId];
@@ -172,7 +219,7 @@ void TestBasicBlock(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId
     VerifiedGet(*tenv.Env, 1, groupId, blobs[7], false, false, std::nullopt, state);
 }
 
-void TestBasicCollectGarbage(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId) {
+void TestBasicCollectGarbage(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId) {    
     std::vector<TBlobInfo> blobs;
     ui64 tablet2 = tabletId + 1;
     TBSState state;
@@ -239,7 +286,7 @@ void TestBasicCollectGarbage(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui3
         TBlobInfo blob(tenv.DataGen(100), tabletId, 99, 1, 3, 0);
         VerifiedPut(*tenv.Env, 1, groupId, blob, state);
         blobs.push_back(blob);
-    }
+    } 
     VerifiedRange(*tenv.Env, 1, groupId, tabletId, blobs[1].Id, blobs[1].Id, false, false, blobs, state);
 
     VerifiedGet(*tenv.Env, 1, groupId, blobs[1], false, false, std::nullopt, state);
@@ -249,22 +296,22 @@ void TestBasicCollectGarbage(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui3
     VerifiedGet(*tenv.Env, 1, groupId, blobs[20], false, false, std::nullopt, state);
     VerifiedGet(*tenv.Env, 1, groupId, blobs[30], false, false, std::nullopt, state);
     VerifiedGet(*tenv.Env, 1, groupId, blobs[31], false, false, std::nullopt, state);
-    VerifiedGet(*tenv.Env, 1, groupId, blobs[40], false, false, std::nullopt, state);
+    VerifiedGet(*tenv.Env, 1, groupId, blobs[40], false, false, std::nullopt, state); 
 
     VerifiedCollectGarbage(*tenv.Env, 1, groupId, tabletId, gen, perGenCtr++, 0, true, 1, 1, nullptr, nullptr, false, true, blobs, state);
 
-    VerifiedCollectGarbage(*tenv.Env, 1, groupId, tabletId, gen, perGenCtr++, 0, false, 1, 5,
-            new TVector<TLogoBlobID>({blobs[4].Id, blobs[5].Id}),
-            nullptr,
+    VerifiedCollectGarbage(*tenv.Env, 1, groupId, tabletId, gen, perGenCtr++, 0, false, 1, 5, 
+            new TVector<TLogoBlobID>({blobs[4].Id, blobs[5].Id}), 
+            nullptr, 
             false, false,
             blobs, state);
 
     VerifiedGet(*tenv.Env, 1, groupId, blobs[4], false, false, std::nullopt, state);
     VerifiedGet(*tenv.Env, 1, groupId, blobs[5], false, false, std::nullopt, state);
 
-    VerifiedCollectGarbage(*tenv.Env, 1, groupId, tabletId, gen, perGenCtr++, 0, false, 1, 6,
-            nullptr,
-            new TVector<TLogoBlobID>({blobs[4].Id, blobs[5].Id}),
+    VerifiedCollectGarbage(*tenv.Env, 1, groupId, tabletId, gen, perGenCtr++, 0, false, 1, 6, 
+            nullptr, 
+            new TVector<TLogoBlobID>({blobs[4].Id, blobs[5].Id}), 
             false, false,
             blobs, state);
     VerifiedGet(*tenv.Env, 1, groupId, blobs[4], false, false, std::nullopt, state);
@@ -272,7 +319,7 @@ void TestBasicCollectGarbage(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui3
 
 
     VerifiedCollectGarbage(*tenv.Env, 1, groupId, tabletId, gen, perGenCtr++, 0, true, 1, 15, nullptr, nullptr, false, true, blobs, state);
-
+    
     VerifiedRange(*tenv.Env, 1, groupId, tabletId, blobs[10].Id, blobs[19].Id, false, false, blobs, state);
 
     gen++;
@@ -321,7 +368,7 @@ void TestRestoreGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId
         }
         return true;
     };
-
+    
     for (ui32 i = 0; i < blobsNum; ++i) {
         blobs.push_back(TBlobInfo(tenv.DataGen(100), tabletId, 1 + i, 1, 1, 0));
     }
@@ -430,7 +477,7 @@ void TestRestoreRange(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 group
         blobs.push_back(TBlobInfo(tenv.DataGen(100), tabletId, tenv.Rand(NKikimr::TLogoBlobID::MaxCookie), 1, 1 + i, 0));
         VerifiedPut(*tenv.Env, 1, groupId, blobs[i], state);
     }
-
+    
     blockedEventType = TEvBlobStorage::TEvVGet::EventType;
     brokenVdisks = { allVdisks[0], allVdisks[1] };
 
@@ -447,8 +494,7 @@ void TestRestoreRange(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 group
     }
 }
 
-void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 tabletId0, ui32 groupId, 
-        ui32 iterationsNum, ui32 decommitStep, ui32 timeLimitSec, std::vector<ui32> probabilities) {
+void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 tabletId0, ui32 groupId, ui32 iterationsNum, ui32 decommitStep, std::vector<ui32> probabilities) {
     enum EActions {
         ALTER = 0,
         PUT,
@@ -461,11 +507,6 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
         COLLECT_GARBAGE_SOFT,
         RESTART_BLOB_DEPOT,
     };
-    
-    std::vector<std::string> actionName = {
-        "ALTER", "PUT", "GET", "MULTIGET", "RANGE", "BLOCK", "DISCOVER", "COLLECT_GARBAGE_HARD", "COLLECT_GARBAGE_SOFT", "RESTART_BLOB_DEPOT"
-    };
-
     std::vector<ui32> probs = probabilities;
     TIntervals act(probs);
 
@@ -485,15 +526,12 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
 
     ui32 perGenCtr = 0;
 
-    THPTimer timer;
-
     for (ui32 iteration = 0; iteration < iterationsNum; ++iteration) {
         if (iteration == decommitStep) {
             DecommitGroup(tenv, groupId);
             continue;
         }
-
-        if (timeLimitSec && timer.Passed() > timeLimitSec) {
+        if (tenv.IsFinished()) {
             break;
         }
         ui32 tablet = tenv.Rand(tablets.size());
@@ -507,9 +545,9 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
         ui32 softCollectStep = state[tabletId].Channels[channel].SoftCollectStep;
         ui32 hardCollectGen = state[tabletId].Channels[channel].HardCollectGen;
         ui32 hardCollectStep = state[tabletId].Channels[channel].HardCollectStep;
-
+        
         ui32 action = act.GetInterval(tenv.Rand(act.UpperLimit()));
-        // Cerr << "iteration# " << iteration << " action# " << actionName[action] << " timer# " << timer.Passed() << Endl;
+        // Cerr << action << Endl;
         switch (action) {
         case EActions::ALTER:
             {
@@ -597,7 +635,7 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
                 ui32 minGeneration = tenv.Rand(0, gen + 2);
                 bool readBody = tenv.Rand(2);
                 bool discoverBlockedGeneration = tenv.Rand(2);
-                ui32 forceBlockedGeneration = 0;
+                ui32 forceBlockedGeneration = 0; 
                 bool fromLeader = tenv.Rand(2);
 
                 VerifiedDiscover(*tenv.Env, node, groupId, tabletId, minGeneration, readBody, discoverBlockedGeneration, forceBlockedGeneration,
@@ -634,10 +672,10 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
                 }
 
                 if (keep->size() == 0 && doNotKeep->size() == 0) {
-                    collect = true;
+                    collect = true; 
                 }
 
-                VerifiedCollectGarbage(*tenv.Env, node, groupId, tabletId, gen, perGenCtr++, channel, collect,
+                VerifiedCollectGarbage(*tenv.Env, node, groupId, tabletId, gen, perGenCtr++, channel, collect, 
                     tryGen, tryStep, keep.Release(), doNotKeep.Release(), isMultiCollectAllowed, true, blobs, state);
             }
             break;
@@ -671,10 +709,10 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
                 }
 
                 if (keep->size() == 0 && doNotKeep->size() == 0) {
-                    collect = true;
+                    collect = true; 
                 }
 
-                VerifiedCollectGarbage(*tenv.Env, node, groupId, tabletId, gen, perGenCtr++, channel, collect,
+                VerifiedCollectGarbage(*tenv.Env, node, groupId, tabletId, gen, perGenCtr++, channel, collect, 
                     tryGen, tryStep, keep.Release(), doNotKeep.Release(), isMultiCollectAllowed, false, blobs, state);
             }
             break;
@@ -688,14 +726,13 @@ void TestVerifiedRandom(TBlobDepotTestEnvironment& tenv, ui32 nodeCount, ui64 ta
             }
             break;
 
-        default:
+        default: 
             UNIT_FAIL("TIntervals failed");
         }
     }
 }
 
-void TestLoadPutAndGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId, ui32 blobsNum, ui32 maxBlobSize, 
-        ui32 readsNum, bool decommit, ui32 timeLimitSec, std::vector<ui32> probablities) {
+void TestLoadPutAndGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 groupId, ui32 blobsNum, ui32 maxBlobSize, ui32 readsNum, bool decommit, std::vector<ui32> probablities) {
     enum EActions {
         GET,
         MULTIGET,
@@ -745,14 +782,12 @@ void TestLoadPutAndGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 grou
         DecommitGroup(tenv, groupId);
     }
 
-    THPTimer timer;
-
     for (ui32 iteration = 0; iteration < readsNum; ++iteration) {
         ui32 action = act.GetInterval(tenv.Rand(act.UpperLimit()));
         if (iteration == readsNum - 1) { // Catch all results on the last iteration
-            action = EActions::CATCH_ALL;
+            action = 4;
         }
-        if (timeLimitSec && timer.Passed() > timeLimitSec) {
+        if (tenv.IsFinished()) {
             break;
         }
 
@@ -807,7 +842,7 @@ void TestLoadPutAndGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 grou
                 ui32 minGeneration = 0;
                 bool readBody = tenv.Rand(2);
                 bool discoverBlockedGeneration = tenv.Rand(2);
-                ui32 forceBlockedGeneration = 0;
+                ui32 forceBlockedGeneration = 0; 
                 bool fromLeader = tenv.Rand(2);
 
                 SendTEvDiscover(*tenv.Env, edge, groupId, tabletId, minGeneration, readBody, discoverBlockedGeneration, forceBlockedGeneration,
@@ -817,7 +852,7 @@ void TestLoadPutAndGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 grou
             }
             break;
 
-        case EActions::CATCH_ALL:
+        case EActions::CATCH_ALL: 
             {
                 // Cerr << getCtr << ' ' << rangeCtr << ' ' << discoverCtr << Endl;
                 while (getCtr + rangeCtr + discoverCtr) {
@@ -874,7 +909,7 @@ void TestLoadPutAndGet(TBlobDepotTestEnvironment& tenv, ui64 tabletId, ui32 grou
             }
             break;
 
-        default:
+        default: 
             UNIT_FAIL("TIntervals failed");
         }
     }

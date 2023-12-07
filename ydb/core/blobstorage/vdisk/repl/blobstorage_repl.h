@@ -14,26 +14,6 @@ namespace NKikimr {
     using TBlobIdQueue = std::deque<TLogoBlobID>;
     using TBlobIdQueuePtr = std::shared_ptr<TBlobIdQueue>;
 
-    struct TUnreplicatedBlobRecord { // for monitoring purposes
-        TIngress Ingress; // merged ingress from all the peers
-        ui32 PartsMask = 0;
-        ui32 DisksRepliedOK = 0;
-        ui32 DisksRepliedNODATA = 0;
-        ui32 DisksRepliedNOT_YET = 0;
-        ui32 DisksRepliedOther = 0;
-        bool LooksLikePhantom = false;
-    };
-
-    using TUnreplicatedBlobRecords = std::unordered_map<TLogoBlobID, TUnreplicatedBlobRecord>;
-
-    struct TEvReplInvoke : TEventLocal<TEvReplInvoke, TEvBlobStorage::EvReplInvoke> {
-        std::function<void(const TUnreplicatedBlobRecords&, TString)> Callback;
-
-        TEvReplInvoke(std::function<void(const TUnreplicatedBlobRecords&, TString)> callback)
-            : Callback(std::move(callback))
-        {}
-    };
-
     ////////////////////////////////////////////////////////////////////////////
     // Internal Repl messages
     ////////////////////////////////////////////////////////////////////////////
@@ -46,7 +26,6 @@ namespace NKikimr {
             TInstant End;
             TLogoBlobID KeyPos;
             bool Eof;
-            bool UnrecoveredNonphantomBlobs = false;
             TVDiskID DonorVDiskId;
             bool DropDonor = false;
 
@@ -85,14 +64,11 @@ namespace NKikimr {
 
             std::unique_ptr<NRepl::TProxyStat> ProxyStat;
 
-            TUnreplicatedBlobRecords UnreplicatedBlobRecords;
-
-            void Finish(const TLogoBlobID &keyPos, bool eof, bool dropDonor, TUnreplicatedBlobRecords&& ubr) {
+            void Finish(const TLogoBlobID &keyPos, bool eof, bool dropDonor) {
                 End = TAppData::TimeProvider->Now();
                 KeyPos = keyPos;
                 Eof = eof;
                 DropDonor = dropDonor;
-                UnreplicatedBlobRecords = std::move(ubr);
             }
 
             TString ToString() const;
@@ -144,7 +120,7 @@ namespace NKikimr {
             : Id(id)
             , Data(std::move(data))
         {
-            Y_DEBUG_ABORT_UNLESS(Id.PartId() != 0);
+            Y_VERIFY_DEBUG(Id.PartId() != 0);
         }
 
         size_t ByteSize() const {
@@ -169,8 +145,5 @@ namespace NKikimr {
     // REPL ACTOR CREATOR
     ////////////////////////////////////////////////////////////////////////////
     IActor* CreateReplActor(std::shared_ptr<TReplCtx> &replCtx);
-
-    IActor *CreateReplMonRequestHandler(TActorId skeletonId, TVDiskIdShort vdiskId,
-        std::shared_ptr<TBlobStorageGroupInfo::TTopology> topology, NMon::TEvHttpInfo::TPtr ev);
 
 } // NKikimr

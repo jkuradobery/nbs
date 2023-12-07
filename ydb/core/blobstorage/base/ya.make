@@ -1,7 +1,7 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/wilson
+    library/cpp/actors/wilson
     library/cpp/deprecated/atomic
     library/cpp/lwtrace
     ydb/core/protos
@@ -9,7 +9,6 @@ PEERDIR(
 
 SRCS(
     batched_vec.h
-    blobstorage_events.cpp
     blobstorage_events.h
     blobstorage_oos_defs.h
     blobstorage_vdiskid.cpp

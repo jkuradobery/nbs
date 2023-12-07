@@ -2,7 +2,7 @@
 
 #include <ydb/core/base/defs.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #define CLOG_T(ctx, stream) LOG_TRACE_S (ctx, NKikimrServices::REPLICATION_CONTROLLER, LogPrefix << stream)
 #define CLOG_D(ctx, stream) LOG_DEBUG_S (ctx, NKikimrServices::REPLICATION_CONTROLLER, LogPrefix << stream)
@@ -18,7 +18,9 @@
 #define LOG_W(stream) CLOG_W(*TlsActivationContext, stream)
 #define LOG_E(stream) CLOG_E(*TlsActivationContext, stream)
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 class TController;
 
@@ -47,4 +49,6 @@ private:
     const ui64 TargetId = 0;
 };
 
-}
+} // NController
+} // NReplication
+} // NKikimr

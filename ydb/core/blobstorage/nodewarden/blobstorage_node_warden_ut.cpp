@@ -11,13 +11,11 @@
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/blobstorage/crypto/default.h>
 #include <ydb/core/blobstorage/nodewarden/node_warden.h>
-#include <ydb/core/blobstorage/nodewarden/node_warden_impl.h>
 #include <ydb/core/blobstorage/base/blobstorage_events.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_tools.h>
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk_ut_http_request.h>
 #include <ydb/core/mind/bscontroller/bsc.h>
 #include <ydb/core/mind/local.h>
-#include <ydb/core/util/testactorsys.h>
 
 #include <ydb/library/pdisk_io/sector_map.h>
 #include <util/random/entropy.h>
@@ -205,7 +203,7 @@ void SetupServices(TTestActorRuntime &runtime, TString extraPath, TIntrusivePtr<
             static_cast<IPDiskServiceFactory*>(new TStrandedPDiskServiceFactory(runtime)) :
             static_cast<IPDiskServiceFactory*>(new TRealPDiskServiceFactory())));
 //            nodeWardenConfig->Monitoring = monitoring;
-        google::protobuf::TextFormat::ParseFromString(staticConfig, nodeWardenConfig->BlobStorageConfig.MutableServiceSet());
+        google::protobuf::TextFormat::ParseFromString(staticConfig, &nodeWardenConfig->ServiceSet);
 
         if (nodeIndex == 0) {
             nodeWardenConfig->SectorMaps[extraPath] = extraSectorMap;
@@ -219,7 +217,7 @@ void SetupServices(TTestActorRuntime &runtime, TString extraPath, TIntrusivePtr<
 
 
             TString pDiskPath0 = TStringBuilder() << "SectorMap:" << baseDir << "pdisk_map";
-            nodeWardenConfig->BlobStorageConfig.MutableServiceSet()->MutablePDisks(0)->SetPath(pDiskPath0);
+            nodeWardenConfig->ServiceSet.MutablePDisks(0)->SetPath(pDiskPath0);
             nodeWardenConfig->SectorMaps[pDiskPath0] = sectorMap;
 
             ui64 pDiskGuid = 1;
@@ -326,7 +324,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
 
         TActorId edge = runtime.AllocateEdgeActor();
         auto request = std::make_unique<TEvBlobStorage::TEvControllerConfigRequest>();
-        Y_ABORT_UNLESS(storagePool.GetKind() == kind);
+        Y_VERIFY(storagePool.GetKind() == kind);
         storagePool.ClearStoragePoolId();
         storagePool.SetName(name);
         storagePool.SetNumGroups(1);
@@ -416,7 +414,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
         TBlockUpdates(TTestBasicRuntime& runtime)
         : Runtime(&runtime)
         {
-            TTestActorRuntime::TEventObserver observer = [=] (TAutoPtr<IEventHandle>& event) -> TTestActorRuntime::EEventAction {
+            TTestActorRuntime::TEventObserver observer = [=] (TTestActorRuntimeBase& /*runtime*/, TAutoPtr<IEventHandle>& event) -> TTestActorRuntime::EEventAction {
                 if (event->GetTypeRewrite() == TEvBlobStorage::EvControllerNodeServiceSetUpdate) {
                     return TTestActorRuntime::EEventAction::DROP;
                 }
@@ -483,127 +481,6 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
 
         ++generation;
         BlockGroup(runtime, sender0, tabletId, groupId, generation++, true, NKikimrProto::EReplyStatus::NO_GROUP);
-    }
-
-    CUSTOM_UNIT_TEST(TestFilterBadSerials) {
-        TTestActorSystem runtime(1);
-        runtime.Start();
-
-        TIntrusivePtr<TNodeWardenConfig> nodeWardenConfig(new TNodeWardenConfig(static_cast<IPDiskServiceFactory*>(new TRealPDiskServiceFactory())));
-
-        IActor* ac = CreateBSNodeWarden(nodeWardenConfig.Release());
-
-        TActorId nodeWarden = runtime.Register(ac, 1);
-
-        runtime.WrapInActorContext(nodeWarden, [](IActor* wardenActor) {
-            auto vectorsEqual = [](const TVector<TString>& vec1, const TVector<TString>& vec2) {
-                TVector<TString> sortedVec1 = vec1;
-                TVector<TString> sortedVec2 = vec2;
-
-                std::sort(sortedVec1.begin(), sortedVec1.end());
-                std::sort(sortedVec2.begin(), sortedVec2.end());
-
-                return sortedVec1 == sortedVec2;
-            };
-
-            auto checkHasOnlyGoodDrive = [](TVector<NPDisk::TDriveData>& drives) {
-                UNIT_ASSERT_EQUAL(1, drives.size());
-                UNIT_ASSERT_EQUAL(drives[0].Path, "/good1");
-            };
-
-            NStorage::TNodeWarden& warden = *dynamic_cast<NStorage::TNodeWarden*>(wardenActor);
-
-            NPDisk::TDriveData goodDrive1;
-            goodDrive1.Path = "/good1";
-            goodDrive1.SerialNumber = "FOOBAR";
-
-            NPDisk::TDriveData goodDrive2;
-            goodDrive2.Path = "/good2";
-            goodDrive2.SerialNumber = "BARFOO";
-
-            NPDisk::TDriveData badDrive1;
-            badDrive1.Path = "/bad1";
-            char s[] = {50, 51, 52, -128, 0}; // Non-ASCII character -128.
-            badDrive1.SerialNumber = TString(s);
-
-            NPDisk::TDriveData badDrive2;
-            badDrive2.Path = "/bad2";
-            badDrive2.SerialNumber = "NOT\tGOOD"; // Non-printable character \t.
-
-            NPDisk::TDriveData badDrive3;
-            badDrive3.Path = "/bad3";
-            badDrive3.SerialNumber = TString(101, 'F'); // Size exceeds 100.
-
-            NPDisk::TDriveData badDrive4;
-            badDrive4.Path = "/bad4";
-            badDrive4.SerialNumber = "NOTGOODEITHER";
-            badDrive4.SerialNumber[5] = '\0'; // Unexpected null-terminator.
-
-            TStringStream details;
-
-            // Check for zero drives.
-            {
-                TVector<NPDisk::TDriveData> drives;
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                UNIT_ASSERT_EQUAL(0, drives.size());
-                UNIT_ASSERT_EQUAL(0, warden.DrivePathCounterKeys().size());
-            }
-            
-            // If a drive is not present in a subsequent call, then it is removed from a counters map.
-            // We check both serial number validator and also that counters are removed for missing drives.
-            {
-                TVector<NPDisk::TDriveData> drives = {goodDrive1, badDrive1};
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                checkHasOnlyGoodDrive(drives);
-                UNIT_ASSERT(vectorsEqual(warden.DrivePathCounterKeys(), {"/good1", "/bad1"}));
-            }
-            {
-                TVector<NPDisk::TDriveData> drives = {goodDrive1, badDrive2};
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                checkHasOnlyGoodDrive(drives);
-                UNIT_ASSERT(vectorsEqual(warden.DrivePathCounterKeys(), {"/good1", "/bad2"}));
-            }
-            {
-                TVector<NPDisk::TDriveData> drives = {goodDrive1, badDrive3};
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                checkHasOnlyGoodDrive(drives);
-                UNIT_ASSERT(vectorsEqual(warden.DrivePathCounterKeys(), {"/good1", "/bad3"}));
-            }
-            {
-                TVector<NPDisk::TDriveData> drives = {goodDrive1, badDrive4};
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                checkHasOnlyGoodDrive(drives);
-                UNIT_ASSERT(vectorsEqual(warden.DrivePathCounterKeys(), {"/good1", "/bad4"}));
-            }
-            {
-                TVector<NPDisk::TDriveData> drives = {goodDrive1, goodDrive2, badDrive4};
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                UNIT_ASSERT_EQUAL(2, drives.size());
-                UNIT_ASSERT(vectorsEqual(warden.DrivePathCounterKeys(), {"/good1", "/good2", "/bad4"}));
-            }
-            // Check that good drives can also be removed from counters map.
-            {
-                TVector<NPDisk::TDriveData> drives = {goodDrive1, badDrive4};
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                checkHasOnlyGoodDrive(drives);
-                UNIT_ASSERT(vectorsEqual(warden.DrivePathCounterKeys(), {"/good1", "/bad4"}));
-            }
-            // Check that everything is removed if there are no drives.
-            {
-                TVector<NPDisk::TDriveData> drives;
-                warden.RemoveDrivesWithBadSerialsAndReport(drives, details);
-
-                UNIT_ASSERT_EQUAL(0, drives.size());
-                UNIT_ASSERT_EQUAL(0, warden.DrivePathCounterKeys().size());
-            }
-        });
     }
 
     CUSTOM_UNIT_TEST(TestSendToInvalidGroupId) {
@@ -807,7 +684,7 @@ Y_UNIT_TEST_SUITE(TBlobStorageWardenTest) {
         Setup(runtime, "", nullptr);
         auto edge = runtime.AllocateEdgeActor(0);
         TActorId nodeWarden = MakeBlobStorageNodeWardenID(edge.NodeId());
-        THttpRequestMock HttpRequest;
+        THttpRequest HttpRequest;
         NMonitoring::TMonService2HttpRequest monService2HttpRequest(nullptr, &HttpRequest, nullptr, nullptr, path,
                 nullptr);
         runtime.Send(new IEventHandle(nodeWarden, edge, new NMon::TEvHttpInfo(monService2HttpRequest)), 0);

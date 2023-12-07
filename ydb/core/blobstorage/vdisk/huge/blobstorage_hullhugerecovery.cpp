@@ -1,7 +1,5 @@
 #include "blobstorage_hullhugerecovery.h"
 #include "blobstorage_hullhugeheap.h"
-#include <library/cpp/random_provider/random_provider.h>
-
 
 using namespace NKikimrServices;
 
@@ -69,11 +67,11 @@ namespace NKikimr {
             const char *end = data + size;
             for (ui64 *var : {&ChunkAllocationLsn, &ChunkFreeingLsn, &HugeBlobLoggedLsn, &LogoBlobsDbSlotDelLsn,
                     &BlocksDbSlotDelLsn, &BarriersDbSlotDelLsn, &EntryPointLsn}) {
-                Y_ABORT_UNLESS(static_cast<size_t>(end - cur) >= sizeof(*var));
+                Y_VERIFY(static_cast<size_t>(end - cur) >= sizeof(*var));
                 memcpy(var, cur, sizeof(*var));
                 cur += sizeof(*var);
             }
-            Y_ABORT_UNLESS(cur == end);
+            Y_VERIFY(cur == end);
         }
 
         bool THullHugeRecoveryLogPos::CheckEntryPoint(const TString &serialized) {
@@ -104,18 +102,18 @@ namespace NKikimr {
         }
 
         void TLogTracker::FinishRecovery(ui64 entryPointLsn) {
-            Y_ABORT_UNLESS(entryPointLsn == 0 || Cur->EntryPointLsn == entryPointLsn);
+            Y_VERIFY(entryPointLsn == 0 || Cur->EntryPointLsn == entryPointLsn);
         }
 
         // Prepare to commit
         void TLogTracker::InitiateNewEntryPointCommit(TPosition pos) {
-            Y_ABORT_UNLESS(InProgress.Empty());
+            Y_VERIFY(InProgress.Empty());
             InProgress = pos;
         }
 
         // Committed
         void TLogTracker::EntryPointCommitted(ui64 lsn) {
-            Y_ABORT_UNLESS(InProgress.Defined() && InProgress->EntryPointLsn == lsn);
+            Y_VERIFY(InProgress.Defined() && InProgress->EntryPointLsn == lsn);
             Prev = Cur;
             Cur = InProgress;
             InProgress.Clear();
@@ -133,12 +131,12 @@ namespace NKikimr {
 
         bool TLogTracker::WouldNewEntryPointAdvanceLog(ui64 freeUpToLsn, bool inFlightWrites) const {
             Y_UNUSED(inFlightWrites);
-            Y_ABORT_UNLESS(InProgress.Empty());
+            Y_VERIFY(InProgress.Empty());
             return FirstLsnToKeep() < freeUpToLsn;
         }
 
         void TLogTracker::PrivateNewLsn(TPosition pos) {
-            Y_ABORT_UNLESS(pos.EntryPointLsn != 0 &&
+            Y_VERIFY(pos.EntryPointLsn != 0 &&
                     ((Prev.Empty() && Cur.Empty()) ||
                      (Prev.Empty() && Cur.Defined()) ||
                      (Prev.Defined() && Cur.Defined() &&
@@ -203,7 +201,7 @@ namespace NKikimr {
             , Guid(TAppData::RandomProvider->GenRand64())
         {
             ParseFromString(entryPointData);
-            Y_ABORT_UNLESS(entryPointLsn == LogPos.EntryPointLsn);
+            Y_VERIFY(entryPointLsn == LogPos.EntryPointLsn);
             logFunc(VDISKP(VCtx->VDiskLogPrefix,
                 "Recovery started (guid# %" PRIu64 " entryLsn# %" PRIu64 "): State# %s",
                 Guid, entryPointLsn, ToString().data()));
@@ -233,7 +231,7 @@ namespace NKikimr {
             , Guid(TAppData::RandomProvider->GenRand64())
         {
             ParseFromArray(entryPointData.GetData(), entryPointData.GetSize());
-            Y_ABORT_UNLESS(entryPointLsn == LogPos.EntryPointLsn);
+            Y_VERIFY(entryPointLsn == LogPos.EntryPointLsn);
             logFunc(VDISKP(VCtx->VDiskLogPrefix,
                 "Recovery started (guid# %" PRIu64 " entryLsn# %" PRIu64 "): State# %s",
                 Guid, entryPointLsn, ToString().data()));
@@ -250,7 +248,7 @@ namespace NKikimr {
 
             // log pos
             TString serializedLogPos = LogPos.Serialize();
-            Y_DEBUG_ABORT_UNLESS(serializedLogPos.size() == THullHugeRecoveryLogPos::SerializedSize);
+            Y_VERIFY_DEBUG(serializedLogPos.size() == THullHugeRecoveryLogPos::SerializedSize);
             str.Write(serializedLogPos.data(), THullHugeRecoveryLogPos::SerializedSize);
 
             // heap
@@ -261,7 +259,7 @@ namespace NKikimr {
 
             // chunks to free -- obsolete field
             const ui32 chunksSize = 0;
-            Y_ABORT_UNLESS(!chunksSize);
+            Y_VERIFY(!chunksSize);
             str.Write(&chunksSize, sizeof(ui32));
 
             // allocated slots
@@ -300,7 +298,7 @@ namespace NKikimr {
             // chunks to free
             ui32 chunksSize = ReadUnaligned<ui32>(cur);
             cur += sizeof(ui32); // chunks size
-            Y_ABORT_UNLESS(!chunksSize);
+            Y_VERIFY(!chunksSize);
 
             // allocated slots
             ui32 slotsSize = ReadUnaligned<ui32>(cur);
@@ -311,7 +309,7 @@ namespace NKikimr {
                 cur += NHuge::THugeSlot::SerializedSize;
                 cur += sizeof(ui64); // refPointLsn (for backward compatibility, can be removed)
                 bool inserted = AllocatedSlots.insert(hugeSlot).second;
-                Y_ABORT_UNLESS(inserted);
+                Y_VERIFY(inserted);
             }
         }
 
@@ -433,7 +431,7 @@ namespace NKikimr {
 
         // initiate commit
         void THullHugeKeeperPersState::InitiateNewEntryPointCommit(ui64 lsn, bool inFlightWrites) {
-            Y_ABORT_UNLESS(lsn > LogPos.EntryPointLsn);
+            Y_VERIFY(lsn > LogPos.EntryPointLsn);
             // set up previous entry point position to prevent log from being occasionally cut and update new entry
             // point position in persistent state
             LogPos.EntryPointLsn = lsn;
@@ -451,7 +449,7 @@ namespace NKikimr {
 
         // finish commit
         void THullHugeKeeperPersState::EntryPointCommitted(ui64 entryPointLsn) {
-            Y_ABORT_UNLESS(entryPointLsn == LogPos.EntryPointLsn);
+            Y_VERIFY(entryPointLsn == LogPos.EntryPointLsn);
             LogTracker.EntryPointCommitted(entryPointLsn);
         }
 
@@ -527,7 +525,7 @@ namespace NKikimr {
                     logPosDelLsn = &LogPos.BarriersDbSlotDelLsn;
                     break;
                 default:
-                    Y_ABORT("Unexpected case");
+                    Y_FAIL("Unexpected case");
             }
             if (lsn > *logPosDelLsn) {
                 // apply
@@ -612,7 +610,7 @@ namespace NKikimr {
             TString logPosSerialized = ExtractLogPosition(data);
             auto logPos = THullHugeRecoveryLogPos::Default();
             logPos.ParseFromString(logPosSerialized);
-            Y_ABORT_UNLESS(logPos.EntryPointLsn == lsn);
+            Y_VERIFY(logPos.EntryPointLsn == lsn);
             LogTracker.EntryPointFromRecoveryLog(logPos);
 
             LOG_DEBUG(ctx, BS_HULLHUGE,
@@ -636,7 +634,7 @@ namespace NKikimr {
             TContiguousSpan logPosSerialized = ExtractLogPosition(data);
             auto logPos = THullHugeRecoveryLogPos::Default();
             logPos.ParseFromArray(logPosSerialized.GetData(), logPosSerialized.GetSize());
-            Y_ABORT_UNLESS(logPos.EntryPointLsn == lsn);
+            Y_VERIFY(logPos.EntryPointLsn == lsn);
             LogTracker.EntryPointFromRecoveryLog(logPos);
 
             LOG_DEBUG(ctx, BS_HULLHUGE,

@@ -7,7 +7,7 @@ namespace NKikimr {
 
     TScrubCoroImpl::TScrubCoroImpl(TScrubContext::TPtr scrubCtx, NKikimrVDiskData::TScrubEntrypoint scrubEntrypoint,
             ui64 scrubEntrypointLsn)
-        : TActorCoroImpl(64_KB)
+        : TActorCoroImpl(65536)
         , ScrubCtx(std::move(scrubCtx))
         , VCtx(ScrubCtx->VCtx)
         , Info(ScrubCtx->Info)
@@ -39,11 +39,8 @@ namespace NKikimr {
             hFunc(NPDisk::TEvCutLog, Handle);
             hFunc(TEvTakeHullSnapshotResult, Handle);
 
-            case TEvents::TSystem::Poison:
-                throw TExPoison();
-
             default:
-                Y_ABORT("unexpected event Type# 0x%08" PRIx32, type);
+                Y_FAIL("unexpected event Type# 0x%08" PRIx32, type);
         }
     }
 
@@ -52,7 +49,7 @@ namespace NKikimr {
     }
 
     void TScrubCoroImpl::ForwardToBlobRecoveryActor(TAutoPtr<IEventHandle> ev) {
-        Send(IEventHandle::Forward(std::move(ev), BlobRecoveryActorId));
+        Send(ev->Forward(BlobRecoveryActorId));
     }
 
     void TScrubCoroImpl::Run() {
@@ -85,8 +82,8 @@ namespace NKikimr {
             STLOGX(GetActorContext(), PRI_DEBUG, BS_VDISK_SCRUB, VDS23, VDISKP(LogPrefix, "catched TExDie"));
         } catch (const TDtorException&) {
             return; // actor system is stopping, no actor activities allowed
-        } catch (const TExPoison&) { // poison pill from the skeleton
-            STLOGX(GetActorContext(), PRI_DEBUG, BS_VDISK_SCRUB, VDS25, VDISKP(LogPrefix, "caught TExPoison"));
+        } catch (const TPoisonPillException&) { // poison pill from the skeleton
+            STLOGX(GetActorContext(), PRI_DEBUG, BS_VDISK_SCRUB, VDS25, VDISKP(LogPrefix, "catched TPoisonPillException"));
         }
         Send(new IEventHandle(TEvents::TSystem::Poison, 0, std::exchange(BlobRecoveryActorId, {}), {}, nullptr, 0));
     }
@@ -96,7 +93,7 @@ namespace NKikimr {
         Send(MakeBlobStorageNodeWardenID(SelfActorId.NodeId()), new TEvBlobStorage::TEvControllerScrubQueryStartQuantum(
             ScrubCtx->NodeId, ScrubCtx->PDiskId, ScrubCtx->VSlotId), 0, ScrubCtx->ScrubCookie);
         CurrentState = TStringBuilder() << "in queue for scrub state";
-        auto res = WaitForSpecificEvent<TEvBlobStorage::TEvControllerScrubStartQuantum>(&TScrubCoroImpl::ProcessUnexpectedEvent);
+        auto res = WaitForSpecificEvent<TEvBlobStorage::TEvControllerScrubStartQuantum>();
         const auto& r = res->Get()->Record;
         if (r.HasState()) {
             State.emplace();
@@ -193,7 +190,7 @@ namespace NKikimr {
         if (State) {
             TString serialized;
             const bool success = State->SerializeToString(&serialized);
-            Y_ABORT_UNLESS(success);
+            Y_VERIFY(success);
             finish(serialized);
             ScrubEntrypoint.MutableScrubState()->CopyFrom(*State);
         } else {
@@ -217,7 +214,7 @@ namespace NKikimr {
         TRcBuf data(TRcBuf::Uninitialized(ScrubEntrypoint.ByteSizeLong()));
         //FIXME(innokentii): better use SerializeWithCachedSizesToArray + check that all fields are set
         const bool success = ScrubEntrypoint.SerializeToArray(reinterpret_cast<uint8_t*>(data.UnsafeGetDataMut()), data.GetSize());
-        Y_ABORT_UNLESS(success);
+        Y_VERIFY(success);
 
         auto seg = ScrubCtx->LsnMngr->AllocLsnForLocalUse();
         ScrubEntrypointLsn = seg.Point();

@@ -4,14 +4,14 @@
 
 #include <ydb/library/yql/providers/dq/actors/actor_helpers.h>
 
-#include <ydb/library/actors/helpers/future_callback.h>
+#include <library/cpp/actors/helpers/future_callback.h>
 
 namespace NYql::NDqs {
 
 template<typename TDerived>
 class TWorkerManagerCommon: public TRichActor<TDerived> {
 public:
-    TWorkerManagerCommon(void (TDerived::*func)(TAutoPtr<NActors::IEventHandle>& ev))
+    TWorkerManagerCommon(void (TDerived::*func)(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext& ctx))
         : TRichActor<TDerived>(func)
     { }
 

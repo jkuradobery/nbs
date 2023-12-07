@@ -1,9 +1,9 @@
 #pragma once
 
-#include "yql_http_gateway.h"
+#include <library/cpp/retry/retry_policy.h>
 
 namespace NYql {
 
-IHTTPGateway::TRetryPolicy::TPtr GetHTTPDefaultRetryPolicy(TDuration maxTime = TDuration::Zero(), size_t maxRetries = std::numeric_limits<size_t>::max()); // Zero means default maxTime
+IRetryPolicy<long>::TPtr GetHTTPDefaultRetryPolicy(TDuration maxTime = TDuration::Zero()); // Zero means default maxTime
 
 }

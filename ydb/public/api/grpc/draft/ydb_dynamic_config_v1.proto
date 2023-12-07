@@ -7,10 +7,6 @@ option java_package = "com.yandex.ydb.dynamic_config.v1";
 
 import "ydb/public/api/protos/draft/ydb_dynamic_config.proto";
 
-// Dynamic Config is the configuration applied to dynamic nodes without static configuration
-// and is utilized by certain services, such as logging, which can update their settings
-// seamlessly without requiring any restarts.
-
 service DynamicConfigService {
     // Apply new version of config.
     // Overwrites previous version.
@@ -32,18 +28,12 @@ service DynamicConfigService {
     // Drop current config.
     // This call is idempotent.
     rpc DropConfig(DynamicConfig.DropConfigRequest) returns (DynamicConfig.DropConfigResponse);
-
-    // Add volatile config.
     rpc AddVolatileConfig(DynamicConfig.AddVolatileConfigRequest) returns (DynamicConfig.AddVolatileConfigResponse);
-
-    // Remove volatile config.
     rpc RemoveVolatileConfig(DynamicConfig.RemoveVolatileConfigRequest) returns (DynamicConfig.RemoveVolatileConfigResponse);
 
     rpc GetNodeLabels(DynamicConfig.GetNodeLabelsRequest) returns (DynamicConfig.GetNodeLabelsResponse);
 
     // Resolve config for particular labels.
     rpc ResolveConfig(DynamicConfig.ResolveConfigRequest) returns (DynamicConfig.ResolveConfigResponse);
-
-    // Resolve config for all possible labels combinations.
     rpc ResolveAllConfig(DynamicConfig.ResolveAllConfigRequest) returns (DynamicConfig.ResolveAllConfigResponse);
 }

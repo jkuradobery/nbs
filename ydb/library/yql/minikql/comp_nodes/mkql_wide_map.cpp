@@ -32,7 +32,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto codegenItem = dynamic_cast<ICodegeneratorExternalNode*>(Item);
         MKQL_ENSURE(codegenItem, "Item must be codegenerator node.");
@@ -88,8 +88,8 @@ public:
         , Flow(flow)
         , Items(std::move(items))
         , NewItems(std::move(newItems))
-        , PasstroughtMap(GetPasstroughtMapOneToOne(Items, NewItems))
-        , ReversePasstroughtMap(GetPasstroughtMapOneToOne(NewItems, Items))
+        , PasstroughtMap(GetPasstroughtMap(Items, NewItems))
+        , ReversePasstroughtMap(GetPasstroughtMap(NewItems, Items))
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {}
 
@@ -97,11 +97,11 @@ public:
         auto** fields = ctx.WideFields.data() + WideFieldsIndex;
 
         for (auto i = 0U; i < Items.size(); ++i)
-            if (const auto& map = PasstroughtMap[i]; map && !Items[i]->GetDependencesCount()) {
+            if (Items[i]->GetDependencesCount() > 0U)
+                fields[i] = &Items[i]->RefValue(ctx);
+            else if (const auto& map = PasstroughtMap[i])
                 if (const auto out = output[*map])
                     fields[i] = out;
-            } else
-                fields[i] = &Items[i]->RefValue(ctx);
 
         if (const auto result = Flow->FetchValues(ctx, fields); EFetchResult::One != result)
             return result;
@@ -123,7 +123,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valueType = Type::getInt128Ty(context);
 
@@ -139,7 +139,7 @@ public:
         block = work;
 
         for (auto i = 0U; i < Items.size(); ++i)
-            if (Items[i]->GetDependencesCount() > 0U || !PasstroughtMap[i])
+            if (Items[i]->GetDependencesCount() > 0U)
                 EnsureDynamicCast<ICodegeneratorExternalNode*>(Items[i])->CreateSetValue(ctx, block, result.second[i](ctx, block));
 
         BranchInst::Create(pass, block);
@@ -182,7 +182,7 @@ public:
         , Flow(flow)
         , Items(std::move(items))
         , NewItem(newItem)
-        , PasstroughItem(GetPasstroughtMap(TComputationNodePtrVector{NewItem}, Items).front())
+        , PasstroughItem(GetPasstroughtMap({NewItem}, Items).front())
         , WideFieldsIndex(mutables.IncrementWideFieldsIndex(Items.size()))
     {}
 
@@ -205,7 +205,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto getres = GetNodeValues(Flow, ctx, block);
 
@@ -259,7 +259,7 @@ private:
 }
 
 IComputationNode* WrapExpandMap(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
-    const auto width = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType()));
+    const auto width = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() == width + 2U, "Expected two or more args.");
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
 
@@ -273,8 +273,8 @@ IComputationNode* WrapExpandMap(TCallable& callable, const TComputationNodeFacto
 
 IComputationNode* WrapWideMap(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
     MKQL_ENSURE(callable.GetInputsCount() > 0U, "Expected argument.");
-    const auto inputWidth = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType()));
-    const auto outputWidth = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetType()->GetReturnType()));
+    const auto inputWidth = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType())->GetItemType())->GetElementsCount();
+    const auto outputWidth = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() == inputWidth + outputWidth + 1U, "Wrong signature.");
 
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
@@ -295,7 +295,7 @@ IComputationNode* WrapWideMap(TCallable& callable, const TComputationNodeFactory
 
 IComputationNode* WrapNarrowMap(TCallable& callable, const TComputationNodeFactoryContext& ctx) {
     MKQL_ENSURE(callable.GetInputsCount() > 1U, "Expected two or more args.");
-    const auto width = GetWideComponentsCount(AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType()));
+    const auto width = AS_TYPE(TTupleType, AS_TYPE(TFlowType, callable.GetInput(0U).GetStaticType())->GetItemType())->GetElementsCount();
     MKQL_ENSURE(callable.GetInputsCount() == width + 2U, "Wrong signature.");
     const auto flow = LocateNode(ctx.NodeLocator, callable, 0U);
     if (const auto wide = dynamic_cast<IComputationWideFlowNode*>(flow)) {

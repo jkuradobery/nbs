@@ -20,13 +20,13 @@ public:
         return Capacity <= UsedSpace;
     }
 
-    void Put(ui64 blobId, TRope&& blob) override {
+    void Put(ui64 blobId, TBuffer&& blob) override {
         if (UsedSpace + blob.size() > Capacity) {
             ythrow yexception() << "Space limit exceeded";
         }
 
         auto result = Blobs.emplace(blobId, std::move(blob));
-        Y_ABORT_UNLESS(result.second);
+        Y_VERIFY(result.second);
         UsedSpace += result.first->second.size();
     }
 
@@ -40,15 +40,7 @@ public:
             return false;
         }
 
-        auto& blob = Blobs[blobId];
-        data.Clear();
-        data.Reserve(blob.size());
-        for (auto it = blob.Begin(); it.Valid(); ++it) {
-            data.Append(it.ContiguousData(), it.ContiguousSize());
-        }
-
-        Y_ABORT_UNLESS(data.size() == blob.size());
-
+        data = std::move(Blobs[blobId]);
         Blobs.erase(blobId);
         UsedSpace -= data.size();
 
@@ -62,7 +54,7 @@ public:
 
 private:
     const ui64 Capacity;
-    THashMap<ui64, TRope> Blobs;
+    THashMap<ui64, TBuffer> Blobs;
     ui64 UsedSpace = 0;
     ui32 GetBlankRequests = 0;
 };

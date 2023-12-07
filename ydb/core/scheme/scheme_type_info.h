@@ -4,6 +4,6 @@
 
 namespace NKikimr::NScheme {
 
-::TString TypeName(const TTypeInfo typeInfo, const ::TString& typeMod = {});
+const char* TypeName(const TTypeInfo typeInfo);
 
 } // NKikimr::NScheme

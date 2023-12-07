@@ -16,6 +16,7 @@
 #include <ydb/core/tx/tx_processing.h>
 
 #include <library/cpp/containers/absl_flat_hash/flat_hash_set.h>
+#include <library/cpp/containers/flat_hash/flat_hash.h>
 
 #include <util/generic/hash.h>
 #include <util/generic/ptr.h>
@@ -68,7 +69,7 @@ struct TStepOrder {
     }
 
     ETxOrder CheckOrder(const TStepOrder& stepTxId) const {
-        Y_ABORT_UNLESS(*this != stepTxId); // avoid self checks
+        Y_VERIFY(*this != stepTxId); // avoid self checks
         if (!Step && !stepTxId.Step) // immediate vs immediate
             return ETxOrder::Any;
         if (!Step || !stepTxId.Step) // planned vs immediate
@@ -77,10 +78,6 @@ struct TStepOrder {
     }
 
     std::pair<ui64, ui64> ToPair() const { return std::pair<ui64, ui64>(Step, TxId); }
-
-    TRowVersion ToRowVersion() const {
-        return TRowVersion(Step, TxId);
-    }
 
     TString ToString() const {
         return TStringBuilder() << Step << ':' << TxId;
@@ -118,20 +115,11 @@ public:
     TBasicOpInfo()
         : Kind(EOperationKind::Unknown)
         , Flags(0)
-        , GlobalTxId(0)
+        , TxId(0)
         , Step(0)
         , MinStep(0)
         , MaxStep(0)
         , TieBreakerIndex(0)
-    {
-    }
-
-    TBasicOpInfo(EOperationKind kind,
-                 ui64 flags,
-                 ui64 maxStep,
-                 TInstant receivedAt,
-                 ui64 tieBreakerIndex)
-        : TBasicOpInfo(0, kind, flags, maxStep, receivedAt, tieBreakerIndex)
     {
     }
 
@@ -143,7 +131,7 @@ public:
                  ui64 tieBreakerIndex)
         : Kind(kind)
         , Flags(flags)
-        , GlobalTxId(txId)
+        , TxId(txId)
         , Step(0)
         , ReceivedAt(receivedAt)
         , MinStep(0)
@@ -253,7 +241,7 @@ public:
     bool HasReadOnlyFlag() const { return HasFlag(TTxFlags::ReadOnly); }
     void SetReadOnlyFlag(bool val = true)
     {
-        Y_ABORT_UNLESS(!val || !IsGlobalWriter());
+        Y_VERIFY(!val || !IsGlobalWriter());
         SetFlag(TTxFlags::ReadOnly, val);
     }
     void ResetReadOnlyFlag() { ResetFlag(TTxFlags::ReadOnly); }
@@ -278,7 +266,7 @@ public:
 
     bool HasGlobalWriterFlag() const { return HasFlag(TTxFlags::GlobalWriter); }
     void SetGlobalWriterFlag(bool val = true) {
-        Y_ABORT_UNLESS(!val || !IsReadOnly());
+        Y_VERIFY(!val || !IsReadOnly());
         SetFlag(TTxFlags::GlobalWriter, val);
     }
     void ResetGlobalWriterFlag() { ResetFlag(TTxFlags::GlobalWriter); }
@@ -359,20 +347,13 @@ public:
     bool HasWaitCompletionFlag() const { return HasFlag(TTxFlags::WaitCompletion); }
     void SetWaitCompletionFlag(bool val = true) { SetFlag(TTxFlags::WaitCompletion, val); }
 
-    bool HasWaitingForGlobalTxIdFlag() const { return HasFlag(TTxFlags::WaitingForGlobalTxId); }
-    void SetWaitingForGlobalTxIdFlag(bool val = true) { SetFlag(TTxFlags::WaitingForGlobalTxId, val); }
-
     ///////////////////////////////////
     //     OPERATION ID AND PLAN     //
     ///////////////////////////////////
-    ui64 GetTxId() const { return GlobalTxId ? GlobalTxId : TieBreakerIndex; }
-    ui64 GetGlobalTxId() const { return GlobalTxId; }
-    void SetGlobalTxId(ui64 txId) { GlobalTxId = txId; }
+    ui64 GetTxId() const { return TxId; }
 
     ui64 GetStep() const { return Step; }
     void SetStep(ui64 step) { Step = step; }
-    ui64 GetPredictedStep() const { return PredictedStep; }
-    void SetPredictedStep(ui64 step) { PredictedStep = step; }
 
     TStepOrder GetStepOrder() const { return TStepOrder(GetStep(), GetTxId()); }
 
@@ -415,9 +396,8 @@ protected:
     EOperationKind Kind;
     // See TTxFlags.
     ui64 Flags;
-    ui64 GlobalTxId;
+    ui64 TxId;
     ui64 Step;
-    ui64 PredictedStep = 0;
     TInstant ReceivedAt;
 
     ui64 MinStep;
@@ -646,7 +626,7 @@ public:
 
     TVector<TOutputOpData::TChangeRecord> &ChangeRecords() { return OutputDataRef().ChangeRecords; }
 
-    const absl::flat_hash_set<ui64> &GetAffectedLocks() const { return AffectedLocks; }
+    const NFH::TFlatHashSet<ui64> &GetAffectedLocks() const { return AffectedLocks; }
     void AddAffectedLock(ui64 lockTxId) { AffectedLocks.insert(lockTxId); }
 
     ////////////////////////////////////////
@@ -671,12 +651,12 @@ public:
     ////////////////////////////////////////
     //            DEPENDENCIES            //
     ////////////////////////////////////////
-    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetDependents() const { return Dependents; }
-    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetDependencies() const { return Dependencies; }
-    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetSpecialDependents() const { return SpecialDependents; }
-    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetSpecialDependencies() const { return SpecialDependencies; }
-    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetPlannedConflicts() const { return PlannedConflicts; }
-    const absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> &GetImmediateConflicts() const { return ImmediateConflicts; }
+    const NFH::TFlatHashSet<TOperation::TPtr> &GetDependents() const { return Dependents; }
+    const NFH::TFlatHashSet<TOperation::TPtr> &GetDependencies() const { return Dependencies; }
+    const NFH::TFlatHashSet<TOperation::TPtr> &GetSpecialDependents() const { return SpecialDependents; }
+    const NFH::TFlatHashSet<TOperation::TPtr> &GetSpecialDependencies() const { return SpecialDependencies; }
+    const NFH::TFlatHashSet<TOperation::TPtr> &GetPlannedConflicts() const { return PlannedConflicts; }
+    const NFH::TFlatHashSet<TOperation::TPtr> &GetImmediateConflicts() const { return ImmediateConflicts; }
     const absl::flat_hash_set<ui64> &GetVolatileDependencies() const { return VolatileDependencies; }
     bool HasVolatileDependencies() const { return !VolatileDependencies.empty(); }
     bool GetVolatileDependenciesAborted() const { return VolatileDependenciesAborted; }
@@ -709,10 +689,6 @@ public:
      */
     bool HasRuntimeConflicts() const noexcept;
 
-    virtual bool HasKeysInfo() const
-    {
-        return false;
-    }
     virtual const NMiniKQL::IEngineFlat::TValidationInfo &GetKeysInfo() const
     {
         return EmptyKeysInfo;
@@ -777,7 +753,7 @@ public:
 
     void AddExecutionTime(TDuration val)
     {
-        Y_DEBUG_ABORT_UNLESS(!IsExecutionPlanFinished());
+        Y_VERIFY_DEBUG(!IsExecutionPlanFinished());
         auto &profile = ExecutionProfile.UnitProfiles[ExecutionPlan[CurrentUnit]];
         profile.ExecuteTime += val;
         ++profile.ExecuteCount;
@@ -857,17 +833,17 @@ private:
     THolder<TOutputOpData> OutputData;
     ui64 Cookie;
     // A set of locks affected by this operation
-    absl::flat_hash_set<ui64> AffectedLocks;
+    NFH::TFlatHashSet<ui64> AffectedLocks;
     // Delayed read/write keys for immediate transactions
     TVector<TOperationKey> DelayedKnownReads;
     TVector<TOperationKey> DelayedKnownWrites;
     // Bidirectional links between dependent transactions
-    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> Dependents;
-    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> Dependencies;
-    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> SpecialDependents;
-    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> SpecialDependencies;
-    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> PlannedConflicts;
-    absl::flat_hash_set<TOperation::TPtr, THash<TOperation::TPtr>> ImmediateConflicts;
+    NFH::TFlatHashSet<TOperation::TPtr> Dependents;
+    NFH::TFlatHashSet<TOperation::TPtr> Dependencies;
+    NFH::TFlatHashSet<TOperation::TPtr> SpecialDependents;
+    NFH::TFlatHashSet<TOperation::TPtr> SpecialDependencies;
+    NFH::TFlatHashSet<TOperation::TPtr> PlannedConflicts;
+    NFH::TFlatHashSet<TOperation::TPtr> ImmediateConflicts;
     absl::flat_hash_set<ui64> VolatileDependencies;
     bool VolatileDependenciesAborted = false;
     TVector<EExecutionUnitKind> ExecutionPlan;
@@ -881,10 +857,6 @@ private:
 
 public:
     std::optional<TRowVersion> MvccReadWriteVersion;
-
-public:
-    // Orbit used for tracking operation progress
-    NLWTrace::TOrbit Orbit;
 };
 
 inline IOutputStream &operator <<(IOutputStream &out,

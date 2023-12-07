@@ -17,7 +17,6 @@ class TBlobStorageGroupIndexRestoreGetRequest
     TArrayHolder<TEvBlobStorage::TEvGet::TQuery> Queries;
     const TInstant Deadline;
     const bool IsInternal;
-    const bool Decommission;
     const std::optional<TEvBlobStorage::TEvGet::TForceBlockTabletData> ForceBlockTabletData;
 
     THashMap<ui64, TGroupQuorumTracker> QuorumTracker;
@@ -50,7 +49,7 @@ class TBlobStorageGroupIndexRestoreGetRequest
             }
             PendingResult->ErrorReason = ErrorReason;
         }
-        Y_ABORT_UNLESS(PendingResult);
+        Y_VERIFY(PendingResult);
         Mon->CountIndexRestoreGetResponseTime(TActivationContext::Now() - StartTime);
         SendResponseAndDie(std::move(PendingResult));
     }
@@ -83,13 +82,13 @@ class TBlobStorageGroupIndexRestoreGetRequest
 
         const NKikimrBlobStorage::TEvVGetResult &record = ev->Get()->Record;
 
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
         NKikimrProto::EReplyStatus status = record.GetStatus();
 
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
         const TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
 
-        Y_ABORT_UNLESS(VGetsInFlight > 0);
+        Y_VERIFY(VGetsInFlight > 0);
         --VGetsInFlight;
 
         A_LOG_DEBUG_S("DSPI10", "Handle TEvVGetResult"
@@ -97,12 +96,12 @@ class TBlobStorageGroupIndexRestoreGetRequest
             << " VDiskId# " << vdisk
             << " ev# " << ev->Get()->ToString());
 
-        Y_ABORT_UNLESS(record.HasCookie());
+        Y_VERIFY(record.HasCookie());
         const ui64 queueId = record.GetCookie();
-        Y_ABORT_UNLESS(queueId > 0);
+        Y_VERIFY(queueId > 0);
 
         auto it = QuorumTracker.find(queueId);
-        Y_ABORT_UNLESS(it != QuorumTracker.end());
+        Y_VERIFY(it != QuorumTracker.end());
 
         switch (NKikimrProto::EReplyStatus newStatus = it->second.ProcessReply(vdisk, status)) {
             case NKikimrProto::ERROR:
@@ -113,13 +112,13 @@ class TBlobStorageGroupIndexRestoreGetRequest
                 break;
 
             default:
-                Y_ABORT("unexpected newStatus# %s", NKikimrProto::EReplyStatus_Name(newStatus).data());
+                Y_FAIL("unexpected newStatus# %s", NKikimrProto::EReplyStatus_Name(newStatus).data());
         }
 
         for (const auto& result : record.GetResult()) {
             const TLogoBlobID& blobId = LogoBlobIDFromLogoBlobID(result.GetBlobID());
             const ui32 queryIdx = result.GetCookie();
-            Y_ABORT_UNLESS(queryIdx < QuerySize && blobId == Queries[queryIdx].Id);
+            Y_VERIFY(queryIdx < QuerySize && blobId == Queries[queryIdx].Id);
             BlobStatus[queryIdx].UpdateFromResponseData(result, vdisk, Info.Get());
             auto& [keep, doNotKeep] = KeepFlags[blobId];
             keep |= result.GetKeep();
@@ -143,7 +142,7 @@ class TBlobStorageGroupIndexRestoreGetRequest
             a.Id = q.Id;
 
             const auto it = KeepFlags.find(q.Id);
-            Y_ABORT_UNLESS(it != KeepFlags.end());
+            Y_VERIFY(it != KeepFlags.end());
             std::tie(a.Keep, a.DoNotKeep) = it->second;
 
             A_LOG_DEBUG_S("DSPI11", "OnEnoughVGetResults Id# " << q.Id << " BlobStatus# " << DumpBlobStatus(idx));
@@ -175,7 +174,6 @@ class TBlobStorageGroupIndexRestoreGetRequest
                 std::unique_ptr<TEvBlobStorage::TEvGet> get(new TEvBlobStorage::TEvGet(
                     Queries[idx].Id, 0, 0, Deadline,
                     GetHandleClass, true));
-                get->Decommission = Decommission;
                 A_LOG_DEBUG_S("DSPI12", "OnEnoughVGetResults"
                         << " recoverable blob, id# " << Queries[idx].Id.ToString()
                         << " BlobStatus# " << DumpBlobStatus(idx)
@@ -211,7 +209,7 @@ class TBlobStorageGroupIndexRestoreGetRequest
             return;
         }
 
-        Y_ABORT_UNLESS(PendingResult);
+        Y_VERIFY(PendingResult);
         for (ui32 i = 0; i < getResult.ResponseSz; ++i) {
             TEvBlobStorage::TEvGetResult::TResponse &response = getResult.Responses[i];
             if (response.Status != NKikimrProto::OK) {
@@ -235,7 +233,7 @@ class TBlobStorageGroupIndexRestoreGetRequest
     }
 
     void SetPendingResultResponseStatus(TLogoBlobID id, NKikimrProto::EReplyStatus status) {
-        Y_ABORT_UNLESS(PendingResult);
+        Y_VERIFY(PendingResult);
         for (ui64 idx = 0; idx < PendingResult->ResponseSz; ++idx) {
             TEvBlobStorage::TEvGetResult::TResponse &response = PendingResult->Responses[idx];
             if (response.Id.IsSameBlob(id)) {
@@ -249,7 +247,6 @@ class TBlobStorageGroupIndexRestoreGetRequest
         auto ev = std::make_unique<TEvBlobStorage::TEvGet>(Queries, QuerySize, Deadline, GetHandleClass,
             true /*mustRestoreFirst*/, true /*isIndexOnly*/, std::nullopt /*forceBlockTabletData*/, IsInternal);
         ev->RestartCounter = counter;
-        ev->Decommission = Decommission;
         return ev;
     }
 
@@ -278,7 +275,6 @@ public:
         , Queries(ev->Queries.Release())
         , Deadline(ev->Deadline)
         , IsInternal(ev->IsInternal)
-        , Decommission(ev->Decommission)
         , ForceBlockTabletData(ev->ForceBlockTabletData)
         , VGetsInFlight(0)
         , StartTime(now)
@@ -296,9 +292,6 @@ public:
         for (ui32 idx = 0; idx < QuerySize; ++idx) {
             BlobStatus.emplace_back(Queries[idx].Id, Info.Get());
         }
-
-        // phantom checks are for non-index queries only
-        Y_ABORT_UNLESS(!ev->PhantomCheck);
     }
 
     void Bootstrap() {
@@ -371,7 +364,7 @@ public:
             // If vqeurry array is not empty, send the query to the disk, else mark request replied
             sendQuery();
         }
-        Y_ABORT_UNLESS(VGetsInFlight);
+        Y_VERIFY(VGetsInFlight);
         Become(&TThis::StateWait);
     }
 

@@ -14,19 +14,6 @@ namespace NKikimr {
 namespace NKqp {
 namespace {
 
-struct TEvComputeChannelDataOOB {
-    NYql::NDqProto::TEvComputeChannelData Proto;
-    TRope Payload;
-
-    size_t Size() const {
-        return Proto.GetChannelData().GetData().GetRaw().size() + Payload.size();
-    }
-
-    ui32 RowCount() const {
-        return Proto.GetChannelData().GetData().GetRows();
-    }
-};
-
 class TResultCommonChannelProxy : public NActors::TActor<TResultCommonChannelProxy> {
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -41,57 +28,48 @@ public:
         , Executer(executer) {}
 
 protected:
-    virtual void SendResults(TEvComputeChannelDataOOB& computeData, TActorId sender) = 0;
+    virtual void SendResults(NYql::NDqProto::TEvComputeChannelData& computeData, TActorId sender) = 0;
 
 private:
     STATEFN(WorkState) {
-        try {
-            switch (ev->GetTypeRewrite()) {
-                hFunc(NYql::NDq::TEvDqCompute::TEvChannelData, HandleWork);
-                hFunc(TEvKqpExecuter::TEvStreamDataAck, HandleWork);
-                hFunc(TEvents::TEvPoison, HandlePoison);
-                default: {
-                    InternalError(TStringBuilder() << "TxId: " << TxId << ", channelId: " << ChannelId
-                        << "Handle unexpected event " << ev->GetTypeRewrite());
-                }
+        switch (ev->GetTypeRewrite()) {
+            hFunc(NYql::NDq::TEvDqCompute::TEvChannelData, HandleWork);
+            hFunc(TEvKqpExecuter::TEvStreamDataAck, HandleWork);
+            hFunc(TEvents::TEvPoison, HandlePoison);
+            default: {
+                InternalError(TStringBuilder() << "TxId: " << TxId << ", channelId: " << ChannelId
+                    << "Handle unexpected event " << ev->GetTypeRewrite());
             }
-        } catch (const yexception& ex) {
-            InternalError(ex.what());
         }
     }
 
-    void UpdateStatistics(const TEvComputeChannelDataOOB& data) {
+    void UpdateStatistics(const ::NYql::NDqProto::TData& data) {
         if (!Stats) {
             return;
         }
 
-        Stats->ResultBytes += data.Size();
-        Stats->ResultRows += data.RowCount();
+        Stats->ResultBytes += data.GetRaw().size();
+        Stats->ResultRows += data.GetRows();
     }
 
     void HandleWork(NYql::NDq::TEvDqCompute::TEvChannelData::TPtr& ev) {
-        TEvComputeChannelDataOOB record;
-        record.Proto = std::move(ev->Get()->Record);
-        if (record.Proto.GetChannelData().GetData().HasPayloadId()) {
-            record.Payload = ev->Get()->GetPayload(record.Proto.GetChannelData().GetData().GetPayloadId());
-        }
-
-        const auto& channelData = record.Proto.GetChannelData();
+        NYql::NDqProto::TEvComputeChannelData& record = ev->Get()->Record;
+        auto& channelData = record.GetChannelData();
 
         ComputeActor = ev->Sender;
 
         LOG_DEBUG_S(*NActors::TlsActivationContext, NKikimrServices::KQP_EXECUTER, "TxId: " << TxId << ", got result"
             << ", channelId: " << channelData.GetChannelId()
-            << ", seqNo: " << record.Proto.GetSeqNo()
+            << ", seqNo: " << record.GetSeqNo()
             << ", from: " << ev->Sender);
 
-        UpdateStatistics(record);
+        UpdateStatistics(channelData.GetData());
         SendResults(record, ev->Sender);
     }
 
     void HandleWork(TEvKqpExecuter::TEvStreamDataAck::TPtr& ev) {
         ui64 seqNo = ev->Get()->Record.GetSeqNo();
-        i64 freeSpace = ev->Get()->Record.GetFreeSpace();
+        ui64 freeSpace = ev->Get()->Record.GetFreeSpace();
 
         LOG_DEBUG_S(*NActors::TlsActivationContext, NKikimrServices::KQP_EXECUTER, "TxId: " << TxId
             << ", send ack to channelId: " << ChannelId
@@ -119,13 +97,8 @@ private:
 
 private:
     STATEFN(DeadState) {
-        try {
-            switch (ev->GetTypeRewrite()) {
-                hFunc(TEvents::TEvPoison, HandlePoison);
-            }
-            
-        } catch(const yexception& ex) {
-            InternalError(ex.what());
+        switch (ev->GetTypeRewrite()) {
+            hFunc(TEvents::TEvPoison, HandlePoison);
         }
     }
 
@@ -147,43 +120,35 @@ private:
 class TResultStreamChannelProxy : public TResultCommonChannelProxy {
 public:
     TResultStreamChannelProxy(ui64 txId, ui64 channelId, NKikimr::NMiniKQL::TType* itemType,
-        const TVector<ui32>* columnOrder, ui32 queryResultIndex, TActorId target, std::shared_ptr<TQueryExecutionStats> stats,
+        const TVector<ui32>* columnOrder, TActorId target, std::shared_ptr<TQueryExecutionStats> stats,
         TActorId executer)
         : TResultCommonChannelProxy(txId, channelId, std::move(stats), executer)
         , ColumnOrder(columnOrder)
         , ItemType(itemType)
-        , QueryResultIndex(queryResultIndex)
         , Target(target) {}
 
 private:
-    void SendResults(TEvComputeChannelDataOOB& computeData, TActorId sender) override {
+    virtual void SendResults(NYql::NDqProto::TEvComputeChannelData& computeData, TActorId sender) {
         Y_UNUSED(sender);
 
-        TVector<NYql::NDq::TDqSerializedBatch> batches(1);
-        auto& batch = batches.front();
-
-        batch.Proto = std::move(*computeData.Proto.MutableChannelData()->MutableData());
-        batch.Payload = std::move(computeData.Payload);
+        auto& channelData = computeData.GetChannelData();
 
         TKqpProtoBuilder protoBuilder{*AppData()->FunctionRegistry};
-        auto resultSet = protoBuilder.BuildYdbResultSet(std::move(batches), ItemType, ColumnOrder);
+        auto resultSet = protoBuilder.BuildYdbResultSet({channelData.GetData()}, ItemType, ColumnOrder);
 
         auto streamEv = MakeHolder<TEvKqpExecuter::TEvStreamData>();
-        streamEv->Record.SetSeqNo(computeData.Proto.GetSeqNo());
-        streamEv->Record.SetQueryResultIndex(QueryResultIndex);
+        streamEv->Record.SetSeqNo(computeData.GetSeqNo());
         streamEv->Record.MutableResultSet()->Swap(&resultSet);
 
         LOG_DEBUG_S(*NActors::TlsActivationContext, NKikimrServices::KQP_EXECUTER,
             "Send TEvStreamData to " << Target << ", seqNo: " << streamEv->Record.GetSeqNo()
-            << ", nRows: " << batch.RowCount() );
+            << ", nRows: " << channelData.GetData().GetRows() );
 
         Send(Target, streamEv.Release());
     }
-
 private:
     const TVector<ui32>* ColumnOrder;
     NKikimr::NMiniKQL::TType* ItemType;
-    ui32 QueryResultIndex = 0;
     const NActors::TActorId Target;
 };
 
@@ -196,18 +161,15 @@ public:
         , ResultReceiver(resultReceiver) {}
 
 private:
-    virtual void SendResults(TEvComputeChannelDataOOB& computeData, TActorId sender) {
-        NYql::NDq::TDqSerializedBatch batch;
-        batch.Proto = std::move(*computeData.Proto.MutableChannelData()->MutableData());
-        batch.Payload = std::move(computeData.Payload);
+    virtual void SendResults(NYql::NDqProto::TEvComputeChannelData& computeData, TActorId sender) {
+        auto& channelData = computeData.GetChannelData();
+        auto channelId = channelData.GetChannelId();
 
-        auto channelId = computeData.Proto.GetChannelData().GetChannelId();
-
-        ResultReceiver->TakeResult(InputIndex, std::move(batch));
+        ResultReceiver->TakeResult(InputIndex, channelData.GetData());
 
         auto ackEv = MakeHolder<NYql::NDq::TEvDqCompute::TEvChannelDataAck>();
 
-        ackEv->Record.SetSeqNo(computeData.Proto.GetSeqNo());
+        ackEv->Record.SetSeqNo(computeData.GetSeqNo());
         ackEv->Record.SetChannelId(channelId);
         ackEv->Record.SetFreeSpace(1_MB);
 
@@ -222,16 +184,14 @@ private:
 } // anonymous namespace end
 
 NActors::IActor* CreateResultStreamChannelProxy(ui64 txId, ui64 channelId, NKikimr::NMiniKQL::TType* itemType,
-    const TVector<ui32>* columnOrder, ui32 queryResultIndex, TActorId target, std::shared_ptr<TQueryExecutionStats> stats,
-    TActorId executer)
+    const TVector<ui32>* columnOrder, TActorId target, std::shared_ptr<TQueryExecutionStats> stats, TActorId executer)
 {
     LOG_DEBUG_S(*NActors::TlsActivationContext, NKikimrServices::KQP_EXECUTER,
         "CreateResultStreamChannelProxy: TxId: " << txId <<
         ", channelId: " << channelId
     );
 
-    return new TResultStreamChannelProxy(txId, channelId, itemType, columnOrder, queryResultIndex, target,
-        std::move(stats), executer);
+    return new TResultStreamChannelProxy(txId, channelId, itemType, columnOrder, target, std::move(stats), executer);
 }
 
 NActors::IActor* CreateResultDataChannelProxy(ui64 txId, ui64 channelId,

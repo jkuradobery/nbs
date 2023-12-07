@@ -98,8 +98,7 @@ PEERDIR(
     ydb/public/api/grpc
     ydb/public/api/grpc/draft
     ydb/public/api/protos
-    ydb/tests/oss/canonical
-    ydb/tests/oss/ydb_sdk_import
+    ydb/tests/oss_canonical
 )
 
 END()

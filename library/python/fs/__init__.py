@@ -294,13 +294,6 @@ def read_file(path, binary=True):
         return f.read()
 
 
-# Text file read
-# Throws OSError
-@errorfix_win
-def read_text(path):
-    return read_file(path, binary=False)
-
-
 # Decoding file read
 # Throws OSError
 @errorfix_win
@@ -337,13 +330,6 @@ def write_file(path, data, binary=True):
             data = data.encode('UTF-8')
         f.write(data)
     replace_file(tmp_path, path)
-
-
-# Atomic text file write
-# Throws OSError
-@errorfix_win
-def write_text(path, data):
-    write_file(path, data, binary=False)
 
 
 # File size

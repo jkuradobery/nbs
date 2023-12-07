@@ -32,17 +32,6 @@ public:
         return *this;
     }
 
-    template <typename ValueType>
-    THttpResponse& AddOrReplaceHeader(const TString& name, const ValueType& value) {
-        return AddOrReplaceHeader(THttpInputHeader(name, ToString(value)));
-    }
-
-    THttpResponse& AddOrReplaceHeader(const THttpInputHeader& header) {
-        Headers.AddOrReplaceHeader(header);
-
-        return *this;
-    }
-
     THttpResponse& AddMultipleHeaders(const THttpHeaders& headers);
 
     const THttpHeaders& GetHeaders() const {
@@ -58,12 +47,6 @@ public:
      */
     THttpResponse& SetContent(const TString& content) {
         Content = content;
-
-        return *this;
-    }
-
-    THttpResponse& SetContent(TString&& content) {
-        Content = std::move(content);
 
         return *this;
     }

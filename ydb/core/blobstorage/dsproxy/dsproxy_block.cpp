@@ -24,19 +24,19 @@ class TBlobStorageGroupBlockRequest : public TBlobStorageGroupRequestActor<TBlob
     void Handle(TEvBlobStorage::TEvVBlockResult::TPtr &ev) {
         ProcessReplyFromQueue(ev);
         const NKikimrBlobStorage::TEvVBlockResult &record = ev->Get()->Record;
-        Y_ABORT_UNLESS(record.HasStatus());
+        Y_VERIFY(record.HasStatus());
         const NKikimrProto::EReplyStatus status = record.GetStatus();
-        Y_ABORT_UNLESS(record.HasVDiskID());
+        Y_VERIFY(record.HasVDiskID());
         const TVDiskID vdisk = VDiskIDFromVDiskID(record.GetVDiskID());
         const TVDiskIdShort shortId(ev->Cookie);
 
-        Y_ABORT_UNLESS(shortId.FailRealm == vdisk.FailRealm &&
+        Y_VERIFY(shortId.FailRealm == vdisk.FailRealm &&
                 shortId.FailDomain == vdisk.FailDomain &&
                 shortId.VDisk == vdisk.VDisk,
                 "VDiskId does not match the cookie, cookie# %s VDiskId# %s",
                 shortId.ToString().c_str(), vdisk.ToString().c_str());
         // You can't call GetActorId before calling IsValidId
-        Y_ABORT_UNLESS(Info->IsValidId(shortId), "Invalid VDiskId VDiskId# %s", shortId.ToString().c_str());
+        Y_VERIFY(Info->IsValidId(shortId), "Invalid VDiskId VDiskId# %s", shortId.ToString().c_str());
 
         A_LOG_LOG_S(false, PriorityForStatusInbound(status), "DSPB01", "Handle TEvVBlockResult"
             << " status# " << NKikimrProto::EReplyStatus_Name(status).data()
@@ -85,7 +85,7 @@ class TBlobStorageGroupBlockRequest : public TBlobStorageGroupRequestActor<TBlob
             }
 
             default:
-                Y_ABORT("unexpected newStatus# %s", NKikimrProto::EReplyStatus_Name(newStatus).data());
+                Y_FAIL("unexpected newStatus# %s", NKikimrProto::EReplyStatus_Name(newStatus).data());
         }
         for (const TVDiskID& vdiskId : queryStatus) {
             SendToQueue(std::make_unique<TEvBlobStorage::TEvVStatus>(vdiskId), 0);

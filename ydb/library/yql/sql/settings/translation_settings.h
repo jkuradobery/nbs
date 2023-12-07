@@ -3,7 +3,6 @@
 #include <util/generic/hash.h>
 #include <util/generic/hash_set.h>
 #include <util/generic/map.h>
-#include <util/generic/vector.h>
 
 namespace google::protobuf {
     class Arena;
@@ -22,17 +21,6 @@ namespace NSQLTranslation {
         LIBRARY = 2,
         SUBQUERY = 3,
         DISCOVERY = 4,
-    };
-
-    enum class EBindingsMode {
-        // raise error 
-        DISABLED,
-        // classic support for bindings
-        ENABLED,
-        // bindings.my_binding -> current_cluster.my_binding + raise warning
-        DROP_WITH_WARNING,
-        // bindings.my_binding -> current_cluster.my_binding
-        DROP
     };
 
     inline bool IsQueryMode(NSQLTranslation::ESqlMode mode) {
@@ -77,12 +65,11 @@ namespace NSQLTranslation {
         THashSet<TString> Libraries;
         THashSet<TString> Flags;
 
-        EBindingsMode BindingsMode;
-        THashMap<TString, TTableBindingSettings> Bindings;
+        THashMap<TString, TTableBindingSettings> PrivateBindings;
+        THashMap<TString, TTableBindingSettings> ScopedBindings;
 
         // each (name, type) entry in this map is equivalent to
         // DECLARE $name AS type;
-        // NOTE: DECLARE statement in SQL text overrides entry in DeclaredNamedExprs
         TMap<TString, TString> DeclaredNamedExprs;
 
         ESqlMode Mode;
@@ -102,12 +89,6 @@ namespace NSQLTranslation {
         ISqlFeaturePolicy::TPtr V0WarnAsError;
         ISqlFeaturePolicy::TPtr DqDefaultAuto;
         bool AssumeYdbOnClusterWithSlash;
-        TString DynamicClusterProvider;
-        TString FileAliasPrefix;
-
-        TVector<ui32> PgParameterTypeOids;
-        bool AutoParametrizeEnabled = false;
-        THashSet<TString> AutoParametrizeEnabledScopes = {};
     };
 
     bool ParseTranslationSettings(const TString& query, NSQLTranslation::TTranslationSettings& settings, NYql::TIssues& issues);

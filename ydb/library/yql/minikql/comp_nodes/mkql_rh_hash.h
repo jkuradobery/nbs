@@ -3,9 +3,6 @@
 #include <util/system/types.h>
 #include <util/generic/yexception.h>
 #include <vector>
-#include <span>
-
-#include <ydb/library/yql/utils/prefetch.h>
 
 #include <util/digest/city.h>
 #include <util/generic/scope.h>
@@ -13,66 +10,13 @@
 namespace NKikimr {
 namespace NMiniKQL {
 
-template <class TKey>
-struct TRobinHoodDefaultSettings {
-    static constexpr bool CacheHash = !std::is_arithmetic<TKey>::value;
-};
-
-template <typename TKey>
-struct TRobinHoodBatchRequestItem {
-    // input
-    alignas(TKey) char KeyStorage[sizeof(TKey)];
-
-    const TKey& GetKey() const {
-        return *reinterpret_cast<const TKey*>(KeyStorage);
-    }
-
-    void ConstructKey(const TKey& key) {
-        new (KeyStorage) TKey(key);
-    }
-    
-    // intermediate data
-    ui64 Hash;
-    char* InitialIterator;
-};
-
-constexpr ui32 PrefetchBatchSize = 64;
-
 //TODO: only POD key & payloads are now supported
-template <typename TKey, typename TEqual, typename THash, typename TAllocator, typename TDeriv, bool CacheHash>
+template <typename TKey, typename TEqual, typename THash, typename TAllocator, typename TDeriv>
 class TRobinHoodHashBase {
-public:
-    using iterator = char*;
-    using const_iterator = const char*;
 protected:
     THash HashLocal;
     TEqual EqualLocal;
-    template <bool CacheHashForPSL>
-    struct TPSLStorageImpl;
-
-    template <>
-    struct TPSLStorageImpl<true> {
-        i32 Distance = -1;
-        ui64 Hash = 0;
-        TPSLStorageImpl() = default;
-        TPSLStorageImpl(const ui64 hash)
-            : Distance(0)
-            , Hash(hash) {
-
-        }
-    };
-
-    template <>
-    struct TPSLStorageImpl<false> {
-        i32 Distance = -1;
-        TPSLStorageImpl() = default;
-        TPSLStorageImpl(const ui64 /*hash*/)
-            : Distance(0) {
-
-        }
-    };
-
-    using TPSLStorage = TPSLStorageImpl<CacheHash>;
+    using TPSLStorage = i32;
 
     explicit TRobinHoodHashBase(const ui64 initialCapacity, THash hash, TEqual equal)
         : HashLocal(std::move(hash))
@@ -98,9 +42,7 @@ protected:
 public:
     // returns iterator
     Y_FORCE_INLINE char* Insert(TKey key, bool& isNew) {
-        auto hash = HashLocal(key);
-        auto ptr = MakeIterator(hash, Data, Capacity);
-        auto ret = InsertImpl(key, hash, isNew, Data, DataEnd, ptr);
+        auto ret = InsertImpl(key, isNew, Capacity, Data, DataEnd);
         Size += isNew ? 1 : 0;
         return ret;
     }
@@ -112,36 +54,10 @@ public:
         }
     }
 
-    template <typename TSink>
-    Y_NO_INLINE void BatchInsert(std::span<TRobinHoodBatchRequestItem<TKey>> batchRequest, TSink&& sink) {
-        while (2 * (Size + batchRequest.size()) >= Capacity) {
-            Grow();
-        }
-
-        for (size_t i = 0; i < batchRequest.size(); ++i) {
-            auto& r = batchRequest[i];
-            r.Hash = HashLocal(r.GetKey());
-            r.InitialIterator = MakeIterator(r.Hash, Data, Capacity);
-            NYql::PrefetchForWrite(r.InitialIterator);
-        }
-
-        for (size_t i = 0; i < batchRequest.size(); ++i) {
-            auto& r = batchRequest[i];
-            bool isNew;
-            auto iter = InsertImpl(r.GetKey(), r.Hash, isNew, Data, DataEnd, r.InitialIterator);
-            Size += isNew ? 1 : 0;
-            sink(i, iter, isNew);
-        }
-    }
-
-    ui64 GetCapacity() const {
-        return Capacity;
-    }
-
     void Clear() {
         char* ptr = Data;
         for (ui64 i = 0; i < Capacity; ++i) {
-            GetPSL(ptr).Distance = -1;
+            GetPSL(ptr) = -1;
             ptr += AsDeriv().GetCellSize();
         }
         Size = 0;
@@ -171,16 +87,16 @@ public:
         return DataEnd;
     }
 
-    void Advance(char*& ptr) const {
+    void Advance(char*& ptr) {
         ptr += AsDeriv().GetCellSize();
     }
 
-    void Advance(const char*& ptr) const {
+    void Advance(const char*& ptr) {
         ptr += AsDeriv().GetCellSize();
     }
 
     bool IsValid(const char* ptr) {
-        return GetPSL(ptr).Distance >= 0;
+        return GetPSL(ptr) >= 0;
     }
 
     static const TPSLStorage& GetPSL(const char* ptr) {
@@ -208,135 +124,84 @@ public:
     }
 
 private:
-    struct TInternalBatchRequestItem : TRobinHoodBatchRequestItem<TKey> {
-        char* OriginalIterator;
-    };
-
-    Y_FORCE_INLINE char* MakeIterator(const ui64 hash, char* data, ui64 capacity) {
-        // https://probablydance.com/2018/06/16/fibonacci-hashing-the-optimization-that-the-world-forgot-or-a-better-alternative-to-integer-modulo/        
-        ui64 bucket = ((SelfHash ^ hash) * 11400714819323198485llu) & (capacity - 1);
-        char* ptr = data + AsDeriv().GetCellSize() * bucket;
-        return ptr;
-    }
-
-    Y_FORCE_INLINE char* InsertImpl(TKey key, const ui64 hash, bool& isNew, char* data, char* dataEnd, char* ptr) {
+    Y_FORCE_INLINE char* InsertImpl(TKey key, bool& isNew, ui64 capacity, char* data, char* dataEnd) {
         isNew = false;
-        TPSLStorage psl(hash);
+        ui64 bucket = (SelfHash ^ HashLocal(key)) & (capacity - 1);
+        char* ptr = data + AsDeriv().GetCellSize() * bucket;
+        TPSLStorage distance = 0;
         char* returnPtr;
         typename TDeriv::TPayloadStore tmpPayload;
         for (;;) {
-            auto& pslPtr = GetPSL(ptr);
-            if (pslPtr.Distance < 0) {
+            if (GetPSL(ptr) < 0) {
                 isNew = true;
-                pslPtr = psl;
+                GetPSL(ptr) = distance;
                 GetKey(ptr) = key;
                 return ptr;
             }
 
-            if constexpr (CacheHash) {
-                if (pslPtr.Hash == psl.Hash && EqualLocal(GetKey(ptr), key)) {
-                    return ptr;
-                }
-            } else {
-                if (EqualLocal(GetKey(ptr), key)) {
-                    return ptr;
-                }
+            if (EqualLocal(GetKey(ptr), key)) {
+                return ptr;
             }
 
-            if (psl.Distance > pslPtr.Distance) {
+            if (distance > GetPSL(ptr)) {
                 // swap keys & state
                 returnPtr = ptr;
-                std::swap(psl, pslPtr);
+                std::swap(distance, GetPSL(ptr));
                 std::swap(key, GetKey(ptr));
                 AsDeriv().SavePayload(GetPayload(ptr), tmpPayload);
                 isNew = true;
 
-                ++psl.Distance;
+                ++distance;
                 AdvancePointer(ptr, data, dataEnd);
                 break;
             }
 
-            ++psl.Distance;
+            ++distance;
             AdvancePointer(ptr, data, dataEnd);
         }
 
         for (;;) {
-            auto& pslPtr = GetPSL(ptr);
-            if (pslPtr.Distance < 0) {
-                pslPtr = psl;
+            if (GetPSL(ptr) < 0) {
+                GetPSL(ptr) = distance;
                 GetKey(ptr) = key;
                 AsDeriv().RestorePayload(GetMutablePayload(ptr), tmpPayload);
                 return returnPtr; // for original key
             }
 
-            if (psl.Distance > pslPtr.Distance) {
+            if (distance > GetPSL(ptr)) {
                 // swap keys & state
-                std::swap(psl, pslPtr);
+                std::swap(distance, GetPSL(ptr));
                 std::swap(key, GetKey(ptr));
                 AsDeriv().SwapPayload(GetMutablePayload(ptr), tmpPayload);
             }
 
-            ++psl.Distance;
+            ++distance;
             AdvancePointer(ptr, data, dataEnd);
         }
     }
 
-    Y_NO_INLINE void Grow() {
-        ui64 growFactor;
-        if (Capacity < 100'000) {
-            growFactor = 8;
-        } else if (Capacity < 1'000'000) {
-            growFactor = 4;
-        } else {
-            growFactor = 2;
-        }
-        auto newCapacity = Capacity * growFactor;
+    void Grow() {
+        auto newCapacity = Capacity * 2;
         char *newData, *newDataEnd;
         Allocate(newCapacity, newData, newDataEnd);
         Y_DEFER {
             Allocator.deallocate(newData, newDataEnd - newData);
         };
 
-        std::array<TInternalBatchRequestItem, PrefetchBatchSize> batch;
-        ui32 batchLen = 0;
         for (auto iter = Begin(); iter != End(); Advance(iter)) {
-            if (GetPSL(iter).Distance < 0) {
+            if (GetPSL(iter) < 0) {
                 continue;
             }
 
-            if (batchLen == batch.size()) {
-                CopyBatch({batch.data(), batchLen}, newData, newDataEnd);
-                batchLen = 0;
-            }
-
-            auto& r = batch[batchLen++];
-            r.ConstructKey(GetKey(iter));
-            r.OriginalIterator = iter;
-
-            if constexpr (CacheHash) {
-                r.Hash = GetPSL(iter).Hash;
-            } else {
-                r.Hash = HashLocal(r.GetKey());
-            }
-
-            r.InitialIterator = MakeIterator(r.Hash, newData, newCapacity);
-            NYql::PrefetchForWrite(r.InitialIterator);
+            bool isNew;
+            auto newIter = InsertImpl(GetKey(iter), isNew, newCapacity, newData, newDataEnd);
+            Y_ASSERT(isNew);
+            AsDeriv().CopyPayload(GetMutablePayload(newIter), GetPayload(iter));
         }
-
-        CopyBatch({batch.data(), batchLen}, newData, newDataEnd);
 
         Capacity = newCapacity;
         std::swap(Data, newData);
         std::swap(DataEnd, newDataEnd);
-    }
-
-    Y_NO_INLINE void CopyBatch(std::span<TInternalBatchRequestItem> batch, char* newData, char* newDataEnd) {
-        for (auto& r : batch) {
-            bool isNew;
-            auto iter = InsertImpl(r.GetKey(), r.Hash, isNew, newData, newDataEnd, r.InitialIterator);
-            Y_ASSERT(isNew);
-            AsDeriv().CopyPayload(GetMutablePayload(iter), GetPayload(r.OriginalIterator));
-        }
     }
 
     void AdvancePointer(char*& ptr, char* begin, char* end) const {
@@ -362,7 +227,7 @@ private:
         dataEnd = data + bytes;
         char* ptr = data;
         for (ui64 i = 0; i < capacity; ++i) {
-            GetPSL(ptr).Distance = -1;
+            GetPSL(ptr) = -1;
             ptr += AsDeriv().GetCellSize();
         }
     }
@@ -384,25 +249,15 @@ private:
     char* DataEnd = nullptr;
 };
 
-template <typename TKey, typename TEqual = std::equal_to<TKey>, typename THash = std::hash<TKey>, typename TAllocator = std::allocator<char>, typename TSettings = TRobinHoodDefaultSettings<TKey>>
-class TRobinHoodHashMap : public TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TRobinHoodHashMap<TKey, TEqual, THash, TAllocator, TSettings>, TSettings::CacheHash> {
+template <typename TKey, typename TEqual = std::equal_to<TKey>, typename THash = std::hash<TKey>, typename TAllocator = std::allocator<char>>
+class TRobinHoodHashMap : public TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TRobinHoodHashMap<TKey, TEqual, THash, TAllocator>> {
 public:
-    using TSelf = TRobinHoodHashMap<TKey, TEqual, THash, TAllocator, TSettings>;
-    using TBase = TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TSelf, TSettings::CacheHash>;
+    using TSelf = TRobinHoodHashMap<TKey, TEqual, THash, TAllocator>;
+    using TBase = TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TSelf>;
     using TPayloadStore = int;
 
     explicit TRobinHoodHashMap(ui32 payloadSize, ui64 initialCapacity = 1u << 8)
         : TBase(initialCapacity, THash(), TEqual())
-        , CellSize(sizeof(typename TBase::TPSLStorage) + sizeof(TKey) + payloadSize)
-        , PayloadSize(payloadSize)
-    {
-        TmpPayload.resize(PayloadSize);
-        TmpPayload2.resize(PayloadSize);
-        TBase::Init();
-    }
-
-    explicit TRobinHoodHashMap(ui32 payloadSize, const THash& hash, const TEqual& equal, ui64 initialCapacity = 1u << 8)
-        : TBase(initialCapacity, hash, equal)
         , CellSize(sizeof(typename TBase::TPSLStorage) + sizeof(TKey) + payloadSize)
         , PayloadSize(payloadSize)
     {
@@ -451,11 +306,11 @@ private:
     TVec TmpPayload, TmpPayload2;
 };
 
-template <typename TKey, typename TPayload, typename TEqual = std::equal_to<TKey>, typename THash = std::hash<TKey>, typename TAllocator = std::allocator<char>, typename TSettings = TRobinHoodDefaultSettings<TKey>>
-class TRobinHoodHashFixedMap : public TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TRobinHoodHashFixedMap<TKey, TPayload, TEqual, THash, TAllocator, TSettings>, TSettings::CacheHash> {
+template <typename TKey, typename TPayload, typename TEqual = std::equal_to<TKey>, typename THash = std::hash<TKey>, typename TAllocator = std::allocator<char>>
+class TRobinHoodHashFixedMap : public TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TRobinHoodHashFixedMap<TKey, TPayload, TEqual, THash, TAllocator>> {
 public:
-    using TSelf = TRobinHoodHashFixedMap<TKey, TPayload, TEqual, THash, TAllocator, TSettings>;
-    using TBase = TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TSelf, TSettings::CacheHash>;
+    using TSelf = TRobinHoodHashFixedMap<TKey, TPayload, TEqual, THash, TAllocator>;
+    using TBase = TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TSelf>;
     using TPayloadStore = TPayload;
 
     explicit TRobinHoodHashFixedMap(ui64 initialCapacity = 1u << 8)
@@ -463,13 +318,6 @@ public:
     {
         TBase::Init();
     }
-
-    explicit TRobinHoodHashFixedMap(const THash& hash, const TEqual& equal, ui64 initialCapacity = 1u << 8)
-        : TBase(initialCapacity, hash, equal)
-    {
-        TBase::Init();
-    }
-
 
     ui32 GetCellSize() const {
         return sizeof(typename TBase::TPSLStorage) + sizeof(TKey) + sizeof(TPayload);
@@ -500,14 +348,14 @@ public:
     }
 };
 
-template <typename TKey, typename TEqual = std::equal_to<TKey>, typename THash = std::hash<TKey>, typename TAllocator = std::allocator<char>, typename TSettings = TRobinHoodDefaultSettings<TKey>>
-class TRobinHoodHashSet : public TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TRobinHoodHashSet<TKey, TEqual, THash, TAllocator, TSettings>, TSettings::CacheHash> {
+template <typename TKey, typename TEqual = std::equal_to<TKey>, typename THash = std::hash<TKey>, typename TAllocator = std::allocator<char>>
+class TRobinHoodHashSet : public TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TRobinHoodHashSet<TKey, TEqual, THash, TAllocator>> {
 public:
-    using TSelf = TRobinHoodHashSet<TKey, TEqual, THash, TAllocator, TSettings>;
-    using TBase = TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TSelf, TSettings::CacheHash>;
+    using TSelf = TRobinHoodHashSet<TKey, TEqual, THash, TAllocator>;
+    using TBase = TRobinHoodHashBase<TKey, TEqual, THash, TAllocator, TSelf>;
     using TPayloadStore = int;
 
-    explicit TRobinHoodHashSet(THash hash, TEqual equal, ui64 initialCapacity = 1u << 8)
+    explicit TRobinHoodHashSet(ui64 initialCapacity, THash hash, TEqual equal)
         : TBase(initialCapacity, hash, equal) {
         TBase::Init();
     }

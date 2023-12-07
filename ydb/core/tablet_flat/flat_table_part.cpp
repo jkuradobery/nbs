@@ -38,7 +38,7 @@ TIntrusiveConstPtr<TPartScheme> TPartScheme::Parse(TArrayRef<const char> raw, bo
         auto got = NPage::TLabelWrapper().Read(raw, NPage::EPage::Schem2);
 
         // Version 1 may have non-zero group columns
-        Y_ABORT_UNLESS(got.Version == 0 || got.Version == 1, "Unknown EPage::Schem2 version");
+        Y_VERIFY(got.Version == 0 || got.Version == 1, "Unknown EPage::Schem2 version");
 
         raw = got.Page;
     }
@@ -53,8 +53,8 @@ TIntrusiveConstPtr<TPartScheme> TPartScheme::Parse(TArrayRef<const char> raw, bo
 
         cols.emplace_back();
         cols.back().Tag = one.GetTag();
-        cols.back().TypeInfo = NScheme::TypeInfoModFromProtoColumnType(one.GetType(),
-            one.HasTypeInfo() ? &one.GetTypeInfo() : nullptr).TypeInfo;
+        cols.back().TypeInfo = NScheme::TypeInfoFromProtoColumnType(one.GetType(),
+            one.HasTypeInfo() ? &one.GetTypeInfo() : nullptr);
         cols.back().Pos = cols.size() - 1;
         cols.back().Group = one.GetGroup();
 
@@ -68,7 +68,7 @@ TIntrusiveConstPtr<TPartScheme> TPartScheme::Parse(TArrayRef<const char> raw, bo
     for (size_t pos = 0; pos < proto.KeyTagsSize(); pos++) {
         auto it = byTag.find(proto.GetKeyTags(pos));
 
-        Y_ABORT_UNLESS(it != byTag.end(), "Cannot find key tag plain scheme");
+        Y_VERIFY(it != byTag.end(), "Cannot find key tag plain scheme");
 
         cols[it->second].Key = pos;
     }
@@ -147,7 +147,7 @@ void TPartScheme::InitGroup(TGroupInfo& group)
 
     for (auto& col : group.Columns) {
         if (col.IsKey()) {
-            Y_ABORT_UNLESS(col.Group == 0, "Key columns must be in the main column group");
+            Y_VERIFY(col.Group == 0, "Key columns must be in the main column group");
 
             group.ColsKeyData.push_back(col);
         }
@@ -193,7 +193,7 @@ TSharedData TPartScheme::Serialize() const
     for (const auto& col : AllColumns) {
         auto* pb = proto.AddColumns();
         pb->SetTag(col.Tag);
-        auto protoType = NScheme::ProtoColumnTypeFromTypeInfoMod(col.TypeInfo, "");
+        auto protoType = NScheme::ProtoColumnTypeFromTypeInfo(col.TypeInfo);
         pb->SetType(protoType.TypeId);
         if (protoType.TypeInfo) {
             *pb->MutableTypeInfo() = *protoType.TypeInfo;

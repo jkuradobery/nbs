@@ -68,28 +68,23 @@ void PQTabletPrepare(const TTabletPreparationParameters& parameters,
             tabletConfig->AddReadRules("user");
             tabletConfig->AddReadFromTimestampsMs(parameters.readFromTimestampsMs);
             tabletConfig->SetMeteringMode(parameters.meteringMode);
-            auto partitionConfig = tabletConfig->MutablePartitionConfig();
-            if (parameters.writeSpeed > 0) {
-                partitionConfig->SetWriteSpeedInBytesPerSecond(parameters.writeSpeed);
-                partitionConfig->SetBurstSize(parameters.writeSpeed);
-            }
-
-            partitionConfig->SetMaxCountInPartition(parameters.maxCountInPartition);
-            partitionConfig->SetMaxSizeInPartition(parameters.maxSizeInPartition);
+            auto config = tabletConfig->MutablePartitionConfig();
+            config->SetMaxCountInPartition(parameters.maxCountInPartition);
+            config->SetMaxSizeInPartition(parameters.maxSizeInPartition);
             if (parameters.storageLimitBytes > 0) {
-                partitionConfig->SetStorageLimitBytes(parameters.storageLimitBytes);
+                config->SetStorageLimitBytes(parameters.storageLimitBytes);
             } else {
-                partitionConfig->SetLifetimeSeconds(parameters.deleteTime);
+                config->SetLifetimeSeconds(parameters.deleteTime);
             }
-            partitionConfig->SetSourceIdLifetimeSeconds(TDuration::Hours(1).Seconds());
+            config->SetSourceIdLifetimeSeconds(TDuration::Hours(1).Seconds());
             if (parameters.sidMaxCount > 0)
-                partitionConfig->SetSourceIdMaxCounts(parameters.sidMaxCount);
-            partitionConfig->SetMaxWriteInflightSize(90'000'000);
-            partitionConfig->SetLowWatermark(parameters.lowWatermark);
+                config->SetSourceIdMaxCounts(parameters.sidMaxCount);
+            config->SetMaxWriteInflightSize(90'000'000);
+            config->SetLowWatermark(parameters.lowWatermark);
 
             for (auto& u : users) {
                 if (u.second)
-                    partitionConfig->AddImportantClientId(u.first);
+                    config->AddImportantClientId(u.first);
                 if (u.first != "user")
                     tabletConfig->AddReadRules(u.first);
             }
@@ -174,6 +169,7 @@ void CmdGetOffset(const ui32 partition, const TString& user, i64 offset, TTestCo
                     }
                 }
             }
+            Cerr << "CMDGETOFFSET partition " << partition << " waiting for offset " << offset << ": " << resp << "\n";
             UNIT_ASSERT((offset == -1 && !resp.HasOffset()) || (i64)resp.GetOffset() == offset);
             if (writeTime > 0) {
                 UNIT_ASSERT(resp.HasWriteTimestampEstimateMS());
@@ -187,12 +183,12 @@ void CmdGetOffset(const ui32 partition, const TString& user, i64 offset, TTestCo
 }
 
 void PQBalancerPrepare(const TString topic, const TVector<std::pair<ui32, std::pair<ui64, ui32>>>& map, const ui64 ssId,
-                       TTestContext& context, const bool requireAuth, bool kill) {
-    PQBalancerPrepare(topic, map, ssId, *context.Runtime, context.BalancerTabletId, context.Edge, requireAuth, kill);
+                       TTestContext& context, const bool requireAuth) {
+    PQBalancerPrepare(topic, map, ssId, *context.Runtime, context.BalancerTabletId, context.Edge, requireAuth);
 }
 
 void PQBalancerPrepare(const TString topic, const TVector<std::pair<ui32, std::pair<ui64, ui32>>>& map, const ui64 ssId,
-                       TTestActorRuntime& runtime, ui64 balancerTabletId, TActorId edge, const bool requireAuth, bool kill) {
+                       TTestActorRuntime& runtime, ui64 balancerTabletId, TActorId edge, const bool requireAuth) {
     TAutoPtr<IEventHandle> handle;
     static int version = 0;
     ++version;
@@ -237,12 +233,10 @@ void PQBalancerPrepare(const TString topic, const TVector<std::pair<ui32, std::p
         }
     }
     //TODO: check state
-    if (kill) {
-        ForwardToTablet(runtime, balancerTabletId, edge, new TEvents::TEvPoisonPill());
-        TDispatchOptions rebootOptions;
-        rebootOptions.FinalEvents.push_back(TDispatchOptions::TFinalEventCondition(TEvTablet::EvRestored, 2));
-        runtime.DispatchEvents(rebootOptions);
-    }
+    ForwardToTablet(runtime, balancerTabletId, edge, new TEvents::TEvPoisonPill());
+    TDispatchOptions rebootOptions;
+    rebootOptions.FinalEvents.push_back(TDispatchOptions::TFinalEventCondition(TEvTablet::EvRestored, 2));
+    runtime.DispatchEvents(rebootOptions);
 }
 
 void PQGetPartInfo(ui64 startOffset, ui64 endOffset, TTestContext& tc) {
@@ -424,7 +418,6 @@ std::pair<TString, TActorId> CmdSetOwner(TTestActorRuntime* runtime, ui64 tablet
             }
 
             UNIT_ASSERT_EQUAL(result->Record.GetErrorCode(), NPersQueue::NErrorCode::OK);
-
             UNIT_ASSERT(result->Record.HasPartitionResponse());
             UNIT_ASSERT(result->Record.GetPartitionResponse().HasCmdGetOwnershipResult());
             UNIT_ASSERT(result->Record.GetPartitionResponse().GetCmdGetOwnershipResult().HasOwnerCookie());
@@ -432,7 +425,6 @@ std::pair<TString, TActorId> CmdSetOwner(TTestActorRuntime* runtime, ui64 tablet
             UNIT_ASSERT(!cookie.empty());
             retriesLeft = 0;
         } catch (NActors::TSchedulingLimitReachedException) {
-            Cerr << "SCHEDULER LIMIT REACHED\n";
             UNIT_ASSERT_VALUES_EQUAL(retriesLeft, 2);
         }
     }
@@ -866,7 +858,7 @@ TVector<TString> CmdSourceIdRead(TTestContext& tc) {
 }
 
 
-void CmdRead(const ui32 partition, const ui64 offset, const ui32 count, const ui32 size, const ui32 resCount, bool timeouted, TTestContext& tc, TVector<i32> offsets, const ui32 maxTimeLagMs, const ui64 readTimestampMs, const TString user) {
+void CmdRead(const ui32 partition, const ui64 offset, const ui32 count, const ui32 size, const ui32 resCount, bool timeouted, TTestContext& tc, TVector<i32> offsets, const ui32 maxTimeLagMs, const ui64 readTimestampMs) {
     TAutoPtr<IEventHandle> handle;
     TEvPersQueue::TEvResponse *result;
     THolder<TEvPersQueue::TEvRequest> request;
@@ -879,7 +871,7 @@ void CmdRead(const ui32 partition, const ui64 offset, const ui32 count, const ui
             req->SetPartition(partition);
             auto read = req->MutableCmdRead();
             read->SetOffset(offset);
-            read->SetClientId(user);
+            read->SetClientId("user");
             read->SetCount(count);
             read->SetBytes(size);
             if (maxTimeLagMs > 0) {
@@ -916,8 +908,7 @@ void CmdRead(const ui32 partition, const ui64 offset, const ui32 count, const ui
             UNIT_ASSERT(result->Record.GetPartitionResponse().HasCmdReadResult());
             auto res = result->Record.GetPartitionResponse().GetCmdReadResult();
 
-            UNIT_ASSERT_EQUAL_C(res.ResultSize(), resCount,
-                "Result size missmatch: expected " << resCount << " but received " << res.ResultSize());
+            UNIT_ASSERT_EQUAL(res.ResultSize(), resCount);
             ui64 off = offset;
 
             for (ui32 i = 0; i < resCount; ++i) {

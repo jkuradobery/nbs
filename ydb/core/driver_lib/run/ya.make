@@ -1,5 +1,11 @@
 LIBRARY(run)
 
+IF (PROFILE_MEMORY_ALLOCATIONS)
+    CFLAGS(
+        -DPROFILE_MEMORY_ALLOCATIONS
+    )
+ENDIF()
+
 SRCS(
     auto_config_initializer.cpp
     config.cpp
@@ -19,23 +25,25 @@ SRCS(
     run.h
     service_initializer.cpp
     service_initializer.h
+    version.cpp
+    version.h
     cert_auth_props.h
     cert_auth_props.cpp
 )
 
 PEERDIR(
     contrib/libs/protobuf
-    ydb/library/actors/core
-    ydb/library/actors/dnsresolver
-    ydb/library/actors/interconnect
-    ydb/library/actors/memory_log
-    ydb/library/actors/prof
-    ydb/library/actors/protos
-    ydb/library/actors/util
+    library/cpp/actors/core
+    library/cpp/actors/dnsresolver
+    library/cpp/actors/interconnect
+    library/cpp/actors/memory_log
+    library/cpp/actors/prof
+    library/cpp/actors/protos
+    library/cpp/actors/util
     library/cpp/getopt/small
-    ydb/library/grpc/client
-    ydb/library/grpc/server
-    ydb/library/grpc/server/actors
+    library/cpp/grpc/client
+    library/cpp/grpc/server
+    library/cpp/grpc/server/actors
     library/cpp/logger
     library/cpp/malloc/api
     library/cpp/messagebus
@@ -63,25 +71,17 @@ PEERDIR(
     ydb/core/driver_lib/base_utils
     ydb/core/driver_lib/cli_config_base
     ydb/core/driver_lib/cli_utils
-    ydb/core/driver_lib/version
     ydb/core/formats
-    ydb/core/fq/libs/init
-    ydb/core/fq/libs/logs
     ydb/core/grpc_services
     ydb/core/grpc_services/base
-    ydb/core/grpc_services/auth_processor
     ydb/core/health_check
     ydb/core/http_proxy
     ydb/core/kesus/proxy
     ydb/core/kesus/tablet
     ydb/core/keyvalue
-    ydb/core/kafka_proxy
     ydb/core/kqp
-    ydb/core/kqp/federated_query
-    ydb/core/kqp/finalize_script_service
     ydb/core/kqp/rm_service
     ydb/core/load_test
-    ydb/core/local_pgwire
     ydb/core/log_backend
     ydb/core/metering
     ydb/core/mind
@@ -98,8 +98,6 @@ PEERDIR(
     ydb/core/scheme
     ydb/core/scheme_types
     ydb/core/security
-    ydb/core/statistics
-    ydb/core/statistics/aggregator
     ydb/core/sys_view/processor
     ydb/core/sys_view/service
     ydb/core/tablet
@@ -109,13 +107,11 @@ PEERDIR(
     ydb/core/tx
     ydb/core/tx/columnshard
     ydb/core/tx/coordinator
-    ydb/core/tx/conveyor/service
     ydb/core/tx/datashard
     ydb/core/tx/long_tx_service
     ydb/core/tx/long_tx_service/public
     ydb/core/tx/mediator
     ydb/core/tx/replication/controller
-    ydb/core/tx/replication/service
     ydb/core/tx/scheme_board
     ydb/core/tx/schemeshard
     ydb/core/tx/sequenceproxy
@@ -127,11 +123,14 @@ PEERDIR(
     ydb/core/viewer
     ydb/core/ymq/actor
     ydb/core/ymq/http
+    ydb/core/yq/libs/init
+    ydb/core/yq/libs/logs
     ydb/library/folder_service
     ydb/library/folder_service/proto
     ydb/library/pdisk_io
     ydb/library/security
-    ydb/library/yql/minikql/comp_nodes/llvm
+    ydb/library/yql/minikql/comp_nodes
+    ydb/library/yql/minikql/computation
     ydb/library/yql/providers/pq/cm_client
     ydb/library/yql/public/udf/service/exception_policy
     ydb/public/lib/base
@@ -143,21 +142,17 @@ PEERDIR(
     ydb/services/discovery
     ydb/services/fq
     ydb/services/kesus
-    ydb/services/keyvalue
     ydb/services/local_discovery
-    ydb/services/maintenance
     ydb/services/metadata/ds_table
     ydb/services/metadata
     ydb/services/bg_tasks/ds_table
     ydb/services/bg_tasks
-    ydb/services/ext_index/service
-    ydb/services/ext_index/metadata
     ydb/services/monitoring
     ydb/services/persqueue_cluster_discovery
-    ydb/services/deprecated/persqueue_v0
     ydb/services/persqueue_v1
     ydb/services/rate_limiter
     ydb/services/ydb
+    ydb/services/yq
 )
 
 YQL_LAST_ABI_VERSION()

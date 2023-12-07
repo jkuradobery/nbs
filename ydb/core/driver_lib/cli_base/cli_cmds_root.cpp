@@ -109,7 +109,7 @@ void TClientCommandRootKikimrBase::ParseCredentials(TConfig& config) {
         if (PasswordFile) {
             config.StaticCredentials.Password = ReadFromFile(PasswordFile, "password", true);
         } else if (!DoNotAskForPassword) {
-            Cerr << "Enter password for user " << UserName << ": ";
+            Cout << "Enter password for user " << UserName << ": ";
             config.StaticCredentials.Password = InputPassword();
         }
         return;
@@ -132,7 +132,7 @@ void TClientCommandRootKikimrBase::ParseCredentials(TConfig& config) {
         if (!envPassword.empty()) {
             config.StaticCredentials.Password = envPassword;
         } else if (!DoNotAskForPassword) {
-            Cerr << "Enter password for user " << envUser << ": ";
+            Cout << "Enter password for user " << envUser << ": ";
             config.StaticCredentials.Password = InputPassword();
         }
         return;
@@ -188,7 +188,7 @@ public:
         if (!hostname) {
             NMsgBusProxy::TMsgBusClientConfig::CrackAddress(Address, hostname, port);
         }
-        CommandConfig.ClientConfig = NYdbGrpc::TGRpcClientConfig(hostname + ':' + ToString(port));
+        CommandConfig.ClientConfig = NGrpc::TGRpcClientConfig(hostname + ':' + ToString(port));
         if (config.EnableSsl) {
             CommandConfig.ClientConfig.EnableSsl = config.EnableSsl;
             CommandConfig.ClientConfig.SslCredentials.pem_root_certs = config.CaCerts;

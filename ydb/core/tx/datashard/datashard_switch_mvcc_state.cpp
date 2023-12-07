@@ -1,7 +1,5 @@
 #include "datashard_txs.h"
 
-#include <ydb/core/base/feature_flags.h>
-
 namespace NKikimr::NDataShard {
 
 void TDataShard::CheckMvccStateChangeCanStart(const TActorContext& ctx) {
@@ -30,7 +28,7 @@ void TDataShard::CheckMvccStateChangeCanStart(const TActorContext& ctx) {
                 case TShardState::Unknown:
                     // We cannot start checking before shard initialization
 
-                    Y_DEBUG_ABORT_UNLESS(false, "Unexpected shard state State:%d", State);
+                    Y_VERIFY_DEBUG(false, "Unexpected shard state State:%d", State);
                     [[fallthrough]];
 
                 case TShardState::Readonly:
@@ -77,7 +75,7 @@ bool TDataShard::TTxExecuteMvccStateChange::Execute(TTransactionContext& txc, co
         return true; // already switched
 
     if (Self->State == TShardState::Ready || Self->State == TShardState::Frozen) {
-        Y_ABORT_UNLESS(Self->TxInFly() == 0 && Self->ImmediateInFly() == 0);
+        Y_VERIFY(Self->TxInFly() == 0 && Self->ImmediateInFly() == 0);
 
         auto [step, txId] = Self->LastCompleteTxVersion();
         Self->SnapshotManager.ChangeMvccState(step, txId, txc,

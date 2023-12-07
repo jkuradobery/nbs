@@ -6,17 +6,17 @@ import logging
 
 from hamcrest import assert_that, has_properties, equal_to, anything, any_of, instance_of, greater_than
 
-from contrib.ydb.tests.library.common.msgbus_types import MessageBusStatus, SchemeStatus
-from contrib.ydb.tests.library.common.path_types import PathType
-from contrib.ydb.tests.library.common.protobuf import build_protobuf_if_necessary
-from contrib.ydb.tests.library.common.protobuf_ss import SchemeOperationStatus, SchemeDescribeRequest
-from contrib.ydb.tests.library.common.protobuf_ss import CreatePath, DropPathRequest
-from contrib.ydb.tests.library.common.protobuf_ss import CreateTableRequest, DropTableRequest
-from contrib.ydb.tests.library.common.protobuf_ss import RegisterTenant, DropTenantRequest, ForceDropTenantRequest
-from contrib.ydb.tests.library.common.protobuf_ss import CreateTopicRequest, DropTopicRequest, AlterTopicRequest
-from contrib.ydb.tests.library.matchers.response_matchers import DynamicFieldsProtobufMatcher
+from ydb.tests.library.common.msgbus_types import MessageBusStatus, SchemeStatus
+from ydb.tests.library.common.path_types import PathType
+from ydb.tests.library.common.protobuf import build_protobuf_if_necessary
+from ydb.tests.library.common.protobuf_ss import SchemeOperationStatus, SchemeDescribeRequest
+from ydb.tests.library.common.protobuf_ss import CreatePath, DropPathRequest
+from ydb.tests.library.common.protobuf_ss import CreateTableRequest, DropTableRequest
+from ydb.tests.library.common.protobuf_ss import RegisterTenant, DropTenantRequest, ForceDropTenantRequest
+from ydb.tests.library.common.protobuf_ss import CreateTopicRequest, DropTopicRequest, AlterTopicRequest
+from ydb.tests.library.matchers.response_matchers import DynamicFieldsProtobufMatcher
 
-import contrib.ydb.core.protos.flat_scheme_op_pb2 as flat_scheme_op
+import ydb.core.protos.flat_scheme_op_pb2 as flat_scheme_op
 
 logger = logging.getLogger(__name__)
 

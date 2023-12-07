@@ -33,7 +33,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto factory = ctx.GetFactory();
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::LazyList));
 
@@ -44,7 +44,7 @@ public:
         const auto lazy = PHINode::Create(list->getType(), IsOptional ? 3U : 2U, "lazy", done);
         lazy->addIncoming(list, block);
 
-        if constexpr (IsOptional) {
+        if (IsOptional) {
             const auto test = BasicBlock::Create(context, "test", ctx.Func);
             BranchInst::Create(done, test, IsEmpty(list, block), block);
 
@@ -60,18 +60,18 @@ public:
 
         block = wrap;
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(list->getType(), {factory->getType(), list->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            const auto res = CallInst::Create(funType, funcPtr, {factory, list}, "res", block);
+            const auto res = CallInst::Create(funcPtr, {factory, list}, "res", block);
             lazy->addIncoming(res, block);
         } else {
             const auto retPtr = new AllocaInst(list->getType(), 0U, "ret_ptr", block);
             new StoreInst(list, retPtr, block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {factory->getType(), retPtr->getType(), retPtr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            CallInst::Create(funType, funcPtr, {factory, retPtr, retPtr}, "", block);
-            const auto res = new LoadInst(list->getType(), retPtr, "res", block);
+            CallInst::Create(funcPtr, {factory, retPtr, retPtr}, "", block);
+            const auto res = new LoadInst(retPtr, "res", block);
             lazy->addIncoming(res, block);
         }
 

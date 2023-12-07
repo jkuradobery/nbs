@@ -12,7 +12,6 @@ SRCS(
 )
 
 PEERDIR(
-    library/cpp/digest/md5
     library/cpp/protobuf/util
     ydb/library/yql/core/file_storage
     ydb/library/yql/minikql

@@ -1,6 +1,6 @@
 PY3_LIBRARY()
 
-STYLE_PYTHON()
+NO_WSHADOW()
 
 PEERDIR(
     contrib/tools/python3/src

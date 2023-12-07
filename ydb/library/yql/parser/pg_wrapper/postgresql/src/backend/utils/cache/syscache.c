@@ -1111,7 +1111,7 @@ InitCatalogCachePhase2(void)
  *	CAUTION: The tuple that is returned must NOT be freed by the caller!
  */
 HeapTuple
-SearchSysCache_original(int cacheId,
+SearchSysCache(int cacheId,
 			   Datum key1,
 			   Datum key2,
 			   Datum key3,
@@ -1124,7 +1124,7 @@ SearchSysCache_original(int cacheId,
 }
 
 HeapTuple
-SearchSysCache1_original(int cacheId,
+SearchSysCache1(int cacheId,
 				Datum key1)
 {
 	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
@@ -1135,7 +1135,7 @@ SearchSysCache1_original(int cacheId,
 }
 
 HeapTuple
-SearchSysCache2_original(int cacheId,
+SearchSysCache2(int cacheId,
 				Datum key1, Datum key2)
 {
 	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
@@ -1146,7 +1146,7 @@ SearchSysCache2_original(int cacheId,
 }
 
 HeapTuple
-SearchSysCache3_original(int cacheId,
+SearchSysCache3(int cacheId,
 				Datum key1, Datum key2, Datum key3)
 {
 	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
@@ -1157,7 +1157,7 @@ SearchSysCache3_original(int cacheId,
 }
 
 HeapTuple
-SearchSysCache4_original(int cacheId,
+SearchSysCache4(int cacheId,
 				Datum key1, Datum key2, Datum key3, Datum key4)
 {
 	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
@@ -1172,7 +1172,7 @@ SearchSysCache4_original(int cacheId,
  *		Release previously grabbed reference count on a tuple
  */
 void
-ReleaseSysCache_original(HeapTuple tuple)
+ReleaseSysCache(HeapTuple tuple)
 {
 	ReleaseCatCache(tuple);
 }

@@ -10,7 +10,6 @@
 #include <library/cpp/digest/argonish/blake2b.h>
 #include <library/cpp/digest/crc32c/crc32c.h>
 #include <library/cpp/digest/md5/md5.h>
-#include <library/cpp/digest/murmur/murmur.h>
 #include <library/cpp/digest/old_crc/crc.h>
 #include <library/cpp/digest/sfh/sfh.h>
 
@@ -65,20 +64,6 @@ namespace {
         Y_UNUSED(valueBuilder);
         const auto& inputRef = args[0].AsStringRef();
         ui32 hash = MurmurHash<ui32>(inputRef.Data(), inputRef.Size());
-        return TUnboxedValuePod(hash);
-    }
-
-    SIMPLE_STRICT_UDF(TMurMurHash2A, ui64(TAutoMap<char*>)) {
-        Y_UNUSED(valueBuilder);
-        const auto& inputRef = args[0].AsStringRef();
-        ui64 hash = TMurmurHash2A<ui64>{}.Update(inputRef.Data(), inputRef.Size()).Value();
-        return TUnboxedValuePod(hash);
-    }
-
-    SIMPLE_STRICT_UDF(TMurMurHash2A32, ui32(TAutoMap<char*>)) {
-        Y_UNUSED(valueBuilder);
-        const auto& inputRef = args[0].AsStringRef();
-        ui32 hash = TMurmurHash2A<ui32>{}.Update(inputRef.Data(), inputRef.Size()).Value();
         return TUnboxedValuePod(hash);
     }
 
@@ -173,7 +158,7 @@ namespace {
         return valueBuilder->NewString(TStringRef(reinterpret_cast<char*>(&out[0]), outSize));
     }
 
-    SIMPLE_STRICT_UDF_WITH_OPTIONAL_ARGS(TBlake2B, char*(TAutoMap<char*>, TOptional<char*>), 1) {
+    SIMPLE_STRICT_UDF_OPTIONS(TBlake2B, char*(TAutoMap<char*>, TOptional<char*>), builder.OptionalArgs(1)) {
         const static ui32 outSize = 32;
         const static NArgonish::TBlake2BFactory bfactory;
         const TStringRef inputRef = args[0].AsStringRef();
@@ -375,8 +360,6 @@ namespace {
                   TFnv64,
                   TMurMurHash,
                   TMurMurHash32,
-                  TMurMurHash2A,
-                  TMurMurHash2A32,
                   TCityHash,
                   TCityHash128,
                   TNumericHash,

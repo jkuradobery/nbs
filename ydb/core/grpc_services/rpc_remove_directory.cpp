@@ -1,7 +1,7 @@
 #include "service_scheme.h"
 
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/public/api/protos/ydb_scheme.pb.h>
 
@@ -58,8 +58,8 @@ private:
     }
 };
 
-void DoRemoveDirectoryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TRemoveDirectoryRPC(p.release()));
+void DoRemoveDirectoryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TRemoveDirectoryRPC(p.release()));
 }
 
 } // namespace NGRpcService

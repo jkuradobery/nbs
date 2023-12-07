@@ -77,10 +77,6 @@ domains_config:
         - property:
           - type: ROT
         encryption_mode: 1
-  security_config:
-    default_users:
-    - name: "root"
-      password: "1234"
 static_erasure: "{ydb_static_erasure}"
 system_tablets:
   default_node: {ydb_defaut_tablet_node_ids}
@@ -133,6 +129,7 @@ log_config:
 grpc_config:
   host: "{ydb_grpc_host}"
   services:
+  - "experimental"
   - "legacy"
   - "yql"
   - "discovery"
@@ -145,6 +142,7 @@ grpc_config:
   - "topic"
   - "datastreams"
   - "scripting"
+  - "s3_internal"
   - "clickhouse_internal"
   - "rate_limiter"
   - "analytics"
@@ -154,7 +152,6 @@ grpc_config:
   - "keyvalue"
   - "monitoring"
   - "auth"
-  - "query_service"
 feature_flags:
   enable_persistent_query_stats: true
   enable_scheme_transactions_at_scheme_shard: true
@@ -199,7 +196,7 @@ net_classifier_config:
     retry_interval_seconds: 30
     net_data_update_interval_seconds: 60
   cms_config_timeout_seconds: 30
-federated_query_config:
+yandex_query_config:
   enabled: false
   common:
     use_bearer_for_ydb: true

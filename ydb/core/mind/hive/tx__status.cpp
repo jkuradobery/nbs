@@ -28,13 +28,6 @@ public:
             if (Record.HasStartTime()) {
                 node.StartTime = TInstant::MicroSeconds(Record.GetStartTime());
             }
-            if (!node.Tablets[TTabletInfo::EVolatileState::TABLET_VOLATILE_STATE_RUNNING].empty()) {
-                Self->WarmUp = false;
-            }
-            if (Self->WarmUp &&
-                node.Statistics.RestartTimestampSize() < Self->GetNodeRestartsToIgnoreInWarmup()) {
-                Self->LastConnect = TActivationContext::Now();
-            }
             if (node.LocationAcquired) {
                 NIceDb::TNiceDb db(txc.DB);
                 NActorsInterconnect::TNodeLocation location;
@@ -47,7 +40,6 @@ public:
                 BLOG_D("THive::TTxStatus(" << nodeId << ")::Complete - continuing node drain");
                 Self->StartHiveDrain(nodeId, {.Persist = true, .KeepDown = node.Down});
             }
-            Self->ObjectDistributions.AddNode(node);
         } else {
             BLOG_W("THive::TTxStatus(status=" << static_cast<int>(status)
                    << " node=" << TNodeInfo::EVolatileStateName(node.GetVolatileState()) << ") - killing node " << node.Id);

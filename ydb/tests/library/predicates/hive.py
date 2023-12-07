@@ -3,7 +3,7 @@
 
 import logging
 
-from contrib.ydb.tests.library.common.types import TabletTypes
+from ydb.tests.library.common.types import TabletTypes
 
 logger = logging.getLogger(__name__)
 

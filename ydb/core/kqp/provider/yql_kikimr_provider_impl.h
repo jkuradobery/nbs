@@ -2,7 +2,6 @@
 
 #include "yql_kikimr_provider.h"
 
-#include <ydb/core/external_sources/external_source_factory.h>
 #include <ydb/core/kqp/provider/yql_kikimr_expr_nodes.h>
 #include <ydb/core/kqp/provider/yql_kikimr_results.h>
 
@@ -14,7 +13,7 @@ namespace NYql {
 
 class TKiSourceVisitorTransformer: public TSyncTransformerBase {
 public:
-    TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) override;
+    TStatus DoTransform(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) final;
 
     void Rewind() override {
     }
@@ -38,16 +37,9 @@ private:
     virtual TStatus HandleCreateTable(NNodes::TKiCreateTable node, TExprContext& ctx) = 0;
     virtual TStatus HandleAlterTable(NNodes::TKiAlterTable node, TExprContext& ctx) = 0;
     virtual TStatus HandleDropTable(NNodes::TKiDropTable node, TExprContext& ctx) = 0;
-
-    virtual TStatus HandleCreateTopic(NNodes::TKiCreateTopic node, TExprContext& ctx) = 0;
-    virtual TStatus HandleAlterTopic(NNodes::TKiAlterTopic node, TExprContext& ctx) = 0;
-    virtual TStatus HandleDropTopic(NNodes::TKiDropTopic node, TExprContext& ctx) = 0;
-
     virtual TStatus HandleCreateUser(NNodes::TKiCreateUser node, TExprContext& ctx) = 0;
     virtual TStatus HandleAlterUser(NNodes::TKiAlterUser node, TExprContext& ctx) = 0;
     virtual TStatus HandleDropUser(NNodes::TKiDropUser node, TExprContext& ctx) = 0;
-
-    virtual TStatus HandleUpsertObject(NNodes::TKiUpsertObject node, TExprContext& ctx) = 0;
     virtual TStatus HandleCreateObject(NNodes::TKiCreateObject node, TExprContext& ctx) = 0;
     virtual TStatus HandleAlterObject(NNodes::TKiAlterObject node, TExprContext& ctx) = 0;
     virtual TStatus HandleDropObject(NNodes::TKiDropObject node, TExprContext& ctx) = 0;
@@ -60,9 +52,6 @@ private:
     virtual TStatus HandleDataQueryBlocks(NNodes::TKiDataQueryBlocks node, TExprContext& ctx) = 0;
     virtual TStatus HandleDataQueryBlock(NNodes::TKiDataQueryBlock node, TExprContext& ctx) = 0;
     virtual TStatus HandleEffects(NNodes::TKiEffects node, TExprContext& ctx) = 0;
-    virtual TStatus HandlePgDropObject(NNodes::TPgDropObject node, TExprContext& ctx) = 0;
-
-    virtual TStatus HandleModifyPermissions(NNodes::TKiModifyPermissions node, TExprContext& ctx) = 0;
 };
 
 class TKikimrKey {
@@ -72,15 +61,7 @@ public:
         TableList,
         TableScheme,
         Role,
-        Object,
-        Topic,
-        Permission,
-        PGObject
-    };
-
-    struct TViewDescription {
-        TString Name;
-        bool PrimaryFlag = false;
+        Object
     };
 
 public:
@@ -88,67 +69,42 @@ public:
         : Ctx(ctx) {}
 
     Type GetKeyType() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
+        Y_VERIFY_DEBUG(KeyType.Defined());
         return *KeyType;
     }
 
     TString GetTablePath() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::Table || KeyType == Type::TableScheme);
-        return Target;
-    }
-
-    TString GetTopicPath() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::Topic);
+        Y_VERIFY_DEBUG(KeyType.Defined());
+        Y_VERIFY_DEBUG(KeyType == Type::Table || KeyType == Type::TableScheme);
         return Target;
     }
 
     TString GetFolderPath() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::TableList);
+        Y_VERIFY_DEBUG(KeyType.Defined());
+        Y_VERIFY_DEBUG(KeyType == Type::TableList);
         return Target;
     }
 
     TString GetRoleName() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::Role);
+        Y_VERIFY_DEBUG(KeyType.Defined());
+        Y_VERIFY_DEBUG(KeyType == Type::Role);
         return Target;
     }
 
     TString GetObjectId() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::Object);
+        Y_VERIFY_DEBUG(KeyType.Defined());
+        Y_VERIFY_DEBUG(KeyType == Type::Object);
         return Target;
     }
 
-    const TMaybe<TViewDescription>& GetView() const {
+    const TMaybe<TString>& GetView() const {
         return View;
     }
 
     const TString& GetObjectType() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(ObjectType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::Object);
-        return *ObjectType;
-    }
-
-    const TString& GetPermissionAction() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::Permission);
-        return Target;
-    }
-
-    const TString& GetPGObjectId() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::PGObject);
-        return Target;
-    }
-
-    const TString& GetPGObjectType() const {
-        Y_DEBUG_ABORT_UNLESS(KeyType.Defined());
-        Y_DEBUG_ABORT_UNLESS(ObjectType.Defined());
-        Y_DEBUG_ABORT_UNLESS(KeyType == Type::PGObject);
+        Y_VERIFY_DEBUG(KeyType.Defined());
+        Y_VERIFY_DEBUG(ObjectType.Defined());
+        Y_VERIFY_DEBUG(KeyType == Type::Object);
         return *ObjectType;
     }
 
@@ -159,7 +115,7 @@ private:
     TMaybe<Type> KeyType;
     TString Target;
     TMaybe<TString> ObjectType;
-    TMaybe<TViewDescription> View;
+    TMaybe<TString> View;
 };
 
 struct TKiDataQueryBlockSettings {
@@ -182,21 +138,17 @@ struct TKiExecDataQuerySettings {
 TAutoPtr<IGraphTransformer> CreateKiSourceTypeAnnotationTransformer(TIntrusivePtr<TKikimrSessionContext> sessionCtx,
     TTypeAnnotationContext& types);
 TAutoPtr<IGraphTransformer> CreateKiSinkTypeAnnotationTransformer(TIntrusivePtr<IKikimrGateway> gateway,
-    TIntrusivePtr<TKikimrSessionContext> sessionCtx, TTypeAnnotationContext& types);
+    TIntrusivePtr<TKikimrSessionContext> sessionCtx);
 TAutoPtr<IGraphTransformer> CreateKiLogicalOptProposalTransformer(TIntrusivePtr<TKikimrSessionContext> sessionCtx,
     TTypeAnnotationContext& types);
 TAutoPtr<IGraphTransformer> CreateKiPhysicalOptProposalTransformer(TIntrusivePtr<TKikimrSessionContext> sessionCtx);
 TAutoPtr<IGraphTransformer> CreateKiSourceLoadTableMetadataTransformer(TIntrusivePtr<IKikimrGateway> gateway,
-    TIntrusivePtr<TKikimrSessionContext> sessionCtx,
-    TTypeAnnotationContext& types,
-    const NKikimr::NExternalSource::IExternalSourceFactory::TPtr& sourceFactory,
-    bool isInternalCall);
+    TIntrusivePtr<TKikimrSessionContext> sessionCtx);
 TAutoPtr<IGraphTransformer> CreateKiSinkIntentDeterminationTransformer(TIntrusivePtr<TKikimrSessionContext> sessionCtx);
 
 TAutoPtr<IGraphTransformer> CreateKiSourceCallableExecutionTransformer(
     TIntrusivePtr<IKikimrGateway> gateway,
-    TIntrusivePtr<TKikimrSessionContext> sessionCtx,
-    TTypeAnnotationContext& types);
+    TIntrusivePtr<TKikimrSessionContext> sessionCtx);
 
 TAutoPtr<IGraphTransformer> CreateKiSinkCallableExecutionTransformer(
     TIntrusivePtr<IKikimrGateway> gateway,
@@ -221,14 +173,8 @@ void TableDescriptionToTableInfo(const TKikimrTableDescription& desc, TYdbOperat
 void TableDescriptionToTableInfo(const TKikimrTableDescription& desc, TYdbOperation op,
     TVector<NKqpProto::TKqpTableInfo>& infos);
 
-void FillLiteralProto(const NNodes::TCoDataCtor& literal, NKikimrMiniKQL::TResult& proto);
-void FillLiteralProto(const NNodes::TCoDataCtor& literal, Ydb::TypedValue& proto);
-// todo gvit switch to ydb typed value.
-void FillLiteralProto(const NNodes::TCoDataCtor& literal, NKqpProto::TKqpPhyLiteralValue& proto);
-
 // Optimizer rules
-TExprNode::TPtr KiBuildQuery(NNodes::TExprBase node, TExprContext& ctx, TIntrusivePtr<TKikimrTablesData> tablesData,
-    TTypeAnnotationContext& types, bool sequentialResults);
+TExprNode::TPtr KiBuildQuery(NNodes::TExprBase node, TExprContext& ctx, TIntrusivePtr<TKikimrTablesData> tablesData);
 TExprNode::TPtr KiBuildResult(NNodes::TExprBase node,  const TString& cluster, TExprContext& ctx);
 
 const THashSet<TStringBuf>& KikimrDataSourceFunctions();
@@ -244,8 +190,5 @@ const TMap<TString, NKikimr::NUdf::EDataSlot>& KikimrSystemColumns();
 bool IsKikimrSystemColumn(const TStringBuf columnName);
 
 bool ValidateTableHasIndex(TKikimrTableMetadataPtr metadata, TExprContext& ctx, const TPositionHandle& pos);
-
-TExprNode::TPtr BuildExternalTableSettings(TPositionHandle pos, TExprContext& ctx, const TMap<TString, NYql::TKikimrColumnMetadata>& columns, const NKikimr::NExternalSource::IExternalSource::TPtr& source, const TString& content);
-TString FillAuthProperties(THashMap<TString, TString>& properties, const TExternalSource& externalSource);
 
 } // namespace NYql

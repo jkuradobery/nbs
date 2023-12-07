@@ -74,26 +74,6 @@ bool TDataShardLocksDb::Load(TVector<TLockRow>& rows) {
         }
     }
 
-    // Load volatile dependencies
-    if (db.HaveTable<Schema::LockVolatileDependencies>()) {
-        auto rowset = db.Table<Schema::LockVolatileDependencies>().Select();
-        if (!rowset.IsReady()) {
-            return false;
-        }
-        while (!rowset.EndOfSet()) {
-            auto lockId = rowset.GetValue<Schema::LockVolatileDependencies::LockId>();
-            auto it = lockIndex.find(lockId);
-            if (it != lockIndex.end()) {
-                auto& lock = rows[it->second];
-                auto txId = rowset.GetValue<Schema::LockVolatileDependencies::TxId>();
-                lock.VolatileDependencies.push_back(txId);
-            }
-            if (!rowset.Next()) {
-                return false;
-            }
-        }
-    }
-
     return true;
 }
 
@@ -131,14 +111,12 @@ void TDataShardLocksDb::PersistLockCounter(ui64 lockId, ui64 counter) {
 
 void TDataShardLocksDb::PersistRemoveLock(ui64 lockId) {
     // We remove lock changes unless it's managed by volatile tx manager
-    bool isVolatile = Self.GetVolatileTxManager().FindByCommitTxId(lockId);
-    if (!isVolatile) {
+    if (!Self.GetVolatileTxManager().FindByCommitTxId(lockId)) {
         for (auto& pr : Self.GetUserTables()) {
             auto tid = pr.second->LocalTid;
             // Removing the lock also removes any uncommitted data
             if (DB.HasOpenTx(tid, lockId)) {
                 DB.RemoveTx(tid, lockId);
-                Self.GetConflictsCache().GetTableCache(tid).RemoveUncommittedWrites(lockId, DB);
             }
         }
     }
@@ -148,9 +126,7 @@ void TDataShardLocksDb::PersistRemoveLock(ui64 lockId) {
     db.Table<Schema::Locks>().Key(lockId).Delete();
     HasChanges_ = true;
 
-    if (!isVolatile) {
-        Self.ScheduleRemoveLockChanges(lockId);
-    }
+    Self.ScheduleRemoveLockChanges(lockId);
 }
 
 void TDataShardLocksDb::PersistAddRange(ui64 lockId, ui64 rangeId, const TPathId& tableId, ui64 flags, const TString& data) {
@@ -190,20 +166,6 @@ void TDataShardLocksDb::PersistRemoveConflict(ui64 lockId, ui64 otherLockId) {
     using Schema = TDataShard::Schema;
     NIceDb::TNiceDb db(DB);
     db.Table<Schema::LockConflicts>().Key(lockId, otherLockId).Delete();
-    HasChanges_ = true;
-}
-
-void TDataShardLocksDb::PersistAddVolatileDependency(ui64 lockId, ui64 txId) {
-    using Schema = TDataShard::Schema;
-    NIceDb::TNiceDb db(DB);
-    db.Table<Schema::LockVolatileDependencies>().Key(lockId, txId).Update();
-    HasChanges_ = true;
-}
-
-void TDataShardLocksDb::PersistRemoveVolatileDependency(ui64 lockId, ui64 txId) {
-    using Schema = TDataShard::Schema;
-    NIceDb::TNiceDb db(DB);
-    db.Table<Schema::LockVolatileDependencies>().Key(lockId, txId).Delete();
     HasChanges_ = true;
 }
 

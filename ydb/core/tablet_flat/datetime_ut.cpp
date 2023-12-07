@@ -284,13 +284,8 @@ Y_UNIT_TEST_SUITE(TFlatTableDatetime) {
             }
         };
 
-        void DefaultSignalTabletActive(const TActorContext &) override {
-            // must be empty
-        }
-
         void OnActivateExecutor(const TActorContext &ctx) override {
             Become(&TThis::StateWork);
-            SignalTabletActive(ctx);
             Execute(new TTxSchema(*this), ctx);
         }
 
@@ -307,14 +302,14 @@ Y_UNIT_TEST_SUITE(TFlatTableDatetime) {
         }
 
         STFUNC(StateInit) {
-            StateInitImpl(ev, SelfId());
+            StateInitImpl(ev, ctx);
         }
 
         STFUNC(StateWork) {
             switch (ev->GetTypeRewrite()) {
                 HFunc(TEvents::TEvWakeup, Handle);
             default:
-                HandleDefaultEvents(ev, SelfId());
+                HandleDefaultEvents(ev, ctx);
                 break;
             }
         }

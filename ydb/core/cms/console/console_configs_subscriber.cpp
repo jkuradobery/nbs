@@ -3,12 +3,11 @@
 #include "util.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/cms/console/util/config_index.h>
 #include <ydb/core/mind/tenant_pool.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <util/system/hostname.h>
 #include <util/generic/ptr.h>
 
@@ -107,8 +106,8 @@ public:
             HFuncTraced(TEvents::TEvPoisonPill, Handle);
 
             default:
-                Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                       ev->GetTypeRewrite(), ev->ToString().data());
+                Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                       ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
         }
     }
 
@@ -197,7 +196,7 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(Pipe);
+        Y_VERIFY(Pipe);
 
         if (rec.GetOrder() != (LastOrder + 1)) {
             BLOG_I("Order mismatch, will resubscribe");
@@ -282,7 +281,7 @@ public:
             return;
         }
 
-        Y_ABORT_UNLESS(Pipe);
+        Y_VERIFY(Pipe);
 
         Subscribe(ctx);
     }

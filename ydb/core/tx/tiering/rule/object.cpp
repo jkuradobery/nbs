@@ -73,8 +73,10 @@ bool TTieringRule::DeserializeFromRecord(const TDecoder& decoder, const Ydb::Val
 
 NKikimr::NOlap::TTiering TTieringRule::BuildOlapTiers() const {
     NOlap::TTiering result;
+    TInstant now = Now(); // Do not put it in cycle: prevent tiers reorder with the same eviction time
     for (auto&& r : Intervals) {
-        result.Add(std::make_shared<NOlap::TTierInfo>(r.GetTierName(), r.GetDurationForEvict(), GetDefaultColumn()));
+        TInstant evictionBorder = now - r.GetDurationForEvict();
+        result.Add(std::make_shared<NOlap::TTierInfo>(r.GetTierName(), evictionBorder, GetDefaultColumn()));
     }
     return result;
 }

@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 import time
 
-from contrib.ydb.tests.library.nemesis.safety_warden import SafetyWarden
+from ydb.tests.library.nemesis.safety_warden import SafetyWarden
 
-from contrib.ydb.tests.library.harness.kikimr_http_client import SwaggerClient
-from contrib.ydb.tests.library.harness.util import PDiskState
+from ydb.tests.library.harness.kikimr_http_client import SwaggerClient
+from ydb.tests.library.harness.util import PDiskState
 
 
 def fetch_pdisk_state_info(node, timeout_seconds=60):

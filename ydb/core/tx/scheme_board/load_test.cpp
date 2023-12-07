@@ -10,8 +10,8 @@
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
 #include <ydb/core/tx/schemeshard/schemeshard.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <util/generic/ptr.h>
 #include <util/generic/ylimits.h>
@@ -126,11 +126,11 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
             return pathId;
         }
 
-        Y_ABORT("Unreachable");
+        Y_FAIL("Unreachable");
     }
 
     void Modify(TPathId pathId) {
-        Y_ABORT_UNLESS(Descriptions.contains(pathId));
+        Y_VERIFY(Descriptions.contains(pathId));
 
         TDescription& description = Descriptions.at(pathId).Record;
         auto& self = *description.MutablePathDescription()->MutableSelf();
@@ -144,10 +144,10 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
     }
 
     void Delete(TPathId pathId) {
-        Y_ABORT_UNLESS(Descriptions.contains(pathId));
+        Y_VERIFY(Descriptions.contains(pathId));
 
         TDescription& description = Descriptions.at(pathId).Record;
-        Y_ABORT_UNLESS(!IsDir(description));
+        Y_VERIFY(!IsDir(description));
 
         description.SetStatus(NKikimrScheme::StatusPathDoesNotExist);
 
@@ -198,7 +198,7 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
         ));
 
         TPathId pathId(Owner, NextPathId - 1);
-        Y_ABORT_UNLESS(Descriptions.contains(pathId));
+        Y_VERIFY(Descriptions.contains(pathId));
         const TString& topPath = Descriptions.at(pathId).Record.GetPath();
 
         // subscriber will help us to know when sync is completed
@@ -230,8 +230,8 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
     void Handle(TSchemeBoardEvents::TEvNotifyUpdate::TPtr& ev) {
         const auto* msg = ev->Get();
 
-        Y_ABORT_UNLESS(ev->Sender == Subscriber);
-        Y_ABORT_UNLESS(msg->PathId.LocalPathId == NextPathId - 1);
+        Y_VERIFY(ev->Sender == Subscriber);
+        Y_VERIFY(msg->PathId.LocalPathId == NextPathId - 1);
 
         Send(Subscriber, new TEvents::TEvPoisonPill());
         Subscriber = TActorId();
@@ -253,7 +253,7 @@ class TLoadProducer: public TActorBootstrapped<TLoadProducer> {
             break;
 
         default:
-            Y_DEBUG_ABORT_UNLESS(false, "Unknown wakeup tag");
+            Y_VERIFY_DEBUG(false, "Unknown wakeup tag");
             break;
         }
     }

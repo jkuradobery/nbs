@@ -1,5 +1,5 @@
 #include "service_logstore.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "rpc_scheme_base.h"
 
 #include <ydb/core/ydb_convert/table_description.h>
@@ -95,11 +95,10 @@ bool ConvertSchemaFromPublicToInternal(const Ydb::LogStore::Schema& from, NKikim
         auto* col = to.AddColumns();
         col->SetName(column.name());
         NScheme::TTypeInfo typeInfo;
-        TString typeMod;
-        if (!ExtractColumnTypeInfo(typeInfo, typeMod, column.type(), status, error)) {
+        if (!ExtractColumnTypeInfo(typeInfo, column.type(), status, error)) {
             return false;
         }
-        auto typeName = NScheme::TypeName(typeInfo, typeMod);
+        auto typeName = NScheme::TypeName(typeInfo);
         col->SetType(typeName);
         if (key.count(column.name())) {
             col->SetNotNull(true);
@@ -238,10 +237,10 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -446,9 +445,7 @@ private:
 
         create->SetColumnShardCount(req->shards_count());
         auto* sharding = create->MutableSharding()->MutableHashSharding();
-        if (req->sharding_type() == Ydb::LogStore::ShardingHashType::HASH_TYPE_CONSISTENCY_64) {
-            sharding->SetFunction(NKikimrSchemeOp::TColumnTableSharding::THashSharding::HASH_FUNCTION_CONSISTENCY_64);
-        } else if (req->sharding_type() == Ydb::LogStore::ShardingHashType::HASH_TYPE_MODULO_N) {
+        if (req->sharding_type() == Ydb::LogStore::ShardingHashType::HASH_TYPE_MODULO_N) {
             sharding->SetFunction(NKikimrSchemeOp::TColumnTableSharding::THashSharding::HASH_FUNCTION_MODULO_N);
         } else {
             sharding->SetFunction(NKikimrSchemeOp::TColumnTableSharding::THashSharding::HASH_FUNCTION_CLOUD_LOGS);
@@ -476,10 +473,10 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NSchemeShard::TEvSchemeShard::TEvDescribeSchemeResult, Handle);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -640,37 +637,37 @@ private:
 using TDropLogStoreRPC = TDropLogRPC<TEvDropLogStoreRequest, NKikimrSchemeOp::EOperationType::ESchemeOpDropColumnStore>;
 using TDropLogTableRPC = TDropLogRPC<TEvDropLogTableRequest, NKikimrSchemeOp::EOperationType::ESchemeOpDropColumnTable>;
 
-void DoCreateLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TCreateLogStoreRPC(p.release()));
+void DoCreateLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TCreateLogStoreRPC(p.release()));
 }
 
-void DoDescribeLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribeLogStoreRPC(p.release()));
+void DoDescribeLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDescribeLogStoreRPC(p.release()));
 }
 
-void DoDropLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDropLogStoreRPC(p.release()));
+void DoDropLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDropLogStoreRPC(p.release()));
 }
 
-void DoAlterLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TAlterLogStoreRPC(p.release()));
+void DoAlterLogStoreRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TAlterLogStoreRPC(p.release()));
 }
 
 
-void DoCreateLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TCreateLogTableRPC(p.release()));
+void DoCreateLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TCreateLogTableRPC(p.release()));
 }
 
-void DoDescribeLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribeLogTableRPC(p.release()));
+void DoDescribeLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDescribeLogTableRPC(p.release()));
 }
 
-void DoDropLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDropLogTableRPC(p.release()));
+void DoDropLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDropLogTableRPC(p.release()));
 }
 
-void DoAlterLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TAlterLogTableRPC(p.release()));
+void DoAlterLogTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TAlterLogTableRPC(p.release()));
 }
 
 }

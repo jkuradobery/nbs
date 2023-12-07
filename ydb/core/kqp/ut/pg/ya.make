@@ -2,8 +2,6 @@ UNITTEST_FOR(ydb/core/kqp)
 
 FORK_SUBTESTS()
 
-SIZE(MEDIUM)
-
 SRCS(
     kqp_pg_ut.cpp
 )
@@ -12,8 +10,6 @@ PEERDIR(
     ydb/core/kqp/ut/common
     ydb/library/yql/public/udf/service/exception_policy
     ydb/library/yql/sql/pg
-    ydb/library/yql/parser/pg_wrapper
-    ydb/public/lib/ut_helpers
 )
 
 ADDINCL(

@@ -6,16 +6,14 @@ import os
 import json
 import random
 import string
-import typing  # noqa: F401
-import sys
 
-from contrib.ydb.tests.library.common import yatest_common
-from contrib.ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
-from contrib.ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
-from contrib.ydb.tests.library.common.types import Erasure
-from contrib.ydb.tests.library.harness.daemon import Daemon
-from contrib.ydb.tests.library.harness.util import LogLevels
-from contrib.ydb.tests.library.harness.kikimr_port_allocator import KikimrFixedPortAllocator, KikimrFixedNodePortAllocator
+from ydb.tests.library.common import yatest_common
+from ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
+from ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
+from ydb.tests.library.common.types import Erasure
+from ydb.tests.library.harness.daemon import Daemon
+from ydb.tests.library.harness.util import LogLevels
+from ydb.tests.library.harness.kikimr_port_allocator import KikimrFixedPortAllocator, KikimrFixedNodePortAllocator
 from library.python.testing.recipe import set_env
 
 
@@ -33,8 +31,6 @@ class EmptyArguments(object):
         self.fixed_ports = False
         self.public_http_config_path = None
         self.dont_use_log_files = False
-        self.enabled_feature_flags = []
-        self.enabled_grpc_services = []
 
 
 def ensure_path_exists(path):
@@ -223,28 +219,8 @@ class Recipe(object):
         return ensure_path_exists(self.data_path)
 
 
-def use_in_memory_pdisks_flag(ydb_working_dir=None):
-    if os.getenv('YDB_USE_IN_MEMORY_PDISKS') is not None:
-        return os.getenv('YDB_USE_IN_MEMORY_PDISKS') == "true"
-
-    if ydb_working_dir:
-        return False
-
-    return True
-
-
-def default_users():
-    if not os.getenv("POSTGRES_USER") and not os.getenv("POSTGRES_PASSWORD"):
-        return None
-
-    user = os.getenv("POSTGRES_USER")
-    if not user:
-        user = "postgres"
-
-    password = os.getenv("POSTGRES_PASSWORD")
-    if not password:
-        password = ""
-    return {user: password}
+def use_in_memory_pdisks_flag():
+    return os.getenv('YDB_USE_IN_MEMORY_PDISKS') == 'true'
 
 
 def enable_survive_restart():
@@ -308,12 +284,6 @@ def deploy(arguments):
         optionals.update({'grpc_ssl_enable': enable_tls()})
     pdisk_store_path = arguments.ydb_working_dir if arguments.ydb_working_dir else None
 
-    enable_feature_flags = arguments.enabled_feature_flags.copy()  # type: typing.List[str]
-    if 'YDB_FEATURE_FLAGS' in os.environ:
-        flags = os.environ['YDB_FEATURE_FLAGS'].split(",")
-        for flag_name in flags:
-            enable_feature_flags.append(flag_name)
-
     configuration = KikimrConfigGenerator(
         parse_erasure(arguments),
         arguments.ydb_binary_path,
@@ -327,14 +297,11 @@ def deploy(arguments):
         udfs_path=arguments.ydb_udfs_dir,
         additional_log_configs=additional_log_configs,
         port_allocator=port_allocator,
-        use_in_memory_pdisks=use_in_memory_pdisks_flag(arguments.ydb_working_dir),
+        use_in_memory_pdisks=use_in_memory_pdisks_flag(),
         fq_config_path=arguments.fq_config_path,
         public_http_config_path=arguments.public_http_config_path,
         auth_config_path=arguments.auth_config_path,
         use_log_files=not arguments.dont_use_log_files,
-        default_users=default_users(),
-        extra_feature_flags=enable_feature_flags,
-        extra_grpc_services=arguments.enabled_grpc_services,
         **optionals
     )
 
@@ -378,25 +345,13 @@ def _stop_instances(arguments):
     recipe = Recipe(arguments)
     if not os.path.exists(recipe.metafile_path()):
         return
-    try:
-        info = recipe.read_metafile()
-    except Exception:
-        sys.stderr.write("Metafile not found for ydb recipe ...")
-        return
-
+    info = recipe.read_metafile()
     for node_id, node_meta in info['nodes'].items():
         pid = node_meta['pid']
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-
-        try:
-            with open(node_meta['stderr_file'], "r") as r:
-                sys.stderr.write(r.read())
-
-        except Exception as e:
-            sys.stderr.write(str(e))
 
 
 def cleanup_working_dir(arguments):

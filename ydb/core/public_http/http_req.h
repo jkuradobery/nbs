@@ -1,8 +1,8 @@
 #pragma once
 
 #include <ydb/public/api/protos/ydb_status_codes.pb.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/http/http.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/http/http.h>
 
 namespace NKikimr::NPublicHttp {
 
@@ -22,7 +22,6 @@ public:
     void ResponseNotFound() const;
     void ResponseNoContent() const;
     void ResponseUnauthenticated(const TString& message) const;
-    void ResponseInternalServerError(const TString& message) const;
 
     void SetPathParams(std::map<TString, TString> pathParams);
     const std::map<TString, TString>& GetPathParams() const;

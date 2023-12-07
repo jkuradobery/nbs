@@ -6,7 +6,7 @@
 #include <ydb/library/aclib/aclib.h>
 #include <ydb/services/metadata/request/request_actor.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr::NMetadata::NModifications {
 
@@ -75,7 +75,7 @@ public:
         , Objects(std::move(objects))
 
     {
-        Y_ABORT_UNLESS(SessionId);
+        Y_VERIFY(SessionId);
     }
 
     STATEFN(StateMain) {
@@ -91,7 +91,7 @@ public:
         TBase::Become(&TModifyObjectsActor::StateMain);
         BuildRequestDirect();
         BuildRequestHistory();
-        Y_ABORT_UNLESS(Requests.size());
+        Y_VERIFY(Requests.size());
         Requests.back().mutable_tx_control()->set_commit_tx(true);
 
         TBase::Register(new NRequest::TYDBCallbackRequest<NRequest::TDialogYQLRequest>(
@@ -137,7 +137,7 @@ private:
 protected:
     virtual Ydb::Table::ExecuteDataQueryRequest BuildModifyQuery() const override {
         auto manager = TObject::GetBehaviour()->GetOperationsManager();
-        Y_ABORT_UNLESS(manager);
+        Y_VERIFY(manager);
         auto objectIds = TBase::Objects.SelectColumns(manager->GetSchema().GetPKColumnIds());
         return objectIds.BuildDeleteQuery(TObject::GetBehaviour()->GetStorageTablePath());
     }

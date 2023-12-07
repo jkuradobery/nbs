@@ -29,7 +29,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto then = BasicBlock::Create(context, "then", ctx.Func);
         const auto elsb = BasicBlock::Create(context, "else", ctx.Func);
@@ -104,7 +104,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto test = BasicBlock::Create(context, "test", ctx.Func);
@@ -122,9 +122,8 @@ public:
 
         block = test;
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
-        const auto result = PHINode::Create(valueType, IsOptional ? 3U : 2U, "result", done);
+        const auto state = new LoadInst(statePtr, "state", block);
+        const auto result = PHINode::Create(state->getType(), IsOptional ? 3U : 2U, "result", done);
 
         if (IsOptional) {
             result->addIncoming(state, block);
@@ -186,7 +185,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     TGenerateResult DoGenGetValues(const TCodegenContext& ctx, Value* statePtr, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto init = BasicBlock::Create(context, "init", ctx.Func);
         const auto test = BasicBlock::Create(context, "test", ctx.Func);
@@ -204,8 +203,7 @@ public:
 
         block = test;
 
-        const auto valueType = Type::getInt128Ty(context);
-        const auto state = new LoadInst(valueType, statePtr, "state", block);
+        const auto state = new LoadInst(statePtr, "state", block);
         const auto result = PHINode::Create(Type::getInt32Ty(context), 2, "result", done);
 
         const auto cast = CastInst::Create(Instruction::Trunc, state, Type::getInt1Ty(context), "bool", block);
@@ -234,16 +232,15 @@ public:
         std::generate_n(std::back_inserter(getters), right.second.size(), [&]() {
             const auto i = idx++;
             return [index, lget = left.second[i], rget = right.second[i]](const TCodegenContext& ctx, BasicBlock*& block) {
-                auto& context = ctx.Codegen.GetContext();
+                auto& context = ctx.Codegen->GetContext();
 
                 const auto then = BasicBlock::Create(context, "then", ctx.Func);
                 const auto elsb = BasicBlock::Create(context, "elsb", ctx.Func);
                 const auto done = BasicBlock::Create(context, "done", ctx.Func);
-                const auto valueType = Type::getInt128Ty(context);
-                const auto result = PHINode::Create(valueType, 2, "result", done);
+                const auto result = PHINode::Create(Type::getInt128Ty(context), 2, "result", done);
 
-                const auto statePtr = GetElementPtrInst::CreateInBounds(valueType, ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), index)}, "state_ptr", block);
-                const auto state = new LoadInst(valueType, statePtr, "state", block);
+                const auto statePtr = GetElementPtrInst::CreateInBounds(ctx.GetMutables(), {ConstantInt::get(Type::getInt32Ty(context), index)}, "state_ptr", block);
+                const auto state = new LoadInst(statePtr, "state", block);
                 const auto trunc = CastInst::Create(Instruction::Trunc, state, Type::getInt1Ty(context), "trunc", block);
 
                 BranchInst::Create(then, elsb, trunc, block);

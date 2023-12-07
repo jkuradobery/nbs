@@ -3,31 +3,12 @@
 #include "mkql_node.h"
 
 #include <ydb/library/yql/public/udf/udf_type_builder.h>
-#include <ydb/library/yql/public/udf/arrow/block_type_helper.h>
 #include <ydb/library/yql/parser/pg_wrapper/interface/compare.h>
-
-#include <util/generic/size_literals.h>
 
 #include <arrow/datum.h>
 
 namespace NKikimr {
 namespace NMiniKQL {
-
-class TBlockTypeHelper : public NUdf::IBlockTypeHelper {
-public:
-    NUdf::IBlockItemComparator::TPtr MakeComparator(NUdf::TType* type) const final;
-    NUdf::IBlockItemHasher::TPtr MakeHasher(NUdf::TType* type) const final;
-};
-
-constexpr size_t MaxBlockSizeInBytes = 240_KB;
-static_assert(MaxBlockSizeInBytes < (size_t)std::numeric_limits<i32>::max());
-
-// maximum size of block item in bytes
-size_t CalcMaxBlockItemSize(const TType* type);
-
-inline size_t CalcBlockLen(size_t maxBlockItemSize) {
-    return MaxBlockSizeInBytes / std::max<size_t>(maxBlockItemSize, 1);
-}
 
 bool ConvertArrowType(TType* itemType, std::shared_ptr<arrow::DataType>& type);
 bool ConvertArrowType(NUdf::EDataSlot slot, std::shared_ptr<arrow::DataType>& type);
@@ -164,7 +145,6 @@ public:
 
     NUdf::IFunctionTypeInfoBuilder15& SupportsBlocks() override;
     NUdf::IFunctionTypeInfoBuilder15& IsStrict() override;
-    const NUdf::IBlockTypeHelper& IBlockTypeHelper() const override;
 
     bool GetSecureParam(NUdf::TStringRef key, NUdf::TStringRef& value) const override;
 
@@ -179,7 +159,6 @@ private:
     ui32 OptionalArgs_ = 0;
     TString Payload_;
     NUdf::ITypeInfoHelper::TPtr TypeInfoHelper_;
-    TBlockTypeHelper BlockTypeHelper;
     TStringBuf ModuleName_;
     NUdf::ICountersProvider* CountersProvider_;
     NUdf::TSourcePosition Pos_;
@@ -200,8 +179,6 @@ public:
     const NYql::NUdf::TPgTypeDescription* FindPgTypeDescription(ui32 typeId) const override;
     NUdf::IArrowType::TPtr MakeArrowType(const NUdf::TType* type) const override;
     NUdf::IArrowType::TPtr ImportArrowType(ArrowSchema* schema) const override;
-    ui64 GetMaxBlockLength(const NUdf::TType* type) const override;
-    ui64 GetMaxBlockBytes() const override;
 
 private:
     static void DoData(const NMiniKQL::TDataType* dt, NUdf::ITypeVisitor* v);
@@ -219,22 +196,9 @@ private:
     static void DoBlock(const NMiniKQL::TBlockType* tt, NUdf::ITypeVisitor* v);
 };
 
-bool CanHash(const NMiniKQL::TType* type);
 NUdf::IHash::TPtr MakeHashImpl(const NMiniKQL::TType* type);
 NUdf::ICompare::TPtr MakeCompareImpl(const NMiniKQL::TType* type);
 NUdf::IEquate::TPtr MakeEquateImpl(const NMiniKQL::TType* type);
-
-template<typename T>
-ui64 CalcMaxBlockLength(T beginIt, T endIt, const NUdf::ITypeInfoHelper& helper) {
-    ui64 maxBlockLen = Max<ui64>();
-    while (beginIt != endIt) {
-        const TType* itemType = *beginIt++;
-        if (itemType) {
-            maxBlockLen = std::min(maxBlockLen, helper.GetMaxBlockLength(itemType));
-        }
-    }
-    return (maxBlockLen == Max<ui64>()) ? 0 : maxBlockLen;
-}
 
 } // namespace NMiniKQL
 } // namespace Nkikimr

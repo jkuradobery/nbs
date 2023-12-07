@@ -14,7 +14,7 @@
 #include <ydb/library/yql/providers/dq/actors/proto_builder.h>
 #include <ydb/library/yql/providers/dq/counters/counters.h>
 #include <ydb/library/yql/providers/dq/common/yql_dq_common.h>
-#include <ydb/library/yql/dq/integration/yql_dq_integration.h>
+#include <ydb/library/yql/providers/dq/interface/yql_dq_integration.h>
 #include <ydb/library/yql/providers/dq/planner/execution_planner.h>
 #include <ydb/library/yql/providers/dq/provider/yql_dq_gateway.h>
 #include <ydb/library/yql/providers/dq/provider/yql_dq_control.h>
@@ -137,39 +137,36 @@ public:
         NDq::TDqTaskRunnerSettings settings;
         settings.OptLLVM = "OFF"; // Don't use LLVM for local execution
         settings.SecureParams = secureParams;
-        settings.StatsMode = NDqProto::DQ_STATS_MODE_BASIC;
+        settings.CollectBasicStats = true;
+        settings.CollectProfileStats = true;
+        settings.AllowGeneratorsInUnboxedValues = true;
         auto runner = NDq::MakeDqTaskRunner(executionContext, settings, {});
-        auto runnerSettings = NDq::TDqTaskSettings(&task);
 
         {
             auto guard = runner->BindAllocator(State->Settings->MemoryLimit.Get().GetOrElse(0));
-            NDq::TDqTaskRunnerExecutionContextDefault execCtx;
-            runner->Prepare(runnerSettings, limits, execCtx);
+            runner->Prepare(task, limits);
         }
 
-        TVector<NDq::TDqSerializedBatch> rows;
+        TVector<NDqProto::TData> rows;
         {
             auto guard = runner->BindAllocator(State->Settings->MemoryLimit.Get().GetOrElse(0));
             YQL_CLOG(DEBUG, ProviderDq) << " NDq::ERunStatus " << runner->Run();
 
             NDq::ERunStatus status;
             while ((status = runner->Run()) == NDq::ERunStatus::PendingOutput || status == NDq::ERunStatus::Finished) {
-                if (!fillSettings.Discard) {
-                    NDq::TDqSerializedBatch data;
-                    while (runner->GetOutputChannel(0)->Pop(data)) {
-                        rows.push_back(std::move(data));
-                        data = {};
-                    }
+                NDqProto::TData data;
+                if (runner->GetOutputChannel(0)->PopAll(data) && !fillSettings.Discard) {
+                    rows.push_back(data);
                 }
                 if (status == NDq::ERunStatus::Finished) {
                     break;
                 }
                 if (!fillSettings.Discard) {
-                    if (fillSettings.AllResultsBytesLimit && runner->GetOutputChannel(0)->GetPopStats().Bytes >= *fillSettings.AllResultsBytesLimit) {
+                    if (fillSettings.AllResultsBytesLimit && runner->GetOutputChannel(0)->GetStats()->Bytes >= *fillSettings.AllResultsBytesLimit) {
                         result.Truncated = true;
                         break;
                     }
-                    if (fillSettings.RowsLimitPerWrite && runner->GetOutputChannel(0)->GetPopStats().Rows >= *fillSettings.RowsLimitPerWrite) {
+                    if (fillSettings.RowsLimitPerWrite && runner->GetOutputChannel(0)->GetStats()->RowsOut >= *fillSettings.RowsLimitPerWrite) {
                         result.Truncated = true;
                         break;
                     }
@@ -182,7 +179,7 @@ public:
         auto serializedResultType = GetSerializedResultType(lambda);
         NYql::NDqs::TProtoBuilder protoBuilder(serializedResultType, columns);
 
-        result.Data = protoBuilder.BuildYson(std::move(rows));
+        result.Data = protoBuilder.BuildYson(rows);
 
         AddCounter("LocalRun", TInstant::Now() - t);
 
@@ -232,122 +229,15 @@ private:
     void AfterCreate(TTransformationPipeline*) const final {}
 
     void AfterTypeAnnotation(TTransformationPipeline* pipeline) const final {
-        pipeline->Add(NDqs::CreateDqsReplacePrecomputesTransformer(*pipeline->GetTypeAnnotationContext(), State_->FunctionRegistry), "ReplacePrecomputes");
-        if (State_->Settings->UseBlockReader.Get().GetOrElse(false)) {
-            pipeline->Add(NDqs::CreateDqsRewritePhyBlockReadOnDqIntegrationTransformer(*pipeline->GetTypeAnnotationContext()), "ReplaceWideReadsWithBlock");
-        }
-        bool useWideChannels = State_->Settings->UseWideChannels.Get().GetOrElse(false);
-        bool useChannelBlocks = State_->Settings->UseWideBlockChannels.Get().GetOrElse(false);
-        NDq::EChannelMode mode;
-        if (!useWideChannels) {
-            mode = NDq::EChannelMode::CHANNEL_SCALAR;
-        } else if (!useChannelBlocks) {
-            mode = NDq::EChannelMode::CHANNEL_WIDE;
-        } else {
-            mode = NDq::EChannelMode::CHANNEL_WIDE_BLOCK;
-        }
-        pipeline->Add(
-            NDq::CreateDqBuildPhyStagesTransformer(
-                State_->Settings->SpillingEngine.Get().GetOrElse(TDqSettings::TDefault::SpillingEngine) != TDqSettings::ESpillingEngine::Disable,
-                *pipeline->GetTypeAnnotationContext(), mode
-            ),
-            "BuildPhy");
-        pipeline->Add(NDqs::CreateDqsRewritePhyCallablesTransformer(*pipeline->GetTypeAnnotationContext()), "RewritePhyCallables");
+        pipeline->Add(NDqs::CreateDqsReplacePrecomputesTransformer(pipeline->GetTypeAnnotationContext().Get(), State_->FunctionRegistry), "ReplacePrecomputes");
+        pipeline->Add(NDq::CreateDqBuildPhyStagesTransformer(false), "BuildPhy");
+        pipeline->Add(NDqs::CreateDqsRewritePhyCallablesTransformer(), "RewritePhyCallables");
     }
 
     void AfterOptimize(TTransformationPipeline*) const final {}
 
 private:
     TDqStatePtr State_;
-};
-
-TExprNode::TPtr DqMarkBlockStage(const TDqPhyStage& stage, TExprContext& ctx) {
-    using NDq::TDqStageSettings;
-    TDqStageSettings settings = NDq::TDqStageSettings::Parse(stage);
-    if (settings.BlockStatus.Defined()) {
-        return stage.Ptr();
-    }
-
-    TExprNode::TPtr root = stage.Program().Body().Ptr();
-
-    // scalar channel as output
-    if (root->IsCallable("FromFlow")) {
-        root = root->HeadPtr();
-    }
-    if (root->IsCallable("WideFromBlocks")) {
-        root = root->HeadPtr();
-    }
-
-    const TTypeAnnotationNode* nodeType = root->GetTypeAnn();
-    YQL_ENSURE(nodeType);
-    auto blockStatus = IsWideSequenceBlockType(*nodeType) ? TDqStageSettings::EBlockStatus::Full : TDqStageSettings::EBlockStatus::None;
-    bool stop = false;
-
-    VisitExpr(root, [&](const TExprNode::TPtr& node) {
-        if (stop || node->IsLambda() || node->IsArgument()) {
-            return false;
-        }
-
-        if (node->IsCallable("WideToBlocks") && node->Head().IsCallable("ToFlow") && node->Head().Head().IsArgument()) {
-            // scalar channel as input
-            return false;
-        }
-
-        const TTypeAnnotationNode* nodeType = node->GetTypeAnn();
-        YQL_ENSURE(nodeType);
-
-        if (nodeType->GetKind() != ETypeAnnotationKind::Stream && nodeType->GetKind() != ETypeAnnotationKind::Flow) {
-            return false;
-        }
-
-        const bool isBlock = IsWideSequenceBlockType(*nodeType);
-        if (blockStatus == TDqStageSettings::EBlockStatus::Full && !isBlock ||
-            blockStatus == TDqStageSettings::EBlockStatus::None && isBlock)
-        {
-            blockStatus = TDqStageSettings::EBlockStatus::Partial;
-        }
-
-        if (blockStatus == TDqStageSettings::EBlockStatus::Partial) {
-            stop = true;
-            return false;
-        }
-
-        return true;
-    });
-
-    YQL_CLOG(INFO, CoreDq) << "Setting block status for stage #" << settings.LogicalId << " = " << ToString(blockStatus);
-    return Build<TDqPhyStage>(ctx, stage.Pos())
-        .InitFrom(stage)
-        .Settings(settings.SetBlockStatus(blockStatus).BuildNode(ctx, stage.Settings().Pos()))
-        .Done().Ptr();
-}
-
-struct TDqsFinalPipelineConfigurator : public IPipelineConfigurator {
-public:
-    TDqsFinalPipelineConfigurator() = default;
-private:
-    void AfterCreate(TTransformationPipeline*) const final {}
-
-    void AfterTypeAnnotation(TTransformationPipeline*) const final {}
-
-    void AfterOptimize(TTransformationPipeline* pipeline) const final {
-        auto typeCtx = pipeline->GetTypeAnnotationContext();
-        pipeline->Add(CreateFunctorTransformer(
-            [typeCtx](const TExprNode::TPtr& input, TExprNode::TPtr& output, TExprContext& ctx) {
-                TOptimizeExprSettings optSettings{typeCtx.Get()};
-                optSettings.VisitLambdas = false;
-                return OptimizeExpr(input, output, [](const TExprNode::TPtr& node, TExprContext& ctx) -> TExprNode::TPtr {
-                    TExprBase expr{node};
-                    if (auto stage = expr.Maybe<TDqPhyStage>()) {
-                        return DqMarkBlockStage(stage.Cast(), ctx);
-                    }
-                    return node;
-                }, ctx, optSettings);
-            }
-        ),
-        "DqAfterPeephole",
-        TIssuesIds::DEFAULT_ERROR);
-    }
 };
 
 class TDqExecTransformer: public TExecTransformerBase, TCounters
@@ -461,25 +351,23 @@ private:
         TTypeEnvironment& typeEnv,
         TUserDataTable& files) const
     {
-        if (!State->Settings->_SkipRevisionCheck.Get().GetOrElse(false)) {
-            if (State->VanillaJobPath.empty()) {
-                auto f = IDqGateway::TFileResource();
-                f.SetName("dq_vanilla_job.lite");
-                f.SetObjectId(GetProgramCommitId());
-                f.SetObjectType(IDqGateway::TFileResource::EEXE_FILE);
-                uploadList->emplace(f);
-            } else {
-                auto f = IDqGateway::TFileResource();
-                f.SetName("dq_vanilla_job.lite");
-                TString path = State->VanillaJobPath;
-                TString objectId = GetProgramCommitId();
-                std::tie(path, objectId) = GetPathAndObjectId(path, objectId, State->VanillaJobMd5);
-                f.SetObjectId(objectId);
-                f.SetLocalPath(path);
-                f.SetObjectType(IDqGateway::TFileResource::EEXE_FILE);
-                f.SetSize(TFile(path, OpenExisting | RdOnly).GetLength());
-                uploadList->emplace(f);
-            }
+        if (State->VanillaJobPath.empty()) {
+            auto f = IDqGateway::TFileResource();
+            f.SetName("dq_vanilla_job.lite");
+            f.SetObjectId(GetProgramCommitId());
+            f.SetObjectType(IDqGateway::TFileResource::EEXE_FILE);
+            uploadList->emplace(f);
+        } else {
+            auto f = IDqGateway::TFileResource();
+            f.SetName("dq_vanilla_job.lite");
+            TString path = State->VanillaJobPath;
+            TString objectId = GetProgramCommitId();
+            std::tie(path, objectId) = GetPathAndObjectId(path, objectId, State->VanillaJobMd5);
+            f.SetObjectId(objectId);
+            f.SetLocalPath(path);
+            f.SetObjectType(IDqGateway::TFileResource::EEXE_FILE);
+            f.SetSize(TFile(path, OpenExisting | RdOnly).GetLength());
+            uploadList->emplace(f);
         }
         bool fallbackFlag = false;
         for (TNode* node : explorer.GetNodes()) {
@@ -878,7 +766,7 @@ private:
                     enableLocalRun);
 
                 if (lambdaResult.first.Level == TStatus::Error) {
-                    if (State->Settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default) == EFallbackPolicy::Never
+                    if (State->Settings->FallbackPolicy.Get().GetOrElse("default") == "never"
                         || State->TypeCtx->ForceDq)
                     {
                         return SyncError();
@@ -955,7 +843,7 @@ private:
                 state->Statistics[state->MetricId++] = res.Statistics;
 
                 if (res.Fallback) {
-                    if (state->Settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default) == EFallbackPolicy::Never || state->TypeCtx->ForceDq) {
+                    if (state->Settings->FallbackPolicy.Get().GetOrElse("default") == "never" || state->TypeCtx->ForceDq) {
                         auto issues = TIssues{TIssue(ctx.GetPosition(input->Pos()), "Gateway Error").SetCode(TIssuesIds::DQ_GATEWAY_NEED_FALLBACK_ERROR, TSeverityIds::S_WARNING)};
                         issues.AddIssues(res.Issues());
                         ctx.AssociativeIssues.emplace(input.Get(), std::move(issues));
@@ -1048,11 +936,12 @@ private:
         }
     }
 
-    IGraphTransformer::TStatus FallbackWithMessage(const TExprNode& node, TIssue issue, TExprContext& ctx, bool isRoot) {
+    IGraphTransformer::TStatus FallbackWithMessage(const TExprNode& node, const TString& message, TExprContext& ctx, bool isRoot) {
         if (State->Metrics) {
             State->Metrics->IncCounter("dq", "Fallback");
         }
         State->Statistics[State->MetricId++].Entries.push_back(TOperationStatistics::TEntry("Fallback", 0, 0, 0, 0, 1));
+        auto issue = TIssue(ctx.GetPosition(node.Pos()), message).SetCode(TIssuesIds::DQ_GATEWAY_NEED_FALLBACK_ERROR, TSeverityIds::S_WARNING);
         if (isRoot) {
             ctx.AssociativeIssues.emplace(&node, TIssues{std::move(issue)});
         } else {
@@ -1061,23 +950,12 @@ private:
         return IGraphTransformer::TStatus::Error;
     }
 
-    IGraphTransformer::TStatus FallbackWithMessage(const TExprNode& node, const TString& message, TExprContext& ctx, bool isRoot) {
-        return FallbackWithMessage(node, TIssue(ctx.GetPosition(node.Pos()), message).SetCode(TIssuesIds::DQ_GATEWAY_NEED_FALLBACK_ERROR, TSeverityIds::S_WARNING), ctx, isRoot);
-    }
-
-    IGraphTransformer::TStatus FallbackWithMessage(const TExprNode& node, const TFallbackError& error, TExprContext& ctx, bool isRoot) {
-        if (auto issue = error.GetIssue()) {
-            return FallbackWithMessage(node, *issue, ctx, isRoot);
-        } else {
-            return FallbackWithMessage(node, error.what(), ctx, isRoot);
-        }
-    }
-
     TPublicIds::TPtr GetPublicIds(const TExprNode::TPtr& root) const {
         TPublicIds::TPtr publicIds = std::make_shared<TPublicIds>();
         VisitExpr(root, [&](const TExprNode::TPtr& node) {
-            if (TResTransientBase::Match(node.Get()) || TDqReadWrapBase::Match(node.Get())
-                || TCoLeft::Match(node.Get()) || TCoRight::Match(node.Get())) {
+            if (TResTransientBase::Match(node.Get())) {
+                return false;
+            } else if (TDqReadWrapBase::Match(node.Get())) {
                 return false;
             } else if (TDqConnection::Match(node.Get())) {
                 if (const auto publicId = State->TypeCtx->TranslateOperationId(node->UniqueId())) {
@@ -1087,8 +965,9 @@ private:
                 if (node->HasResult()) {
                     return false;
                 }
-            } else if (const auto& maybeStage = TMaybeNode<TDqStage>(node.Get())) {
-                if (const auto& stage = maybeStage.Cast(); !(stage.Ref().StartsExecution() || stage.Ref().HasResult())) {
+            } else if (TDqStage::Match(node.Get())) {
+                const auto& stage = TDqStage(node);
+                if (!(stage.Ref().StartsExecution() || stage.Ref().HasResult())) {
                     if (const auto publicId = State->TypeCtx->TranslateOperationId(node->UniqueId())) {
                         if (const auto settings = NDq::TDqStageSettings::Parse(stage); settings.LogicalId) {
                             publicIds->Stage2publicId[settings.LogicalId] = *publicId;
@@ -1164,16 +1043,15 @@ private:
         FlushCounter("FreezeUsedFiles");
         // copy-paste }
 
-        auto settings = std::make_shared<TDqSettings>(*State->Settings);
-
         auto executionPlanner = MakeHolder<TDqsExecutionPlanner>(
-            settings, State->TypeCtx, ctx, State->FunctionRegistry,
+            State->TypeCtx, ctx, State->FunctionRegistry,
             optimizedInput);
 
         // exprRoot must be DqCnResult or DqQuery
 
         executionPlanner->SetPublicIds(publicIds->Stage2publicId);
 
+        auto settings = std::make_shared<TDqSettings>(*State->Settings);
         auto tasksPerStage = settings->MaxTasksPerStage.Get().GetOrElse(TDqSettings::TDefault::MaxTasksPerStage);
         const auto maxTasksPerOperation = State->Settings->MaxTasksPerOperation.Get().GetOrElse(TDqSettings::TDefault::MaxTasksPerOperation);
 
@@ -1181,10 +1059,10 @@ private:
         auto stagesCount = executionPlanner->StagesCount();
 
         if (!executionPlanner->CanFallback()) {
-            settings->FallbackPolicy = State->TypeCtx->DqFallbackPolicy = EFallbackPolicy::Never;
+            settings->FallbackPolicy = State->TypeCtx->DqFallbackPolicy = "never";
         }
 
-        bool canFallback = (settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default) != EFallbackPolicy::Never && !State->TypeCtx->ForceDq);
+        bool canFallback = (settings->FallbackPolicy.Get().GetOrElse("default") != "never" && !State->TypeCtx->ForceDq);
 
         if (stagesCount > maxTasksPerOperation && canFallback) {
             return SyncStatus(FallbackWithMessage(
@@ -1198,17 +1076,14 @@ private:
         YQL_ENSURE(stagesCount <= maxTasksPerOperation);
 
         try {
-            while (!executionPlanner->PlanExecution(canFallback) && tasksPerStage > 1) {
+            while (executionPlanner->PlanExecution(settings, canFallback) > maxTasksPerOperation && tasksPerStage > 1) {
                 tasksPerStage /= 2;
                 settings->MaxTasksPerStage = tasksPerStage;
                 executionPlanner->Clear();
             }
-        } catch (const TErrorException& err) {
-            ctx.IssueManager.RaiseIssue(ExceptionToIssue(err));
-            return SyncError();
         } catch (const TFallbackError& err) {
             YQL_ENSURE(canFallback, "Unexpected TFallbackError: " << err.what());
-            return SyncStatus(FallbackWithMessage(pull.Ref(), err, ctx, true));
+            return SyncStatus(FallbackWithMessage(pull.Ref(), err.what(), ctx, true));
         }
 
         bool fallbackFlag = false;
@@ -1362,7 +1237,7 @@ private:
 
             if (truncated && !state->TypeCtx->ForceDq && !enableFullResultWrite) {
                 auto issue = TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << "DQ cannot execute the query. Cause: " << "too big result " <<  trStr).SetCode(TIssuesIds::DQ_GATEWAY_NEED_FALLBACK_ERROR, TSeverityIds::S_INFO);
-                bool error = settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default) == EFallbackPolicy::Never;
+                bool error = settings->FallbackPolicy.Get().GetOrElse("default") == "never";
                 for (const auto& i : res.Issues()) {
                     TIssuePtr subIssue = new TIssue(i);
                     if (error && subIssue->Severity == TSeverityIds::S_WARNING) {
@@ -1652,15 +1527,15 @@ private:
             FlushCounter("FreezeUsedFiles");
             // copy-paste }
 
-            auto settings = std::make_shared<TDqSettings>(*commonSettings);
-
             auto executionPlanner = MakeHolder<TDqsExecutionPlanner>(
-                settings, State->TypeCtx, ctx, State->FunctionRegistry,
+                State->TypeCtx, ctx, State->FunctionRegistry,
                 optimizedInput);
 
             // exprRoot must be DqCnResult or DqQuery
 
             executionPlanner->SetPublicIds(publicIds->Stage2publicId);
+
+            auto settings = std::make_shared<TDqSettings>(*commonSettings);
 
             auto tasksPerStage = settings->MaxTasksPerStage.Get().GetOrElse(TDqSettings::TDefault::MaxTasksPerStage);
             const auto maxTasksPerOperation = State->Settings->MaxTasksPerOperation.Get().GetOrElse(TDqSettings::TDefault::MaxTasksPerOperation);
@@ -1669,10 +1544,10 @@ private:
             auto stagesCount = executionPlanner->StagesCount();
 
             if (!executionPlanner->CanFallback()) {
-                settings->FallbackPolicy = State->TypeCtx->DqFallbackPolicy = EFallbackPolicy::Never;
+                settings->FallbackPolicy = State->TypeCtx->DqFallbackPolicy = "never";
             }
 
-            bool canFallback = (settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default) != EFallbackPolicy::Never && !State->TypeCtx->ForceDq);
+            bool canFallback = (settings->FallbackPolicy.Get().GetOrElse("default") != "never" && !State->TypeCtx->ForceDq);
 
             if (stagesCount > maxTasksPerOperation && canFallback) {
                 return FallbackWithMessage(
@@ -1686,14 +1561,14 @@ private:
             YQL_ENSURE(stagesCount <= maxTasksPerOperation);
 
             try {
-                while (!executionPlanner->PlanExecution(canFallback) && tasksPerStage > 1) {
+                while (executionPlanner->PlanExecution(settings, canFallback) > maxTasksPerOperation && tasksPerStage > 1) {
                     tasksPerStage /= 2;
                     settings->MaxTasksPerStage = tasksPerStage;
                     executionPlanner->Clear();
                 }
             } catch (const TFallbackError& err) {
                 YQL_ENSURE(canFallback, "Unexpected TFallbackError: " << err.what());
-                return FallbackWithMessage(*input, err, ctx, false);
+                return FallbackWithMessage(*input, err.what(), ctx, false);
             }
 
             bool fallbackFlag = false;
@@ -1751,10 +1626,6 @@ private:
             graphParams["Precompute"] = ToString(true);
             MarkProgressStarted(publicIds->AllPublicIds, State->ProgressWriter);
 
-            if (const auto optLLVM = State->TypeCtx->OptLLVM) {
-                settings->OptLLVM = *optLLVM;
-            }
-
             IDqGateway::TDqProgressWriter progressWriter = MakeDqProgressWriter(publicIds);
 
             auto future = State->ExecutePlan(State->SessionId, executionPlanner->GetPlan(), {}, secureParams, graphParams,
@@ -1762,7 +1633,7 @@ private:
 
             executionPlanner.Destroy();
 
-            bool neverFallback = settings->FallbackPolicy.Get().GetOrElse(EFallbackPolicy::Default) == EFallbackPolicy::Never;
+            bool neverFallback = settings->FallbackPolicy.Get().GetOrElse("default") == "never";
             future.Subscribe([publicIds, state = State, startTime, execState = ExecState, node = input.Get(), neverFallback, logCtx](const NThreading::TFuture<IDqGateway::TResult>& completedFuture) {
                 YQL_LOG_CTX_ROOT_SESSION_SCOPE(logCtx);
                 YQL_ENSURE(!completedFuture.HasException());
@@ -1839,12 +1710,10 @@ private:
 
     IGraphTransformer::TStatus PeepHole(TExprNode::TPtr input, TExprNode::TPtr& output, TExprContext& ctx) const {
         TDqsPipelineConfigurator peepholeConfig(State);
-        TDqsFinalPipelineConfigurator finalPeepholeConfg;
         TPeepholeSettings peepholeSettings;
         peepholeSettings.CommonConfig = &peepholeConfig;
-        peepholeSettings.FinalConfig = &finalPeepholeConfg;
         bool hasNonDeterministicFunctions;
-        auto status = PeepHoleOptimizeNode(input, output, ctx, *State->TypeCtx, nullptr, hasNonDeterministicFunctions, peepholeSettings);
+        auto status = PeepHoleOptimizeNode<true>(input, output, ctx, *State->TypeCtx, nullptr, hasNonDeterministicFunctions, peepholeSettings);
         if (status.Level != TStatus::Ok) {
             ctx.AddError(TIssue(ctx.GetPosition(output->Pos()), TString("Peephole optimization failed for Dq stage")));
             return status;

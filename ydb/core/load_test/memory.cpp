@@ -3,8 +3,6 @@
 #include <ydb/core/base/appdata.h>
 
 #include <library/cpp/monlib/service/pages/templates.h>
-#include <library/cpp/time_provider/time_provider.h>
-
 
 namespace NKikimr {
 
@@ -20,12 +18,10 @@ class TMemoryLoadTestActor : public TActorBootstrapped<TMemoryLoadTestActor> {
     const ui64 Tag;
 
     TDuration Duration;
-    ui32 DurationSeconds;
     ui64 BlockSize;
     TDuration Interval;
 
     TInstant TestStartTime;
-    bool EarlyStop = false;
     TVector<TVector<char>> Blocks;
     ui64 AllocatedSize = 0;
 
@@ -44,7 +40,6 @@ public:
 
         VERIFY_PARAM(DurationSeconds);
         Duration = TDuration::Seconds(cmd.GetDurationSeconds());
-        DurationSeconds = cmd.GetDurationSeconds();
 
         VERIFY_PARAM(BlockSize);
         BlockSize = cmd.GetBlockSize();
@@ -67,22 +62,15 @@ public:
         ctx.Schedule(Duration, new TEvents::TEvPoisonPill);
         ctx.Schedule(Interval, new TEvAllocateBlock);
         TestStartTime = TAppData::TimeProvider->Now();
-        EarlyStop = false;
     }
 
     void HandlePoisonPill(const TActorContext& ctx) {
-        EarlyStop = (TAppData::TimeProvider->Now() - TestStartTime).Seconds() < DurationSeconds;
         LOG_INFO_S(ctx, NKikimrServices::BS_LOAD_TEST, "Tag# " << Tag
             << " Handle PoisonPill");
 
-        TIntrusivePtr<TEvLoad::TLoadReport> report = nullptr;
-        if (!EarlyStop) {
-            report.Reset(new TEvLoad::TLoadReport());
-            report->Duration = Duration;
-        }
-        const TString errorReason = EarlyStop ?
-            "Abort, stop signal received" : "OK, called StartDeathProcess";
-        ctx.Send(Parent, new TEvLoad::TEvLoadTestFinished(Tag, report, errorReason));
+        TIntrusivePtr<TEvLoad::TLoadReport> report(new TEvLoad::TLoadReport());
+        report->Duration = Duration;
+        ctx.Send(Parent, new TEvLoad::TEvLoadTestFinished(Tag, report, "OK"));
         Die(ctx);
     }
 
@@ -120,7 +108,8 @@ public:
                 }
                 TABLEBODY() {
                     PARAM("Elapsed time / Duration",
-                        (TAppData::TimeProvider->Now() - TestStartTime).Seconds() << "s / " << DurationSeconds << "s");
+                        (TAppData::TimeProvider->Now() - TestStartTime).Seconds() << "s / "
+                        << Duration.Seconds() << "s");
                     PARAM("Interval", Interval.MicroSeconds() << "us");
                     PARAM("Block size", BlockSize);
                     PARAM("Allocated bytes", AllocatedSize);
@@ -128,7 +117,6 @@ public:
                 }
             }
         }
-#undef PARAM
 
         ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes(str.Str(), ev->Get()->SubRequestId));
     }

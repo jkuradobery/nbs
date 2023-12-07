@@ -2,7 +2,7 @@
 #include <ydb/core/testlib/test_pq_client.h>
 #include <ydb/public/sdk/cpp/client/ydb_persqueue_core/persqueue.h>
 
-#include <ydb/library/grpc/server/grpc_server.h>
+#include <library/cpp/grpc/server/grpc_server.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 #include <library/cpp/testing/unittest/tests_data.h>
@@ -15,51 +15,38 @@ static constexpr int DEBUG_LOG_LEVEL = 7;
 
 class TTestServer {
 public:
-    TTestServer(const NKikimr::Tests::TServerSettings& settings, 
-                bool start = true,
-                const TVector<NKikimrServices::EServiceKikimr>& logServices = TTestServer::LOGGED_SERVICES,
-                NActors::NLog::EPriority logPriority = NActors::NLog::PRI_DEBUG,
-                TMaybe<TSimpleSharedPtr<TPortManager>> portManager = Nothing())
+    TTestServer(bool start = true, TMaybe<TSimpleSharedPtr<TPortManager>> portManager = Nothing())
         : PortManager(portManager.GetOrElse(MakeSimpleShared<TPortManager>()))
         , Port(PortManager->GetPort(2134))
         , GrpcPort(PortManager->GetPort(2135))
-        , ServerSettings(settings)
-        , GrpcServerOptions(NYdbGrpc::TServerOptions().SetHost("[::1]").SetPort(GrpcPort))
+        , ServerSettings(NKikimr::NPersQueueTests::PQSettings(Port).SetGrpcPort(GrpcPort))
+        , GrpcServerOptions(NGrpc::TServerOptions().SetHost("[::1]").SetPort(GrpcPort))
     {
-        auto loggerInitializer = [logServices, logPriority](NActors::TTestActorRuntime& runtime) {
-            for (auto s : logServices)
-                runtime.SetLogPriority(s, logPriority);
-        };
-        ServerSettings.SetLoggerInitializer(loggerInitializer);
-
+        if (start) {
+            StartServer();
+        }
+    }
+    TTestServer(const NKikimr::Tests::TServerSettings& settings, bool start = true)
+        : PortManager(MakeSimpleShared<TPortManager>())
+        , Port(PortManager->GetPort(2134))
+        , GrpcPort(PortManager->GetPort(2135))
+        , ServerSettings(settings)
+        , GrpcServerOptions(NGrpc::TServerOptions().SetHost("[::1]").SetPort(GrpcPort))
+    {
         ServerSettings.Port = Port;
         ServerSettings.SetGrpcPort(GrpcPort);
-
         if (start)
             StartServer();
     }
 
-    TTestServer(bool start = true)
-        : TTestServer(NKikimr::NPersQueueTests::PQSettings(), start)
-    {
-    }
-
     void StartServer(bool doClientInit = true, TMaybe<TString> databaseName = Nothing()) {
-        Log.SetFormatter([](ELogPriority priority, TStringBuf message) {
-            return TStringBuilder() << TInstant::Now() << " " << priority << ": " << message << Endl;
-        });
-
         PrepareNetDataFile();
-
         CleverServer = MakeHolder<NKikimr::Tests::TServer>(ServerSettings);
         CleverServer->EnableGRpc(GrpcServerOptions);
-
-        Log << TLOG_INFO << "TTestServer started on Port " << Port << " GrpcPort " << GrpcPort;
-
         AnnoyingClient = MakeHolder<NKikimr::NPersQueueTests::TFlatMsgBusPQClient>(ServerSettings, GrpcPort, databaseName);
+        EnableLogs(LOGGED_SERVICES);
         if (doClientInit) {
             AnnoyingClient->FullInit();
-            AnnoyingClient->CheckClustersList(CleverServer->GetRuntime());
         }
     }
 
@@ -80,13 +67,9 @@ public:
         StartServer();
     }
 
-    auto GetRuntime() {
-        return CleverServer->GetRuntime();
-    }
-
-    void EnableLogs(const TVector<NKikimrServices::EServiceKikimr>& services = LOGGED_SERVICES,
+    void EnableLogs(const TVector<NKikimrServices::EServiceKikimr> services,
                     NActors::NLog::EPriority prio = NActors::NLog::PRI_DEBUG) {
-        Y_ABORT_UNLESS(CleverServer != nullptr, "Start server before enabling logs");
+        Y_VERIFY(CleverServer != nullptr, "Start server before enabling logs");
         for (auto s : services) {
             CleverServer->GetRuntime()->SetLogPriority(s, prio);
         }
@@ -99,7 +82,7 @@ public:
     bool PrepareNetDataFile(const TString& content = "::1/128\tdc1") {
         if (NetDataFile)
             return false;
-        NetDataFile = MakeHolder<TTempFileHandle>();
+        NetDataFile = MakeHolder<TTempFileHandle>("netData.tsv");
         NetDataFile->Write(content.Data(), content.Size());
         NetDataFile->FlushData();
         ServerSettings.NetClassifierConfig.SetNetDataFilePath(NetDataFile->Name());
@@ -114,53 +97,15 @@ public:
         return CleverServer->GetDriver();
     }
 
-    void KillTopicPqrbTablet(const TString& topicPath) {
-        KillTopicTablets(topicPath, true, false);
-    }
-
-    void KillTopicPqTablets(const TString& topicPath) {
-        KillTopicTablets(topicPath, false, true);
-    }
-
-private:
-    void KillTopicTablets(const TString& topicPath, bool killPqrb, bool killPq) {
-        auto describeResult = AnnoyingClient->Ls(topicPath);
-        UNIT_ASSERT_C(describeResult->Record.GetPathDescription().HasPersQueueGroup(), describeResult->Record);
-        auto persQueueGroup = describeResult->Record.GetPathDescription().GetPersQueueGroup();
-
-        if (killPqrb)
-        {
-            Log << TLOG_INFO << "Kill PQRB tablet " << persQueueGroup.GetBalancerTabletID();
-            AnnoyingClient->KillTablet(*CleverServer, persQueueGroup.GetBalancerTabletID());
-        }
-
-        if (killPq)
-        {
-            THashSet<ui64> restartedTablets;
-            for (const auto& p : persQueueGroup.GetPartitions())
-                if (restartedTablets.insert(p.GetTabletId()).second)
-                {
-                    Log << TLOG_INFO << "Kill PQ tablet " << p.GetTabletId();
-                    AnnoyingClient->KillTablet(*CleverServer, p.GetTabletId());
-                }
-        }
-
-        CleverServer->GetRuntime()->DispatchEvents();
-    }
-
 public:
-    TString TestCaseName;
-
     TSimpleSharedPtr<TPortManager> PortManager;
     ui16 Port;
     ui16 GrpcPort;
 
     THolder<NKikimr::Tests::TServer> CleverServer;
     NKikimr::Tests::TServerSettings ServerSettings;
-    NYdbGrpc::TServerOptions GrpcServerOptions;
+    NGrpc::TServerOptions GrpcServerOptions;
     THolder<TTempFileHandle> NetDataFile;
-
-    TLog Log = CreateLogBackend("cerr", ELogPriority::TLOG_DEBUG);
 
     THolder<NKikimr::NPersQueueTests::TFlatMsgBusPQClient> AnnoyingClient;
 

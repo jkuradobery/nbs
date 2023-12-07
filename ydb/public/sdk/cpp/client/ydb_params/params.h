@@ -26,10 +26,6 @@ namespace NExperimental {
     class TStreamQueryClient;
 }
 
-namespace NQuery {
-    class TExecQueryImpl;
-}
-
 class TParamsBuilder;
 
 class TParams {
@@ -39,7 +35,6 @@ class TParams {
     friend class NTable::TDataQuery;
     friend class NScripting::TScriptingClient;
     friend class NExperimental::TStreamQueryClient;
-    friend class NQuery::TExecQueryImpl;
     friend class NYdb::TProtoAccessor;
 public:
     bool Empty() const;

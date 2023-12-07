@@ -244,7 +244,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, Value* arg, BasicBlock*& block) const {
-        return MakeOptional(ctx.Codegen.GetContext(), arg, block);
+        return MakeOptional(ctx.Codegen->GetContext(), arg, block);
     }
 #endif
 };
@@ -254,7 +254,7 @@ public:
     void* operator new(size_t sz) = delete;
     void* operator new[](size_t sz) = delete;
     void operator delete(void *mem, std::size_t sz) {
-        const auto pSize = static_cast<void*>(static_cast<ui8*>(mem) + sizeof(TComputationValue<TDirectArrayHolderInplace>));
+        const auto pSize = static_cast<void*>(static_cast<ui8*>(mem) + offsetof(TDirectArrayHolderInplace, Size));
         FreeWithSize(mem, sz + *static_cast<ui64*>(pSize) * sizeof(NUdf::TUnboxedValue));
     }
 
@@ -427,7 +427,7 @@ private:
     }
 
     NUdf::TUnboxedValue GetElement(ui32 index) const final {
-        Y_DEBUG_ABORT_UNLESS(index < Size);
+        Y_VERIFY_DEBUG(index < Size);
         return GetPtr()[index];
     }
 
@@ -568,7 +568,7 @@ private:
         return NUdf::TUnboxedValuePod(new TDictIterator(this));
     }
 
-    NUdf::IBoxedValuePtr ReverseListImpl(const NUdf::IValueBuilder&) const final {
+    NUdf::IBoxedValuePtr ReverseListImpl(const NUdf::IValueBuilder& builder) const final {
         if (1U >= TBaseVector::size()) {
             return const_cast<TVectorHolderBase*>(this);
         }
@@ -653,7 +653,7 @@ public:
         NUdf::TUnboxedValue *items = nullptr;
         const auto result = Cache.NewArray(ctx, ValueNodes.size(), items);
         if (!ValueNodes.empty()) {
-            Y_ABORT_UNLESS(items);
+            Y_VERIFY(items);
             for (const auto& node : ValueNodes) {
                 *items++ = node->GetValue(ctx);
             }
@@ -667,22 +667,21 @@ public:
         if (ValueNodes.size() > CodegenArraysFallbackLimit)
             return TBaseComputation::DoGenerateGetValue(ctx, block);
 
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto valType = Type::getInt128Ty(context);
         const auto idxType = Type::getInt32Ty(context);
         const auto type = ArrayType::get(valType, ValueNodes.size());
-        const auto ptrType = PointerType::getUnqual(type);
         /// TODO: how to get computation context or other workaround
         const auto itms = *Stateless || ctx.AlwaysInline ?
-            new AllocaInst(ptrType, 0U, "itms", &ctx.Func->getEntryBlock().back()):
-            new AllocaInst(ptrType, 0U, "itms", block);
+            new AllocaInst(PointerType::getUnqual(type), 0U, "itms", &ctx.Func->getEntryBlock().back()):
+            new AllocaInst(PointerType::getUnqual(type), 0U, "itms", block);
         const auto result = Cache.GenNewArray(ValueNodes.size(), itms, ctx, block);
-        const auto itemsPtr = new LoadInst(ptrType, itms, "items", block);
+        const auto itemsPtr = new LoadInst(itms, "items", block);
 
         ui32 i = 0U;
         for (const auto node : ValueNodes) {
-            const auto itemPtr = GetElementPtrInst::CreateInBounds(type, itemsPtr, {ConstantInt::get(idxType, 0), ConstantInt::get(idxType, i++)}, "item", block);
+            const auto itemPtr = GetElementPtrInst::CreateInBounds(itemsPtr, {ConstantInt::get(idxType, 0), ConstantInt::get(idxType, i++)}, "item", block);
             GetNodeValue(itemPtr, node, ctx, block);
         }
         return result;
@@ -710,22 +709,22 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto valueType = Type::getInt128Ty(context);
         const auto factory = ctx.GetFactory();
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::GetEmptyContainer));
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {factory->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            const auto res = CallInst::Create(funType, funcPtr, {factory}, "res", block);
+            const auto res = CallInst::Create(funcPtr, {factory}, "res", block);
             return res;
         } else {
             const auto retPtr = new AllocaInst(valueType, 0U, "ret_ptr", block);
             const auto funType = FunctionType::get(Type::getVoidTy(context), {factory->getType(), retPtr->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            CallInst::Create(funType, funcPtr, {factory, retPtr}, "", block);
-            const auto res = new LoadInst(valueType, retPtr, "res", block);
+            CallInst::Create(funcPtr, {factory, retPtr}, "", block);
+            const auto res = new LoadInst(retPtr, "res", block);
             return res;
         }
     }
@@ -1007,10 +1006,10 @@ private:
             Reverse(Items.begin(), Items.end());
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
 
-        Y_DEBUG_ABORT_UNLESS(IsSortedUnique());
+        Y_VERIFY_DEBUG(IsSortedUnique());
         IsBuilt = true;
 
         if (!Items.empty()) {
@@ -1209,10 +1208,10 @@ private:
             Reverse(Items.begin(), Items.end());
             break;
         default:
-            Y_ABORT();
+            Y_FAIL();
         }
 
-        Y_DEBUG_ABORT_UNLESS(IsSortedUnique());
+        Y_VERIFY_DEBUG(IsSortedUnique());
         IsBuilt = true;
 
         if (!Items.empty()) {
@@ -2730,8 +2729,7 @@ public:
     TDictNode(TComputationMutables& mutables,
             std::vector<std::pair<IComputationNode*, IComputationNode*>>&& itemNodes,
             const TKeyTypes& types, bool isTuple, TType* encodedType,
-            NUdf::IHash::TPtr hash, NUdf::IEquate::TPtr equate,
-            NUdf::ICompare::TPtr compare, bool isSorted)
+            NUdf::IHash::TPtr hash, NUdf::IEquate::TPtr equate)
         : TBaseComputation(mutables)
         , ItemNodes(std::move(itemNodes))
         , Types(types)
@@ -2739,8 +2737,6 @@ public:
         , EncodedType(encodedType)
         , Hash(hash)
         , Equate(equate)
-        , Compare(compare)
-        , IsSorted(isSorted)
     {}
 
     NUdf::TUnboxedValuePod DoCalculate(TComputationContext& ctx) const {
@@ -2755,29 +2751,20 @@ public:
             packer.emplace(true, EncodedType);
         }
 
-        if (IsSorted) {
-            const TSortedDictFiller filler = [&](TKeyPayloadPairVector& values) {
-                values = std::move(items);
-            };
-
-            return ctx.HolderFactory.CreateDirectSortedDictHolder(filler, Types, IsTuple, EDictSortMode::RequiresSorting,
-                true, EncodedType, Compare.Get(), Equate.Get());
-        } else {
-            THashedDictFiller filler =
-                    [&items, &packer](TValuesDictHashMap& map) {
-                        for (auto& value : items) {
-                            auto key = std::move(value.first);
-                            if (packer) {
-                                key = MakeString(packer->Pack(key));
-                            }
-
-                            map.emplace(std::move(key), std::move(value.second));
+        THashedDictFiller filler =
+                [&items, &packer](TValuesDictHashMap& map) {
+                    for (auto& value : items) {
+                        auto key = std::move(value.first);
+                        if (packer) {
+                            key = MakeString(packer->Pack(key));
                         }
-                    };
 
-            return ctx.HolderFactory.CreateDirectHashedDictHolder(
-                    filler, Types, IsTuple, true, EncodedType, Hash.Get(), Equate.Get());
-        }
+                        map.emplace(std::move(key), std::move(value.second));
+                    }
+                };
+
+        return ctx.HolderFactory.CreateDirectHashedDictHolder(
+                filler, Types, IsTuple, true, EncodedType, Hash.Get(), Equate.Get());
     }
 
 private:
@@ -2794,8 +2781,6 @@ private:
     TType* EncodedType;
     NUdf::IHash::TPtr Hash;
     NUdf::IEquate::TPtr Equate;
-    NUdf::ICompare::TPtr Compare;
-    const bool IsSorted;
 };
 
 class TVariantNode : public TMutableCodegeneratorNode<TVariantNode> {
@@ -2816,7 +2801,7 @@ public:
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
         const auto value = GetNodeValue(ItemNode, ctx, block);
-        return MakeVariant(value, ConstantInt::get(Type::getInt32Ty(ctx.Codegen.GetContext()), Index), ctx, block);
+        return MakeVariant(value, ConstantInt::get(Type::getInt32Ty(ctx.Codegen->GetContext()), Index), ctx, block);
     }
 #endif
 private:
@@ -3931,13 +3916,13 @@ IComputationNode* TNodeFactory::CreateArrayNode(TComputationNodePtrVector&& valu
 IComputationNode* TNodeFactory::CreateDictNode(
         std::vector<std::pair<IComputationNode*, IComputationNode*>>&& items,
         const TKeyTypes& types, bool isTuple, TType* encodedType,
-        NUdf::IHash::TPtr hash, NUdf::IEquate::TPtr equate, NUdf::ICompare::TPtr compare, bool isSorted) const
+        NUdf::IHash::TPtr hash, NUdf::IEquate::TPtr equate) const
 {
     if (items.empty()) {
         return new TEmptyNode(Mutables);
     }
 
-    return new TDictNode(Mutables, std::move(items), types, isTuple, encodedType, hash, equate, compare, isSorted);
+    return new TDictNode(Mutables, std::move(items), types, isTuple, encodedType, hash, equate);
 }
 
 IComputationNode* TNodeFactory::CreateVariantNode(IComputationNode* item, ui32 index) const {
@@ -3952,7 +3937,7 @@ IComputationNode* TNodeFactory::CreateImmutableNode(NUdf::TUnboxedValue&& value)
     return new TUnboxedImmutableCodegeneratorNode(&MemInfo, std::move(value));
 }
 
-void GetDictionaryKeyTypes(TType* keyType, TKeyTypes& types, bool& isTuple, bool& encoded, bool& useIHash, bool expandTuple) {
+void GetDictionaryKeyTypes(TType* keyType, TKeyTypes& types, bool& isTuple, bool& encoded, bool& useIHash) {
     isTuple = false;
     encoded = false;
     useIHash = false;
@@ -3967,7 +3952,7 @@ void GetDictionaryKeyTypes(TType* keyType, TKeyTypes& types, bool& isTuple, bool
         keyType = AS_TYPE(TOptionalType, keyType)->GetItemType();
     }
 
-    if (expandTuple && keyType->IsTuple()) {
+    if (keyType->IsTuple()) {
         auto tuple = AS_TYPE(TTupleType, keyType);
         for (ui32 i = 0; i < tuple->GetElementsCount(); ++i) {
             bool isOptional;
@@ -4044,8 +4029,8 @@ Value* GenerateCheckNotUniqueBoxed(Value* value, LLVMContext& context, Function*
     const auto half = CastInst::Create(Instruction::Trunc, value, Type::getInt64Ty(context), "half", block);
     const auto type = StructType::get(context, {PointerType::getUnqual(StructType::get(context)), Type::getInt32Ty(context), Type::getInt16Ty(context)});
     const auto boxptr = CastInst::Create(Instruction::IntToPtr, half, PointerType::getUnqual(type), "boxptr", block);
-    const auto cntptr = GetElementPtrInst::CreateInBounds(type, boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
-    const auto refs = new LoadInst(Type::getInt32Ty(context), cntptr, "refs", block);
+    const auto cntptr = GetElementPtrInst::CreateInBounds(boxptr, {ConstantInt::get(Type::getInt32Ty(context), 0), ConstantInt::get(Type::getInt32Ty(context), 1)}, "cntptr", block);
+    const auto refs = new LoadInst(cntptr, "refs", block);
     const auto many = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_UGT, refs, ConstantInt::get(refs->getType(), 1U), "many", block);
     result->addIncoming(many, block);
     BranchInst::Create(done, block);
@@ -4057,7 +4042,7 @@ Value* GenerateCheckNotUniqueBoxed(Value* value, LLVMContext& context, Function*
 }
 
 Value* TContainerCacheOnContext::GenNewArray(ui64 sz, Value* items, const TCodegenContext& ctx, BasicBlock*& block) const {
-    auto& context = ctx.Codegen.GetContext();
+    auto& context = ctx.Codegen->GetContext();
     const auto valueType = Type::getInt128Ty(context);
     const auto arrayType = ArrayType::get(valueType, sz);
     const auto pointerType = PointerType::getUnqual(arrayType);
@@ -4066,17 +4051,17 @@ Value* TContainerCacheOnContext::GenNewArray(ui64 sz, Value* items, const TCodeg
 
     const auto values = ctx.GetMutables();
 
-    const auto indexPtr = GetElementPtrInst::CreateInBounds(valueType, values, {ConstantInt::get(idxType, Index)}, "index_ptr", block);
+    const auto indexPtr = GetElementPtrInst::CreateInBounds(values, {ConstantInt::get(idxType, Index)}, "index_ptr", block);
 
-    const auto raw = new LoadInst(valueType, indexPtr, "raw", block);
+    const auto raw = new LoadInst(indexPtr, "raw", block);
 
     const auto indb = GetterFor<bool>(raw, context, block);
-    const auto indf = CastInst::Create(Instruction::ZExt, indb, idxType, "indf", block);
+    const auto indf = new ZExtInst(indb, idxType, "indf", block);
     const auto ind_one = BinaryOperator::CreateAdd(indf, ConstantInt::get(idxType, Index + 1U), "ind_one", block);
 
-    const auto tpfirst = GetElementPtrInst::CreateInBounds(valueType, values, {ind_one}, "tpfirst", block);
+    const auto tpfirst = GetElementPtrInst::CreateInBounds(values, {ind_one}, "tpfirst", block);
 
-    const auto tfirst = new LoadInst(valueType, tpfirst, "tfirst", block);
+    const auto tfirst = new LoadInst(tpfirst, "tfirst", block);
     const auto cfirst = GenerateCheckNotUniqueBoxed(tfirst, context, ctx.Func, block);
 
     const auto scnd = BasicBlock::Create(context, "scnd", ctx.Func);
@@ -4096,12 +4081,12 @@ Value* TContainerCacheOnContext::GenNewArray(ui64 sz, Value* items, const TCodeg
     const auto newInd = SetterFor<bool>(neg, context, block);
     new StoreInst(newInd, indexPtr, block);
 
-    const auto inds = CastInst::Create(Instruction::ZExt, neg, idxType, "inds", block);
+    const auto inds = new ZExtInst(neg, idxType, "inds", block);
 
     const auto ind_two = BinaryOperator::CreateAdd(inds, ConstantInt::get(idxType, Index + 1U), "ind_two", block);
 
-    const auto tpsecond = GetElementPtrInst::CreateInBounds(valueType, values, {ind_two}, "tpsecond", block);
-    const auto tsecond = new LoadInst(valueType, tpsecond, "tsecond", block);
+    const auto tpsecond = GetElementPtrInst::CreateInBounds(values, {ind_two}, "tpsecond", block);
+    const auto tsecond = new LoadInst(tpsecond, "tsecond", block);
     const auto csecond = GenerateCheckNotUniqueBoxed(tsecond, context, ctx.Func, block);
     has->addIncoming(tsecond, block);
     BranchInst::Create(make, have, csecond, block);
@@ -4115,18 +4100,18 @@ Value* TContainerCacheOnContext::GenNewArray(ui64 sz, Value* items, const TCodeg
         const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&THolderFactory::CreateDirectArrayHolder));
         const auto size = ConstantInt::get(Type::getInt64Ty(context), sz);
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto funType = FunctionType::get(valueType, {fact->getType(), size->getType(), items->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            const auto array = CallInst::Create(funType, funcPtr, {fact, size, items}, "array", block);
+            const auto array = CallInst::Create(funcPtr, {fact, size, items}, "array", block);
             AddRefBoxed(array, ctx, block);
             result->addIncoming(array, block);
             new StoreInst(array, tpsecond, block);
         } else {
             const auto funType = FunctionType::get(Type::getVoidTy(context), {fact->getType(), tpsecond->getType(), size->getType(), items->getType()}, false);
             const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funType), "function", block);
-            CallInst::Create(funType, funcPtr, {fact, tpsecond, size, items}, "", block);
-            const auto array = new LoadInst(valueType, tpsecond, "array", block);
+            CallInst::Create(funcPtr, {fact, tpsecond, size, items}, "", block);
+            const auto array = new LoadInst(tpsecond, "array", block);
             AddRefBoxed(array, ctx, block);
             result->addIncoming(array, block);
         }
@@ -4144,7 +4129,7 @@ Value* TContainerCacheOnContext::GenNewArray(ui64 sz, Value* items, const TCodeg
         const auto itemsPtr = CastInst::Create(Instruction::IntToPtr, offs, pointerType, "items_ptr", block);
 
         for (ui64 i = 0; i < sz; ++i) {
-            const auto itemp = GetElementPtrInst::CreateInBounds(arrayType, itemsPtr, {ConstantInt::get(idxType, 0), ConstantInt::get(idxType, i)}, "itemp", block);
+            const auto itemp = GetElementPtrInst::CreateInBounds(itemsPtr, {ConstantInt::get(idxType, 0), ConstantInt::get(idxType, i)}, "itemp", block);
             ValueUnRef(EValueRepresentation::Any, itemp, ctx, block);
         }
 

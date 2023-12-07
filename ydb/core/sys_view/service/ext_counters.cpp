@@ -2,9 +2,6 @@
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/counters.h>
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-
 
 namespace NKikimr {
 namespace NSysView {
@@ -93,7 +90,7 @@ private:
                 double usedCore = PoolElapsedMicrosec[i]->Val() / 10000.;
                 CpuUsedCorePercents[i]->Set(usedCore);
             }
-            if (PoolCurrentThreadCount[i] && PoolCurrentThreadCount[i]->Val()) {
+            if (PoolCurrentThreadCount[i]) {
                 double limitCore = PoolCurrentThreadCount[i]->Val() * 100;
                 CpuLimitCorePercents[i]->Set(limitCore);
             } else {

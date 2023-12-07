@@ -117,7 +117,7 @@ TExprBase BuildDqJoinInput(TExprContext& ctx, TPositionHandle pos, const TExprBa
 }
 
 TMaybe<TJoinInputDesc> BuildDqJoin(const TCoEquiJoinTuple& joinTuple,
-    const THashMap<TStringBuf, TJoinInputDesc>& inputs, EHashJoinMode mode, TExprContext& ctx)
+    const THashMap<TStringBuf, TJoinInputDesc>& inputs, TExprContext& ctx)
 {
     auto options = joinTuple.Options();
     auto linkSettings = GetEquiJoinLinkSettings(options.Ref());
@@ -129,7 +129,7 @@ TMaybe<TJoinInputDesc> BuildDqJoin(const TCoEquiJoinTuple& joinTuple,
         left = inputs.at(joinTuple.LeftScope().Cast<TCoAtom>().Value());
         YQL_ENSURE(left, "unknown scope " << joinTuple.LeftScope().Cast<TCoAtom>().Value());
     } else {
-        left = BuildDqJoin(joinTuple.LeftScope().Cast<TCoEquiJoinTuple>(), inputs, mode, ctx);
+        left = BuildDqJoin(joinTuple.LeftScope().Cast<TCoEquiJoinTuple>(), inputs, ctx);
         if (!left) {
             return {};
         }
@@ -140,7 +140,7 @@ TMaybe<TJoinInputDesc> BuildDqJoin(const TCoEquiJoinTuple& joinTuple,
         right = inputs.at(joinTuple.RightScope().Cast<TCoAtom>().Value());
         YQL_ENSURE(right, "unknown scope " << joinTuple.RightScope().Cast<TCoAtom>().Value());
     } else {
-        right = BuildDqJoin(joinTuple.RightScope().Cast<TCoEquiJoinTuple>(), inputs, mode, ctx);
+        right = BuildDqJoin(joinTuple.RightScope().Cast<TCoEquiJoinTuple>(), inputs, ctx);
         if (!right) {
             return {};
         }
@@ -199,34 +199,16 @@ TMaybe<TJoinInputDesc> BuildDqJoin(const TCoEquiJoinTuple& joinTuple,
         rightJoinKeys.emplace_back(rightKey);
     }
 
-    if (EHashJoinMode::Off == mode || EHashJoinMode::Map == mode || !(leftAny || rightAny)) {
-        auto dqJoin = Build<TDqJoin>(ctx, joinTuple.Pos())
-            .LeftInput(BuildDqJoinInput(ctx, joinTuple.Pos(), left->Input, leftJoinKeys, leftAny))
-            .LeftLabel(leftTableLabel)
-            .RightInput(BuildDqJoinInput(ctx, joinTuple.Pos(), right->Input, rightJoinKeys, rightAny))
-            .RightLabel(rightTableLabel)
-            .JoinType(joinTuple.Type())
-            .JoinKeys(joinKeysBuilder.Done())
-            .Done();
-        return TJoinInputDesc(Nothing(), dqJoin, std::move(resultKeys));
-    } else {
-        TExprNode::TListType flags;
-        if (leftAny)
-            flags.emplace_back(ctx.NewAtom(joinTuple.Pos(), "LeftAny", TNodeFlags::Default));
-        if (rightAny)
-            flags.emplace_back(ctx.NewAtom(joinTuple.Pos(), "RightAny", TNodeFlags::Default));
+    auto dqJoin = Build<TDqJoin>(ctx, joinTuple.Pos())
+        .LeftInput(BuildDqJoinInput(ctx, joinTuple.Pos(), left->Input, leftJoinKeys, leftAny))
+        .LeftLabel(leftTableLabel)
+        .RightInput(BuildDqJoinInput(ctx, joinTuple.Pos(), right->Input, rightJoinKeys, rightAny))
+        .RightLabel(rightTableLabel)
+        .JoinType(joinTuple.Type())
+        .JoinKeys(joinKeysBuilder.Done())
+        .Done();
 
-        auto dqJoin = Build<TDqJoin>(ctx, joinTuple.Pos())
-            .LeftInput(BuildDqJoinInput(ctx, joinTuple.Pos(), left->Input, leftJoinKeys, false))
-            .LeftLabel(leftTableLabel)
-            .RightInput(BuildDqJoinInput(ctx, joinTuple.Pos(), right->Input, rightJoinKeys, false))
-            .RightLabel(rightTableLabel)
-            .JoinType(joinTuple.Type())
-            .JoinKeys(joinKeysBuilder.Done())
-            .Flags().Add(std::move(flags)).Build()
-            .Done();
-        return TJoinInputDesc(Nothing(), dqJoin, std::move(resultKeys));
-    }
+    return TJoinInputDesc(Nothing(), dqJoin, std::move(resultKeys));
 }
 
 TMaybe<TJoinInputDesc> PrepareJoinInput(const TCoEquiJoinInput& input) {
@@ -348,7 +330,7 @@ bool CheckJoinColumns(const TExprBase& node) {
  * physical stages with join operators.
  * Potentially this optimizer can also perform joins reorder given cardinality information.
  */
-TExprBase DqRewriteEquiJoin(const TExprBase& node, EHashJoinMode mode, TExprContext& ctx) {
+TExprBase DqRewriteEquiJoin(const TExprBase& node, TExprContext& ctx) {
     if (!node.Maybe<TCoEquiJoin>()) {
         return node;
     }
@@ -365,7 +347,7 @@ TExprBase DqRewriteEquiJoin(const TExprBase& node, EHashJoinMode mode, TExprCont
     }
 
     auto joinTuple = equiJoin.Arg(equiJoin.ArgCount() - 2).Cast<TCoEquiJoinTuple>();
-    auto result = BuildDqJoin(joinTuple, inputs, mode, ctx);
+    auto result = BuildDqJoin(joinTuple, inputs, ctx);
     if (!result) {
         return node;
     }
@@ -423,48 +405,6 @@ TExprBase DqRewriteEquiJoin(const TExprBase& node, EHashJoinMode mode, TExprCont
         .Done();
 
     return projection;
-}
-
-TDqJoin DqSuppressSortOnJoinInput(const TDqJoin& join, TExprContext& ctx) {
-    const bool lOrdered = join.LeftInput().Ref().GetConstraint<TSortedConstraintNode>() || join.LeftInput().Ref().GetConstraint<TChoppedConstraintNode>();
-    const bool rOrdered = join.RightInput().Ref().GetConstraint<TSortedConstraintNode>() || join.RightInput().Ref().GetConstraint<TChoppedConstraintNode>();
-
-    if (lOrdered && rOrdered)
-        return Build<TDqJoin>(ctx, join.Pos())
-            .LeftInput<TCoUnordered>()
-                .Input(join.LeftInput())
-                .Build()
-            .RightInput<TCoUnordered>()
-                .Input(join.RightInput())
-                .Build()
-            .LeftLabel(join.RightLabel())
-            .RightLabel(join.LeftLabel())
-            .JoinType(join.JoinType())
-            .JoinKeys(join.JoinKeys())
-            .Done();
-    else if (lOrdered)
-        return Build<TDqJoin>(ctx, join.Pos())
-            .LeftInput<TCoUnordered>()
-                .Input(join.LeftInput())
-                .Build()
-            .RightInput(join.RightInput())
-            .LeftLabel(join.RightLabel())
-            .RightLabel(join.LeftLabel())
-            .JoinType(join.JoinType())
-            .JoinKeys(join.JoinKeys())
-            .Done();
-    else if (rOrdered)
-        return Build<TDqJoin>(ctx, join.Pos())
-            .LeftInput(join.LeftInput())
-            .RightInput<TCoUnordered>()
-                .Input(join.RightInput())
-                .Build()
-            .LeftLabel(join.RightLabel())
-            .RightLabel(join.LeftLabel())
-            .JoinType(join.JoinType())
-            .JoinKeys(join.JoinKeys())
-            .Done();
-    return join;
 }
 
 TExprBase DqRewriteRightJoinToLeft(const TExprBase node, TExprContext& ctx) {
@@ -926,7 +866,7 @@ TExprNode::TPtr ExpandJoinInput(const TStructExprType& type, TExprNode::TPtr&& a
             .Seal().Build();
 }
 
-TExprNode::TPtr SqueezeJoinInputToDict(TExprNode::TPtr&& input, size_t width, const std::vector<ui32>& keys, bool withPayloads, bool multiRow, TExprContext& ctx) {
+TExprNode::TPtr SqueezeJoinInputToDict(TExprNode::TPtr&& input, size_t width, const std::vector<ui32>& keys, bool withPayloads, TExprContext& ctx) {
     YQL_ENSURE(width > 0U && !keys.empty());
     return ctx.Builder(input->Pos())
         .Callable("NarrowSqueezeToDict")
@@ -956,7 +896,7 @@ TExprNode::TPtr SqueezeJoinInputToDict(TExprNode::TPtr&& input, size_t width, co
             .Seal()
             .List(3)
                 .Atom(0, "Hashed", TNodeFlags::Default)
-                .Atom(1, withPayloads && multiRow ? "Many" : "One", TNodeFlags::Default)
+                .Atom(1, withPayloads ? "Many" : "One", TNodeFlags::Default)
             .Seal()
         .Seal().Build();
 }
@@ -964,16 +904,17 @@ TExprNode::TPtr SqueezeJoinInputToDict(TExprNode::TPtr&& input, size_t width, co
 using TModifyKeysList = std::vector<std::tuple<TCoAtom, TCoAtom, ui32, const TTypeAnnotationNode*>>;
 
 template<bool LeftOrRight>
-TCoLambda PrepareJoinSide(
-    TPositionHandle pos,
+bool PrepareJoinSide(
+    TDqConnection& connection,
     const std::map<std::string_view, ui32>& columns,
     const std::vector<TCoAtom>& keys,
     TModifyKeysList& remap,
     bool filter,
     TExprNode::TListType& keysList,
-    TExprContext& ctx) {
+    TExprContext& ctx,
+    IOptimizationContext& optCtx) {
 
-    TCoArgument inputArg{ctx.NewArgument(pos, "flow")};
+    TCoArgument inputArg{ctx.NewArgument(connection.Pos(), "flow")};
     auto preprocess = ctx.Builder(inputArg.Pos())
         .Callable("Map")
             .Add(0, inputArg.Ptr())
@@ -999,7 +940,7 @@ TCoLambda PrepareJoinSide(
                                         .Arg(0, "row")
                                         .Add(1, std::get<0>(key).Ptr())
                                     .Seal()
-                                    .Add(1, ExpandType(pos, *std::get<const TTypeAnnotationNode*>(key), ctx))
+                                    .Add(1, ExpandType(connection.Pos(), *std::get<const TTypeAnnotationNode*>(key), ctx))
                                 .Seal()
                             .Seal();
                         }
@@ -1029,15 +970,22 @@ TCoLambda PrepareJoinSide(
         }
     }
 
+    const auto lambda = Build<TCoLambda>(ctx, preprocess->Pos())
+        .Args({inputArg})
+        .Body(std::move(preprocess))
+        .Done();
+
+    if (const auto cn = DqPushLambdaToStageUnionAll(connection.Cast<TDqCnUnionAll>(), lambda, {}, ctx, optCtx))
+        connection = cn.Cast();
+    else
+        return false;
+
     for (auto& key : remap) {
         const auto index = std::get<ui32>(key);
         keysList[index] = ctx.ChangeChild(*keysList[index], LeftOrRight ? TDqJoinKeyTuple::idx_LeftColumn : TDqJoinKeyTuple::idx_RightColumn, std::get<1>(key).Ptr());
     }
 
-    return Build<TCoLambda>(ctx, preprocess->Pos())
-        .Args({inputArg})
-        .Body(std::move(preprocess))
-        .Done();
+    return true;
 }
 
 TExprNode::TPtr ReplaceJoinOnSide(TExprNode::TPtr&& input, const TTypeAnnotationNode& resutType, const std::string_view& tableName, TExprContext& ctx) {
@@ -1154,39 +1102,24 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
 
     if (!remapLeft.empty() || !remapRight.empty()) {
         auto joinKeys = join.JoinKeys().Ref().ChildrenList();
-        auto connLeft = join.LeftInput().Cast<TDqCnUnionAll>();
-        auto connRight = join.RightInput().Cast<TDqCnUnionAll>();
-
-        std::vector<std::pair<TDqCnUnionAll, TCoLambda>> remaps;
+        auto connLeft = join.LeftInput().Cast<TDqConnection>();
+        auto connRight = join.RightInput().Cast<TDqConnection>();
 
         if (!remapLeft.empty())
-            remaps.emplace_back(connLeft, PrepareJoinSide<true>(connLeft.Pos(), leftNames, leftJoinKeys, remapLeft, filter || rightKind, joinKeys, ctx));
+            if (!PrepareJoinSide<true>(connLeft, leftNames, leftJoinKeys, remapLeft, filter || rightKind, joinKeys, ctx, optCtx))
+                return join;
 
         if (!remapRight.empty())
-            remaps.emplace_back(connRight, PrepareJoinSide<false>(connRight.Pos(), rightNames, rightJoinKeys, remapRight, filter || leftKind, joinKeys, ctx));
+            if (!PrepareJoinSide<false>(connRight, rightNames, rightJoinKeys, remapRight, filter || leftKind, joinKeys, ctx, optCtx))
+                return join;
 
-        DqPushLambdasToStagesUnionAll(remaps, ctx, optCtx);
-
-        if (!remapLeft.empty())
-            connLeft = remaps.front().first;
-
-        if (!remapRight.empty())
-            connRight = remaps.back().first;
-
-        const auto& items = GetSeqItemType(*join.Ref().GetTypeAnn()).Cast<TStructExprType>()->GetItems();
-        TExprNode::TListType fields(items.size());
-        std::transform(items.cbegin(), items.cend(), fields.begin(), [&](const TItemExprType* item) { return ctx.NewAtom(join.Pos(), item->GetName()); });
-
-        return Build<TCoExtractMembers>(ctx, join.Pos())
-            .Input<TDqJoin>()
-                .LeftInput(connLeft)
-                .LeftLabel(join.LeftLabel())
-                .RightInput(connRight)
-                .RightLabel(join.RightLabel())
-                .JoinType(join.JoinType())
-                .JoinKeys(ctx.ChangeChildren(join.JoinKeys().Ref(), std::move(joinKeys)))
-                .Build()
-            .Members().Add(std::move(fields)).Build()
+        return Build<TDqJoin>(ctx, join.Pos())
+            .LeftInput(connLeft)
+            .LeftLabel(join.LeftLabel())
+            .RightInput(connRight)
+            .RightLabel(join.RightLabel())
+            .JoinType(join.JoinType())
+            .JoinKeys(ctx.ChangeChildren(join.JoinKeys().Ref(), std::move(joinKeys)))
             .Done();
     }
 
@@ -1206,15 +1139,6 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
     const auto rightShuffle = buildShuffle(rightIn, rightJoinKeys);
     const auto leftShuffle = buildShuffle(leftIn, leftJoinKeys);
 
-    TString callableName = "GraceJoinCore";
-    int shift = 2;
-    bool selfJoin = false;
-    if (mode == EHashJoinMode::GraceAndSelf && leftIn.Stage().Ptr() == rightIn.Stage().Ptr()) {
-        callableName = "GraceSelfJoinCore";
-        shift = 1;
-        selfJoin = true;
-    }
-
     TCoArgument leftInputArg{ctx.NewArgument(join.LeftInput().Pos(), "_dq_join_left")};
     TCoArgument rightInputArg{ctx.NewArgument(join.RightInput().Pos(), "_dq_join_right")};
 
@@ -1229,28 +1153,15 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
     if (singleSide && leftKind)
         rightNames.clear();
 
-    TExprNode::TListType flags;
-    if (const auto maybeJoin = join.Maybe<TDqJoin>()) {
-        if (const auto maybeFlags = maybeJoin.Cast().Flags()) {
-            flags = maybeFlags.Cast().Ref().ChildrenList();
-        }
-    }
-
     TExprNode::TPtr hashJoin;
     switch (mode) {
-        case EHashJoinMode::GraceAndSelf:
         case EHashJoinMode::Grace:
             hashJoin = ctx.Builder(join.Pos())
-                .Callable(callableName)
-                    .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                        parent.Add(0, std::move(leftWideFlow));
-                        if (selfJoin == false) {
-                            parent.Add(1, std::move(rightWideFlow));
-                        }
-                        return parent;
-                    })
-                    .Add(shift, join.JoinType().Ptr())
-                    .List(shift + 1)
+                .Callable("GraceJoinCore")
+                    .Add(0, std::move(leftWideFlow))
+                    .Add(1, std::move(rightWideFlow))
+                    .Add(2, join.JoinType().Ptr())
+                    .List(3)
                         .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                             for (ui32 i = 0U; i < leftKeys.size(); ++i) {
                                 parent.Atom(i, ctx.GetIndexAsString(leftKeys[i]), TNodeFlags::Default);
@@ -1258,7 +1169,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                             return parent;
                         })
                     .Seal()
-                    .List(shift + 2)
+                    .List(4)
                         .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                             for (ui32 i = 0U; i < rightKeys.size(); ++i) {
                                 parent.Atom(i, ctx.GetIndexAsString(rightKeys[i]), TNodeFlags::Default);
@@ -1266,7 +1177,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                             return parent;
                         })
                     .Seal()
-                    .List(shift + 3)
+                    .List(5)
                         .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                             for (ui32 i = 0U; i < leftNames.size(); ++i) {
                                 parent.Atom(2*i, ctx.GetIndexAsString(i), TNodeFlags::Default);
@@ -1275,7 +1186,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                             return parent;
                         })
                     .Seal()
-                    .List(shift + 4)
+                    .List(6)
                         .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                             for (ui32 i = 0U; i < rightNames.size(); ++i) {
                                 parent.Atom(2*i, ctx.GetIndexAsString(i), TNodeFlags::Default);
@@ -1284,7 +1195,6 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                             return parent;
                         })
                     .Seal()
-                    .List(shift + 5).Add(std::move(flags)).Seal()
                 .Seal()
                 .Build();
             break;
@@ -1292,7 +1202,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
             if (leftKind || joinType == "Inner"sv) {
                 hashJoin = ctx.Builder(join.Pos())
                     .Callable("FlatMap")
-                        .Add(0, SqueezeJoinInputToDict(std::move(rightWideFlow), rightFullWidth, rightKeys, !rightNames.empty(), true, ctx))
+                        .Add(0, SqueezeJoinInputToDict(std::move(rightWideFlow), rightFullWidth, rightKeys, !rightNames.empty(), ctx))
                         .Lambda(1)
                             .Param("dict")
                             .Callable("MapJoinCore")
@@ -1309,14 +1219,6 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                                 .Seal()
                                 .List(4)
                                     .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                                        for (ui32 i = 0U; i < rightKeys.size(); ++i) {
-                                            parent.Atom(i, ctx.GetIndexAsString(rightKeys[i]), TNodeFlags::Default);
-                                        }
-                                        return parent;
-                                    })
-                                .Seal()
-                                .List(5)
-                                    .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                                         for (ui32 i = 0U; i < leftNames.size(); ++i) {
                                             parent.Atom(2*i, ctx.GetIndexAsString(i), TNodeFlags::Default);
                                             parent.Atom(2*i + 1, ctx.GetIndexAsString(i), TNodeFlags::Default);
@@ -1324,7 +1226,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                                         return parent;
                                     })
                                 .Seal()
-                                .List(6)
+                                .List(5)
                                     .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                                         for (ui32 i = 0U; i < rightNames.size(); ++i) {
                                             parent.Atom(2*i, ctx.GetIndexAsString(i), TNodeFlags::Default);
@@ -1340,7 +1242,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
             } else if (rightKind) {
                 hashJoin = ctx.Builder(join.Pos())
                     .Callable("FlatMap")
-                        .Add(0, SqueezeJoinInputToDict(std::move(leftWideFlow), leftFullWidth, leftKeys, !leftNames.empty(), true, ctx))
+                        .Add(0, SqueezeJoinInputToDict(std::move(leftWideFlow), leftFullWidth, leftKeys, !leftNames.empty(), ctx))
                         .Lambda(1)
                             .Param("dict")
                             .Callable("MapJoinCore")
@@ -1357,14 +1259,6 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                                 .Seal()
                                 .List(4)
                                     .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                                        for (ui32 i = 0U; i < leftKeys.size(); ++i) {
-                                            parent.Atom(i, ctx.GetIndexAsString(leftKeys[i]), TNodeFlags::Default);
-                                        }
-                                        return parent;
-                                    })
-                                .Seal()
-                                .List(5)
-                                    .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                                         for (ui32 i = 0U; i < rightNames.size(); ++i) {
                                             parent.Atom(2*i, ctx.GetIndexAsString(i), TNodeFlags::Default);
                                             parent.Atom(2*i + 1, ctx.GetIndexAsString(i + leftNames.size()), TNodeFlags::Default);
@@ -1372,7 +1266,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                                         return parent;
                                     })
                                 .Seal()
-                                .List(6)
+                                .List(5)
                                     .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
                                         for (ui32 i = 0U; i < leftNames.size(); ++i) {
                                             parent.Atom(2*i, ctx.GetIndexAsString(i), TNodeFlags::Default);
@@ -1387,33 +1281,21 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                 break;
             }
             [[fallthrough]];
-        case EHashJoinMode::Dict: {
-            bool leftAny = false, rightAny = false;
-            for (auto& flag : flags) {
-                if (flag->IsAtom("LeftAny")) {
-                    leftAny = true;
-                    flag = ctx.NewAtom(flag->Pos(), "LeftUnique", TNodeFlags::Default);
-                } else if (flag->IsAtom("RightAny")) {
-                    rightAny = true;
-                    flag = ctx.NewAtom(flag->Pos(), "RightUnique", TNodeFlags::Default);
-                }
-            }
-
+        case EHashJoinMode::Dict:
             hashJoin = ctx.Builder(join.Pos())
                 .Callable("ExpandMap")
                     .Callable(0, "FlatMap")
-                        .Add(0, SqueezeJoinInputToDict(std::move(leftWideFlow), leftFullWidth, leftKeys, !leftNames.empty(), !leftAny, ctx))
+                        .Add(0, SqueezeJoinInputToDict(std::move(leftWideFlow), leftFullWidth, leftKeys, !leftNames.empty(), ctx))
                         .Lambda(1)
                             .Param("left")
                             .Callable("FlatMap")
-                                .Add(0, SqueezeJoinInputToDict(std::move(rightWideFlow), rightFullWidth, rightKeys, !rightNames.empty(), !rightAny, ctx))
+                                .Add(0, SqueezeJoinInputToDict(std::move(rightWideFlow), rightFullWidth, rightKeys, !rightNames.empty(), ctx))
                                 .Lambda(1)
                                     .Param("right")
                                     .Callable("JoinDict")
                                         .Arg(0, "left")
                                         .Arg(1, "right")
                                         .Add(2, join.JoinType().Ptr())
-                                        .List(3).Add(std::move(flags)).Seal()
                                     .Seal()
                                 .Seal()
                             .Seal()
@@ -1460,7 +1342,7 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                         })
                     .Seal()
                 .Seal().Build();
-        }   break;
+            break;
         default:
             ythrow yexception() << "Invalid hash join mode: " << mode;
     }
@@ -1493,9 +1375,8 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
                         for (const auto& colName : fullColNames) {
                             parent.List(i)
                                 .Atom(0, colName)
-                                .Arg(1, "output", i)
+                                .Arg(1, "output", i++)
                             .Seal();
-                            i++;
                         }
                         return parent;
                     })
@@ -1504,25 +1385,15 @@ TExprBase DqBuildHashJoin(const TDqJoin& join, EHashJoinMode mode, TExprContext&
         .Seal()
         .Build();
 
-    TVector<TExprBase> stageInputs; stageInputs.reserve(2);
-    stageInputs.emplace_back(leftShuffle);
-    if (selfJoin == false) {
-        stageInputs.emplace_back(rightShuffle);
-    }
-    TVector<TCoArgument> inputArgs; inputArgs.reserve(2);
-    inputArgs.emplace_back(leftInputArg);
-    if (selfJoin == false) {
-        inputArgs.emplace_back(rightInputArg);
-    }
-
     return Build<TDqCnUnionAll>(ctx, join.Pos())
         .Output()
             .Stage<TDqStage>()
                 .Inputs()
-                    .Add(stageInputs)
+                    .Add(leftShuffle)
+                    .Add(rightShuffle)
                     .Build()
                 .Program()
-                    .Args(inputArgs)
+                    .Args({leftInputArg, rightInputArg})
                     .Body(std::move(hashJoin))
                     .Build()
                 .Settings(TDqStageSettings().BuildNode(ctx, join.Pos()))

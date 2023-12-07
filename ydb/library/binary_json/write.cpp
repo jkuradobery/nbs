@@ -162,20 +162,20 @@ struct TPODWriter {
 
     template <typename T>
     void Write(const T& value) {
-        Y_DEBUG_ABORT_UNLESS(Offset + sizeof(T) <= Buffer.Size());
+        Y_VERIFY_DEBUG(Offset + sizeof(T) <= Buffer.Size());
         MemCopy(Buffer.Data() + Offset, reinterpret_cast<const char*>(&value), sizeof(T));
         Offset += sizeof(T);
     }
 
     void Write(const char* source, ui32 length) {
-        Y_DEBUG_ABORT_UNLESS(Offset + length <= Buffer.Size());
+        Y_VERIFY_DEBUG(Offset + length <= Buffer.Size());
         MemCopy(Buffer.Data() + Offset, source, length);
         Offset += length;
     }
 
     template <typename T>
     void Skip(ui32 count) {
-        Y_DEBUG_ABORT_UNLESS(Offset + count * sizeof(T) <= Buffer.Size());
+        Y_VERIFY_DEBUG(Offset + count * sizeof(T) <= Buffer.Size());
         Offset += count * sizeof(T);
     }
 };
@@ -250,7 +250,7 @@ private:
      * @brief Writes container and all its children recursively
      */
     void WriteContainer(TPODWriter& valueWriter, ui32 index) {
-        Y_DEBUG_ABORT_UNLESS(index < Json.Containers.size());
+        Y_VERIFY_DEBUG(index < Json.Containers.size());
         const auto& container = Json.Containers[index];
 
         switch (container.Type) {
@@ -549,19 +549,15 @@ void DomToJsonIndex(const NUdf::TUnboxedValue& value, TBinaryJsonCallbacks& call
 
 }
 
-TMaybe<TBinaryJson> SerializeToBinaryJsonImpl(const TStringBuf json) {
+TMaybe<TBinaryJson> SerializeToBinaryJson(const TStringBuf json) {
     TMemoryInput input(json.data(), json.size());
     TBinaryJsonCallbacks callbacks(/* throwException */ false);
     if (!ReadJson(&input, &callbacks)) {
         return Nothing();
     }
+
     TBinaryJsonSerializer serializer(std::move(callbacks).GetResult());
     return std::move(serializer).Serialize();
-
-}
-
-TMaybe<TBinaryJson> SerializeToBinaryJson(const TStringBuf json) {
-    return SerializeToBinaryJsonImpl(json);
 }
 
 TBinaryJson SerializeToBinaryJson(const NUdf::TUnboxedValue& value) {

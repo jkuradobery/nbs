@@ -66,36 +66,17 @@ union TBasicKikimrServicesMask {
         bool EnableYandexQuery:1;
         bool EnableSequenceProxyService:1;
         bool EnableHttpProxy:1;
-        bool EnableMetadataProvider:1;
-        bool EnableReplicationService:1;
-        bool EnableBackgroundTasks:1;
-        bool EnableExternalIndex: 1;
-        bool EnableScanConveyor : 1;
-        bool EnableCompConveyor : 1;
-        bool EnableInsertConveyor : 1;
-        bool EnableLocalPgWire:1;
-        bool EnableKafkaProxy:1;
-        bool EnableIcNodeCacheService:1;
-        bool EnableMemoryTracker:1;
-
-        // next 64 flags
-
-        bool EnableDatabaseMetadataCache:1;
+        bool EnableMetadataProvider : 1;
     };
 
-    struct {
-        ui64 Raw1;
-        ui64 Raw2;
-    };
+    ui64 Raw;
 
     void DisableAll() {
-        Raw1 = 0;
-        Raw2 = 0;
+        Raw = 0;
     }
 
     void EnableAll() {
-        Raw1 = 0xFFFFFFFFFFFFFFFFLL;
-        Raw2 = 0xFFFFFFFFFFFFFFFFLL;
+        Raw = 0xFFFFFFFFFFFFFFFFLL;
     }
 
     void EnableYQ() {
@@ -113,19 +94,12 @@ union TBasicKikimrServicesMask {
         EnableProfiler = true;
     }
 
-    void SetTinyMode() {
-        EnableSelfPing = false;
-        EnableMemoryTracker = false;
-
-        // TODO: set EnableStatsCollector to false as well
-    }
-
     TBasicKikimrServicesMask() {
         EnableAll();
     }
 };
 
-static_assert(sizeof(TBasicKikimrServicesMask) == 16, "expected sizeof(TBasicKikimrServicesMask) == 16");
+static_assert(sizeof(TBasicKikimrServicesMask) == 8, "expected sizeof(TBasicKikimrServicesMask) == 8");
 
 
 struct TKikimrRunConfig {

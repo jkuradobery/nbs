@@ -47,7 +47,6 @@ public:
     virtual void Visit(TFlowType& node) = 0;
     virtual void Visit(TTaggedType& node) = 0;
     virtual void Visit(TBlockType& node) = 0;
-    virtual void Visit(TMultiType& node) = 0;
 };
 
 class TThrowingNodeVisitor : public INodeVisitor {
@@ -85,7 +84,6 @@ public:
     void Visit(TFlowType& node) override;
     void Visit(TTaggedType& node) override;
     void Visit(TBlockType& node) override;
-    void Visit(TMultiType& node) override;
 
 protected:
     static void ThrowUnexpectedNodeType();
@@ -126,7 +124,6 @@ public:
     void Visit(TFlowType& node) override;
     void Visit(TTaggedType& node) override;
     void Visit(TBlockType& node) override;
-    void Visit(TMultiType& node) override;
 };
 
 class TExploringNodeVisitor : public INodeVisitor {
@@ -166,7 +163,6 @@ public:
     void Visit(TFlowType& node) override;
     void Visit(TTaggedType& node) override;
     void Visit(TBlockType& node) override;
-    void Visit(TMultiType& node) override;
 
     void Walk(TNode* root, const TTypeEnvironment& env, const std::vector<TNode*>& terminalNodes = std::vector<TNode*>(),
         bool buildConsumersMap = false, size_t nodesCountHint = 0);

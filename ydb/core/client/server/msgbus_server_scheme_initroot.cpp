@@ -62,7 +62,7 @@ public:
     }
 
     //STFUNC(StateWork)
-    void StateWork(TAutoPtr<NActors::IEventHandle> &ev) {
+    void StateWork(TAutoPtr<NActors::IEventHandle> &ev, const NActors::TActorContext &ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvSchemeShard::TEvInitRootShardResult, Handle);
         }

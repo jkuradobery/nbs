@@ -3,12 +3,12 @@
 #include "change_sender_monitoring.h"
 #include "datashard_impl.h"
 
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/log.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/monlib/service/pages/mon_page.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 
@@ -44,7 +44,7 @@ class TChangeSender: public TActor<TChangeSender> {
     }
 
     TSender& AddChangeSender(const TPathId& pathId, const TTableId& userTableId, ESenderType type) {
-        Y_DEBUG_ABORT_UNLESS(!Senders.contains(pathId));
+        Y_VERIFY_DEBUG(!Senders.contains(pathId));
 
         auto& sender = Senders[pathId];
         sender.UserTableId = userTableId;
@@ -63,7 +63,7 @@ class TChangeSender: public TActor<TChangeSender> {
     }
 
     void RegisterChangeSender(const TPathId& pathId, TSender& sender) const {
-        Y_DEBUG_ABORT_UNLESS(!sender.ActorId);
+        Y_VERIFY_DEBUG(!sender.ActorId);
         sender.ActorId = RegisterChangeSender(pathId, sender.UserTableId, sender.Type);
     }
 
@@ -107,8 +107,8 @@ class TChangeSender: public TActor<TChangeSender> {
 
         auto it = Senders.find(msg.PathId);
         if (it != Senders.end()) {
-            Y_ABORT_UNLESS(it->second.UserTableId == msg.UserTableId);
-            Y_ABORT_UNLESS(it->second.Type == msg.Type);
+            Y_VERIFY(it->second.UserTableId == msg.UserTableId);
+            Y_VERIFY(it->second.Type == msg.Type);
             LOG_W("Trying to add duplicate sender"
                 << ": userTableId# " << msg.UserTableId
                 << ", type# " << msg.Type
@@ -160,7 +160,7 @@ class TChangeSender: public TActor<TChangeSender> {
         }
 
         if (Enqueued) {
-            Handle(std::exchange(Enqueued, {}));
+            Handle(std::move(Enqueued));
         }
     }
 
@@ -301,12 +301,12 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvChangeExchange::TEvActivateSender, Handle);
         default:
-            return StateBase(ev);
+            return StateBase(ev, ctx);
         }
     }
 
     STFUNC(StateActive) {
-        return StateBase(ev);
+        return StateBase(ev, ctx);
     }
 
 private:

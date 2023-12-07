@@ -2,7 +2,7 @@
 #include "cli_cmds.h"
 #include <ydb/core/base/location.h>
 #include <ydb/core/base/path.h>
-#include <ydb/library/yaml_config/yaml_config.h>
+#include <ydb/core/cms/console/yaml_config/yaml_config.h>
 #include <ydb/core/driver_lib/run/run.h>
 #include <ydb/library/yaml_config/yaml_config_parser.h>
 #include <ydb/public/lib/deprecated/kicli/kicli.h>
@@ -13,9 +13,6 @@
 #include <util/system/fs.h>
 #include <util/system/hostname.h>
 #include <google/protobuf/text_format.h>
-
-#include <ydb/public/sdk/cpp/client/ydb_discovery/discovery.h>
-#include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 
 extern TAutoPtr<NKikimrConfig::TActorSystemConfig> DummyActorSystemConfig();
 extern TAutoPtr<NKikimrConfig::TAllocatorConfig> DummyAllocatorConfig();
@@ -63,7 +60,6 @@ protected:
     bool FixedNodeID;
     bool IgnoreCmsConfigs;
     bool HierarchicalCfg;
-    bool TinyMode;
     TString NodeAddress;
     TString NodeHost;
     TString NodeResolveHost;
@@ -208,6 +204,7 @@ protected:
         config.Opts->AddLongOption("cms-file", "CMS config file").OptionalArgument("PATH");
         config.Opts->AddLongOption("alloc-file", "Allocator config file").OptionalArgument("PATH");
         config.Opts->AddLongOption("yql-file", "Yql Analytics config file").OptionalArgument("PATH");
+        config.Opts->AddLongOption("yq-file", "Yandex Query config file (deprecated)").OptionalArgument("PATH");
         config.Opts->AddLongOption("fq-file", "Federated Query config file").OptionalArgument("PATH");
         config.Opts->AddLongOption("feature-flags-file", "File with feature flags to turn new features on/off").OptionalArgument("PATH");
         config.Opts->AddLongOption("rb-file", "File with resource broker customizations").OptionalArgument("PATH");
@@ -245,9 +242,6 @@ protected:
         config.Opts->AddLongOption("http-proxy-file", "Http proxy config file").OptionalArgument("PATH");
         config.Opts->AddLongOption("public-http-file", "Public HTTP config file").OptionalArgument("PATH");
 
-        config.Opts->AddLongOption("tiny-mode", "Start in a tiny mode")
-        .NoArgument().SetFlag(&TinyMode);
-
         config.Opts->AddHelpOption('h');
 
         // add messagebus proxy options
@@ -283,7 +277,7 @@ protected:
 
         if (optname && config.ParseResult->Has(optname)) {
             const bool success = ParsePBFromFile(config.ParseResult->Get(optname), res = (AppConfig.*mutableConfig)());
-            Y_ABORT_UNLESS(success);
+            Y_VERIFY(success);
         } else if ((BaseConfig.*hasConfig)()) {
             res = (AppConfig.*mutableConfig)();
             res->CopyFrom((BaseConfig.*getConfig)());
@@ -300,7 +294,7 @@ protected:
         if (config.ParseResult->Has(optname)) {
             TProto cfg;
             bool success = ParsePBFromFile(config.ParseResult->Get(optname), &cfg);
-            Y_ABORT_UNLESS(success);
+            Y_VERIFY(success);
             res = (AppConfig.*mutableConfig)();
             res->MergeFrom(cfg);
         }
@@ -325,14 +319,14 @@ protected:
     }
 
     void AddLabelToAppConfig(const TString& name, const TString& value) {
-        for (auto &label : *AppConfig.MutableLabels()) {
+        for (auto &label : *RunConfig.AppConfig.MutableLabels()) {
             if (label.GetName() == name) {
                 label.SetValue(value);
                 return;
             }
         }
 
-        auto *label = AppConfig.AddLabels();
+        auto *label = RunConfig.AppConfig.AddLabels();
         label->SetName(name);
         label->SetValue(value);
     }
@@ -400,10 +394,6 @@ protected:
             ythrow yexception() << "wrong '--node-kind' value '" << NodeKind << "', only '" << NODE_KIND_YDB << "' or '" << NODE_KIND_YQ << "' is allowed";
         }
 
-        if (TinyMode) {
-            RunConfig.ServicesMask.SetTinyMode();
-        }
-
         RunConfig.Labels["node_id"] = ToString(NodeId);
         RunConfig.Labels["node_host"] = FQDNHostName();
         RunConfig.Labels["tenant"] = TenantName;
@@ -414,7 +404,7 @@ protected:
         RunConfig.Labels["dynamic"] = ToString(NodeBrokerAddresses.empty() ? "false" : "true");
 
         for (const auto& [name, value] : RunConfig.Labels) {
-            auto *label = AppConfig.AddLabels();
+            auto *label = RunConfig.AppConfig.AddLabels();
             label->SetName(name);
             label->SetValue(value);
         }
@@ -503,6 +493,7 @@ protected:
         OPTION("kqp-file", KQPConfig);
         OPTION("incrhuge-file", IncrHugeConfig);
         OPTION("alloc-file", AllocatorConfig);
+        OPTION("yq-file", FederatedQueryConfig); // TODO: remove after migration (YQ-1467)
         OPTION("fq-file", FederatedQueryConfig);
         OPTION(nullptr, TracingConfig);
         OPTION(nullptr, FailureInjectionConfig);
@@ -594,7 +585,7 @@ protected:
         if (!AppConfig.HasRestartsCountConfig() && RestartsCountFile)
             AppConfig.MutableRestartsCountConfig()->SetRestartsCountFile(RestartsCountFile);
 
-        // Ports and node type are always applied (even if config was loaded from CMS).
+        // Ports and node type are always applied (event if config was loaded from CMS).
         if (MonitoringPort)
             AppConfig.MutableMonitoringConfig()->SetMonitoringPort(MonitoringPort);
         if (MonitoringAddress)
@@ -608,7 +599,7 @@ protected:
             }
         }
         if (SqsHttpPort)
-            AppConfig.MutableSqsConfig()->MutableHttpServerConfig()->SetPort(SqsHttpPort);
+            RunConfig.AppConfig.MutableSqsConfig()->MutableHttpServerConfig()->SetPort(SqsHttpPort);
         if (GRpcPort) {
             auto& conf = *AppConfig.MutableGRpcConfig();
             conf.SetStartGRpcProxy(true);
@@ -742,13 +733,13 @@ protected:
             messageBusConfig->SetTracePath(TracePath);
         }
 
-        if (AppConfig.HasDynamicNameserviceConfig()) {
-            bool isDynamic = RunConfig.NodeId > AppConfig.GetDynamicNameserviceConfig().GetMaxStaticNodeId();
+        if (RunConfig.AppConfig.HasDynamicNameserviceConfig()) {
+            bool isDynamic = RunConfig.NodeId > RunConfig.AppConfig.GetDynamicNameserviceConfig().GetMaxStaticNodeId();
             RunConfig.Labels["dynamic"] = ToString(isDynamic ? "true" : "false");
             AddLabelToAppConfig("node_id", RunConfig.Labels["node_id"]);
         }
 
-        RunConfig.ClusterName = AppConfig.GetNameserviceConfig().GetClusterUUID();
+        RunConfig.ClusterName = RunConfig.AppConfig.GetNameserviceConfig().GetClusterUUID();
     }
 
     inline bool LoadConfigFromCMS() {
@@ -799,7 +790,10 @@ protected:
                             result.GetYamlConfig(),
                             result.GetVolatileYamlConfigs(),
                             RunConfig.Labels,
-                            yamlConfig);
+                            yamlConfig,
+                            nullptr,
+                            nullptr,
+                            true);
                     }
 
                     RunConfig.InitialCmsConfig.CopyFrom(appConfig);
@@ -867,6 +861,10 @@ protected:
                 }
             }
         }
+        // TODO: remove after migration (YQ-1467)
+        if (AppConfig.HasYandexQueryConfig()) {
+            AppConfig.MutableFederatedQueryConfig()->MergeFrom(AppConfig.GetYandexQueryConfig());
+        }
     }
 
     inline bool LoadBootstrapConfig(TConfig& config) {
@@ -874,7 +872,7 @@ protected:
         for (const TString& path : config.ParseResult->GetFreeArgs()) {
             NKikimrConfig::TAppConfig parsedConfig;
             const bool result = ParsePBFromFile(path, &parsedConfig);
-            Y_ABORT_UNLESS(result);
+            Y_VERIFY(result);
             BaseConfig.MergeFrom(parsedConfig);
             res = true;
         }
@@ -914,7 +912,7 @@ protected:
     }
 
     bool GetCachedConfig(NKikimrConfig::TAppConfig &appConfig) {
-        Y_DEBUG_ABORT_UNLESS(RunConfig.PathToConfigCacheFile, "GetCachedConfig called with a cms config cache file set");
+        Y_VERIFY_DEBUG(RunConfig.PathToConfigCacheFile, "GetCachedConfig called with a cms config cache file set");
 
         try {
             auto cacheFile = TFileInput(RunConfig.PathToConfigCacheFile);
@@ -936,7 +934,16 @@ protected:
         }
     }
 
-    TNodeLocation CreateNodeLocation() {
+    THolder<NClient::TRegistrationResult> TryToRegisterDynamicNode(
+            const TString &addr,
+            const TString &domainName,
+            const TString &nodeHost,
+            const TString &nodeAddress,
+            const TString &nodeResolveHost,
+        const TMaybe<TString>& path) {
+        NClient::TKikimr kikimr(GetKikimr(addr));
+        auto registrant = kikimr.GetNodeRegistrant();
+
         NActorsInterconnect::TNodeLocation location;
         location.SetDataCenter(DataCenter);
         location.SetRack(Rack);
@@ -949,75 +956,8 @@ protected:
         legacy.SetRackNum(RackFromString(Rack));
         legacy.SetBodyNum(Body);
         loc.InheritLegacyValue(TNodeLocation(legacy));
-        return loc;
-    }
 
-    NYdb::NDiscovery::TNodeRegistrationSettings GetNodeRegistrationSettings(const TString &domainName,
-            const TString &nodeHost,
-            const TString &nodeAddress,
-            const TString &nodeResolveHost,
-            const TMaybe<TString>& path) {
-        NYdb::NDiscovery::TNodeRegistrationSettings settings;
-        settings.Host(nodeHost);
-        settings.Port(InterconnectPort);
-        settings.ResolveHost(nodeResolveHost);
-        settings.Address(nodeAddress);
-        settings.DomainPath(domainName);
-        settings.FixedNodeId(FixedNodeID);
-        if (path) {
-            settings.Path(*path);
-        }
-
-        auto loc = CreateNodeLocation();
-        NActorsInterconnect::TNodeLocation tmpLocation;
-        loc.Serialize(&tmpLocation, false);
-
-        NYdb::NDiscovery::TNodeLocation settingLocation;
-        CopyNodeLocation(&settingLocation, tmpLocation);
-        settings.Location(settingLocation);
-        return settings;
-    }
-
-    NYdb::NDiscovery::TNodeRegistrationResult TryToRegisterDynamicNodeViaDiscoveryService(
-            const TString &addr,
-            const TString &domainName,
-            const TString &nodeHost,
-            const TString &nodeAddress,
-            const TString &nodeResolveHost,
-            const TMaybe<TString>& path) {
-        TCommandConfig::TServerEndpoint endpoint = TCommandConfig::ParseServerAddress(addr);
-        NYdb::TDriverConfig config;
-        if (endpoint.EnableSsl.Defined()) {
-            if (PathToGrpcCaFile) {
-                config.UseSecureConnection(ReadFromFile(PathToGrpcCaFile, "CA certificates").c_str());
-            }
-            if (PathToGrpcCertFile && PathToGrpcPrivateKeyFile) {
-                auto certificate = ReadFromFile(PathToGrpcCertFile, "Client certificates");
-                auto privateKey = ReadFromFile(PathToGrpcPrivateKeyFile, "Client certificates key");
-                config.UseClientCertificate(certificate.c_str(), privateKey.c_str());
-            }
-        }
-        config.SetAuthToken(BUILTIN_ACL_ROOT);
-        config.SetEndpoint(endpoint.Address);
-        auto connection = NYdb::TDriver(config);
-
-        auto client = NYdb::NDiscovery::TDiscoveryClient(connection);
-        NYdb::NDiscovery::TNodeRegistrationResult result = client.NodeRegistration(GetNodeRegistrationSettings(domainName, nodeHost, nodeAddress, nodeResolveHost, path)).GetValueSync();
-        connection.Stop(true);
-        return result;
-    }
-
-    THolder<NClient::TRegistrationResult> TryToRegisterDynamicNodeViaLegacyService(
-            const TString &addr,
-            const TString &domainName,
-            const TString &nodeHost,
-            const TString &nodeAddress,
-            const TString &nodeResolveHost,
-        const TMaybe<TString>& path) {
-        NClient::TKikimr kikimr(GetKikimr(addr));
-        auto registrant = kikimr.GetNodeRegistrant();
-
-        auto loc = CreateNodeLocation();
+        Cout << "Trying to register at " << addr << Endl;
 
         return MakeHolder<NClient::TRegistrationResult>
             (registrant.SyncRegisterNode(ToString(domainName),
@@ -1036,8 +976,8 @@ protected:
                 addrs.push_back(addr);
             }
         } else {
-            Y_ABORT_UNLESS(NodeBrokerPort);
-            for (auto &node : AppConfig.MutableNameserviceConfig()->GetNode()) {
+            Y_VERIFY(NodeBrokerPort);
+            for (auto &node : RunConfig.AppConfig.MutableNameserviceConfig()->GetNode()) {
                 addrs.emplace_back(TStringBuilder() << (NodeBrokerUseTls ? "grpcs://" : "") << node.GetHost() << ':' << NodeBrokerPort);
             }
         }
@@ -1061,171 +1001,9 @@ protected:
         return {};
     }
 
-    NYdb::NDiscovery::TNodeRegistrationResult RegisterDynamicNodeViaDiscoveryService(const TVector<TString>& addrs, const TString& domainName) {
-        NYdb::NDiscovery::TNodeRegistrationResult result;
-        const size_t maxNumberRecivedCallUnimplemented = 5;
-        size_t currentNumberRecivedCallUnimplemented = 0;
-        while (!result.IsSuccess() && currentNumberRecivedCallUnimplemented < maxNumberRecivedCallUnimplemented) {
-            for (const auto& addr : addrs) {
-                result = TryToRegisterDynamicNodeViaDiscoveryService(addr, domainName, NodeHost, NodeAddress, NodeResolveHost, GetSchemePath());
-                if (result.IsSuccess()) {
-                    Cout << "Success. Registered via discovery service as " << result.GetNodeId() << Endl;
-                    break;
-                }
-                Cerr << "Registration error: " << static_cast<NYdb::TStatus>(result) << Endl;
-            }
-            if (!result.IsSuccess()) {
-                Sleep(TDuration::Seconds(1));
-                if (result.GetStatus() == NYdb::EStatus::CLIENT_CALL_UNIMPLEMENTED) {
-                    currentNumberRecivedCallUnimplemented++;
-                }
-            }
-        }
-        return result;
-    }
-
-    void ProcessRegistrationDynamicNodeResult(const NYdb::NDiscovery::TNodeRegistrationResult& result) {
-        RunConfig.NodeId = result.GetNodeId();
-        NActors::TScopeId scopeId;
-        if (result.HasScopeTabletId() && result.HasScopePathId()) {
-            scopeId.first = result.GetScopeTabletId();
-            scopeId.second = result.GetScopePathId();
-        }
-        RunConfig.ScopeId = TKikimrScopeId(scopeId);
-
-        auto &nsConfig = *AppConfig.MutableNameserviceConfig();
-        nsConfig.ClearNode();
-
-        auto &dnConfig = *AppConfig.MutableDynamicNodeConfig();
-        for (auto &node : result.GetNodes()) {
-            if (node.NodeId == result.GetNodeId()) {
-                auto nodeInfo = dnConfig.MutableNodeInfo();
-                nodeInfo->SetNodeId(node.NodeId);
-                nodeInfo->SetHost(node.Host);
-                nodeInfo->SetPort(node.Port);
-                nodeInfo->SetResolveHost(node.ResolveHost);
-                nodeInfo->SetAddress(node.Address);
-                nodeInfo->SetExpire(node.Expire);
-                CopyNodeLocation(nodeInfo->MutableLocation(), node.Location);
-            } else {
-                auto &info = *nsConfig.AddNode();
-                info.SetNodeId(node.NodeId);
-                info.SetAddress(node.Address);
-                info.SetPort(node.Port);
-                info.SetHost(node.Host);
-                info.SetInterconnectHost(node.ResolveHost);
-                CopyNodeLocation(info.MutableLocation(), node.Location);
-            }
-        }
-    }
-
-    static void CopyNodeLocation(NActorsInterconnect::TNodeLocation* dst, const NYdb::NDiscovery::TNodeLocation& src) {
-        if (src.DataCenterNum) {
-            dst->SetDataCenterNum(src.DataCenterNum.value());
-        }
-        if (src.RoomNum) {
-            dst->SetRoomNum(src.RoomNum.value());
-        }
-        if (src.RackNum) {
-            dst->SetRackNum(src.RackNum.value());
-        }
-        if (src.BodyNum) {
-            dst->SetBodyNum(src.BodyNum.value());
-        }
-        if (src.Body) {
-            dst->SetBody(src.Body.value());
-        }
-        if (src.DataCenter) {
-            dst->SetDataCenter(src.DataCenter.value());
-        }
-        if (src.Module) {
-            dst->SetModule(src.Module.value());
-        }
-        if (src.Rack) {
-            dst->SetRack(src.Rack.value());
-        }
-        if (src.Unit) {
-            dst->SetUnit(src.Unit.value());
-        }
-    }
-
-    static void CopyNodeLocation(NYdb::NDiscovery::TNodeLocation* dst, const NActorsInterconnect::TNodeLocation& src) {
-        if (src.HasDataCenterNum()) {
-            dst->DataCenterNum = src.GetDataCenterNum();
-        }
-        if (src.HasRoomNum()) {
-            dst->RoomNum = src.GetRoomNum();
-        }
-        if (src.HasRackNum()) {
-            dst->RackNum = src.GetRackNum();
-        }
-        if (src.HasBodyNum()) {
-            dst->BodyNum = src.GetBodyNum();
-        }
-        if (src.HasBody()) {
-            dst->Body = src.GetBody();
-        }
-        if (src.HasDataCenter()) {
-            dst->DataCenter = src.GetDataCenter();
-        }
-        if (src.HasModule()) {
-            dst->Module = src.GetModule();
-        }
-        if (src.HasRack()) {
-            dst->Rack = src.GetRack();
-        }
-        if (src.HasUnit()) {
-            dst->Unit = src.GetUnit();
-        }
-    }
-
-    THolder<NClient::TRegistrationResult> RegisterDynamicNodeViaLegacyService(const TVector<TString>& addrs, const TString& domainName) {
-        THolder<NClient::TRegistrationResult> result;
-        while (!result || !result->IsSuccess()) {
-            for (const auto& addr : addrs) {
-                result = TryToRegisterDynamicNodeViaLegacyService(addr, domainName, NodeHost, NodeAddress, NodeResolveHost, GetSchemePath());
-                if (result->IsSuccess()) {
-                    Cout << "Success. Registered via legacy service as " << result->GetNodeId() << Endl;
-                    break;
-                }
-                Cerr << "Registration error: " << result->GetErrorMessage() << Endl;
-            }
-            if (!result || !result->IsSuccess())
-                Sleep(TDuration::Seconds(1));
-        }
-        Y_ABORT_UNLESS(result);
-
-        if (!result->IsSuccess())
-            ythrow yexception() << "Cannot register dynamic node: " << result->GetErrorMessage();
-
-        return result;
-    }
-
-    void ProcessRegistrationDynamicNodeResult(const THolder<NClient::TRegistrationResult>& result) {
-        RunConfig.NodeId = result->GetNodeId();
-        RunConfig.ScopeId = TKikimrScopeId(result->GetScopeId());
-
-        auto &nsConfig = *AppConfig.MutableNameserviceConfig();
-        nsConfig.ClearNode();
-
-        auto &dnConfig = *AppConfig.MutableDynamicNodeConfig();
-        for (auto &node : result->Record().GetNodes()) {
-            if (node.GetNodeId() == result->GetNodeId()) {
-                dnConfig.MutableNodeInfo()->CopyFrom(node);
-            } else {
-                auto &info = *nsConfig.AddNode();
-                info.SetNodeId(node.GetNodeId());
-                info.SetAddress(node.GetAddress());
-                info.SetPort(node.GetPort());
-                info.SetHost(node.GetHost());
-                info.SetInterconnectHost(node.GetResolveHost());
-                info.MutableLocation()->CopyFrom(node.GetLocation());
-            }
-        }
-    }
-
     void RegisterDynamicNode() {
         TVector<TString> addrs;
+        auto &dnConfig = *RunConfig.AppConfig.MutableDynamicNodeConfig();
 
         FillClusterEndpoints(addrs);
 
@@ -1242,12 +1020,42 @@ protected:
         if (!NodeResolveHost)
             NodeResolveHost = NodeHost;
 
-        NYdb::NDiscovery::TNodeRegistrationResult result = RegisterDynamicNodeViaDiscoveryService(addrs, domainName);
-        if (result.IsSuccess()) {
-            ProcessRegistrationDynamicNodeResult(result);
-        } else {
-            THolder<NClient::TRegistrationResult> result = RegisterDynamicNodeViaLegacyService(addrs, domainName);
-            ProcessRegistrationDynamicNodeResult(result);
+        THolder<NClient::TRegistrationResult> result;
+        while (!result || !result->IsSuccess()) {
+            for (auto addr : addrs) {
+                result = TryToRegisterDynamicNode(addr, domainName, NodeHost, NodeAddress, NodeResolveHost, GetSchemePath());
+                if (result->IsSuccess()) {
+                    Cout << "Success. Registered as " << result->GetNodeId() << Endl;
+                    break;
+                }
+                Cerr << "Registration error: " << result->GetErrorMessage() << Endl;
+            }
+            if (!result || !result->IsSuccess())
+                Sleep(TDuration::Seconds(1));
+        }
+        Y_VERIFY(result);
+
+        if (!result->IsSuccess())
+            ythrow yexception() << "Cannot register dynamic node: " << result->GetErrorMessage();
+
+        RunConfig.NodeId = result->GetNodeId();
+        RunConfig.ScopeId = TKikimrScopeId(result->GetScopeId());
+        auto &nsConfig = *RunConfig.AppConfig.MutableNameserviceConfig();
+
+        nsConfig.ClearNode();
+
+        for (auto &node : result->Record().GetNodes()) {
+            if (node.GetNodeId() == result->GetNodeId()) {
+                dnConfig.MutableNodeInfo()->CopyFrom(node);
+            } else {
+                auto &info = *nsConfig.AddNode();
+                info.SetNodeId(node.GetNodeId());
+                info.SetAddress(node.GetAddress());
+                info.SetPort(node.GetPort());
+                info.SetHost(node.GetHost());
+                info.SetInterconnectHost(node.GetResolveHost());
+                info.MutableLocation()->CopyFrom(node.GetLocation());
+            }
         }
     }
 
@@ -1263,7 +1071,7 @@ protected:
     }
 
     bool SaveConfigForNodeToCache(const NKikimrConfig::TAppConfig &appConfig) {
-        Y_DEBUG_ABORT_UNLESS(RunConfig.PathToConfigCacheFile, "SaveConfigForNodeToCache called without a cms config cache file set");
+        Y_VERIFY_DEBUG(RunConfig.PathToConfigCacheFile, "SaveConfigForNodeToCache called without a cms config cache file set");
 
         // Ensure "atomicity" by writing to temp file and renaming it
         const TString pathToTempFile = RunConfig.PathToConfigCacheFile + ".tmp";
@@ -1318,7 +1126,10 @@ protected:
                 result.GetYamlConfig(),
                 result.GetVolatileYamlConfigs(),
                 RunConfig.Labels,
-                yamlConfig);
+                yamlConfig,
+                nullptr,
+                nullptr,
+                true);
         }
 
         RunConfig.InitialCmsConfig.CopyFrom(result.GetConfig());
@@ -1392,7 +1203,7 @@ protected:
 private:
     NClient::TKikimr GetKikimr(const TString& addr) {
         TCommandConfig::TServerEndpoint endpoint = TCommandConfig::ParseServerAddress(addr);
-        NYdbGrpc::TGRpcClientConfig grpcConfig(endpoint.Address, TDuration::Seconds(5));
+        NGrpc::TGRpcClientConfig grpcConfig(endpoint.Address, TDuration::Seconds(5));
         grpcConfig.LoadBalancingPolicy = "round_robin";
         if (endpoint.EnableSsl.Defined()) {
             grpcConfig.EnableSsl = endpoint.EnableSsl.GetRef();
@@ -1422,11 +1233,11 @@ public:
     }
 
     virtual int Run(TConfig& config) override {
-        Y_ABORT_UNLESS(config.ParseResult->Has("dump-config-to"));
+        Y_VERIFY(config.ParseResult->Has("dump-config-to"));
 
         TString proto;
         const bool status = google::protobuf::TextFormat::PrintToString(AppConfig, &proto);
-        Y_ABORT_UNLESS(status);
+        Y_VERIFY(status);
         TString path = config.ParseResult->Get("dump-config-to");
         TFileOutput file(path);
         file << proto;
@@ -1443,7 +1254,7 @@ public:
     {}
 
     virtual int Run(TConfig &/*config*/) override {
-        Y_ABORT_UNLESS(RunConfig.NodeId);
+        Y_VERIFY(RunConfig.NodeId);
         return MainRun(RunConfig, Factories);
     }
 

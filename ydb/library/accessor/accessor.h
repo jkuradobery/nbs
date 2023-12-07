@@ -18,9 +18,6 @@ public:\
         name ## Flag = value;\
         return *this;\
     }\
-    bool Get##name() const noexcept {\
-        return name ## Flag;\
-    }\
 private:
 
 namespace NYDBAccessor {

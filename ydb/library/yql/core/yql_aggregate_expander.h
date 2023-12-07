@@ -37,9 +37,8 @@ public:
             .Order = VoidNode
         };
     }
-
+    
     TExprNode::TPtr ExpandAggregate();
-    static TExprNode::TPtr CountAggregateRewrite(const NNodes::TCoAggregate& node, TExprContext& ctx, bool useBlocks);
 
 private:
     using TIdxSet = std::set<ui32>;
@@ -58,7 +57,7 @@ private:
     // Partial aggregate generation
     TExprNode::TPtr GeneratePartialAggregate(const TExprNode::TPtr keyExtractor, const TVector<const TTypeAnnotationNode*>& keyItemTypes, bool needPickle);
     TExprNode::TPtr GeneratePartialAggregateForNonDistinct(const TExprNode::TPtr& keyExtractor, const TExprNode::TPtr& pickleTypeNode);
-
+    
     TExprNode::TPtr GenerateDistinctGrouper(const TExprNode::TPtr distinctField,
         const TVector<const TTypeAnnotationNode*>& keyItemTypes, bool needDistinctPickle);
 
@@ -84,7 +83,7 @@ private:
     TExprNode::TPtr TryGenerateBlockMergeFinalizeHashed();
     TExprNode::TPtr TryGenerateBlockCombine();
     TExprNode::TPtr TryGenerateBlockMergeFinalize();
-    TExprNode::TPtr MakeInputBlocks(const TExprNode::TPtr& stream, TExprNode::TListType& keyIdxs,
+    TExprNode::TPtr MakeInputBlocks(const TExprNode::TPtr& streamArg, TExprNode::TListType& keyIdxs,
         TVector<TString>& outputColumns, TExprNode::TListType& aggs, bool overState, bool many, ui32* streamIdxColumn = nullptr);
 
 private:
@@ -136,6 +135,8 @@ inline TExprNode::TPtr ExpandAggregatePeepholeImpl(const TExprNode::TPtr& node, 
     return aggExpander.ExpandAggregate();
 }
 
-TExprNode::TPtr ExpandAggregatePeephole(const TExprNode::TPtr& node, TExprContext& ctx, TTypeAnnotationContext& typesCtx);
+inline TExprNode::TPtr ExpandAggregatePeephole(const TExprNode::TPtr& node, TExprContext& ctx, TTypeAnnotationContext& typesCtx) {
+    return ExpandAggregatePeepholeImpl(node, ctx, typesCtx, false, typesCtx.UseBlocks);
+}
 
 }

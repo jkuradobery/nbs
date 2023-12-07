@@ -17,7 +17,8 @@ public:
 
     TTxType GetTxType() const override { return TXTYPE_REMOVE_REQUEST; }
 
-    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override {
+    bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemoveRequest Execute");
 
         NIceDb::TNiceDb db(txc.DB);
@@ -31,15 +32,16 @@ public:
         return true;
     }
 
-    void Complete(const TActorContext &ctx) override {
+    void Complete(const TActorContext &ctx) override
+    {
         LOG_DEBUG(ctx, NKikimrServices::CMS, "TTxRemoveRequest Complete");
 
         if (Response) {
-            Y_ABORT_UNLESS(Request);
+            Y_VERIFY(Request);
             Self->Reply(Request.Get(), Response, ctx);
         }
 
-        Self->RemoveEmptyTasks(ctx);
+        Self->RemoveEmptyWalleTasks(ctx);
     }
 
 private:
@@ -48,7 +50,8 @@ private:
     TString Id;
 };
 
-ITransaction *TCms::CreateTxRemoveRequest(const TString &id, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp) {
+ITransaction* TCms::CreateTxRemoveRequest(const TString &id, THolder<IEventBase> req, TAutoPtr<IEventHandle> resp)
+{
     return new TTxRemoveRequest(this, id, std::move(req), std::move(resp));
 }
 

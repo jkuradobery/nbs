@@ -1,9 +1,8 @@
 #include "service_table.h"
 #include <ydb/core/grpc_services/base/base.h>
 #include "rpc_kqp_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 #include "service_table.h"
-#include "audit_dml_operations.h"
 
 #include <ydb/core/grpc_services/base/base.h>
 #include <ydb/public/api/protos/ydb_scheme.pb.h>
@@ -11,8 +10,6 @@
 #include <ydb/core/protos/console_config.pb.h>
 #include <ydb/core/ydb_convert/ydb_convert.h>
 #include <ydb/public/lib/operation_id/operation_id.h>
-
-#include <ydb/core/kqp/executer_actor/kqp_executer.h>
 
 #include <ydb/library/yql/public/issue/yql_issue.h>
 
@@ -44,11 +41,10 @@ public:
         Proceed(ctx);
     }
 
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
             HFunc(NKqp::TEvKqp::TEvQueryResponse, Handle);
-            IgnoreFunc(NKqp::TEvKqpExecuter::TEvExecuterProgress);
-            default: TBase::StateWork(ev);
+            default: TBase::StateWork(ev, ctx);
         }
     }
 
@@ -57,10 +53,10 @@ public:
         const auto traceId = Request_->GetTraceId();
         const auto requestType = Request_->GetRequestType();
 
-        AuditContextAppend(Request_.get(), *req);
+        NYql::TIssues issues;
 
-        if (!CheckSession(req->session_id(), Request_.get())) {
-            return Reply(Ydb::StatusIds::BAD_REQUEST, ctx);
+        if (!CheckSession(req->session_id(), issues)) {
+            return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
         }
 
         if (!req->has_tx_control()) {
@@ -92,7 +88,7 @@ public:
         NKikimrKqp::EQueryType queryType;
 
         switch (query.query_case()) {
-            case Ydb::Table::Query::kYqlText: {
+            case Query::kYqlText: {
                 NYql::TIssues issues;
                 if (!CheckQuery(query.yql_text(), issues)) {
                     return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
@@ -103,7 +99,7 @@ public:
                 break;
             }
 
-            case Ydb::Table::Query::kId: {
+            case Query::kId: {
                 if (query.id().empty()) {
                     NYql::TIssues issues;
                     issues.AddIssue(MakeIssue(NKikimrIssues::TIssuesIds::DEFAULT_ERROR, "Empty query id"));
@@ -116,6 +112,7 @@ public:
                     NYql::TIssues issues;
                     issues.AddIssue(NYql::ExceptionToIssue(ex));
                     return Reply(Ydb::StatusIds::BAD_REQUEST, issues, ctx);
+                    return;
                 }
 
                 queryAction = NKikimrKqp::QUERY_ACTION_EXECUTE_PREPARED;
@@ -131,13 +128,13 @@ public:
         }
 
         auto ev = MakeHolder<NKqp::TEvKqp::TEvQueryRequest>(
-            queryAction,
-            queryType,
-            SelfId(),
             Request_,
             req->session_id(),
+            SelfId(),
             std::move(yqlText),
             std::move(queryId),
+            queryAction,
+            queryType,
             &req->tx_control(),
             &req->parameters(),
             req->collect_stats(),
@@ -168,7 +165,7 @@ public:
     }
 
     void Handle(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
-        auto& record = ev->Get()->Record.GetRef();
+        const auto& record = ev->Get()->Record.GetRef();
         SetCost(record.GetConsumedRu());
         AddServerHintsIfAny(record);
 
@@ -179,11 +176,7 @@ public:
 
             try {
                 if (kqpResponse.GetYdbResults().size()) {
-                    Y_DEBUG_ABORT_UNLESS(!kqpResponse.GetYdbResults().GetArena() ||
-                        queryResult->mutable_result_sets()->GetArena() == kqpResponse.GetYdbResults().GetArena());
-                    // https://protobuf.dev/reference/cpp/arenas/#swap
-                    // Actualy will be copy in case pf remote execution
-                    queryResult->mutable_result_sets()->Swap(record.MutableResponse()->MutableYdbResults());
+                    queryResult->mutable_result_sets()->CopyFrom(kqpResponse.GetYdbResults());
                 } else {
                     NKqp::ConvertKqpQueryResultsToDbResult(kqpResponse, queryResult);
                 }
@@ -193,8 +186,10 @@ public:
                 }
                 if (!kqpResponse.GetPreparedQuery().empty()) {
                     auto& queryMeta = *queryResult->mutable_query_meta();
-
-                    queryMeta.set_id(FormatPreparedQueryIdCompat(kqpResponse.GetPreparedQuery()));
+                    Ydb::TOperationId opId;
+                    opId.SetKind(TOperationId::PREPARED_QUERY_ID);
+                    AddOptionalValue(opId, "id", kqpResponse.GetPreparedQuery());
+                    queryMeta.set_id(ProtoToString(opId));
 
                     const auto& queryParameters = kqpResponse.GetQueryParameters();
                     for (const auto& queryParameter: queryParameters) {
@@ -209,8 +204,6 @@ public:
                 return Reply(Ydb::StatusIds::INTERNAL_ERROR, issues, ctx);
             }
 
-            AuditContextAppend(Request_.get(), *GetProtoRequest(), *queryResult);
-
             ReplyWithResult(Ydb::StatusIds::SUCCESS, issueMessage, *queryResult, ctx);
         } else {
             return OnQueryResponseErrorWithTxMeta(record, ctx);
@@ -218,8 +211,8 @@ public:
     }
 };
 
-void DoExecuteDataQueryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& provider) {
-    provider.RegisterActor(new TExecuteDataQueryRPC(p.release()));
+void DoExecuteDataQueryRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TExecuteDataQueryRPC(p.release()));
 }
 
 template<>

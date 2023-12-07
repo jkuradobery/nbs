@@ -6,7 +6,6 @@ PEERDIR(
     library/cpp/colorizer
     library/cpp/dbg_output
     library/cpp/diff
-    library/cpp/json
     library/cpp/json/writer
     library/cpp/testing/common
     library/cpp/testing/hook
@@ -15,7 +14,6 @@ PEERDIR(
 SRCS(
     gtest.cpp
     checks.cpp
-    junit.cpp
     plugin.cpp
     registar.cpp
     tests_data.cpp

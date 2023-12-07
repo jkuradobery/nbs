@@ -7,6 +7,7 @@ SRCS(
     flat_comp.cpp
     flat_comp_create.cpp
     flat_comp_gen.cpp
+    flat_comp_shard.cpp
     flat_cxx_database.h
     flat_database.cpp
     flat_database.h
@@ -44,13 +45,13 @@ SRCS(
     flat_page_label.cpp
     flat_part_dump.cpp
     flat_part_iter_multi.cpp
-    flat_part_index_iter_create.cpp
     flat_part_loader.cpp
     flat_part_overlay.cpp
     flat_part_outset.cpp
     flat_part_slice.cpp
     flat_range_cache.cpp
     flat_row_versions.cpp
+    flat_stat_part.cpp
     flat_stat_part.h
     flat_stat_table.h
     flat_stat_table.cpp
@@ -65,7 +66,6 @@ SRCS(
     shared_handle.cpp
     shared_sausagecache.cpp
     shared_sausagecache.h
-    shared_cache_memtable.h
     tablet_flat_executor.h
     tablet_flat_executor.cpp
     tablet_flat_executed.h
@@ -74,6 +74,8 @@ SRCS(
 )
 
 GENERATE_ENUM_SERIALIZATION(flat_comp_gen.h)
+
+GENERATE_ENUM_SERIALIZATION(flat_comp_shard.h)
 
 GENERATE_ENUM_SERIALIZATION(flat_part_loader.h)
 
@@ -89,7 +91,6 @@ ENDIF()
 
 PEERDIR(
     contrib/libs/protobuf
-    ydb/library/actors/util
     library/cpp/containers/absl_flat_hash
     library/cpp/containers/intrusive_rb_tree
     library/cpp/containers/stack_vector
@@ -113,7 +114,6 @@ END()
 
 RECURSE_FOR_TESTS(
     test
-    benchmark
     ut
     ut_large
     ut_pg

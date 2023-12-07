@@ -9,7 +9,6 @@ SIZE(MEDIUM)
 PEERDIR(
     library/cpp/getopt
     library/cpp/svnversion
-    ydb/library/actors/helpers
     ydb/core/base
     ydb/core/mind
     ydb/core/mind/hive
@@ -19,7 +18,6 @@ PEERDIR(
 YQL_LAST_ABI_VERSION()
 
 SRCS(
-    object_distribution_ut.cpp
     sequencer_ut.cpp
     storage_pool_info_ut.cpp
     hive_ut.cpp

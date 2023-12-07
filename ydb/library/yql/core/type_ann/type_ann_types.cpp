@@ -2,7 +2,6 @@
 #include "type_ann_expr.h"
 #include "type_ann_impl.h"
 #include "type_ann_types.h"
-#include "ydb/library/yql/core/yql_opt_utils.h"
 
 namespace NYql {
 namespace NTypeAnnImpl {
@@ -300,6 +299,27 @@ namespace NTypeAnnImpl {
         }
 
         auto type = ctx.Expr.MakeType<TBlockExprType>(itemType);
+        input->SetTypeAnn(ctx.Expr.MakeType<TTypeExprType>(type));
+        return IGraphTransformer::TStatus::Ok;
+    }
+
+    template <>
+    IGraphTransformer::TStatus TypeWrapper<ETypeAnnotationKind::ChunkedBlock>(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
+        Y_UNUSED(output);
+        if (!EnsureArgsCount(*input, 1, ctx.Expr)) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        if (auto status = EnsureTypeRewrite(input->HeadRef(), ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
+            return status;
+        }
+
+        auto itemType = input->Child(0)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
+        if (!EnsureInspectableType(input->Child(0)->Pos(), *itemType, ctx.Expr)) {
+            return IGraphTransformer::TStatus::Error;
+        }
+
+        auto type = ctx.Expr.MakeType<TChunkedBlockExprType>(itemType);
         input->SetTypeAnn(ctx.Expr.MakeType<TTypeExprType>(type));
         return IGraphTransformer::TStatus::Ok;
     }
@@ -937,7 +957,7 @@ namespace NTypeAnnImpl {
             TAstNode::NewList(inputPos, pool,
                 TAstNode::NewLiteralAtom(inputPos, TStringBuf("return"), pool), parsedType));
         TExprNode::TPtr exprRoot;
-        if (!CompileExpr(*astRoot, exprRoot, ctx.Expr, nullptr, nullptr)) {
+        if (!CompileExpr(*astRoot, exprRoot, ctx.Expr, nullptr)) {
             return IGraphTransformer::TStatus::Error;
         }
 
@@ -965,34 +985,6 @@ namespace NTypeAnnImpl {
             }
         }
 
-        input->SetTypeAnn(ctx.Expr.MakeType<TDataExprType>(EDataSlot::String));
-        return IGraphTransformer::TStatus::Ok;
-    }
-
-    IGraphTransformer::TStatus FormatTypeDiffWrapper(const TExprNode::TPtr& input, TExprNode::TPtr& output, TContext& ctx) {
-        Y_UNUSED(output);
-        if (!EnsureArgsCount(*input, 3, ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-
-        auto resType = MakeTypeHandleResourceType(ctx.Expr);
-        if (input->Child(0)->GetTypeAnn() != resType) {
-            if (auto status = EnsureTypeRewrite(input->ChildRef(0), ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
-                return status;
-            }
-        }
-        if (input->Child(1)->GetTypeAnn() != resType) {
-            if (auto status = EnsureTypeRewrite(input->ChildRef(1), ctx.Expr); status != IGraphTransformer::TStatus::Ok) {
-                return status;
-            }
-        }
-        if (!EnsureAtom(*input->Child(2), ctx.Expr)) {
-            return IGraphTransformer::TStatus::Error;
-        }
-        if (!TryFromString<bool>(input->Child(2)->Content())) {
-            ctx.Expr.AddError(TIssue(ctx.Expr.GetPosition(input->ChildPtr(2)->Pos()), TStringBuilder() << "Expected boolean value, but got: " << input->ChildPtr(2)->Content()));
-            return IGraphTransformer::TStatus::Error;
-        }
         input->SetTypeAnn(ctx.Expr.MakeType<TDataExprType>(EDataSlot::String));
         return IGraphTransformer::TStatus::Ok;
     }

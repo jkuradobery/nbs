@@ -3,18 +3,16 @@
 #include "monitorable_actor.h"
 #include "subscriber.h"
 
-#include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
 #include <ydb/core/base/statestorage_impl.h>
 #include <ydb/core/base/tabletid.h>
 #include <ydb/core/protos/scheme_board.pb.h>
-#include <ydb/library/services/services.pb.h>
-#include <ydb/library/yverify_stream/yverify_stream.h>
+#include <ydb/core/protos/services.pb.h>
+#include <ydb/core/util/yverify_stream.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/map.h>
 #include <util/generic/maybe.h>
@@ -651,7 +649,7 @@ class TSubscriber: public TMonitorableActor<TDerived> {
             pathId = TPathId(record.GetPathOwnerId(), record.GetLocalPathId());
         }
 
-        Y_ABORT_UNLESS(path || pathId);
+        Y_VERIFY(path || pathId);
 
         if (!pathId) {
             notify = MakeHolder<TNotify>(path, std::forward<Args>(args)...);
@@ -665,7 +663,7 @@ class TSubscriber: public TMonitorableActor<TDerived> {
     }
 
     TMap<TActorId, TState>::const_iterator SelectStateImpl() const {
-        Y_ABORT_UNLESS(!States.empty());
+        Y_VERIFY(!States.empty());
 
         auto it = States.begin();
         auto newest = it;
@@ -681,18 +679,18 @@ class TSubscriber: public TMonitorableActor<TDerived> {
 
     const TState& SelectState() const {
         auto it = SelectStateImpl();
-        Y_ABORT_UNLESS(it != States.end());
+        Y_VERIFY(it != States.end());
         return it->second;
     }
 
     NKikimrSchemeBoard::TEvNotify& SelectResponse() {
-        Y_ABORT_UNLESS(IsMajorityReached());
+        Y_VERIFY(IsMajorityReached());
 
         auto newest = SelectStateImpl();
-        Y_ABORT_UNLESS(newest != States.end());
+        Y_VERIFY(newest != States.end());
 
         auto it = InitialResponses.find(newest->first);
-        Y_ABORT_UNLESS(it != InitialResponses.end());
+        Y_VERIFY(it != InitialResponses.end());
 
         return it->second;
     }
@@ -713,7 +711,7 @@ class TSubscriber: public TMonitorableActor<TDerived> {
         CurrentSyncRequest = DelayedSyncRequest;
         DelayedSyncRequest = 0;
 
-        Y_ABORT_UNLESS(PendingSync.empty());
+        Y_VERIFY(PendingSync.empty());
         for (const auto& proxy : Proxies) {
             this->Send(proxy, new TSchemeBoardEvents::TEvSyncVersionRequest(Path), 0, CurrentSyncRequest);
             PendingSync.emplace(proxy);
@@ -798,7 +796,7 @@ class TSubscriber: public TMonitorableActor<TDerived> {
             return;
         }
 
-        Y_ABORT_UNLESS(MaybeRunVersionSync());
+        Y_VERIFY(MaybeRunVersionSync());
     }
 
     void Handle(TSchemeBoardEvents::TEvSyncVersionResponse::TPtr& ev) {
@@ -823,7 +821,7 @@ class TSubscriber: public TMonitorableActor<TDerived> {
         }
 
         PendingSync.erase(it);
-        Y_ABORT_UNLESS(!ReceivedSync.contains(ev->Sender));
+        Y_VERIFY(!ReceivedSync.contains(ev->Sender));
         ReceivedSync[ev->Sender] = ev->Get()->Record.GetPartial();
 
         ui32 successes = 0;
@@ -1053,18 +1051,6 @@ public:
 };
 
 } // NSchemeBoard
-
-IActor* CreateSchemeBoardSubscriber(
-    const TActorId& owner,
-    const TString& path
-) {
-    auto& domains = AppData()->DomainsInfo->Domains;
-    Y_ABORT_UNLESS(!domains.empty());
-    auto& domain = domains.begin()->second;
-    ui32 schemeBoardGroup = domain->DefaultSchemeBoardGroup;
-    ui64 domainOwnerId = domain->SchemeRoot;
-    return CreateSchemeBoardSubscriber(owner, path, schemeBoardGroup, domainOwnerId);
-}
 
 IActor* CreateSchemeBoardSubscriber(
     const TActorId& owner,

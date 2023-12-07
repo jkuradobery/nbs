@@ -36,7 +36,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     void DoGenerateGetValue(const TCodegenContext& ctx, Value* pointer, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto valueType = Type::getInt128Ty(context);
         const auto indexType = Type::getInt32Ty(context);
 
@@ -47,7 +47,7 @@ public:
 
         const auto none = BasicBlock::Create(context, "none", ctx.Func);
 
-        if constexpr (IsOptional) {
+        if (IsOptional) {
             const auto good = BasicBlock::Create(context, "good", ctx.Func);
 
             BranchInst::Create(none, good, IsEmpty(var, block), block);
@@ -112,7 +112,7 @@ public:
         block = box;
         CallBoxedValueVirtualMethod<NUdf::TBoxedValueAccessor::EMethod::GetVariantItem>(pointer, var, ctx.Codegen, block);
 
-        const auto load = new LoadInst(valueType, pointer, "load", block);
+        const auto load = new LoadInst(pointer, "load", block);
         new StoreInst(MakeOptional(context, load, block), pointer, block);
 
         BranchInst::Create(done, block);

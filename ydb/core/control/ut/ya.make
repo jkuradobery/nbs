@@ -7,16 +7,13 @@ TIMEOUT(600)
 SIZE(MEDIUM)
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect
+    library/cpp/actors/core
+    library/cpp/actors/interconnect
     library/cpp/testing/unittest
     util
     ydb/core/base
     ydb/core/mind
     ydb/core/mon
-    ydb/library/yql/sql/pg_dummy
-    ydb/services/ydb
-    ydb/library/yql/public/udf/service/exception_policy
 )
 
 SRCS(

@@ -23,7 +23,7 @@ namespace {
         bool Used = false;
     };
 
-    IGraphTransformer::TStatus ParseJoinKeys(TExprNode& side, TVector<std::pair<TStringBuf, TStringBuf>>& keys,
+    IGraphTransformer::TStatus ParseJoinKeys(const TExprNode& side, TVector<std::pair<TStringBuf, TStringBuf>>& keys,
         TVector<const TTypeAnnotationNode*>& keyTypes, const TJoinLabels& labels,
         TExprContext& ctx, bool isCross) {
         if (!EnsureTuple(side, ctx)) {
@@ -104,12 +104,12 @@ namespace {
     }
 
     IGraphTransformer::TStatus ParseJoins(const TJoinLabels& labels,
-        TExprNode& joins, TVector<TJoinState>& joinsStates, THashSet<TStringBuf>& scope,
-        TGLobalJoinState& globalState, bool strictKeys, TExprContext& ctx, const TUniqueConstraintNode** unique = nullptr, const TDistinctConstraintNode** distinct = nullptr);
+        const TExprNode& joins, TVector<TJoinState>& joinsStates, THashSet<TStringBuf>& scope,
+        TGLobalJoinState& globalState, bool strictKeys, TExprContext& ctx, const TUniqueConstraintNode** internal = nullptr, const TUniqueConstraintNode** external = nullptr);
 
     IGraphTransformer::TStatus ParseJoinScope(const TJoinLabels& labels,
-        TExprNode& side, TVector<TJoinState>& joinsStates, THashSet<TStringBuf>& scope,
-        TGLobalJoinState& globalState, bool strictKeys, const TUniqueConstraintNode*& unique, const TDistinctConstraintNode*& distinct, TExprContext& ctx) {
+        const TExprNode& side, TVector<TJoinState>& joinsStates, THashSet<TStringBuf>& scope,
+        TGLobalJoinState& globalState, bool strictKeys, const TUniqueConstraintNode*& internal, const TUniqueConstraintNode*& external, TExprContext& ctx) {
         if (side.IsAtom()) {
             const auto label = side.Content();
             const auto input = labels.FindInput(label);
@@ -123,20 +123,10 @@ namespace {
                 scope.insert(x);
             }
 
-            const auto rename = [&](const TPartOfConstraintBase::TPathType& path) -> std::vector<TPartOfConstraintBase::TPathType> {
-                if (path.empty())
-                    return {};
-                auto newPath = path;
-                newPath.front() = ctx.AppendString((*input)->FullName(newPath.front()));
-                return {std::move(newPath)};
-            };
-
             if (const auto u = (*input)->Unique) {
-                unique = u->RenameFields(ctx, rename);
-            }
-
-            if (const auto d = (*input)->Distinct) {
-                distinct = d->RenameFields(ctx, rename);
+                internal = external = u->RenameFields(ctx, [&](const std::string_view& name) -> std::vector<std::string_view> {
+                    return {ctx.AppendString((*input)->FullName(name))};
+                });
             }
 
             return IGraphTransformer::TStatus::Ok;
@@ -149,12 +139,12 @@ namespace {
         }
 
         ++globalState.NestedJoins;
-        return ParseJoins(labels, side, joinsStates, scope, globalState, strictKeys, ctx, &unique, &distinct);
+        return ParseJoins(labels, side, joinsStates, scope, globalState, strictKeys, ctx, &internal, &external);
     }
 
     IGraphTransformer::TStatus ParseJoins(const TJoinLabels& labels,
-        TExprNode& joins, TVector<TJoinState>& joinsStates, THashSet<TStringBuf>& scope,
-        TGLobalJoinState& globalState, bool strictKeys, TExprContext& ctx, const TUniqueConstraintNode** unique, const TDistinctConstraintNode** distinct) {
+        const TExprNode& joins, TVector<TJoinState>& joinsStates, THashSet<TStringBuf>& scope,
+        TGLobalJoinState& globalState, bool strictKeys, TExprContext& ctx, const TUniqueConstraintNode** internal, const TUniqueConstraintNode** external) {
         if (!EnsureTupleSize(joins, 6, ctx)) {
             return IGraphTransformer::TStatus::Error;
         }
@@ -170,16 +160,16 @@ namespace {
         }
 
         THashSet<TStringBuf> myLeftScope;
-        const TUniqueConstraintNode* lUnique = nullptr;
-        const TDistinctConstraintNode* lDistinct = nullptr;
-        if (const auto status = ParseJoinScope(labels, *joins.Child(1), joinsStates, myLeftScope, globalState, strictKeys, lUnique, lDistinct, ctx); status.Level != IGraphTransformer::TStatus::Ok) {
+        const TUniqueConstraintNode* lIntUnique = nullptr;
+        const TUniqueConstraintNode* lExtUnique = nullptr;
+        if (const auto status = ParseJoinScope(labels, *joins.Child(1), joinsStates, myLeftScope, globalState, strictKeys, lIntUnique, lExtUnique, ctx); status.Level != IGraphTransformer::TStatus::Ok) {
             return status;
         }
 
         THashSet<TStringBuf> myRightScope;
-        const TUniqueConstraintNode* rUnique = nullptr;
-        const TDistinctConstraintNode* rDistinct = nullptr;
-        if (const auto status = ParseJoinScope(labels, *joins.Child(2), joinsStates, myRightScope, globalState, strictKeys, rUnique, rDistinct, ctx); status.Level != IGraphTransformer::TStatus::Ok) {
+        const TUniqueConstraintNode* rIntUnique = nullptr;
+        const TUniqueConstraintNode* rExtUnique = nullptr;
+        if (const auto status = ParseJoinScope(labels, *joins.Child(2), joinsStates, myRightScope, globalState, strictKeys, rIntUnique, rExtUnique, ctx); status.Level != IGraphTransformer::TStatus::Ok) {
             return status;
         }
 
@@ -193,8 +183,7 @@ namespace {
         std::vector<std::string_view> lCheck;
         lCheck.reserve(leftKeys.size());
         for (const auto& x : leftKeys) {
-            for (const auto& name : (*labels.FindInput(x.first))->AllNames(x.second))
-                lCheck.emplace_back(ctx.AppendString(name));
+            lCheck.emplace_back(ctx.AppendString((*labels.FindInput(x.first))->FullName(x.second)));
             if (!myLeftScope.contains(x.first)) {
                 ctx.AddError(TIssue(ctx.GetPosition(joins.Pos()),
                     TStringBuilder() << "Correlation name " << x.first << " is out of scope"));
@@ -213,8 +202,7 @@ namespace {
         std::vector<std::string_view> rCheck;
         rCheck.reserve(rightKeys.size());
         for (const auto& x : rightKeys) {
-            for (const auto& name : (*labels.FindInput(x.first))->AllNames(x.second))
-                rCheck.emplace_back(ctx.AppendString(name));
+            rCheck.emplace_back(ctx.AppendString((*labels.FindInput(x.first))->FullName(x.second)));
             if (!myRightScope.contains(x.first)) {
                 ctx.AddError(TIssue(ctx.GetPosition(joins.Pos()),
                     TStringBuilder() << "Correlation name " << x.first << " is out of scope"));
@@ -261,7 +249,7 @@ namespace {
 
         scope.clear();
 
-        const bool singleSide = joinType.Content().ends_with("Only") || joinType.Content().ends_with("Semi");
+        const bool singleSide = joinType.Content().ends_with("Only") ||  joinType.Content().ends_with("Semi");
         const bool rightSide = joinType.Content().starts_with("Right");
         const bool leftSide = joinType.Content().starts_with("Left");
 
@@ -336,49 +324,48 @@ namespace {
             }
         }
 
-        const bool lAny = leftHints && (leftHints->contains("unique") || leftHints->contains("any"));
-        const bool rAny = rightHints && (rightHints->contains("unique") || rightHints->contains("any"));
+        const bool lOneRow = (lIntUnique && lIntUnique->HasEqualColumns(lCheck)) || (leftHints && (leftHints->contains("unique") || leftHints->contains("any")));
+        const bool rOneRow = (rIntUnique && rIntUnique->HasEqualColumns(rCheck)) || (rightHints && (rightHints->contains("unique") || rightHints->contains("any")));
+        const bool bothOne = lOneRow && rOneRow;
 
-        const bool lOneRow = lAny || lUnique && lUnique->ContainsCompleteSet(lCheck);
-        const bool rOneRow = rAny || rUnique && rUnique->ContainsCompleteSet(rCheck);
-
-        if (unique) {
+        if (internal) {
             if (singleSide) {
                 if (leftSide)
-                    *unique = lUnique;
+                    *internal = lIntUnique;
                 else if (rightSide)
-                    *unique = rUnique;
-            } else if (!joinType.IsAtom("Cross")) {
-                const bool exclusion = joinType.IsAtom("Exclusion") ;
-                const bool useLeft = lUnique && (rOneRow || exclusion);
-                const bool useRight = rUnique && (lOneRow || exclusion);
-
-                if (useLeft && !useRight)
-                    *unique = lUnique;
-                else if (useRight && !useLeft)
-                    *unique = rUnique;
-                else if (useLeft && useRight)
-                    *unique = TUniqueConstraintNode::Merge(lUnique, rUnique, ctx);
+                    *internal = rIntUnique;
+            } else if (joinType.IsAtom("Exclusion") || (lOneRow && rOneRow && joinType.IsAtom({"Inner", "Full", "Left", "Right"}))) {
+                if (lIntUnique && rIntUnique) {
+                    auto sets = lIntUnique->GetAllSets();
+                    sets.insert(rIntUnique->GetAllSets().cbegin(), rIntUnique->GetAllSets().cend());
+                    *internal = ctx.MakeConstraint<TUniqueConstraintNode>(std::move(sets));
+                } else if (lIntUnique)
+                    *internal = lIntUnique;
+                else if (rIntUnique)
+                    *internal = rIntUnique;
             }
         }
 
-        if (distinct) {
+        if (external) {
             if (singleSide) {
                 if (leftSide)
-                    *distinct = lDistinct;
+                    *external = lExtUnique;
                 else if (rightSide)
-                    *distinct = rDistinct;
-            } else if (!joinType.IsAtom("Cross")) {
-                const bool inner = joinType.IsAtom("Inner");
-                const bool useLeft = lDistinct && rOneRow && (inner || leftSide);
-                const bool useRight = rDistinct && lOneRow && (inner || rightSide);
+                    *external = rExtUnique;
+            } else {
+                const bool useBoth = bothOne && joinType.IsAtom("Inner");
+                const bool useLeft = lExtUnique && ((leftSide && rOneRow) || useBoth);
+                const bool useRight = rExtUnique && ((rightSide && lOneRow) || useBoth);
 
                 if (useLeft && !useRight)
-                    *distinct = lDistinct;
+                    *external = lExtUnique;
                 else if (useRight && !useLeft)
-                    *distinct = rDistinct;
-                else if (useLeft && useRight)
-                    *distinct = TDistinctConstraintNode::Merge(lDistinct, rDistinct, ctx);
+                    *external = rExtUnique;
+                else if (useLeft && useRight) {
+                    auto sets = lExtUnique->GetAllSets();
+                    sets.insert(rExtUnique->GetAllSets().cbegin(), rExtUnique->GetAllSets().cend());
+                    *external = ctx.MakeConstraint<TUniqueConstraintNode>(std::move(sets));
+                }
             }
         }
 
@@ -387,7 +374,7 @@ namespace {
 
     struct TFlattenState {
         TString Table;
-        TTypeAnnotationNode::TListType AllTypes;
+        TVector<const TTypeAnnotationNode*> AllTypes;
     };
 
     void CollectEquiJoinKeyColumnsFromLeaf(const TExprNode& columns, THashMap<TStringBuf, THashSet<TStringBuf>>& tableKeysMap) {
@@ -464,11 +451,10 @@ namespace {
     }
 }
 
-TMaybe<TIssue> TJoinLabel::Parse(TExprContext& ctx, TExprNode& node, const TStructExprType* structType, const TUniqueConstraintNode* unique, const TDistinctConstraintNode* distinct) {
+TMaybe<TIssue> TJoinLabel::Parse(TExprContext& ctx, TExprNode& node, const TStructExprType* structType, const TUniqueConstraintNode* unique) {
     Tables.clear();
     InputType = structType;
     Unique = unique;
-    Distinct = distinct;
     if (auto atom = TMaybeNode<TCoAtom>(&node)) {
         if (auto err = ValidateLabel(ctx, atom.Cast())) {
             return err;
@@ -547,12 +533,6 @@ TString TJoinLabel::FullName(const TStringBuf& column) const {
     }
 }
 
-TVector<TString> TJoinLabel::AllNames(const TStringBuf& column) const {
-    TVector<TString> result(Tables.size());
-    std::transform(Tables.cbegin(), Tables.cend(), result.begin(), std::bind(&FullColumnName, std::placeholders::_1, std::cref(column)));
-    return result;
-}
-
 TStringBuf TJoinLabel::ColumnName(const TStringBuf& column) const {
     auto pos = column.find('.');
     if (pos == TString::npos) {
@@ -614,11 +594,11 @@ TVector<TString> TJoinLabel::EnumerateAllMembers() const {
     return result;
 }
 
-TMaybe<TIssue> TJoinLabels::Add(TExprContext& ctx, TExprNode& node, const TStructExprType* structType, const TUniqueConstraintNode* unique, const TDistinctConstraintNode* distinct) {
+TMaybe<TIssue> TJoinLabels::Add(TExprContext& ctx, TExprNode& node, const TStructExprType* structType, const TUniqueConstraintNode* unique) {
     ui32 index = Inputs.size();
     Inputs.emplace_back();
     TJoinLabel& label = Inputs.back();
-    if (auto err = label.Parse(ctx, node, structType, unique, distinct)) {
+    if (auto err = label.Parse(ctx, node, structType, unique)) {
         return err;
     }
 
@@ -693,7 +673,7 @@ TVector<TString> TJoinLabels::EnumerateColumns(const TStringBuf& table) const {
     return result;
 }
 
-IGraphTransformer::TStatus ValidateEquiJoinOptions(TPositionHandle positionHandle, TExprNode& optionsNode,
+IGraphTransformer::TStatus ValidateEquiJoinOptions(TPositionHandle positionHandle, const TExprNode& optionsNode,
     TJoinOptions& options, TExprContext& ctx)
 {
     auto position = ctx.GetPosition(positionHandle);
@@ -741,6 +721,8 @@ IGraphTransformer::TStatus ValidateEquiJoinOptions(TPositionHandle positionHandl
             }
         } else if (optionName == "flatten") {
             options.Flatten = true;
+        } else if (optionName == "keep_sys") {
+            options.KeepSysColumns = true;
         } else if (optionName == "strict_keys") {
             options.StrictKeys = true;
         } else if (optionName == "preferred_sort") {
@@ -787,7 +769,7 @@ IGraphTransformer::TStatus EquiJoinAnnotation(
     TPositionHandle positionHandle,
     const TStructExprType*& resultType,
     const TJoinLabels& labels,
-    TExprNode& joins,
+    const TExprNode& joins,
     const TJoinOptions& options,
     TExprContext& ctx
 ) {
@@ -870,12 +852,32 @@ IGraphTransformer::TStatus EquiJoinAnnotation(
 
     if (options.Flatten) {
         for (auto& x : flattenFields) {
-            if (const auto commonType = CommonType(positionHandle, x.second.AllTypes, ctx)) {
-                const bool unwrap = ETypeAnnotationKind::Optional == commonType->GetKind() &&
-                    std::any_of(x.second.AllTypes.cbegin(), x.second.AllTypes.cend(), [](const TTypeAnnotationNode* type) { return ETypeAnnotationKind::Optional != type->GetKind(); });
-                resultFields.emplace_back(ctx.MakeType<TItemExprType>(x.first, unwrap ? commonType->Cast<TOptionalExprType>()->GetItemType() : commonType));
-            } else
-                return IGraphTransformer::TStatus::Error;
+            bool isOptional = true;
+            const TTypeAnnotationNode* commonType = nullptr;
+            for (auto type : x.second.AllTypes) {
+                if (type->GetKind() != ETypeAnnotationKind::Optional) {
+                    isOptional = false;
+                } else {
+                    type = type->Cast<TOptionalExprType>()->GetItemType();
+                }
+
+                if (!commonType) {
+                    commonType = type;
+                } else {
+                    auto arg1 = ctx.NewArgument(positionHandle, "a");
+                    auto arg2 = ctx.NewArgument(positionHandle, "b");
+                    if (SilentInferCommonType(arg1, *commonType, arg2, *type, ctx, commonType,
+                        TConvertFlags().Set(NConvertFlags::AllowUnsafeConvert)) == IGraphTransformer::TStatus::Error) {
+                        return IGraphTransformer::TStatus::Error;
+                    }
+                }
+            }
+
+            if (isOptional && commonType->GetKind() != ETypeAnnotationKind::Optional) {
+                commonType = ctx.MakeType<TOptionalExprType>(commonType);
+            }
+
+            resultFields.push_back(ctx.MakeType<TItemExprType>(x.first, commonType));
         }
     }
 
@@ -887,12 +889,11 @@ IGraphTransformer::TStatus EquiJoinAnnotation(
     return IGraphTransformer::TStatus::Ok;
 }
 
-IGraphTransformer::TStatus EquiJoinConstraints(
+IGraphTransformer::TStatus EquiJoinUniq(
     TPositionHandle positionHandle,
     const TUniqueConstraintNode*& unique,
-    const TDistinctConstraintNode*& distinct,
     const TJoinLabels& labels,
-    TExprNode& joins,
+    const TExprNode& joins,
     TExprContext& ctx
 ) {
     const auto position = ctx.GetPosition(positionHandle);
@@ -901,7 +902,8 @@ IGraphTransformer::TStatus EquiJoinConstraints(
     TVector<TJoinState> joinsStates(labels.Inputs.size());
     TGLobalJoinState globalState;
     THashSet<TStringBuf> scope;
-    if (const auto parseStatus = ParseJoins(labels, joins, joinsStates, scope, globalState, false, ctx, &unique, &distinct); parseStatus.Level != IGraphTransformer::TStatus::Ok) {
+    const TUniqueConstraintNode* stub = nullptr;
+    if (const auto parseStatus = ParseJoins(labels, joins, joinsStates, scope, globalState, false, ctx, &stub, &unique); parseStatus.Level != IGraphTransformer::TStatus::Ok) {
         return parseStatus;
     }
     return IGraphTransformer::TStatus::Ok;

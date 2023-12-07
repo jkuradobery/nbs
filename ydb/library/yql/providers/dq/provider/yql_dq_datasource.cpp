@@ -2,8 +2,6 @@
 #include "yql_dq_datasource_constraints.h"
 #include "yql_dq_datasource_type_ann.h"
 #include "yql_dq_state.h"
-#include "yql_dq_validate.h"
-#include "yql_dq_statistics.h"
 
 #include <ydb/library/yql/providers/common/config/yql_configuration_transformer.h>
 #include <ydb/library/yql/providers/common/provider/yql_data_provider_impl.h>
@@ -20,7 +18,6 @@
 
 #include <ydb/library/yql/dq/opt/dq_opt_build.h>
 #include <ydb/library/yql/dq/opt/dq_opt.h>
-#include <ydb/library/yql/dq/type_ann/dq_type_ann.h>
 
 #include <ydb/library/yql/utils/log/log.h>
 #include <ydb/library/yql/core/services/yql_transform_pipeline.h>
@@ -43,14 +40,13 @@ namespace {
 class TDqDataProviderSource: public TDataProviderBase {
 public:
     TDqDataProviderSource(const TDqState::TPtr& state, TExecTransformerFactory execTransformerFactory)
-        : State_(state)
-        , ConfigurationTransformer_([this]() {
-            return MakeHolder<NCommon::TProviderConfigurationTransformer>(State_->Settings, *State_->TypeCtx, TString{DqProviderName});
+        : State(state)
+        , ConfigurationTransformer([this]() {
+            return MakeHolder<NCommon::TProviderConfigurationTransformer>(State->Settings, *State->TypeCtx, TString{DqProviderName});
         })
-        , ExecTransformer_([this, execTransformerFactory] () { return THolder<IGraphTransformer>(execTransformerFactory(State_)); })
-        , TypeAnnotationTransformer_([] () { return CreateDqsDataSourceTypeAnnotationTransformer(); })
-        , ConstraintsTransformer_([] () { return CreateDqDataSourceConstraintTransformer(); })
-        , StatisticsTransformer_([this]() { return CreateDqsStatisticsTransformer(State_); })
+        , ExecTransformer([this, execTransformerFactory] () { return THolder<IGraphTransformer>(execTransformerFactory(State)); })
+        , TypeAnnotationTransformer([] () { return CreateDqsDataSourceTypeAnnotationTransformer(); })
+        , ConstraintsTransformer([] () { return CreateDqDataSourceConstraintTransformer(); })
     { }
 
     TStringBuf GetName() const override {
@@ -59,52 +55,16 @@ public:
 
     IGraphTransformer& GetTypeAnnotationTransformer(bool instantOnly) override {
         Y_UNUSED(instantOnly);
-        return *TypeAnnotationTransformer_;
+        return *TypeAnnotationTransformer;
     }
 
     IGraphTransformer& GetConstraintTransformer(bool instantOnly, bool subGraph) override {
         Y_UNUSED(instantOnly && subGraph);
-        return *ConstraintsTransformer_;
+        return *ConstraintsTransformer;
     }
 
     IGraphTransformer& GetConfigurationTransformer() override {
-        return *ConfigurationTransformer_;
-    }
-
-    IGraphTransformer& GetStatisticsProposalTransformer() override {
-        return *StatisticsTransformer_;
-    }
-
-    bool CanBuildResultImpl(const TExprNode& node, TNodeSet& visited) {
-        if (!visited.emplace(&node).second) {
-            return true;
-        }
-
-        if (TDqConnection::Match(&node) || TDqPhyPrecompute::Match(&node)) {
-            // Don't go deeper
-            return true;
-        }
-
-        if (auto right = TMaybeNode<TCoRight>(&node)) {
-            auto cons = right.Cast().Input().Maybe<TCoCons>();
-            if (!cons) {
-                return false;
-            }
-
-            return CanBuildResultImpl(cons.Cast().Input().Ref(), visited);
-        }
-
-        if (!node.IsComposable()) {
-            return false;
-        }
-
-        for (const auto& child : node.Children()) {
-            if (!CanBuildResultImpl(*child, visited)) {
-                return false;
-            }
-        }
-
-        return true;
+        return *ConfigurationTransformer;
     }
 
     bool CanBuildResult(const TExprNode& node, TSyncMap& syncList) override {
@@ -112,8 +72,22 @@ public:
             return false;
         }
 
-        TNodeSet visited;
-        bool canBuild = CanBuildResultImpl(node, visited);
+        bool canBuild = true;
+        VisitExpr(node, [&canBuild] (const TExprNode& n) {
+            if (!canBuild) {
+                return false;
+            }
+            if (TDqConnection::Match(&n) || TDqPhyPrecompute::Match(&n)) {
+                // Don't go deeper
+                return false;
+            }
+            if (!n.IsComposable()) {
+                canBuild = false;
+                return false;
+            }
+            return true;
+        });
+
         if (canBuild) {
             for (const auto& child : node.ChildrenList()) {
                 VisitExpr(child, [&syncList] (const TExprNode::TPtr& item) {
@@ -157,31 +131,19 @@ public:
             return {};
         }
 
-        const auto newWorld = ctx.NewWorld(node->Pos());
-        TNodeOnNodeOwnedMap replaces;
-        VisitExpr(node, [&replaces, &newWorld, &ctx] (const TExprNode::TPtr& item) {
+        TExprNode::TListType worlds;
+        VisitExpr(node, [&worlds] (const TExprNode::TPtr& item) {
             if (ETypeAnnotationKind::World == item->GetTypeAnn()->GetKind()) {
-                replaces[item.Get()] = newWorld;
+                worlds.emplace_back(item);
                 return false;
             }
-
-            if (auto right = TMaybeNode<TCoRight>(item)) {
-                if (right.Cast().Input().Ref().IsCallable("PgReadTable!")) {
-                    const auto& read = right.Cast().Input().Ref();
-                    replaces[item.Get()] = ctx.Builder(item->Pos())
-                        .Callable("PgTableContent")
-                            .Add(0, read.Child(1)->TailPtr())
-                            .Add(1, read.ChildPtr(2))
-                            .Add(2, read.ChildPtr(3))
-                            .Add(3, read.ChildPtr(4))
-                        .Seal()
-                        .Build();
-                    return false;
-                }
-            }
-
             return true;
         });
+
+        const auto newWorld = ctx.NewWorld(node->Pos());
+        TNodeOnNodeOwnedMap replaces(worlds.size());
+        for (const auto& w : worlds)
+            replaces.emplace(w.Get(), newWorld);
 
         return Build<TDqCnResult>(ctx, node->Pos())
             .Output()
@@ -211,9 +173,9 @@ public:
             return false;
         }
 
-        canRef = State_->Settings->EnableFullResultWrite.Get().GetOrElse(false);
+        canRef = State->Settings->EnableFullResultWrite.Get().GetOrElse(false);
         if (canRef) {
-            if (auto fullResultTableProvider = State_->TypeCtx->DataSinkMap.Value(State_->TypeCtx->FullResultDataSink, nullptr)) {
+            if (auto fullResultTableProvider = State->TypeCtx->DataSinkMap.Value(State->TypeCtx->FullResultDataSink, nullptr)) {
                 canRef = !!fullResultTableProvider->GetDqIntegration();
             } else {
                 canRef = false;
@@ -261,33 +223,28 @@ public:
         return TDqCnResult::Match(&node) || TDqQuery::Match(&node);
     }
 
-    bool ValidateExecution(const TExprNode& node, TExprContext& ctx) override {
-        return ValidateDqExecution(node, *State_->TypeCtx, ctx, State_);
-    }
-
     bool CanParse(const TExprNode& node) override {
-        return TypeAnnotationTransformer_->CanParse(node);
+        return TypeAnnotationTransformer->CanParse(node);
     }
 
     IGraphTransformer& GetCallableExecutionTransformer() override {
-        return *ExecTransformer_;
+        return *ExecTransformer;
     }
 
     void Reset() final {
-        if (ExecTransformer_) {
-            ExecTransformer_->Rewind();
-            TypeAnnotationTransformer_->Rewind();
-            ConstraintsTransformer_->Rewind();
+        if (ExecTransformer) {
+            ExecTransformer->Rewind();
+            TypeAnnotationTransformer->Rewind();
+            ConstraintsTransformer->Rewind();
         }
     }
 
 private:
-    const TDqState::TPtr State_;
-    TLazyInitHolder<IGraphTransformer> ConfigurationTransformer_;
-    TLazyInitHolder<IGraphTransformer> ExecTransformer_;
-    TLazyInitHolder<TVisitorTransformerBase> TypeAnnotationTransformer_;
-    TLazyInitHolder<IGraphTransformer> ConstraintsTransformer_;
-    TLazyInitHolder<IGraphTransformer> StatisticsTransformer_;
+    const TDqState::TPtr State;
+    TLazyInitHolder<IGraphTransformer> ConfigurationTransformer;
+    TLazyInitHolder<IGraphTransformer> ExecTransformer;
+    TLazyInitHolder<TVisitorTransformerBase> TypeAnnotationTransformer;
+    TLazyInitHolder<IGraphTransformer> ConstraintsTransformer;
 };
 
 }

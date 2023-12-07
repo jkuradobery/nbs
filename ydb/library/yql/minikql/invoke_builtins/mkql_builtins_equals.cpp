@@ -36,9 +36,8 @@ Y_FORCE_INLINE bool Equals(T1 x, T2 y) {
     using FT = std::conditional_t<(sizeof(F1) > sizeof(F2)), F1, F2>;
     const auto l = static_cast<FT>(x);
     const auto r = static_cast<FT>(y);
-    if constexpr (Aggr) {
-        if (std::isunordered(l, r))
-            return std::isnan(l) == std::isnan(r);
+    if (Aggr && std::isunordered(l, r)) {
+        return std::isnan(l) == std::isnan(r);
     }
     return l == r;
 }
@@ -152,7 +151,7 @@ struct TEquals : public TCompareArithmeticBinary<TLeft, TRight, TEquals<TLeft, T
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        return GenEquals<TLeft, TRight, Aggr>(left, right, ctx.Codegen.GetContext(), block);
+        return GenEquals<TLeft, TRight, Aggr>(left, right, ctx.Codegen->GetContext(), block);
     }
 #endif
 };
@@ -166,20 +165,20 @@ struct TEqualsOp<TLeft, TRight, bool> : public TEquals<TLeft, TRight, false> {
 };
 
 template<typename TLeft, typename TRight, bool Aggr>
-struct TDiffDateEquals : public TCompareArithmeticBinary<typename TLeft::TLayout, typename TRight::TLayout, TDiffDateEquals<TLeft, TRight, Aggr>>, public TAggrEquals {
-    static bool Do(typename TLeft::TLayout left, typename TRight::TLayout right)
+struct TDiffDateEquals : public TCompareArithmeticBinary<TLeft, TRight, TDiffDateEquals<TLeft, TRight, Aggr>>, public TAggrEquals {
+    static bool Do(TLeft left, TRight right)
     {
         return std::is_same<TLeft, TRight>::value ?
-            Equals<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right):
+            Equals<TLeft, TRight, Aggr>(left, right):
             Equals<TScaledDate, TScaledDate, Aggr>(ToScaledDate<TLeft>(left), ToScaledDate<TRight>(right));
     }
 
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Gen(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         return std::is_same<TLeft, TRight>::value ?
-            GenEquals<typename TLeft::TLayout, typename TRight::TLayout, Aggr>(left, right, context, block):
+            GenEquals<TLeft, TRight, Aggr>(left, right, context, block):
             GenEquals<TScaledDate, TScaledDate, Aggr>(GenToScaledDate<TLeft>(left, context, block), GenToScaledDate<TRight>(right, context, block), context, block);
     }
 #endif
@@ -189,7 +188,7 @@ template<typename TLeft, typename TRight, typename TOutput>
 struct TDiffDateEqualsOp;
 
 template<typename TLeft, typename TRight>
-struct TDiffDateEqualsOp<TLeft, TRight, NUdf::TDataType<bool>> : public TDiffDateEquals<TLeft, TRight, false> {
+struct TDiffDateEqualsOp<TLeft, TRight, bool> : public TDiffDateEquals<TLeft, TRight, false> {
     static constexpr bool DefaultNulls = true;
 };
 
@@ -203,7 +202,7 @@ struct TAggrTzDateEquals : public TArithmeticConstraintsBinary<TLeft, TRight, bo
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto lhs = GetterFor<TLeft>(left, context, block);
         const auto rhs = GetterFor<TRight>(right, context, block);
         const auto ltz = GetterForTimezone(context, left, block);
@@ -224,7 +223,7 @@ struct TCustomEquals : public TAggrEquals {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto res = CallBinaryUnboxedValueFunction(&CompareCustoms<Slot>, Type::getInt32Ty(context), left, right, ctx.Codegen, block);
         const auto comp = CmpInst::Create(Instruction::ICmp, ICmpInst::ICMP_EQ, res, ConstantInt::get(res->getType(), 0), "equals", block);
         ValueCleanup(EValueRepresentation::String, left, ctx, block);
@@ -244,7 +243,7 @@ struct TDecimalEquals {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto good = NDecimal::GenIsComparable(l, context, block);
@@ -265,7 +264,7 @@ struct TDecimalAggrEquals : public TAggrEquals {
 #ifndef MKQL_DISABLE_CODEGEN
     static Value* Generate(Value* left, Value* right, const TCodegenContext& ctx, BasicBlock*& block)
     {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto l = GetterForInt128(left, block);
         const auto r = GetterForInt128(right, block);
         const auto eq = GenEqualsIntegral(l, r, block);
@@ -281,7 +280,6 @@ void RegisterEquals(IBuiltinFunctionRegistry& registry) {
 
     RegisterComparePrimitive<TEquals, TCompareArgsOpt>(registry, name);
     RegisterCompareDatetime<TDiffDateEquals, TCompareArgsOpt>(registry, name);
-    RegisterCompareBigDatetime<TDiffDateEquals, TCompareArgsOpt>(registry, name);
 
     RegisterCompareStrings<TCustomEquals, TCompareArgsOpt>(registry, name);
     RegisterCompareCustomOpt<NUdf::TDataType<NUdf::TDecimal>, NUdf::TDataType<NUdf::TDecimal>, TDecimalEquals, TCompareArgsOpt>(registry, name);

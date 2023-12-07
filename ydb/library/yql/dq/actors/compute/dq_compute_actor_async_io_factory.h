@@ -21,11 +21,6 @@ concept TSourceCreatorFunc = requires(T f, TProto&& settings, IDqAsyncIoFactory:
 };
 
 template <class T, class TProto>
-concept TSourceCreatorFuncPtr = requires(T f, TProto* settings, IDqAsyncIoFactory::TSourceArguments&& args) {
-    { f(settings, std::move(args)) } -> TCastsToAsyncInputPair;
-};
-
-template <class T, class TProto>
 concept TInputTransformCreatorFunc = requires(T f, TProto&& settings, IDqAsyncIoFactory::TInputTransformArguments&& args) {
     { f(std::move(settings), std::move(args)) } -> TCastsToAsyncInputPair;
 };
@@ -54,38 +49,6 @@ public:
     // Registration
     void RegisterSource(const TString& type, TSourceCreatorFunction creator);
 
-    // There are 2 functions to register source
-    // The main difference between them is:
-    // First function uses Arena to allocate SourceSettings
-    // Second function doesn't use Arena, instead it allocates SourceSettings on the stack
-
-    // This function expects to have Arena where SourceSettings (are / would be) allocated
-    // This function expects to have CreatorFunc with ( TProto* settings ),
-    template <class TProtoMsg, TSourceCreatorFuncPtr<TProtoMsg> TCreatorFunc>
-    void RegisterSource(const TString& type, TCreatorFunc creator) {
-        RegisterSource(type,
-            [creator = std::move(creator), type](TSourceArguments&& args)
-            {
-                YQL_ENSURE(args.Arena, "args are expected to have Arena for SourceSettings");
-                if (args.SourceSettings != nullptr) {
-                    const TProtoMsg* settingsPtr = dynamic_cast<const TProtoMsg*>(args.SourceSettings);
-                    YQL_ENSURE(settingsPtr, "Wrong type of source settings");
-                    YQL_ENSURE(settingsPtr->GetArena(), "Source settings are expected to be allocated in arena");
-                    YQL_ENSURE(settingsPtr->GetArena() == args.Arena->Get(), "(Given Arena) and (Arena from SourceSettings) are not the same");
-                    return creator(settingsPtr, std::move(args));
-                } else {
-                    const google::protobuf::Any& settingsAny = args.InputDesc.GetSource().GetSettings();
-                    YQL_ENSURE(settingsAny.Is<TProtoMsg>(),
-                        "Source \"" << type << "\" settings are expected to have protobuf type " << TProtoMsg::descriptor()->full_name()
-                        << ", but got " << settingsAny.type_url());
-                    TProtoMsg* settingsPtr = args.Arena->Allocate<TProtoMsg>();
-                    YQL_ENSURE(settingsAny.UnpackTo(settingsPtr), "Failed to unpack settings of type \"" << type << "\"");
-                    return creator(std::move(settingsPtr), std::move(args));
-                }
-        });
-    }
-
-    // This function doesn't use Arena, and SourceSettings are passed to CreatorFunc by rvalue reference
     template <class TProtoMsg, TSourceCreatorFunc<TProtoMsg> TCreatorFunc>
     void RegisterSource(const TString& type, TCreatorFunc creator) {
         RegisterSource(type,

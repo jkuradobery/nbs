@@ -49,8 +49,8 @@ void TestPutMaxPartCountOnHandoff(TErasureType::EErasureSpecies erasureSpecies) 
     const ui32 hash = blobId.Hash();
     const ui32 totalvd = group.GetInfo()->Type.BlobSubgroupSize();
     const ui32 totalParts = group.GetInfo()->Type.TotalPartCount();
-    Y_ABORT_UNLESS(blobId.BlobSize() == data.size());
-    Y_ABORT_UNLESS(totalvd >= totalParts);
+    Y_VERIFY(blobId.BlobSize() == data.size());
+    Y_VERIFY(totalvd >= totalParts);
     TBlobStorageGroupInfo::TServiceIds vDisksSvc;
     TBlobStorageGroupInfo::TVDiskIds vDisksId;
     group.GetInfo()->PickSubgroup(hash, &vDisksId, &vDisksSvc);
@@ -59,9 +59,9 @@ void TestPutMaxPartCountOnHandoff(TErasureType::EErasureSpecies erasureSpecies) 
     char *dataBytes = encryptedData.Detach();
     Encrypt(dataBytes, dataBytes, 0, encryptedData.size(), blobId, *group.GetInfo());
 
-    TBatchedVec<TStackVec<TRope, TypicalPartsInBlob>> partSetSingleton(1);
-    partSetSingleton[0].resize(totalParts);
-    ErasureSplit((TErasureType::ECrcMode)blobId.CrcMode(), group.GetInfo()->Type, TRope(encryptedData), partSetSingleton[0]);
+    TBatchedVec<TDataPartSet> partSetSingleton(1);
+    partSetSingleton[0].Parts.resize(totalParts);
+    group.GetInfo()->Type.SplitData((TErasureType::ECrcMode)blobId.CrcMode(), encryptedData, partSetSingleton[0]);
 
     TEvBlobStorage::TEvPut ev(blobId, data, TInstant::Max(), NKikimrBlobStorage::TabletLog,
             TEvBlobStorage::TEvPut::TacticDefault);
@@ -165,7 +165,7 @@ struct TTestPutAllOk {
 
     TLogContext LogCtx;
 
-    TBatchedVec<TStackVec<TRope, TypicalPartsInBlob>> PartSets;
+    TBatchedVec<TDataPartSet> PartSets;
 
     TStackVec<ui32, 16> CheckStack;
 
@@ -185,11 +185,11 @@ struct TTestPutAllOk {
 
         const ui32 totalvd = Group.GetInfo()->Type.BlobSubgroupSize();
         const ui32 totalParts = Group.GetInfo()->Type.TotalPartCount();
-        Y_ABORT_UNLESS(totalvd >= totalParts);
+        Y_VERIFY(totalvd >= totalParts);
 
         for (ui64 blobIdx = 0; blobIdx < BlobCount; ++blobIdx) {
             TLogoBlobID blobId = BlobIds[blobIdx];
-            Y_ABORT_UNLESS(blobId.BlobSize() == Data.size());
+            Y_VERIFY(blobId.BlobSize() == Data.size());
             TBlobStorageGroupInfo::TServiceIds vDisksSvc;
             TBlobStorageGroupInfo::TVDiskIds vDisksId;
             const ui32 hash = blobId.Hash();
@@ -199,8 +199,8 @@ struct TTestPutAllOk {
             char *dataBytes = encryptedData.Detach();
             Encrypt(dataBytes, dataBytes, 0, encryptedData.size(), blobId, *Group.GetInfo());
 
-            PartSets[blobIdx].resize(totalParts);
-            ErasureSplit((TErasureType::ECrcMode)blobId.CrcMode(), Group.GetInfo()->Type, TRope(encryptedData), PartSets[blobIdx]);
+            PartSets[blobIdx].Parts.resize(totalParts);
+            Group.GetInfo()->Type.SplitData((TErasureType::ECrcMode)blobId.CrcMode(), encryptedData, PartSets[blobIdx]);
         }
     }
 
@@ -229,7 +229,7 @@ struct TTestPutAllOk {
                 UNIT_ASSERT_VALUES_EQUAL(status, NKikimrProto::OK);
             }
             vMultiPutResults[vMultiPutIdx].reset(new TEvBlobStorage::TEvVMultiPutResult());
-            Y_ABORT_UNLESS(vMultiPut.Record.ItemsSize() == statuses.size());
+            Y_VERIFY(vMultiPut.Record.ItemsSize() == statuses.size());
             TEvBlobStorage::TEvVMultiPutResult &vMultiPutResult = *vMultiPutResults[vMultiPutIdx];
             vMultiPutResult.MakeError(NKikimrProto::OK, TString(), vMultiPut.Record);
             for (ui64 itemIdx = 0; itemIdx < statuses.size(); ++itemIdx) {
@@ -237,7 +237,7 @@ struct TTestPutAllOk {
                 NKikimrProto::EReplyStatus status = statuses[itemIdx];
                 item.SetStatus(status);
             }
-            Y_ABORT_UNLESS(vMultiPutResult.Record.ItemsSize() == statuses.size());
+            Y_VERIFY(vMultiPutResult.Record.ItemsSize() == statuses.size());
         }
     }
 
@@ -319,7 +319,7 @@ struct TTestPutAllOk {
                 }
 
                 vMultiPutResults[vMultiPutIdx].reset(new TEvBlobStorage::TEvVMultiPutResult());
-                Y_ABORT_UNLESS(vMultiPut.Record.ItemsSize() == statuses.size());
+                Y_VERIFY(vMultiPut.Record.ItemsSize() == statuses.size());
                 TEvBlobStorage::TEvVMultiPutResult &vMultiPutResult = *vMultiPutResults[vMultiPutIdx];
                 vMultiPutResult.MakeError(NKikimrProto::OK, TString(), vMultiPut.Record);
 
@@ -418,13 +418,13 @@ Y_UNIT_TEST(TestMirror3dcWith3x3MinLatencyMod) {
     logCtx.LogAcc.IsLogEnabled = false;
 
     const ui32 totalParts = env.Info->Type.TotalPartCount();
-    TBatchedVec<TStackVec<TRope, TypicalPartsInBlob>> partSetSingleton(1);
-    partSetSingleton[0].resize(totalParts);
+    TBatchedVec<TDataPartSet> partSetSingleton(1);
+    partSetSingleton[0].Parts.resize(totalParts);
 
     TString encryptedData = data;
     char *dataBytes = encryptedData.Detach();
     Encrypt(dataBytes, dataBytes, 0, encryptedData.size(), blobId, *env.Info);
-    ErasureSplit((TErasureType::ECrcMode)blobId.CrcMode(), env.Info->Type, TRope(encryptedData), partSetSingleton[0]);
+    env.Info->Type.SplitData((TErasureType::ECrcMode)blobId.CrcMode(), encryptedData, partSetSingleton[0]);
     putImpl.GenerateInitialRequests(logCtx, partSetSingleton, vPuts);
 
     UNIT_ASSERT_VALUES_EQUAL(vPuts.size(), 9);

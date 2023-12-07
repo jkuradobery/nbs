@@ -5,7 +5,7 @@
 #include "datashard_active_transaction.h"
 #include "range_treap.h"
 
-#include <library/cpp/containers/absl_flat_hash/flat_hash_map.h>
+#include <library/cpp/containers/flat_hash/flat_hash.h>
 
 namespace NKikimr {
 namespace NDataShard {
@@ -81,17 +81,11 @@ private:
         void RemoveOperation(const TOperation::TPtr& op) const noexcept override;
     };
 
-    struct TFollowerDependencyTrackingLogic : public TDependencyTrackingLogic {
-        explicit TFollowerDependencyTrackingLogic(TDependencyTracker& parent)
-            : TDependencyTrackingLogic(parent) {}
-
-        void AddOperation(const TOperation::TPtr& op) const noexcept override;
-        void RemoveOperation(const TOperation::TPtr& op) const noexcept override;
-    };
-
 public:
     TDependencyTracker(TDataShard* self)
         : Self(self)
+        , DefaultLogic(*this)
+        , MvccLogic(*this)
     { }
 
 public:
@@ -136,18 +130,18 @@ private:
     const TDependencyTrackingLogic& GetTrackingLogic() const noexcept;
 
 private:
-    TDataShard* const Self;
+    TDataShard* Self;
     // Temporary vectors for building dependencies
     TKeys TmpRead;
     TKeys TmpWrite;
     // Last planned snapshot operation
     TOperation::TPtr LastSnapshotOp;
     // Maps lock id to prediction of what this lock would look like when all transactions are complete
-    absl::flat_hash_map<ui64, TLockPrediction> Locks;
+    NFH::TFlatHashMap<ui64, TLockPrediction> Locks;
     // Maps lock id to the last operation that used them, all lock operations are serialized
-    absl::flat_hash_map<ui64, TOperation::TPtr> LastLockOps;
+    NFH::TFlatHashMap<ui64, TOperation::TPtr> LastLockOps;
     // Maps table id to current ranges that have been read/written by all transactions
-    absl::flat_hash_map<ui64, TTableState> Tables;
+    NFH::TFlatHashMap<ui64, TTableState> Tables;
     // All operations that are reading or writing something
     TIntrusiveList<TOperation, TOperationAllListTag> AllPlannedReaders;
     TIntrusiveList<TOperation, TOperationAllListTag> AllPlannedWriters;
@@ -164,9 +158,8 @@ private:
     TIntrusiveList<TOperation, TOperationDelayedWriteListTag> DelayedPlannedWrites;
     TIntrusiveList<TOperation, TOperationDelayedWriteListTag> DelayedImmediateWrites;
 
-    const TDefaultDependencyTrackingLogic DefaultLogic{ *this };
-    const TMvccDependencyTrackingLogic MvccLogic{ *this };
-    const TFollowerDependencyTrackingLogic FollowerLogic{ *this };
+    const TDefaultDependencyTrackingLogic DefaultLogic;
+    const TMvccDependencyTrackingLogic MvccLogic;
 };
 
 } // namespace NDataShard

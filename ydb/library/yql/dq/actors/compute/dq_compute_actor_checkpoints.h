@@ -6,7 +6,7 @@
 
 #include <ydb/library/yql/dq/common/dq_common.h>
 
-#include <ydb/library/actors/core/log.h>
+#include <library/cpp/actors/core/log.h>
 
 #include <util/generic/ptr.h>
 
@@ -20,7 +20,7 @@ enum ECheckpointingMode : int;
 
 namespace NYql::NDq {
 
-NDqProto::ECheckpointingMode GetTaskCheckpointingMode(const TDqTaskSettings& task);
+NDqProto::ECheckpointingMode GetTaskCheckpointingMode(const NDqProto::TDqTask& task);
 
 class TDqComputeActorCheckpoints : public NActors::TActor<TDqComputeActorCheckpoints>
 {
@@ -35,7 +35,7 @@ class TDqComputeActorCheckpoints : public NActors::TActor<TDqComputeActorCheckpo
     };
 
     struct TPendingCheckpoint {
-        TPendingCheckpoint(const TDqTaskSettings& task)
+        TPendingCheckpoint(const NDqProto::TDqTask& task)
             : SinksCount(GetSinksCount(task))
         {
         }
@@ -50,11 +50,11 @@ class TDqComputeActorCheckpoints : public NActors::TActor<TDqComputeActorCheckpo
         void Clear();
 
         bool IsReady() const {
-            Y_ABORT_UNLESS(Checkpoint);
+            Y_VERIFY(Checkpoint);
             return SavedComputeActorState && SinksCount == SavedSinkStatesCount;
         }
 
-        static size_t GetSinksCount(const TDqTaskSettings& task);
+        static size_t GetSinksCount(const NDqProto::TDqTask& task);
 
         const size_t SinksCount;
         TMaybe<NDqProto::TCheckpoint> Checkpoint;
@@ -76,7 +76,7 @@ public:
 
         virtual void Start() = 0;
         virtual void Stop() = 0;
-        virtual void ResumeExecution(EResumeSource source) = 0;
+        virtual void ResumeExecution() = 0;
 
         virtual void LoadState(NDqProto::TComputeActorState&& state) = 0;
 
@@ -89,7 +89,7 @@ public:
         ComputeActorCurrentStateVersion = 2,
     };
 
-    TDqComputeActorCheckpoints(const NActors::TActorId& owner, const TTxId& txId, TDqTaskSettings task, ICallbacks* computeActor);
+    TDqComputeActorCheckpoints(const NActors::TActorId& owner, const TTxId& txId, NDqProto::TDqTask task, ICallbacks* computeActor);
     void Init(NActors::TActorId computeActorId, NActors::TActorId checkpointsId);
     [[nodiscard]]
     bool HasPendingCheckpoint() const;
@@ -108,7 +108,7 @@ public:
         Y_UNUSED(state);
         Y_UNUSED(outputIndex); // Note that we can have both sink and transform on one output index
         Y_UNUSED(checkpoint);
-        Y_ABORT("Transform states are unimplemented");
+        Y_FAIL("Transform states are unimplemented");
     }
 
     void TryToSavePendingCheckpoint();
@@ -140,7 +140,7 @@ private:
 private:
     const NActors::TActorId Owner;
     const TTxId TxId;
-    const TDqTaskSettings Task;
+    const NDqProto::TDqTask Task;
     const bool IngressTask;
 
     const NActors::TActorId CheckpointStorage;

@@ -39,7 +39,7 @@ void Test() {
         auto& r = res->Get()->Responses[0];
         UNIT_ASSERT_VALUES_EQUAL(r.Status, status);
         if (status == NKikimrProto::OK) {
-            UNIT_ASSERT_VALUES_EQUAL(r.Buffer.ConvertToString(), data);
+            UNIT_ASSERT_VALUES_EQUAL(r.Buffer, data);
         }
     };
 
@@ -51,7 +51,7 @@ void Test() {
         ui32 nodeId, pdiskId;
         std::tie(nodeId, pdiskId, std::ignore) = DecomposeVDiskServiceId(vdiskActorId);
         auto it = env.PDiskMockStates.find(std::make_pair(nodeId, pdiskId));
-        Y_ABORT_UNLESS(it != env.PDiskMockStates.end());
+        Y_VERIFY(it != env.PDiskMockStates.end());
 
         const TActorId sender = runtime->AllocateEdgeActor(vdiskActorId.NodeId());
         env.Runtime->Send(new IEventHandle(vdiskActorId, sender, new TEvBlobStorage::TEvCaptureVDiskLayout), sender.NodeId());

@@ -1,8 +1,6 @@
 #include "columnshard_impl.h"
 #include "columnshard_private_events.h"
 #include "columnshard_schema.h"
-#include <ydb/library/yql/dq/actors/compute/dq_compute_actor.h>
-#include <ydb/library/yql/dq/actors/dq.h>
 
 namespace NKikimr::NColumnShard {
 
@@ -13,7 +11,6 @@ public:
     TTxProposeTransaction(TColumnShard* self, TEvColumnShard::TEvProposeTransaction::TPtr& ev)
         : TBase(self)
         , Ev(ev)
-        , TabletTxNo(++Self->TabletTxCounter)
     {}
 
     bool Execute(TTransactionContext& txc, const TActorContext& ctx) override;
@@ -22,22 +19,13 @@ public:
 
 private:
     TEvColumnShard::TEvProposeTransaction::TPtr Ev;
-    const ui32 TabletTxNo;
     std::unique_ptr<TEvColumnShard::TEvProposeTransactionResult> Result;
-
-    TStringBuilder TxPrefix() const {
-        return TStringBuilder() << "TxProposeTransaction[" << ToString(TabletTxNo) << "] ";
-    }
-
-    TString TxSuffix() const {
-        return TStringBuilder() << " at tablet " << Self->TabletID();
-    }
 };
 
 
-bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContext& /*ctx*/) {
-    Y_ABORT_UNLESS(Ev);
-    LOG_S_DEBUG(TxPrefix() << "execute" << TxSuffix());
+bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContext& ctx) {
+    Y_VERIFY(Ev);
+    LOG_S_DEBUG("TTxProposeTransaction.Execute at tablet " << Self->TabletID());
 
     txc.DB.NoMoreReadsForTx();
     NIceDb::TNiceDb db(txc.DB);
@@ -61,29 +49,22 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
             if (!meta.Body.ParseFromString(txBody)) {
                 statusMessage = TStringBuilder()
                     << "Schema TxId# " << txId << " cannot be parsed";
-                status = NKikimrTxColumnShard::EResultStatus::SCHEMA_ERROR;
                 break;
-            }
-
-            NOlap::ISnapshotSchema::TPtr currentSchema;
-            if (Self->TablesManager.HasPrimaryIndex()) {
-                currentSchema = Self->TablesManager.GetPrimaryIndexSafe().GetVersionedIndex().GetLastSchema();
             }
 
             // Invalid body generated at a newer SchemeShard
-            if (!meta.Validate(currentSchema)) {
+            if (!meta.Validate()) {
                 statusMessage = TStringBuilder()
                     << "Schema TxId# " << txId << " cannot be proposed";
-                status = NKikimrTxColumnShard::EResultStatus::SCHEMA_ERROR;
                 break;
             }
 
-            Y_ABORT_UNLESS(record.HasSchemeShardId());
+            Y_VERIFY(record.HasSchemeShardId());
             if (Self->CurrentSchemeShardId == 0) {
                 Self->CurrentSchemeShardId = record.GetSchemeShardId();
                 Schema::SaveSpecialValue(db, Schema::EValueIds::CurrentSchemeShardId, Self->CurrentSchemeShardId);
             } else {
-                Y_ABORT_UNLESS(Self->CurrentSchemeShardId == record.GetSchemeShardId());
+                Y_VERIFY(Self->CurrentSchemeShardId == record.GetSchemeShardId());
             }
 
             auto seqNo = SeqNoFromProto(meta.Body.GetSeqNo());
@@ -99,21 +80,26 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
                     << " ssId " << Self->CurrentSchemeShardId
                     << " seqNo " << seqNo
                     << " lastSeqNo " << lastSeqNo;
-                LOG_S_INFO(TxPrefix() << statusMessage << TxSuffix());
+                LOG_S_INFO(statusMessage);
                 break;
             }
 
             Self->UpdateSchemaSeqNo(seqNo, txc);
 
             // FIXME: current tests don't provide processing params!
-            // Y_DEBUG_ABORT_UNLESS(record.HasProcessingParams());
+            // Y_VERIFY_DEBUG(record.HasProcessingParams());
             if (!Self->ProcessingParams && record.HasProcessingParams()) {
                 Self->ProcessingParams.emplace().CopyFrom(record.GetProcessingParams());
                 Schema::SaveSpecialProtoValue(db, Schema::EValueIds::ProcessingParams, *Self->ProcessingParams);
             }
 
             // Always persist the latest metadata, this may include an updated seqno
-            Self->ProgressTxController->RegisterTx(txId, txKind, txBody, Ev->Get()->GetSource(), Ev->Cookie, txc);
+            auto& txInfo = Self->BasicTxInfo[txId];
+            txInfo.TxId = txId;
+            txInfo.TxKind = txKind;
+            txInfo.Source = Ev->Get()->GetSource();
+            txInfo.Cookie = Ev->Cookie;
+            Schema::SaveTxInfo(db, txInfo.TxId, txInfo.TxKind, txBody, txInfo.MaxStep, txInfo.Source, txInfo.Cookie);
 
             if (!Self->AltersInFlight.contains(txId)) {
                 Self->AltersInFlight.emplace(txId, std::move(meta));
@@ -122,26 +108,26 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
                 existing.Body = std::move(meta.Body);
             }
 
-            LOG_S_DEBUG(TxPrefix() << "schema txId " << txId << TxSuffix());
+            LOG_S_DEBUG("TTxProposeTransaction schema txId " << txId << " at tablet " << Self->TabletID());
 
             status = NKikimrTxColumnShard::EResultStatus::PREPARED;
             break;
         }
         case NKikimrTxColumnShard::TX_KIND_COMMIT: {
             if (Self->CommitsInFlight.contains(txId)) {
-                LOG_S_DEBUG(TxPrefix() << "CommitTx (retry) TxId " << txId << TxSuffix());
+                LOG_S_DEBUG("TTxProposeTransaction CommitTx (retry) TxId " << txId << " at tablet " << Self->TabletID());
 
-                auto txInfoPtr = Self->ProgressTxController->GetTxInfo(txId);
-                Y_ABORT_UNLESS(txInfoPtr);
+                Y_VERIFY(Self->BasicTxInfo.contains(txId));
+                const auto& txInfo = Self->BasicTxInfo[txId];
 
-                if (txInfoPtr->Source != Ev->Get()->GetSource() || txInfoPtr->Cookie != Ev->Cookie) {
+                if (txInfo.Source != Ev->Get()->GetSource() || txInfo.Cookie != Ev->Cookie) {
                     statusMessage = TStringBuilder()
                         << "Another commit TxId# " << txId << " has already been proposed";
                     break;
                 }
 
-                maxStep = txInfoPtr->MaxStep;
-                minStep = txInfoPtr->MinStep;
+                maxStep = txInfo.MaxStep;
+                minStep = maxStep - Self->MaxCommitTxDelay.MilliSeconds(); // TODO: improve this code
                 status = NKikimrTxColumnShard::EResultStatus::PREPARED;
                 break;
             }
@@ -185,20 +171,32 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
                 }
             }
 
+            minStep = Self->GetAllowedStep();
+            maxStep = minStep + Self->MaxCommitTxDelay.MilliSeconds();
+
             TColumnShard::TCommitMeta meta;
+            meta.MetaShard = body.GetTxInitiator();
             for (ui64 wId : body.GetWriteIds()) {
                 TWriteId writeId{wId};
                 meta.AddWriteId(writeId);
-                Self->AddLongTxWrite(writeId, txId);
+                if (meta.MetaShard == 0) {
+                    Self->AddLongTxWrite(writeId, txId);
+                }
             }
 
-            const auto& txInfo = Self->ProgressTxController->RegisterTxWithDeadline(txId, txKind, txBody, Ev->Get()->GetSource(), Ev->Cookie, txc);
-            minStep = txInfo.MinStep;
-            maxStep = txInfo.MaxStep;
+            auto& txInfo = Self->BasicTxInfo[txId];
+            txInfo.TxId = txId;
+            txInfo.TxKind = txKind;
+            txInfo.MaxStep = maxStep;
+            txInfo.Source = Ev->Get()->GetSource();
+            txInfo.Cookie = Ev->Cookie;
+            Schema::SaveTxInfo(db, txInfo.TxId, txInfo.TxKind, txBody, txInfo.MaxStep, txInfo.Source, txInfo.Cookie);
 
             Self->CommitsInFlight.emplace(txId, std::move(meta));
 
-            LOG_S_DEBUG(TxPrefix() << "CommitTx txId " << txId << TxSuffix());
+            Self->DeadlineQueue.emplace(txInfo.MaxStep, txId);
+
+            LOG_S_DEBUG("TTxProposeTransaction CommitTx txId " << txId << " at tablet " << Self->TabletID());
 
             status = NKikimrTxColumnShard::EResultStatus::PREPARED;
             break;
@@ -232,13 +230,13 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
                     break;
                 }
 
-                if (!Self->TablesManager.HasPrimaryIndex()) {
+                if (!Self->PrimaryIndex) {
                     statusMessage = "No primary index for TTL";
                     status = NKikimrTxColumnShard::EResultStatus::SCHEMA_ERROR;
                     break;
                 }
 
-                auto schema = Self->TablesManager.GetPrimaryIndexSafe().GetVersionedIndex().GetLastSchema()->GetSchema();
+                auto schema = Self->PrimaryIndex->GetIndexInfo().ArrowSchema();
                 auto ttlColumn = schema->GetFieldByName(columnName);
                 if (!ttlColumn) {
                     statusMessage = "TTL tx wrong TTL column '" + columnName + "'";
@@ -247,17 +245,21 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
                 }
 
                 if (statusMessage.empty()) {
-                    const TInstant now = TlsActivationContext ? AppData()->TimeProvider->Now() : TInstant::Now();
                     for (ui64 pathId : ttlBody.GetPathIds()) {
                         NOlap::TTiering tiering;
-                        tiering.Ttl = NOlap::TTierInfo::MakeTtl(now - unixTime, columnName);
+                        tiering.Ttl = NOlap::TTierInfo::MakeTtl(unixTime, columnName);
                         pathTtls.emplace(pathId, std::move(tiering));
                     }
                 }
             }
 
             if (statusMessage.empty()) {
-                if (Self->SetupTtl(pathTtls, true)) {
+                if (auto event = Self->SetupTtl(pathTtls, true)) {
+                    if (event->NeedDataReadWrite()) {
+                        ctx.Send(Self->EvictionActor, event.release());
+                    } else {
+                        ctx.Send(Self->SelfId(), event->TxEvent.release());
+                    }
                     status = NKikimrTxColumnShard::EResultStatus::SUCCESS;
                 } else {
                     statusMessage = "TTL not started";
@@ -285,15 +287,16 @@ bool TTxProposeTransaction::Execute(TTransactionContext& txc, const TActorContex
         Self->IncCounter(COUNTER_PREPARE_SUCCESS);
     } else {
         Self->IncCounter(COUNTER_PREPARE_ERROR);
-        LOG_S_INFO(TxPrefix() << "error txId " << txId << " " << statusMessage << TxSuffix());
+        LOG_S_INFO("TTxProposeTransaction error txId " << txId << " at tablet " << Self->TabletID()
+            << " " << statusMessage);
     }
     return true;
 }
 
 void TTxProposeTransaction::Complete(const TActorContext& ctx) {
-    Y_ABORT_UNLESS(Ev);
-    Y_ABORT_UNLESS(Result);
-    LOG_S_DEBUG(TxPrefix() << "complete" << TxSuffix());
+    Y_VERIFY(Ev);
+    Y_VERIFY(Result);
+    LOG_S_DEBUG("TTxProposeTransaction.Complete at tablet " << Self->TabletID());
 
     ctx.Send(Ev->Get()->GetSource(), Result.release());
 

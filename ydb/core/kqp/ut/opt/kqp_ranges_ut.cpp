@@ -40,8 +40,7 @@ static void CreateSampleTables(TSession session) {
             (3u,   200u, "Eleven"),
             (3u,   300u, "Twelve"),
             (3u,   400u, "Thirteen"),
-            (3u,   500u, "Fourteen"),
-            (3u,   600u, NULL);
+            (3u,   500u, "Fourteen");
     )", TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).GetValueSync().IsSuccess());
 
     UNIT_ASSERT(session.ExecuteSchemeQuery(R"(
@@ -57,23 +56,6 @@ static void CreateSampleTables(TSession session) {
             (NULL, "One"),
             (Date("2019-05-08"), "Two"),
             (Date("2019-07-01"), "Three");
-    )", TTxControl::BeginTx().CommitTx()).GetValueSync().IsSuccess());
-
-    UNIT_ASSERT(session.ExecuteSchemeQuery(R"(
-        CREATE TABLE `/Root/TestJson` (
-            Key1 Int32,
-            Key2 Int32,
-            Value Json,
-            PRIMARY KEY (Key1, Key2)
-        );
-    )").GetValueSync().IsSuccess());
-
-    UNIT_ASSERT(session.ExecuteDataQuery(R"(
-        REPLACE INTO `/Root/TestJson` (Key1, Key2, Value) VALUES
-            (0, 0, NULL),
-            (0, 1, "[0]"),
-            (1, 0, NULL),
-            (1, 1, "[1]");
     )", TTxControl::BeginTx().CommitTx()).GetValueSync().IsSuccess());
 
     {
@@ -372,117 +354,6 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         CompareYson(R"([[["One"]]])", FormatResultSetYson(result.GetResultSet(0)));
     }
 
-    Y_UNIT_TEST(IsNotNullSecondComponent) {
-        TKikimrRunner kikimr;
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        CreateSampleTables(session);
-        auto result = session.ExecuteDataQuery(Q_(R"(
-                SELECT * FROM `/Root/TestNulls` WHERE
-                    Key1 IS NULL AND Key2 IS NOT NULL
-            )"),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        CompareYson(R"([[#;[100u];["Two"]];[#;[200u];["Three"]]])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(IsNullInValue) {
-        TKikimrRunner kikimr;
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        CreateSampleTables(session);
-        auto result = session.ExecuteDataQuery(Q_(R"(
-                SELECT * FROM `/Root/TestNulls` WHERE
-                    Key1 = 3u AND Value IS NULL
-            )"),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        CompareYson(R"([
-            [[3u];[600u];#]
-        ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(IsNullInJsonValue) {
-        TKikimrRunner kikimr;
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        CreateSampleTables(session);
-        auto result = session.ExecuteDataQuery(Q_(R"(
-                SELECT * FROM `/Root/TestJson` WHERE
-                    Key1 = 0 AND Value IS NULL
-            )"),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        CompareYson(R"([
-            [[0];[0];#]
-        ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(IsNotNullInValue) {
-        TKikimrRunner kikimr;
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        CreateSampleTables(session);
-        auto result = session.ExecuteDataQuery(Q_(R"(
-                SELECT * FROM `/Root/TestNulls` WHERE
-                    Key1 = 3u AND Value IS NOT NULL
-            )"),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        CompareYson(R"([
-            [[3u];[100u];["Ten"]];
-            [[3u];[200u];["Eleven"]];
-            [[3u];[300u];["Twelve"]];
-            [[3u];[400u];["Thirteen"]];
-            [[3u];[500u];["Fourteen"]]
-        ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(IsNotNullInJsonValue) {
-        TKikimrRunner kikimr;
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        CreateSampleTables(session);
-        auto result = session.ExecuteDataQuery(Q_(R"(
-                SELECT * FROM `/Root/TestJson` WHERE
-                    Key1 = 0 AND Value IS NOT NULL
-            )"),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        CompareYson(R"([
-            [[0];[1];["[0]"]]
-        ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(IsNotNullInJsonValue2) {
-        TKikimrRunner kikimr;
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        CreateSampleTables(session);
-        auto result = session.ExecuteDataQuery(Q_(R"(
-                SELECT * FROM `/Root/TestJson` WHERE
-                    Value IS NOT NULL
-            )"),
-            TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-        CompareYson(R"([
-            [[0];[1];["[0]"]];
-            [[1];[1];["[1]"]]
-        ])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
     Y_UNIT_TEST(IsNullPartial) {
         TKikimrRunner kikimr;
         auto db = kikimr.GetTableClient();
@@ -531,7 +402,7 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         UNIT_ASSERT(result.IsSuccess());
 
         CompareYson(R"([
-            [["Seven"]];[["Eight"]];[["Nine"]];[["Ten"]];[["Eleven"]];[["Twelve"]];[["Thirteen"]];[["Fourteen"]];[#]
+            [["Seven"]];[["Eight"]];[["Nine"]];[["Ten"]];[["Eleven"]];[["Twelve"]];[["Thirteen"]];[["Fourteen"]]
         ])", FormatResultSetYson(result.GetResultSet(0)));
     }
 
@@ -648,24 +519,19 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
             UNIT_ASSERT(result.IsSuccess());
 
             auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-            size_t readPhase = 0;
-            if (stats.query_phases().size() == 3) {
-                readPhase = 1;
-            } else {
-                UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
-            }
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
 
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).affected_shards(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access().size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access(0).name(), "/Root/MultiShardTable");
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access(0).reads().rows(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase).table_access(0).partitions_count(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).name(), "/Root/MultiShardTable");
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).partitions_count(), 1);
 
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).affected_shards(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access().size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access(0).name(), "/Root/MultiShardTable");
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access(0).updates().rows(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(readPhase + 1).table_access(0).partitions_count(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).affected_shards(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access().size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access(0).name(), "/Root/MultiShardTable");
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access(0).updates().rows(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access(0).partitions_count(), 1);
         }
     }
 
@@ -803,8 +669,7 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
                 [[3u];["Eleven"]];
                 [[3u];["Twelve"]];
                 [[3u];["Thirteen"]];
-                [[3u];["Fourteen"]];
-                [[3u];#]
+                [[3u];["Fourteen"]]
             ])", FormatResultSetYson(result.GetResultSet(0)));
         }
     }
@@ -1055,8 +920,12 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
 
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 0);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).updates().rows(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).deletes().rows(), 0);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).partitions_count(), 1);
 
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).affected_shards(), 1);
         UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(1).table_access().size(), 1);
@@ -1089,18 +958,13 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
             [[2];[403u];["Value3"]]])", FormatResultSetYson(result.GetResultSet(0)));
 
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-        size_t phase = 0;
-        if (stats.query_phases().size() == 2) {
-            phase = 1;
-        } else {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
-        }
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
 
         if (!settings.AppConfig.GetTableServiceConfig().GetEnableKqpDataQueryStreamLookup()) {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).affected_shards(), 4);
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).partitions_count(), 4);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).affected_shards(), 4);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).partitions_count(), 4);
         }
     }
 
@@ -1131,14 +995,9 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         ])", FormatResultSetYson(result.GetResultSet(0)));
 
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-        size_t phase = 0;
-        if (stats.query_phases().size() == 2) {
-            phase = 1;
-        } else {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
-        }
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
     }
 
     Y_UNIT_TEST(LiteralOrCompisiteCollision) {
@@ -1168,14 +1027,9 @@ Y_UNIT_TEST_SUITE(KqpRanges) {
         ])", FormatResultSetYson(result.GetResultSet(0)));
 
         auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-        size_t phase = 0;
-        if (stats.query_phases().size() == 2) {
-            phase = 1;
-        } else {
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
-        }
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access().size(), 1);
+        UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(0).table_access(0).reads().rows(), 3);
     }
 
     Y_UNIT_TEST(NoFullScanAtScanQuery) {

@@ -23,7 +23,7 @@ STFUNC(TAuditLogActor::StateWork)
         HFunc(TEvents::TEvPoisonPill, HandlePoisonPill);
         HFunc(TEvAuditLog::TEvWriteAuditLog, HandleWriteAuditLog);
     default:
-        HandleUnexpectedEvent(ev);
+        HandleUnexpectedEvent(ev, ctx);
         break;
     }
 }
@@ -89,9 +89,11 @@ void TAuditLogActor::HandleWriteAuditLog(const TEvAuditLog::TEvWriteAuditLog::TP
 
 void TAuditLogActor::HandleUnexpectedEvent(STFUNC_SIG)
 {
+    Y_UNUSED(ctx);
+
     LOG_W("TAuditLogActor:"
           << " unhandled event type: " << ev->GetTypeRewrite()
-          << " event: " << ev->GetTypeName());
+          << " event: " << (ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?"));
 }
 
 }    // namespace NKikimr::NAudit

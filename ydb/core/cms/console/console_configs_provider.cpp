@@ -7,7 +7,7 @@
 #include <ydb/core/cms/console/validators/registry.h>
 #include <ydb/core/mon/mon.h>
 
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 namespace NKikimr::NConsole {
 
@@ -56,7 +56,7 @@ public:
 
     void OpenPipe(const TActorContext &ctx)
     {
-        Y_ABORT_UNLESS(Subscription->Subscriber.TabletId);
+        Y_VERIFY(Subscription->Subscriber.TabletId);
         NTabletPipe::TClientConfig pipeConfig;
         pipeConfig.RetryPolicy = FastConnectRetryPolicy();
         auto pipe = NTabletPipe::CreateClient(ctx.SelfID, Subscription->Subscriber.TabletId, pipeConfig);
@@ -142,8 +142,8 @@ public:
             HFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
 
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                   ev->GetTypeRewrite(), ev->ToString().data());
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                   ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
             break;
         }
     }
@@ -282,8 +282,8 @@ public:
             IgnoreFunc(TEvInterconnect::TEvNodeConnected);
 
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                   ev->GetTypeRewrite(), ev->ToString().data());
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                   ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
             break;
         }
     }
@@ -326,8 +326,8 @@ public:
             IgnoreFunc(TEvInterconnect::TEvNodeConnected);
 
             default:
-                Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                       ev->GetTypeRewrite(), ev->ToString().data());
+                Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                       ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
                 break;
         }
     }
@@ -838,7 +838,7 @@ void TConfigsProvider::Handle(TEvConsole::TEvConfigSubscriptionCanceled::TPtr &e
         return;
     }
 
-    Y_ABORT_UNLESS(subscription->Worker);
+    Y_VERIFY(subscription->Worker);
 
     InMemoryIndex.RemoveSubscription(subscriber);
     Send(subscription->Worker, new TEvents::TEvPoisonPill());
@@ -1001,7 +1001,7 @@ void TConfigsProvider::Handle(TEvConsole::TEvConfigNotificationResponse::TPtr &e
         LOG_DEBUG_S(ctx, NKikimrServices::CMS_CONFIGS,
                     "Config notification response cookie mismatch for"
                     << " subscription id=" << rec.GetSubscriptionId());
-        Y_ABORT_UNLESS(subscription->Subscriber.ServiceId);
+        Y_VERIFY(subscription->Subscriber.ServiceId);
         return;
     }
     // Actually it's possible cookie was changed in configs manager
@@ -1182,7 +1182,7 @@ void TConfigsProvider::Handle(TEvPrivate::TEvSetConfig::TPtr &ev, const TActorCo
 void TConfigsProvider::Handle(TEvPrivate::TEvSetConfigs::TPtr &ev, const TActorContext &ctx)
 {
     Y_UNUSED(ctx);
-    Y_ABORT_UNLESS(ConfigIndex.IsEmpty());
+    Y_VERIFY(ConfigIndex.IsEmpty());
     for (auto &pr : ev->Get()->ConfigItems)
         ConfigIndex.AddItem(pr.second);
     CheckAllSubscriptions(ctx);
@@ -1191,7 +1191,7 @@ void TConfigsProvider::Handle(TEvPrivate::TEvSetConfigs::TPtr &ev, const TActorC
 void TConfigsProvider::Handle(TEvPrivate::TEvSetSubscriptions::TPtr &ev, const TActorContext &ctx)
 {
     Y_UNUSED(ctx);
-    Y_ABORT_UNLESS(SubscriptionIndex.IsEmpty());
+    Y_VERIFY(SubscriptionIndex.IsEmpty());
     for (auto &pr : ev->Get()->Subscriptions)
         SubscriptionIndex.AddSubscription(pr.second);
     CheckAllSubscriptions(ctx);
@@ -1202,8 +1202,8 @@ void TConfigsProvider::Handle(TEvPrivate::TEvUpdateConfigs::TPtr &ev, const TAct
     auto &event = ev->Get()->Event;
     if (event) {
         LOG_TRACE_S(ctx, NKikimrServices::CMS_CONFIGS,
-                    "TConfigsProvider send: " << ev->ToString());
-        ctx.Send(event.Release());
+                    "TConfigsProvider send: " << event->GetBase()->ToString());
+        ctx.Send(event);
     }
 
     ApplyConfigModifications(ev->Get()->Modifications, ctx);
@@ -1214,8 +1214,8 @@ void TConfigsProvider::Handle(TEvPrivate::TEvUpdateSubscriptions::TPtr &ev, cons
     auto &event = ev->Get()->Event;
     if (event) {
         LOG_TRACE_S(ctx, NKikimrServices::CMS_CONFIGS,
-                    "TConfigsProvider send: " << ev->ToString());
-        ctx.Send(event.Release());
+                    "TConfigsProvider send: " << event->GetBase()->ToString());
+        ctx.Send(event);
     }
 
     ApplySubscriptionModifications(ev->Get()->Modifications, ctx);

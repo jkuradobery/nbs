@@ -1,13 +1,13 @@
 #include "ydb/core/testlib/basics/appdata.h"
 
-#include <ydb/core/fq/libs/actors/logging/log.h>
-#include <ydb/core/fq/libs/ydb/util.h>
-#include <ydb/core/fq/libs/ydb/ydb.h>
+#include <ydb/core/yq/libs/actors/logging/log.h>
+#include <ydb/core/yq/libs/ydb/util.h>
+#include <ydb/core/yq/libs/ydb/ydb.h>
 
-#include <ydb/core/fq/libs/control_plane_proxy/events/events.h>
+#include <ydb/core/yq/libs/control_plane_proxy/events/events.h>
 
-#include <ydb/library/actors/core/executor_pool_basic.h>
-#include <ydb/library/actors/core/scheduler_basic.h>
+#include <library/cpp/actors/core/executor_pool_basic.h>
+#include <library/cpp/actors/core/scheduler_basic.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <ydb/library/yql/utils/actors/http_sender_actor.h>
@@ -18,7 +18,7 @@
 
 #include <util/system/env.h>
 
-namespace NYql {
+namespace NYq {
 
 using namespace NActors;
 using namespace NKikimr;
@@ -204,4 +204,4 @@ Y_UNIT_TEST_SUITE(THttpSenderTests) {
 
 
 
-} // namespace NYql
+} // namespace NYq

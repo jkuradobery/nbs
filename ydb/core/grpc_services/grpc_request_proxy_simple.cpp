@@ -47,12 +47,11 @@ class TGRpcRequestProxySimple
 public:
     explicit TGRpcRequestProxySimple(const NKikimrConfig::TAppConfig& appConfig)
         : AppConfig(appConfig)
-        , ChannelBufferSize(appConfig.GetTableServiceConfig().GetResourceManager().GetChannelBufferSize())
     {
     }
 
     void Bootstrap(const TActorContext& ctx);
-    void StateFunc(TAutoPtr<IEventHandle>& ev);
+    void StateFunc(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx);
 
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
         return NKikimrServices::TActivity::GRPC_PROXY;
@@ -110,12 +109,12 @@ private:
 
         auto state = requestBaseCtx->GetAuthState();
 
-        if (state.State == NYdbGrpc::TAuthState::AS_FAIL) {
+        if (state.State == NGrpc::TAuthState::AS_FAIL) {
             requestBaseCtx->ReplyUnauthenticated();
             return;
         }
 
-        if (state.State == NYdbGrpc::TAuthState::AS_UNAVAILABLE) {
+        if (state.State == NGrpc::TAuthState::AS_UNAVAILABLE) {
             Counters->IncDatabaseUnavailableCounter();
             const TString error = "Unable to resolve token";
             const auto issue = MakeIssue(NKikimrIssues::TIssuesIds::YDB_AUTH_UNAVAILABLE, error);
@@ -126,7 +125,7 @@ private:
 
         {
             TSchemeBoardEvents::TDescribeSchemeResult schemeData;
-            Register(CreateGrpcRequestCheckActor<TEvent>(SelfId(), schemeData, nullptr, event.Release(), Counters, false, this));
+            Register(CreateGrpcRequestCheckActor<TEvent>(SelfId(), schemeData, nullptr, event.Release(), Counters, false));
             return;
         }
 
@@ -136,16 +135,11 @@ private:
         requestBaseCtx->ReplyWithYdbStatus(Ydb::StatusIds::BAD_REQUEST);
     }
 
-    ui64 GetChannelBufferSize() const override {
-        return ChannelBufferSize.load();
+    const NKikimrConfig::TAppConfig& GetAppConfig() const override {
+        return AppConfig;
     }
 
-    TActorId RegisterActor(IActor* actor) const override {
-        return TActivationContext::AsActorContext().Register(actor);
-    }
-
-    const NKikimrConfig::TAppConfig AppConfig;
-    std::atomic<ui64> ChannelBufferSize;
+    NKikimrConfig::TAppConfig AppConfig;
     IGRpcProxyCounters::TPtr Counters;
 };
 
@@ -171,8 +165,8 @@ void TGRpcRequestProxySimple::HandleUndelivery(TEvents::TEvUndelivered::TPtr& ev
 
 bool TGRpcRequestProxySimple::IsAuthStateOK(const IRequestProxyCtx& ctx) {
     const auto& state = ctx.GetAuthState();
-    return state.State == NYdbGrpc::TAuthState::AS_OK ||
-           state.State == NYdbGrpc::TAuthState::AS_FAIL && state.NeedAuth == false ||
+    return state.State == NGrpc::TAuthState::AS_OK ||
+           state.State == NGrpc::TAuthState::AS_FAIL && state.NeedAuth == false ||
            state.NeedAuth == false && !ctx.GetYdbToken();
 }
 
@@ -202,13 +196,13 @@ void LogRequest(const TEvent& event) {
     }
 }
 
-void TGRpcRequestProxySimple::StateFunc(TAutoPtr<IEventHandle>& ev) {
+void TGRpcRequestProxySimple::StateFunc(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
     switch (ev->GetTypeRewrite()) {
         hFunc(TEvents::TEvUndelivered, HandleUndelivery);
         HFunc(TEvListEndpointsRequest, PreHandle);
         HFunc(TEvProxyRuntimeEvent, PreHandle);
         default:
-            Y_ABORT("Unknown request: %u\n", ev->GetTypeRewrite());
+            Y_FAIL("Unknown request: %u\n", ev->GetTypeRewrite());
         break;
     }
 }

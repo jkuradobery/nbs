@@ -2,26 +2,20 @@
 
 #include "defs.h"
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actorsystem.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/mailbox.h>
-#include <ydb/library/actors/core/scheduler_queue.h>
-#include <ydb/library/actors/interconnect/interconnect_common.h>
-#include <ydb/library/actors/util/should_continue.h>
-#include <ydb/library/actors/core/monotonic_provider.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actorsystem.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/mailbox.h>
+#include <library/cpp/actors/core/scheduler_queue.h>
+#include <library/cpp/actors/interconnect/interconnect_common.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/tablet.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <util/system/env.h>
-#include <ydb/core/protos/config.pb.h>
 
 #include "single_thread_ic_mock.h"
 
 namespace NKikimr {
-
-void RegisterActorName(const TActorId& actorId, const TString& name);
-TString GetRegisteredActorName(const TActorId& actorId);
 
 class TTestExecutorPool;
 
@@ -112,12 +106,11 @@ class TTestActorSystem {
     TProgramShouldContinue ProgramShouldContinue;
     TAppData AppData;
     TIntrusivePtr<NLog::TSettings> LoggerSettings_;
-    NActors::NLog::EPrio OwnLogPriority = NActors::NLog::EPrio::Error;
     TActorId CurrentRecipient;
     ui32 CurrentNodeId = 0;
     ui64 EventsProcessed = 0;
-    TSingleThreadInterconnectMock InterconnectMock;
     std::unordered_map<ui32, TPerNodeInfo> PerNodeInfo;
+    TSingleThreadInterconnectMock InterconnectMock;
     std::set<TActorId> LoggerActorIds;
 
     static thread_local TTestActorSystem *CurrentTestActorSystem;
@@ -151,18 +144,18 @@ class TTestActorSystem {
         {}
 
         void WaitForEvent(std::unique_ptr<IEventHandle> *handlePtr) {
-            Y_ABORT_UNLESS(!HandlePtr);
+            Y_VERIFY(!HandlePtr);
             HandlePtr = handlePtr;
         }
 
         void StopWaitingForEvent() {
-            Y_ABORT_UNLESS(HandlePtr);
+            Y_VERIFY(HandlePtr);
             HandlePtr = nullptr;
         }
 
-        void StateFunc(TAutoPtr<IEventHandle>& ev) {
-            Y_ABORT_UNLESS(HandlePtr, "event is not being captured by this actor Tag# %s", Tag.data());
-            Y_ABORT_UNLESS(!*HandlePtr);
+        void StateFunc(TAutoPtr<IEventHandle>& ev, const TActorContext& /*ctx*/) {
+            Y_VERIFY(HandlePtr, "event is not being captured by this actor Tag# %s", Tag.data());
+            Y_VERIFY(!*HandlePtr);
             HandlePtr->reset(ev.Release());
         }
     };
@@ -178,7 +171,7 @@ public:
     TTestActorSystem(ui32 numNodes, NLog::EPriority defaultPrio = NLog::PRI_ERROR)
         : MaxNodeId(numNodes)
         , AppData(0, 0, 0, 0, {{"IC", 0}}, nullptr, nullptr, nullptr, &ProgramShouldContinue)
-        , LoggerSettings_(MakeIntrusive<NLog::TSettings>(TActorId(0, "logger"), NActorsServices::LOGGER, defaultPrio))
+        , LoggerSettings_(MakeIntrusive<NLog::TSettings>(TActorId(0, "logger"), NKikimrServices::LOGGER, defaultPrio))
         , InterconnectMock(0, Max<ui64>(), this) // burst capacity (bytes), bytes per second
     {
         AppData.Counters = MakeIntrusive<::NMonitoring::TDynamicCounters>();
@@ -197,20 +190,14 @@ public:
             PerNodeInfo.emplace(i + 1, TPerNodeInfo());
         }
 
-        Y_ABORT_UNLESS(!CurrentTestActorSystem);
+        Y_VERIFY(!CurrentTestActorSystem);
         CurrentTestActorSystem = this;
 
         AppData.MonotonicTimeProvider = CreateMonotonicTimeProvider();
-
-        AppData.HiveConfig.SetWarmUpBootWaitingPeriod(10);
-        AppData.HiveConfig.SetMaxNodeUsageToKick(100);
-        AppData.HiveConfig.SetMinCounterScatterToBalance(100);
-        AppData.HiveConfig.SetMinScatterToBalance(100);
-        AppData.HiveConfig.SetObjectImbalanceToBalance(100);
     }
 
     ~TTestActorSystem() {
-        Y_ABORT_UNLESS(CurrentTestActorSystem == this);
+        Y_VERIFY(CurrentTestActorSystem == this);
         CurrentTestActorSystem = nullptr;
     }
 
@@ -250,14 +237,15 @@ public:
 
         // we create this actor for correct service lookup through ActorSystem
         setup->LocalServices.emplace_back(LoggerSettings_->LoggerActorId, TActorSetupCmd(
-            std::make_unique<TEdgeActor>(__FILE__, __LINE__), TMailboxType::Simple, 0));
+            new TEdgeActor(__FILE__, __LINE__), TMailboxType::Simple, 0));
 
         auto common = MakeIntrusive<TInterconnectProxyCommon>();
         auto& proxyActors = setup->Interconnect.ProxyActors;
         proxyActors.resize(MaxNodeId + 1);
         for (const auto& [peerNodeId, peerInfo] : PerNodeInfo) {
             if (peerNodeId != nodeId) {
-                proxyActors[peerNodeId] = TActorSetupCmd(InterconnectMock.CreateProxyActor(nodeId, peerNodeId, common), TMailboxType::Simple, 0);
+                proxyActors[peerNodeId] = TActorSetupCmd(InterconnectMock.CreateProxyActor(nodeId, peerNodeId,
+                    common).release(), TMailboxType::Simple, 0);
             }
         }
 
@@ -335,7 +323,7 @@ public:
         for (auto& [nodeId, info] : PerNodeInfo) {
             info.ActorSystem->Stop();
         }
-        Y_ABORT_UNLESS(!TlsActivationContext);
+        Y_VERIFY(!TlsActivationContext);
         for (;;) {
             // exchange container to prevent side-effects while destroying actors (they may use actor system in dtors);
             // do this in cycle because actor destructor code may spawn more actors
@@ -373,14 +361,15 @@ public:
     void SetLogPriority(NActors::NLog::EComponent component, NActors::NLog::EPriority priority) {
         TString explanation;
         int res = LoggerSettings_->SetLevel(priority, component, explanation);
-        Y_ABORT_UNLESS(!res, "failed to set log level: %s", explanation.data());
+        Y_VERIFY(!res, "failed to set log level: %s", explanation.data());
     }
 
-    void SetOwnLogPriority(NActors::NLog::EPrio priority) {
-        OwnLogPriority = priority;
+    bool Send(IEventHandle *ev, ui32 nodeId = 0) {
+        TAutoPtr<IEventHandle> wrapper(ev);
+        return Send(wrapper, nodeId);
     }
 
-    bool Send(TAutoPtr<IEventHandle> ev, ui32 nodeId = 0) {
+    bool Send(TAutoPtr<IEventHandle>& ev, ui32 nodeId) {
         if (!ev) {
             return false;
         } else if (LoggerActorIds.count(ev->GetRecipientRewrite()) && ev->GetTypeRewrite() == NLog::TEvLog::EventType) {
@@ -401,13 +390,7 @@ public:
         }
 
         nodeId = nodeId ? nodeId : CurrentNodeId;
-        Y_ABORT_UNLESS(nodeId);
-
-        if (OwnLogPriority >= NActors::NLog::EPrio::Info) {
-            auto actor = GetActor(TransformEvent(ev.Get(), nodeId));
-            const auto targetActorId = actor ? (actor->SelfId()) : TActorId{0, 0};
-            *LogStream << "[TestActorSystem] Send event from " << GetRegisteredActorName(ev->Sender) << " to " << GetRegisteredActorName(targetActorId) << ": " << ev->ToString() << Endl;
-        }
+        Y_VERIFY(nodeId);
 
         // check if the target actor exists; we have to transform the event recipient early to keep behaviour of real
         // actor system here
@@ -415,7 +398,8 @@ public:
             Schedule(Clock, ev, nullptr, nodeId);
             return true;
         } else {
-            Send(IEventHandle::ForwardOnNondelivery(std::move(ev), TEvents::TEvUndelivered::ReasonActorUnknown), nodeId);
+            TAutoPtr<IEventHandle> wrapper(ev->ForwardOnNondelivery(TEvents::TEvUndelivered::ReasonActorUnknown));
+            Send(wrapper, nodeId);
             return false;
         }
     }
@@ -433,14 +417,11 @@ public:
     }
 
     void Schedule(TInstant ts, TAutoPtr<IEventHandle> ev, ISchedulerCookie *cookie, ui32 nodeId) {
-        Y_ABORT_UNLESS(ts >= Clock);
+        Y_VERIFY(ts >= Clock);
         nodeId = nodeId ? nodeId : CurrentNodeId;
-        Y_ABORT_UNLESS(nodeId);
-        if (ev) {
-            auto* evf = ev.Get();
-            if (evf && evf->HasEvent() && evf->GetTypeRewrite() == evf->Type && !EventName.count(evf->Type)) {
-                EventName.emplace(evf->Type, TypeName(*evf->GetBase()));
-            }
+        Y_VERIFY(nodeId);
+        if (ev && ev->HasEvent() && ev->GetTypeRewrite() == ev->Type && !EventName.count(ev->Type)) {
+            EventName.emplace(ev->Type, TypeName(*ev->GetBase()));
         }
         std::unique_ptr<IEventHandle> evPtr(ev.Release());
         if (!FilterEnqueue || FilterEnqueue(nodeId, evPtr, cookie, ts)) {
@@ -457,8 +438,8 @@ public:
         // count stats
         TString name = TypeName(*actor);
         ++ActorStats[name].Created;
-        const bool inserted = ActorName.emplace(actor, name).second;
-        Y_ABORT_UNLESS(inserted);
+        const bool inserted = ActorName.emplace(actor, std::move(name)).second;
+        Y_VERIFY(inserted);
 
         // specify node id if not provided
         nodeId = nodeId ? nodeId : CurrentNodeId;
@@ -478,10 +459,6 @@ public:
         // generate actor id
         const TActorId actorId(nodeId, poolId, mbox.ActorLocalId, mboxId);
         ++mbox.ActorLocalId;
-        if (OwnLogPriority >= NActors::NLog::EPrio::Info) {
-            *LogStream << "[TestActorSystem] Register actor \"" << name << "\" with id " << actorId.ToString() << Endl;
-            RegisterActorName(actorId, name);
-        }
 
         // initialize actor in actor system
         DoActorInit(info->ActorSystem.get(), actor, actorId, parentId ? parentId : CurrentRecipient);
@@ -518,7 +495,7 @@ public:
                 if (items.empty()) {
                     ScheduleQ.erase(it);
                 } else {
-                    Y_ABORT_UNLESS(Clock <= timestamp);
+                    Y_VERIFY(Clock <= timestamp);
                     Clock = timestamp;
                     item.emplace(std::move(items.front()));
                     items.pop_front();
@@ -527,7 +504,7 @@ public:
             }
 
             if (!item) {
-                Y_ABORT("test actor system stalled -- no progress made"); // ensure we are doing progress
+                Y_FAIL("test actor system stalled -- no progress made"); // ensure we are doing progress
             }
 
             if (item->Cookie && !item->Cookie->Detach()) { // item is not relevant anymore
@@ -547,11 +524,11 @@ public:
                 const ui32 type = ev->GetTypeRewrite();
 
                 THPTimer timer;
-                actor->Receive(ev);
+                actor->Receive(ev, TActivationContext::AsActorContext());
                 const TDuration timing = TDuration::Seconds(timer.Passed());
 
                 const auto it = ActorName.find(actor);
-                Y_ABORT_UNLESS(it != ActorName.end(), "%p", actor);
+                Y_VERIFY(it != ActorName.end(), "%p", actor);
 
                 auto& stats = EventProcessingStats[std::make_pair(it->second, type)];
                 ++stats.HitCount;
@@ -604,9 +581,9 @@ public:
             // remove destroyed actors from the mailbox
             for (const auto& actor : info->ExecutorThread->GetUnregistered()) {
                 const TActorId& actorId = actor->SelfId();
-                Y_ABORT_UNLESS(TMailboxId(actorId) == mboxIt->first);
+                Y_VERIFY(TMailboxId(actorId) == mboxIt->first);
                 const auto nameIt = ActorName.find(actor.Get());
-                Y_ABORT_UNLESS(nameIt != ActorName.end());
+                Y_VERIFY(nameIt != ActorName.end());
                 ++ActorStats[nameIt->second].Destroyed;
                 ActorName.erase(nameIt);
             }
@@ -630,7 +607,7 @@ public:
         std::vector<TEdgeActor*> edges;
         for (const TActorId& edgeActorId : edgeActorIds) {
             TEdgeActor *edge = dynamic_cast<TEdgeActor*>(GetActor(edgeActorId));
-            Y_ABORT_UNLESS(edge);
+            Y_VERIFY(edge);
             edge->WaitForEvent(&res);
             edges.push_back(edge);
         }
@@ -644,7 +621,7 @@ public:
     template<typename TEvent>
     std::unique_ptr<TEventHandle<TEvent>> WaitForEdgeActorEvent(const TActorId& edgeActorId, bool termOnCapture = true) {
         auto ev = WaitForEdgeActorEvent({edgeActorId});
-        Y_ABORT_UNLESS(ev->GetTypeRewrite() == TEvent::EventType, "unexpected Event# 0x%08" PRIx32, ev->GetTypeRewrite());
+        Y_VERIFY(ev->GetTypeRewrite() == TEvent::EventType, "unexpected Event# 0x%08" PRIx32, ev->GetTypeRewrite());
         if (termOnCapture) {
             DestroyActor(edgeActorId);
         }
@@ -654,16 +631,16 @@ public:
     void DestroyActor(TActorId actorId) {
         // find per-node info for this actor
         TPerNodeInfo *info = GetNode(actorId.NodeId());
-        Y_ABORT_UNLESS(info);
+        Y_VERIFY(info);
 
         // find mailbox
         auto it = Mailboxes.find(actorId);
-        Y_ABORT_UNLESS(it != Mailboxes.end());
+        Y_VERIFY(it != Mailboxes.end());
         TMailboxInfo& mbox = it->second;
 
         // update stats
         const auto nameIt = ActorName.find(mbox.Header.FindActor(actorId.LocalId()));
-        Y_ABORT_UNLESS(nameIt != ActorName.end());
+        Y_VERIFY(nameIt != ActorName.end());
         ++ActorStats[nameIt->second].Destroyed;
         ActorName.erase(nameIt);
 
@@ -737,25 +714,25 @@ private:
     IExecutorPool *CreateTestExecutorPool(ui32 nodeId);
 
     TActorId TransformEvent(IEventHandle *ev, ui32 nodeId) {
-        Y_ABORT_UNLESS(nodeId);
+        Y_VERIFY(nodeId);
         TActorId recip = ev->GetRecipientRewrite();
         if (recip.NodeId() && recip.NodeId() != nodeId) {
-            //Y_ABORT_UNLESS(!ev->HasEvent() || ev->GetBase()->IsSerializable(), "event can't pass through interconnect");
-            Y_ABORT_UNLESS(ev->Recipient == recip, "original recipient actor id lost");
+            Y_VERIFY(!ev->HasEvent() || ev->GetBase()->IsSerializable(), "event can't pass through interconnect");
+            Y_VERIFY(ev->Recipient == recip, "original recipient actor id lost");
             recip = GetNode(nodeId)->ActorSystem->InterconnectProxy(recip.NodeId());
             ev->Rewrite(TEvInterconnect::EvForward, recip);
         } else if (recip.IsService()) {
-            Y_ABORT_UNLESS(!recip.NodeId() || recip.NodeId() == nodeId, "recipient node mismatch");
+            Y_VERIFY(!recip.NodeId() || recip.NodeId() == nodeId, "recipient node mismatch");
             recip = GetNode(nodeId)->ActorSystem->LookupLocalService(recip);
             ev->Rewrite(ev->GetTypeRewrite(), recip);
         }
-        Y_ABORT_UNLESS(!recip || (recip.NodeId() == nodeId && !recip.IsService()));
+        Y_VERIFY(!recip || (recip.NodeId() == nodeId && !recip.IsService()));
         return recip;
     }
 
     TPerNodeInfo *GetNode(ui32 nodeId) {
         const auto nodeIt = PerNodeInfo.find(nodeId);
-        Y_ABORT_UNLESS(nodeIt != PerNodeInfo.end());
+        Y_VERIFY(nodeIt != PerNodeInfo.end());
         return &nodeIt->second;
     }
 };
@@ -763,8 +740,8 @@ private:
 class TFakeSchedulerCookie : public ISchedulerCookie {
 public:
     bool Detach() noexcept override { delete this; return false; }
-    bool DetachEvent() noexcept override { Y_ABORT(); }
-    bool IsArmed() noexcept override { Y_ABORT(); }
+    bool DetachEvent() noexcept override { Y_FAIL(); }
+    bool IsArmed() noexcept override { Y_FAIL(); }
 };
 
 } // NKikimr

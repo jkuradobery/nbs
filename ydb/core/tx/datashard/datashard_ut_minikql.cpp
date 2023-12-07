@@ -1,4 +1,4 @@
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 
 #include <ydb/public/lib/deprecated/kicli/kicli.h>
 
@@ -1579,9 +1579,9 @@ Y_UNIT_TEST(MemoryUsageImmediateSmallTx) {
     }
 
     auto counters3 = ReadTxMemoryCounters(t, TTestTxConfig::TxTablet0);
-    // Expect one allocation on prepare for default pool
+    // Expect one allocation on prepare for default pool + one allocation for temporary pool after exception on limit extension unavailable.
     // on execute_data_tx_unit.cpp:127 we set limit and on temporary object allocation (on reading) we add new page with exhausted limit.
-    CheckCounters(counters3, counters2, 1, 0, 0);
+    CheckCounters(counters3, counters2, 2, 0, 0);
 }
 
 Y_UNIT_TEST(MemoryUsageImmediateMediumTx) {

@@ -4,27 +4,14 @@
 #include "leaky_singleton.h"
 #endif
 
-#ifdef _asan_enabled_
-#include <sanitizer/lsan_interface.h>
-#endif
-
-#include <utility>
-
 namespace NYT {
 
 ////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
-template <class... TArgs>
-TLeakyStorage<T>::TLeakyStorage(TArgs&&... args)
+TLeakyStorage<T>::TLeakyStorage()
 {
-#ifdef _asan_enabled_
-    __lsan_disable();
-#endif
-    new (Get()) T(std::forward<TArgs>(args)...);
-#ifdef _asan_enabled_
-    __lsan_enable();
-#endif
+    new (Get()) T();
 }
 
 template <class T>
@@ -35,10 +22,10 @@ T* TLeakyStorage<T>::Get()
 
 ////////////////////////////////////////////////////////////////////////////////
 
-template <class T, class... TArgs>
-T* LeakySingleton(TArgs&&... args)
+template <class T>
+T* LeakySingleton()
 {
-    static TLeakyStorage<T> Storage(std::forward<TArgs>(args)...);
+    static TLeakyStorage<T> Storage;
     return Storage.Get();
 }
 

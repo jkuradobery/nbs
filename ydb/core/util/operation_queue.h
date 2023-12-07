@@ -6,7 +6,7 @@
 
 #include <ydb/core/base/defs.h>
 
-#include <ydb/library/actors/core/monotonic.h>
+#include <library/cpp/actors/core/monotonic.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/algorithm.h>
@@ -603,7 +603,7 @@ void TOperationQueue<T, TQueue>::StartOperations() {
     if ((ReadyQueue.Empty() && WaitingItems.Empty()) || RunningItems.Size() == Config.InflightLimit)
         return;
 
-    Y_ABORT_UNLESS(RunningItems.Size() < Config.InflightLimit);
+    Y_VERIFY(RunningItems.Size() < Config.InflightLimit);
 
     auto now = Timer.Now();
     TokenBucket.Fill(now);

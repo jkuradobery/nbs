@@ -2,13 +2,10 @@
 
 #include "public.h"
 #include "spin_lock_base.h"
-#include "spin_lock_count.h"
 
 #include <library/cpp/yt/misc/port.h>
 
 #include <library/cpp/yt/system/thread_id.h>
-
-#include <library/cpp/yt/memory/public.h>
 
 #include <util/system/src_location.h>
 #include <util/system/types.h>
@@ -63,16 +60,16 @@ private:
     void AcquireSlow() noexcept;
 };
 
-REGISTER_TRACKED_SPIN_LOCK_CLASS(TSpinLock)
-
 ////////////////////////////////////////////////////////////////////////////////
 
-//! A variant of TSpinLock occupying the whole cache line.
-class alignas(CacheLineSize) TPaddedSpinLock
+//! A variant of TReaderWriterSpinLock occupyig the whole cache line.
+class TPaddedSpinLock
     : public TSpinLock
-{ };
-
-REGISTER_TRACKED_SPIN_LOCK_CLASS(TPaddedSpinLock)
+{
+private:
+    [[maybe_unused]]
+    char Padding_[CacheLineSize - sizeof(TSpinLock)];
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -81,3 +78,4 @@ REGISTER_TRACKED_SPIN_LOCK_CLASS(TPaddedSpinLock)
 #define SPIN_LOCK_INL_H_
 #include "spin_lock-inl.h"
 #undef SPIN_LOCK_INL_H_
+

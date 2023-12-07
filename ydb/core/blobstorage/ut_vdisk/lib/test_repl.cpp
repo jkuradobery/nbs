@@ -26,9 +26,9 @@ class TReadUntilSuccessActor : public TActorBootstrapped<TReadUntilSuccessActor>
 
         bool AddReply(const TLogoBlobID& id) {
             const ui8 partId = id.PartId();
-            Y_ABORT_UNLESS(partId > 0);
+            Y_VERIFY(partId > 0);
             const ui32 mask = 1 << (partId - 1);
-            Y_ABORT_UNLESS(!(PartMask & mask));
+            Y_VERIFY(!(PartMask & mask));
             PartMask |= mask;
             return PartMask == 7;
         }
@@ -72,7 +72,7 @@ class TReadUntilSuccessActor : public TActorBootstrapped<TReadUntilSuccessActor>
         ui64 blobsSize = 0;
 
         TAutoPtr<IDataSet::TIterator> it = DataSet->First();
-        Y_ABORT_UNLESS(it->IsValid());
+        Y_VERIFY(it->IsValid());
         while (it->IsValid()) {
             ReadSet.insert(std::pair<TLogoBlobID, TVal>(it->Get()->Id, TVal(it->Get()->Data)));
             PendingReads.insert(it->Get()->Id);
@@ -102,7 +102,7 @@ class TReadUntilSuccessActor : public TActorBootstrapped<TReadUntilSuccessActor>
                     const TLogoBlobID id = TLogoBlobID(LogoBlobIDFromLogoBlobID(q.GetBlobID()), 0);
                     const TReadSet::iterator it = ReadSet.find(id);
                     if (it != ReadSet.end()) {
-                        if (it->second.Data == ev->Get()->GetBlobData(q).ConvertToString()) {
+                        if (it->second.Data == q.GetBuffer()) {
                             if (!Multipart || it->second.AddReply(LogoBlobIDFromLogoBlobID(q.GetBlobID()))) {
                                 ReadSet.erase(it);
                             }
@@ -234,11 +234,12 @@ private:
         while (Proxy->Valid()) {
             TLogoBlobID id;
             NKikimrProto::EReplyStatus status;
-            TRope data;
-            Proxy->FetchData(&id, &status, &data);
+            TTrackableString data(TMemoryConsumer(VCtx->Replication));
+            Proxy->GetData(&id, &status, &data);
             if (status == NKikimrProto::OK) {
-                ExpectedSetPtr->Check(id, status, data.ConvertToString());
+                ExpectedSetPtr->Check(id, status, data.GetBaseConstRef());
             }
+            Proxy->Next();
         }
 
         if (Proxy->IsEof()) {

@@ -119,7 +119,7 @@ public:
     }
 #ifndef MKQL_DISABLE_CODEGEN
     Value* DoGenerateGetValue(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
 
         const auto list = GetNodeValue(List, ctx, block);
         const auto startv = GetNodeValue(Start, ctx, block);
@@ -132,18 +132,18 @@ public:
         const auto ptrType = PointerType::getUnqual(StructType::get(context));
         const auto self = CastInst::Create(Instruction::IntToPtr, ConstantInt::get(Type::getInt64Ty(context), uintptr_t(this)), ptrType, "self", block);
 
-        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen.GetEffectiveTarget()) {
+        if (NYql::NCodegen::ETarget::Windows != ctx.Codegen->GetEffectiveTarget()) {
             const auto signature = FunctionType::get(list->getType(), {self->getType(), ctx.Ctx->getType(), list->getType(), start->getType(), step->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            const auto output = CallInst::Create(signature, creator, {self, ctx.Ctx, list, start, step}, "output", block);
+            const auto output = CallInst::Create(creator, {self, ctx.Ctx, list, start, step}, "output", block);
             return output;
         } else {
             const auto place = new AllocaInst(list->getType(), 0U, "place", block);
             new StoreInst(list, place, block);
             const auto signature = FunctionType::get(Type::getVoidTy(context), {self->getType(), place->getType(), ctx.Ctx->getType(), place->getType(), start->getType(), step->getType()}, false);
             const auto creator = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(signature), "creator", block);
-            CallInst::Create(signature, creator, {self, place, ctx.Ctx, place, start, step}, "", block);
-            const auto output = new LoadInst(list->getType(), place, "output", block);
+            CallInst::Create(creator, {self, place, ctx.Ctx, place, start, step}, "", block);
+            const auto output = new LoadInst(place, "output", block);
             return output;
         }
     }

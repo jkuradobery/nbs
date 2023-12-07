@@ -40,6 +40,20 @@ TVector<ui32> BuildColumnOrder(const TVector<TString>& columns, NKikimr::NMiniKQ
     return columnOrder;
 }
 
+NDqProto::EDataTransportVersion GetTransportVersion(const NYql::NDqProto::TData& data) {
+    switch (data.GetTransportVersion()) {
+        case 10000:
+            return NDqProto::EDataTransportVersion::DATA_TRANSPORT_YSON_1_0;
+        case 20000:
+            return NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_PICKLE_1_0;
+        case 30000:
+            return NDqProto::EDataTransportVersion::DATA_TRANSPORT_ARROW_1_0;
+        default:
+            break;
+    }
+    return NDqProto::EDataTransportVersion::DATA_TRANSPORT_VERSION_UNSPECIFIED;
+}
+
 } // unnamed
 
 TProtoBuilder::TProtoBuilder(const TString& type, const TVector<TString>& columns)
@@ -59,13 +73,13 @@ bool TProtoBuilder::CanBuildResultSet() const {
     return ResultType->GetKind() == TType::EKind::Struct;
 }
 
-TString TProtoBuilder::BuildYson(TVector<NYql::NDq::TDqSerializedBatch>&& rows, ui64 maxBytesLimit) {
+TString TProtoBuilder::BuildYson(const TVector<NYql::NDqProto::TData>& rows, ui64 maxBytesLimit) {
     ui64 size = 0;
     TStringStream out;
     NYson::TYsonWriter writer((IOutputStream*)&out);
     writer.OnBeginList();
 
-    auto full = WriteData(std::move(rows), [&](const NYql::NUdf::TUnboxedValuePod& value) {
+    auto full = WriteData(rows, [&](const NYql::NUdf::TUnboxedValuePod& value) {
         auto rowYson = NCommon::WriteYsonValue(value, ResultType, ColumnOrder.empty() ? nullptr : &ColumnOrder);
         writer.OnListItem();
         writer.OnRaw(rowYson);
@@ -81,51 +95,53 @@ TString TProtoBuilder::BuildYson(TVector<NYql::NDq::TDqSerializedBatch>&& rows, 
     return out.Str();
 }
 
-bool TProtoBuilder::WriteYsonData(NYql::NDq::TDqSerializedBatch&& data, const std::function<bool(const TString& rawYson)>& func) {
-    return WriteData(std::move(data), [&](const NYql::NUdf::TUnboxedValuePod& value) {
+bool TProtoBuilder::WriteYsonData(const NYql::NDqProto::TData& data, const std::function<bool(const TString& rawYson)>& func) {
+    return WriteData(data, [&](const NYql::NUdf::TUnboxedValuePod& value) {
         auto rowYson = NCommon::WriteYsonValue(value, ResultType, ColumnOrder.empty() ? nullptr : &ColumnOrder);
         return func(rowYson);
     });
 }
 
-bool TProtoBuilder::WriteData(NYql::NDq::TDqSerializedBatch&& data, const std::function<bool(const NYql::NUdf::TUnboxedValuePod& value)>& func) {
+bool TProtoBuilder::WriteData(const NDqProto::TData& data, const std::function<bool(const NYql::NUdf::TUnboxedValuePod& value)>& func) {
     TGuard<TScopedAlloc> allocGuard(Alloc);
 
     TMemoryUsageInfo memInfo("ProtoBuilder");
     THolderFactory holderFactory(Alloc.Ref(), memInfo);
-    const auto transportVersion = NDqProto::EDataTransportVersion::DATA_TRANSPORT_VERSION_UNSPECIFIED;
+    NDqProto::EDataTransportVersion transportVersion = GetTransportVersion(data);
     NDq::TDqDataSerializer dataSerializer(TypeEnv, holderFactory, transportVersion);
 
-    YQL_ENSURE(!ResultType->IsMulti());
-    TUnboxedValueBatch buffer(ResultType);
-    dataSerializer.Deserialize(std::move(data), ResultType, buffer);
+    TUnboxedValueVector buffer;
+    dataSerializer.Deserialize(data, ResultType, buffer);
 
-    return buffer.ForEachRow([&func](const auto& value) {
-        return func(value);
-    });
-}
-
-bool TProtoBuilder::WriteData(TVector<NYql::NDq::TDqSerializedBatch>&& rows, const std::function<bool(const NYql::NUdf::TUnboxedValuePod& value)>& func) {
-    TGuard<TScopedAlloc> allocGuard(Alloc);
-
-    TMemoryUsageInfo memInfo("ProtoBuilder");
-    THolderFactory holderFactory(Alloc.Ref(), memInfo);
-    const auto transportVersion = NDqProto::EDataTransportVersion::DATA_TRANSPORT_VERSION_UNSPECIFIED;
-    NDq::TDqDataSerializer dataSerializer(TypeEnv, holderFactory, transportVersion);
-
-    YQL_ENSURE(!ResultType->IsMulti());
-
-    for (auto& part : rows) {
-        TUnboxedValueBatch buffer(ResultType);
-        dataSerializer.Deserialize(std::move(part), ResultType, buffer);
-        if (!buffer.ForEachRow([&func](const auto& value) { return func(value); })) {
+    for (const auto& item : buffer) {
+        if (!func(item)) {
             return false;
         }
     }
     return true;
 }
 
-Ydb::ResultSet TProtoBuilder::BuildResultSet(TVector<NYql::NDq::TDqSerializedBatch>&& data) {
+bool TProtoBuilder::WriteData(const TVector<NDqProto::TData>& rows, const std::function<bool(const NYql::NUdf::TUnboxedValuePod& value)>& func) {
+    TGuard<TScopedAlloc> allocGuard(Alloc);
+
+    TMemoryUsageInfo memInfo("ProtoBuilder");
+    THolderFactory holderFactory(Alloc.Ref(), memInfo);
+    const auto transportVersion = rows.empty() ? NDqProto::EDataTransportVersion::DATA_TRANSPORT_VERSION_UNSPECIFIED : GetTransportVersion(rows.front());
+    NDq::TDqDataSerializer dataSerializer(TypeEnv, holderFactory, transportVersion);
+
+    for (const auto& part : rows) {
+        TUnboxedValueVector buffer;
+        dataSerializer.Deserialize(part, ResultType, buffer);
+        for (const auto& item : buffer) {
+            if (!func(item)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+Ydb::ResultSet TProtoBuilder::BuildResultSet(const TVector<NYql::NDqProto::TData>& data) {
     Ydb::ResultSet resultSet;
     auto structType = AS_TYPE(TStructType, ResultType);
     MKQL_ENSURE(structType, "Result is not a struct");
@@ -136,7 +152,7 @@ Ydb::ResultSet TProtoBuilder::BuildResultSet(TVector<NYql::NDq::TDqSerializedBat
         ExportTypeToProto(structType->GetMemberType(memberIndex), *column.mutable_type());
     }
 
-    WriteData(std::move(data), [&](const NYql::NUdf::TUnboxedValuePod& value) {
+    WriteData(data, [&](const NYql::NUdf::TUnboxedValuePod& value) {
         ExportValueToProto(ResultType, value, *resultSet.add_rows(), &ColumnOrder);
         return true;
     });

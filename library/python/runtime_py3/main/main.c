@@ -1,10 +1,11 @@
 #include <Python.h>
-#include <contrib/tools/python3/src/Include/internal/pycore_runtime.h> // _PyRuntime_Initialize()
+#include <contrib/tools/python3/src/Include/internal/pycore_runtime.h>  // _PyRuntime_Initialize()
 
 #include <stdlib.h>
 #include <string.h>
 #include <locale.h>
 
+void Py_InitArgcArgv(int argc, wchar_t **argv);
 char* GetPyMain();
 int IsYaIdeVenv();
 
@@ -25,7 +26,7 @@ void unsetenv(const char* name) {
 }
 #endif
 
-static int RunModule(const char* modname)
+static int RunModule(const char *modname)
 {
     PyObject *module, *runpy, *runmodule, *runargs, *result;
     runpy = PyImport_ImportModule("runpy");
@@ -52,7 +53,7 @@ static int RunModule(const char* modname)
     runargs = Py_BuildValue("(Oi)", module, 0);
     if (runargs == NULL) {
         fprintf(stderr,
-                "Could not create arguments for runpy._run_module_as_main\n");
+            "Could not create arguments for runpy._run_module_as_main\n");
         PyErr_Print();
         Py_DECREF(runpy);
         Py_DECREF(runmodule);
@@ -84,28 +85,50 @@ static int pymain(int argc, char** argv) {
         Py_ExitStatusException(status);
     }
 
-    int sts = 1;
+    int i, sts = 1;
+    char* oldloc = NULL;
+    wchar_t** argv_copy = NULL;
     char* entry_point_copy = NULL;
+
+    if (argc > 0) {
+        argv_copy = PyMem_RawMalloc(sizeof(wchar_t*) * argc);
+        if (!argv_copy) {
+            fprintf(stderr, "out of memory\n");
+            goto error;
+        }
+    }
 
     PyConfig config;
     PyConfig_InitPythonConfig(&config);
-    // Suppress errors from getpath.c
-    config.pathconfig_warnings = 0;
-    // Disable parsing command line arguments
-    config.parse_argv = 0;
+    config.pathconfig_warnings = 0;   /* Suppress errors from getpath.c */
 
     const char* bytes_warning = getenv(env_bytes_warning);
     if (bytes_warning) {
         config.bytes_warning = atoi(bytes_warning);
     }
 
-    if (argc > 0 && argv) {
-        status = PyConfig_SetBytesString(&config, &config.program_name, argv[0]);
-        if (PyStatus_Exception(status)) {
+    oldloc = _PyMem_RawStrdup(setlocale(LC_ALL, NULL));
+    if (!oldloc) {
+        fprintf(stderr, "out of memory\n");
+        goto error;
+    }
+
+    setlocale(LC_ALL, "");
+    for (i = 0; i < argc; i++) {
+        argv_copy[i] = Py_DecodeLocale(argv[i], NULL);
+        if (!argv_copy[i]) {
+            fprintf(stderr, "Unable to decode the command line argument #%i\n",
+                            i + 1);
+            argc = i;
             goto error;
         }
+    }
+    setlocale(LC_ALL, oldloc);
+    PyMem_RawFree(oldloc);
+    oldloc = NULL;
 
-        status = PyConfig_SetBytesArgv(&config, argc, argv);
+    if (argc > 0 && argv) {
+        status = PyConfig_SetBytesString(&config, &config.program_name, argv[0]);
         if (PyStatus_Exception(status)) {
             goto error;
         }
@@ -140,10 +163,13 @@ static int pymain(int argc, char** argv) {
     }
 
     if (entry_point_copy && !strcmp(entry_point_copy, main_entry_point)) {
-        sts = Py_BytesMain(argc, argv);
+        sts = Py_Main(argc, argv_copy);
         free(entry_point_copy);
         return sts;
     }
+
+    Py_InitArgcArgv(argc, argv_copy);
+    PySys_SetArgv(argc, argv_copy);
 
     {
         PyObject* module = PyImport_ImportModule("library.python.runtime_py3.entry_points");
@@ -163,7 +189,7 @@ static int pymain(int argc, char** argv) {
     const char* module_name = entry_point_copy;
     const char* func_name = NULL;
 
-    char* colon = strchr(entry_point_copy, ':');
+    char *colon = strchr(entry_point_copy, ':');
     if (colon != NULL) {
         colon[0] = '\0';
         func_name = colon + 1;
@@ -199,6 +225,8 @@ static int pymain(int argc, char** argv) {
 
 error:
     free(entry_point_copy);
+    PyMem_RawFree(argv_copy);
+    PyMem_RawFree(oldloc);
     return sts;
 }
 

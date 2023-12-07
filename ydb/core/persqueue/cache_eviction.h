@@ -111,8 +111,8 @@ namespace NPQ {
 
         void Verify(const TRequestedBlob& blob) const {
             TKey key(TKeyPrefix::TypeData, 0, blob.Offset, blob.PartNo, blob.Count, blob.InternalPartsCount, false);
-            Y_ABORT_UNLESS(blob.Value.size() == blob.Size);
-            TClientBlob::CheckBlob(key, blob.Value);
+            Y_VERIFY(blob.Value.size() == blob.Size);
+            CheckBlob(key, blob.Value);
         }
     };
 
@@ -230,10 +230,11 @@ namespace NPQ {
             }
         };
 
-        explicit TIntabletCache(ui64 tabletId)
+        TIntabletCache(ui64 tabletId, ui32 l1Size)
             : TabletId(tabletId)
             , L1Strategy(nullptr)
         {
+            Y_UNUSED(l1Size);
         }
 
         const TMapType& CachedMap() const { return Cache; }
@@ -304,7 +305,7 @@ namespace NPQ {
 
         void SavePrefetchBlobs(const TActorContext& ctx, const TKvRequest& kvReq, const TVector<bool>& store)
         {
-            Y_ABORT_UNLESS(store.size() == kvReq.Blobs.size());
+            Y_VERIFY(store.size() == kvReq.Blobs.size());
 
             THolder<TCacheL2Request> reqData = MakeHolder<TCacheL2Request>(TabletId);
 
@@ -318,7 +319,7 @@ namespace NPQ {
                 {
                     TValueL1 value;
                     if (CheckExists(ctx, blob, value)) {
-                        Y_ABORT_UNLESS(value.Source == TValueL1::SourceHead);
+                        Y_VERIFY(value.Source == TValueL1::SourceHead);
                         continue;
                     }
                 }
@@ -354,7 +355,7 @@ namespace NPQ {
             }
 
             auto sp = it->second.GetBlob();
-            Y_ABORT_UNLESS(sp.get() == value.get(),
+            Y_VERIFY(sp.get() == value.get(),
                 "Evicting strange blob. Partition %d offset %ld partNo %d size %ld. L1 ptr %p vs L2 ptr %p",
                 blob.Partition, blob.Offset, blob.PartNo, value->DataSize(), sp.get(), value.get());
 
@@ -409,7 +410,7 @@ namespace NPQ {
                 return nullptr;
             }
 
-            Y_ABORT_UNLESS(data->DataSize() == it->second.DataSize, "Mismatch L1-L2 blob sizes");
+            Y_VERIFY(data->DataSize() == it->second.DataSize, "Mismatch L1-L2 blob sizes");
 
             const TBlobId& blob = it->first;
             LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Got data from cache. Partition "
@@ -434,7 +435,7 @@ namespace NPQ {
                     ++numCached;
                     blob.Value = cached->GetValue();
                     blob.Cached = true;
-                    Y_ABORT_UNLESS(blob.Value.size(), "Got empty blob from cache");
+                    Y_VERIFY(blob.Value.size(), "Got empty blob from cache");
                 }
             }
             return numCached;
@@ -471,7 +472,7 @@ namespace NPQ {
             auto it = Cache.find(blob);
             if (it != Cache.end()) {
                 out = it->second;
-                Y_ABORT_UNLESS(out.GetBlob(), "Duplicate blob in L1 with no data");
+                Y_VERIFY(out.GetBlob(), "Duplicate blob in L1 with no data");
                 LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "Duplicate blob in L1. "
                     << "Partition " << blob.Partition << " offset " << blob.Offset << " count " << blob.Count
                     << " size " << out.DataSize << " actorID " << ctx.SelfID

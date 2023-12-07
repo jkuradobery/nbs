@@ -42,12 +42,12 @@ namespace NKikimr {
             , Result(std::move(result))
             , ReplSchedulerId(replSchedulerId)
         {
-            Y_DEBUG_ABORT_UNLESS(Result);
+            Y_VERIFY_DEBUG(Result);
         }
 
         ui8 PDiskPriority() const {
             ui8 priority = 0;
-            Y_ABORT_UNLESS(Record.HasHandleClass());
+            Y_VERIFY(Record.HasHandleClass());
             switch (Record.GetHandleClass()) {
                 case NKikimrBlobStorage::EGetHandleClass::AsyncRead:
                     priority = NPriRead::HullOnlineOther;
@@ -60,7 +60,7 @@ namespace NKikimr {
                     priority = NPriRead::HullLow;
                     break;
                 default:
-                    Y_ABORT("Unexpected case");
+                    Y_FAIL("Unexpected case");
             }
             return priority;
         }
@@ -95,7 +95,7 @@ namespace NKikimr {
             } else {
                 ui64 total = 0;
                 for (const auto& result : Result->Record.GetResult()) {
-                    total += Result->GetBlobSize(result);
+                    total += result.GetBuffer().size();
                     hasNotYet = hasNotYet || result.GetStatus() == NKikimrProto::NOT_YET;
                 }
                 QueryCtx->MonGroup.GetTotalBytes() += total;

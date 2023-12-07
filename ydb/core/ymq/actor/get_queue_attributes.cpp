@@ -182,55 +182,51 @@ private:
         const auto& record = ev->Get()->Record;
         const ui32 status = record.GetStatus();
         auto* result = Response_.MutableGetQueueAttributes();
-        bool queueExists = true;
 
         if (status == TEvTxUserProxy::TEvProposeTransactionStatus::EStatus::ExecComplete) {
             const TValue val(TValue::Create(record.GetExecutionEngineEvaluatedResponse()));
-            queueExists = val["queueExists"];
-            if (queueExists) {
-                const TValue& attrs(val["attrs"]);
+            const TValue& attrs(val["attrs"]);
 
-                if (HasAttributeName("ContentBasedDeduplication")) {
-                    result->SetContentBasedDeduplication(bool(attrs["ContentBasedDeduplication"]));
-                }
-                if (HasAttributeName("DelaySeconds")) {
-                    result->SetDelaySeconds(TDuration::MilliSeconds(ui64(attrs["DelaySeconds"])).Seconds());
-                }
-                if (HasAttributeName("FifoQueue")) {
-                    result->SetFifoQueue(bool(attrs["FifoQueue"]));
-                }
-                if (HasAttributeName("MaximumMessageSize")) {
-                    result->SetMaximumMessageSize(ui64(attrs["MaximumMessageSize"]));
-                }
-                if (HasAttributeName("MessageRetentionPeriod")) {
-                    result->SetMessageRetentionPeriod(TDuration::MilliSeconds(ui64(attrs["MessageRetentionPeriod"])).Seconds());
-                }
-                if (HasAttributeName("ReceiveMessageWaitTimeSeconds")) {
-                    result->SetReceiveMessageWaitTimeSeconds(TDuration::MilliSeconds(ui64(attrs["ReceiveMessageWaitTime"])).Seconds());
-                }
-                if (HasAttributeName("VisibilityTimeout")) {
-                    result->SetVisibilityTimeout(TDuration::MilliSeconds(ui64(attrs["VisibilityTimeout"])).Seconds());
-                }
-                if (HasAttributeName("RedrivePolicy")) {
-                    const TValue& dlqArn(attrs["DlqArn"]);
-                    if (dlqArn.HaveValue() && !TString(dlqArn).empty()) {
-                        // the attributes can't be set separately, so we check only one
-                        TRedrivePolicy redrivePolicy;
-                        redrivePolicy.TargetArn = TString(dlqArn);
-                        redrivePolicy.MaxReceiveCount = ui64(attrs["MaxReceiveCount"]);
-                        result->SetRedrivePolicy(redrivePolicy.ToJson());
-                    }
-                }
-                
-                --WaitCount_;
-                ReplyIfReady();
-                return;
+            if (HasAttributeName("ContentBasedDeduplication")) {
+                result->SetContentBasedDeduplication(bool(attrs["ContentBasedDeduplication"]));
             }
+            if (HasAttributeName("DelaySeconds")) {
+                result->SetDelaySeconds(TDuration::MilliSeconds(ui64(attrs["DelaySeconds"])).Seconds());
+            }
+            if (HasAttributeName("FifoQueue")) {
+                result->SetFifoQueue(bool(attrs["FifoQueue"]));
+            }
+            if (HasAttributeName("MaximumMessageSize")) {
+                result->SetMaximumMessageSize(ui64(attrs["MaximumMessageSize"]));
+            }
+            if (HasAttributeName("MessageRetentionPeriod")) {
+                result->SetMessageRetentionPeriod(TDuration::MilliSeconds(ui64(attrs["MessageRetentionPeriod"])).Seconds());
+            }
+            if (HasAttributeName("ReceiveMessageWaitTimeSeconds")) {
+                result->SetReceiveMessageWaitTimeSeconds(TDuration::MilliSeconds(ui64(attrs["ReceiveMessageWaitTime"])).Seconds());
+            }
+            if (HasAttributeName("VisibilityTimeout")) {
+                result->SetVisibilityTimeout(TDuration::MilliSeconds(ui64(attrs["VisibilityTimeout"])).Seconds());
+            }
+            if (HasAttributeName("RedrivePolicy")) {
+                const TValue& dlqArn(attrs["DlqArn"]);
+                if (dlqArn.HaveValue() && !TString(dlqArn).empty()) {
+                    // the attributes can't be set separately, so we check only one
+                    TRedrivePolicy redrivePolicy;
+                    redrivePolicy.TargetArn = TString(dlqArn);
+                    redrivePolicy.MaxReceiveCount = ui64(attrs["MaxReceiveCount"]);
+                    result->SetRedrivePolicy(redrivePolicy.ToJson());
+                }
+            }
+        } else {
+            RLOG_SQS_ERROR("Get queue attributes query failed");
+            MakeError(result, NErrors::INTERNAL_FAILURE);
+            SendReplyAndDie();
+            return;
         }
 
-        RLOG_SQS_ERROR("Get queue attributes query failed, queue exists: " << queueExists << ", answer: " << record);
-        MakeError(result, queueExists ? NErrors::INTERNAL_FAILURE : NErrors::NON_EXISTENT_QUEUE);
-        SendReplyAndDie();
+        --WaitCount_;
+        ReplyIfReady();
     }
 
     void HandleRuntimeAttributes(TSqsEvents::TEvGetRuntimeQueueAttributesResponse::TPtr& ev) {
@@ -262,13 +258,6 @@ private:
 
     void HandleQueueFolderIdAndCustomName(TSqsEvents::TEvQueueFolderIdAndCustomName::TPtr& ev) {
         auto* result = Response_.MutableGetQueueAttributes();
-
-        if (ev->Get()->Throttled) {
-            RLOG_SQS_DEBUG("Get queue folder id and custom name was throttled.");
-            MakeError(result, NErrors::THROTTLING_EXCEPTION);
-            SendReplyAndDie();
-            return;
-        }
 
         if (ev->Get()->Failed || !ev->Get()->Exists) {
             RLOG_SQS_DEBUG("Get queue folder id and custom name failed. Failed: " << ev->Get()->Failed << ". Exists: " << ev->Get()->Exists);
@@ -327,12 +316,12 @@ private:
     }
 
     void OnResponses(std::vector<NKikimrClient::TSqsResponse>&& responses) override {
-        Y_ABORT_UNLESS(Request().EntriesSize() == responses.size());
+        Y_VERIFY(Request().EntriesSize() == responses.size());
         auto& resp = *Response_.MutableGetQueueAttributesBatch();
         for (size_t i = 0; i < Request().EntriesSize(); ++i) {
             const auto& reqEntry = Request().GetEntries(i);
             auto& respEntry = *resp.AddEntries();
-            Y_ABORT_UNLESS(responses[i].HasGetQueueAttributes());
+            Y_VERIFY(responses[i].HasGetQueueAttributes());
             respEntry = std::move(*responses[i].MutableGetQueueAttributes());
             respEntry.SetId(reqEntry.GetId());
         }

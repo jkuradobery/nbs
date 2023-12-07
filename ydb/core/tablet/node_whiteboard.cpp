@@ -3,12 +3,11 @@
 #include <util/system/info.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/mon_alloc/stats.h>
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/process_stats.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/process_stats.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
-#include <ydb/core/base/nameservice.h>
 #include "tablet_counters.h"
 #include <ydb/core/base/counters.h>
 #include <ydb/core/util/tuples.h>
@@ -25,7 +24,6 @@ class TNodeWhiteboardService : public TActorBootstrapped<TNodeWhiteboardService>
         enum EEv {
             EvUpdateRuntimeStats = EventSpaceBegin(TEvents::ES_PRIVATE),
             EvCleanupDeadTablets,
-            EvUpdateClockSkew,
             EvEnd
         };
 
@@ -33,7 +31,6 @@ class TNodeWhiteboardService : public TActorBootstrapped<TNodeWhiteboardService>
 
         struct TEvUpdateRuntimeStats : TEventLocal<TEvUpdateRuntimeStats, EvUpdateRuntimeStats> {};
         struct TEvCleanupDeadTablets : TEventLocal<TEvCleanupDeadTablets, EvCleanupDeadTablets> {};
-        struct TEvUpdateClockSkew : TEventLocal<TEvUpdateClockSkew, EvUpdateClockSkew> {};
     };
 public:
     static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
@@ -66,7 +63,6 @@ public:
         }
         ctx.Send(ctx.SelfID, new TEvPrivate::TEvUpdateRuntimeStats());
         ctx.Schedule(TDuration::Seconds(60), new TEvPrivate::TEvCleanupDeadTablets());
-        ctx.Schedule(TDuration::Seconds(15), new TEvPrivate::TEvUpdateClockSkew());
         Become(&TNodeWhiteboardService::StateFunc);
     }
 
@@ -76,8 +72,6 @@ protected:
     std::unordered_map<ui32, NKikimrWhiteboard::TPDiskStateInfo> PDiskStateInfo;
     std::unordered_map<TVDiskID, NKikimrWhiteboard::TVDiskStateInfo, THash<TVDiskID>> VDiskStateInfo;
     std::unordered_map<ui32, NKikimrWhiteboard::TBSGroupStateInfo> BSGroupStateInfo;
-    i64 MaxClockSkewWithPeerUs;
-    ui32 MaxClockSkewPeerId;
     NKikimrWhiteboard::TSystemStateInfo SystemStateInfo;
     THolder<NTracing::ITraceCollection> TabletIntrospectionData;
     TProcStat ProcessStats;
@@ -388,7 +382,6 @@ protected:
     STRICT_STFUNC(StateFunc,
         HFunc(TEvWhiteboard::TEvTabletStateUpdate, Handle);
         HFunc(TEvWhiteboard::TEvTabletStateRequest, Handle);
-        HFunc(TEvWhiteboard::TEvClockSkewUpdate, Handle);
         HFunc(TEvWhiteboard::TEvNodeStateUpdate, Handle);
         HFunc(TEvWhiteboard::TEvNodeStateDelete, Handle);
         HFunc(TEvWhiteboard::TEvNodeStateRequest, Handle);
@@ -416,7 +409,6 @@ protected:
         HFunc(TEvWhiteboard::TEvSignalBodyRequest, Handle);
         HFunc(TEvPrivate::TEvUpdateRuntimeStats, Handle);
         HFunc(TEvPrivate::TEvCleanupDeadTablets, Handle);
-        HFunc(TEvPrivate::TEvUpdateClockSkew, Handle);
     )
 
     void Handle(TEvWhiteboard::TEvTabletStateUpdate::TPtr &ev, const TActorContext &ctx) {
@@ -427,14 +419,6 @@ protected:
         }
         if (CheckedMerge(tabletStateInfo, ev->Get()->Record) >= 100) {
             tabletStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
-        }
-    }
-
-    void Handle(TEvWhiteboard::TEvClockSkewUpdate::TPtr &ev, const TActorContext &) {
-        i64 skew = ev->Get()->Record.GetClockSkewUs();
-        if (abs(skew) > abs(MaxClockSkewWithPeerUs)) {
-            MaxClockSkewWithPeerUs = skew;
-            MaxClockSkewPeerId = ev->Get()->Record.GetPeerNodeId();
         }
     }
 
@@ -457,6 +441,7 @@ protected:
         auto& pDiskStateInfo = PDiskStateInfo[ev->Get()->Record.GetPDiskId()];
         if (CheckedMerge(pDiskStateInfo, ev->Get()->Record) >= 100) {
             pDiskStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
+            UpdateSystemState(ctx);
         }
     }
 
@@ -467,27 +452,32 @@ protected:
             auto& value = VDiskStateInfo[key];
             value = record;
             value.SetChangeTime(ctx.Now().MilliSeconds());
+            UpdateSystemState(ctx);
         } else if (const auto it = VDiskStateInfo.find(key); it != VDiskStateInfo.end() &&
                 it->second.GetInstanceGuid() == record.GetInstanceGuid()) {
             auto& value = it->second;
 
             if (CheckedMerge(value, record) >= 100) {
                 value.SetChangeTime(ctx.Now().MilliSeconds());
+                UpdateSystemState(ctx);
             }
         }
     }
 
-    void Handle(TEvWhiteboard::TEvVDiskStateDelete::TPtr &ev, const TActorContext &) {
-        VDiskStateInfo.erase(VDiskIDFromVDiskID(ev->Get()->Record.GetVDiskId()));
+    void Handle(TEvWhiteboard::TEvVDiskStateDelete::TPtr &ev, const TActorContext &ctx) {
+        if (VDiskStateInfo.erase(VDiskIDFromVDiskID(ev->Get()->Record.GetVDiskId()))) {
+            UpdateSystemState(ctx);
+        }
     }
 
-    void Handle(TEvWhiteboard::TEvVDiskStateGenerationChange::TPtr &ev, const TActorContext &) {
+    void Handle(TEvWhiteboard::TEvVDiskStateGenerationChange::TPtr &ev, const TActorContext &ctx) {
         auto *msg = ev->Get();
         if (const auto it = VDiskStateInfo.find(msg->VDiskId); it != VDiskStateInfo.end() &&
                 it->second.GetInstanceGuid() == msg->InstanceGuid) {
             auto node = VDiskStateInfo.extract(it);
             node.key().GroupGeneration = msg->Generation;
             VDiskStateInfo.insert(std::move(node));
+            UpdateSystemState(ctx);
         }
     }
 
@@ -517,6 +507,7 @@ protected:
 
             if (change) {
                 value.SetChangeTime(ctx.Now().MilliSeconds());
+                UpdateSystemState(ctx);
             }
         }
     }
@@ -526,16 +517,19 @@ protected:
         if (CheckedMerge(bSGroupStateInfo, ev->Get()->Record) >= 100) {
             bSGroupStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
         }
+        UpdateSystemState(ctx);
     }
 
-    void Handle(TEvWhiteboard::TEvBSGroupStateDelete::TPtr &ev, const TActorContext &) {
+    void Handle(TEvWhiteboard::TEvBSGroupStateDelete::TPtr &ev, const TActorContext &ctx) {
         ui32 groupId = ev->Get()->Record.GetGroupID();
         BSGroupStateInfo.erase(groupId);
+        UpdateSystemState(ctx);
     }
 
     void Handle(TEvWhiteboard::TEvSystemStateUpdate::TPtr &ev, const TActorContext &ctx) {
         if (CheckedMerge(SystemStateInfo, ev->Get()->Record)) {
             SystemStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
+            UpdateSystemState(ctx);
         }
     }
 
@@ -544,6 +538,7 @@ protected:
         endpoint.SetName(ev->Get()->Name);
         endpoint.SetAddress(ev->Get()->Address);
         SystemStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
+        UpdateSystemState(ctx);
     }
 
     void Handle(TEvWhiteboard::TEvSystemStateAddRole::TPtr &ev, const TActorContext &ctx) {
@@ -551,6 +546,7 @@ protected:
         if (Find(roles, ev->Get()->Role) == roles.end()) {
             SystemStateInfo.AddRoles(ev->Get()->Role);
             SystemStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
+            UpdateSystemState(ctx);
         }
     }
 
@@ -560,6 +556,7 @@ protected:
             SystemStateInfo.ClearTenants();
             SystemStateInfo.AddTenants(ev->Get()->Tenant);
             SystemStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
+            UpdateSystemState(ctx);
         }
     }
 
@@ -569,6 +566,7 @@ protected:
         if (itTenant != tenants.end()) {
             tenants.erase(itTenant);
             SystemStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
+            UpdateSystemState(ctx);
         }
     }
 
@@ -612,9 +610,7 @@ protected:
                 maxDiskUsage = std::max(maxDiskUsage, 1.0 - avail);
             }
         }
-        if (PDiskStateInfo.size() > 0) {
-            SystemStateInfo.SetMaxDiskUsage(maxDiskUsage);
-        }
+        SystemStateInfo.SetMaxDiskUsage(maxDiskUsage);
         if (pDiskFlag == NKikimrWhiteboard::EFlag::Yellow) {
             switch (yellowFlags) {
             case 1:
@@ -772,12 +768,13 @@ protected:
         ctx.Send(ev->Sender, response.Release(), 0, ev->Cookie);
     }
 
-    void Handle(TEvWhiteboard::TEvPDiskStateDelete::TPtr &ev, const TActorContext &) {
+    void Handle(TEvWhiteboard::TEvPDiskStateDelete::TPtr &ev, const TActorContext &ctx) {
         auto pdiskId = ev->Get()->Record.GetPDiskId();
 
         auto it = PDiskStateInfo.find(pdiskId);
         if (it != PDiskStateInfo.end()) {
             PDiskStateInfo.erase(it);
+            UpdateSystemState(ctx);
         }
     }
 
@@ -924,11 +921,8 @@ protected:
             systemStatsUpdate->Record.SetMemoryLimit(ProcessStats.CGroupMemLim);
         }
         systemStatsUpdate->Record.SetMemoryUsedInAlloc(TAllocState::GetAllocatedMemoryEstimate());
-        if (CheckedMerge(SystemStateInfo, systemStatsUpdate->Record)) {
-            SystemStateInfo.SetChangeTime(ctx.Now().MilliSeconds());
-        }
-        UpdateSystemState(ctx);
-        ctx.Schedule(TDuration::Seconds(15), new TEvPrivate::TEvUpdateRuntimeStats());
+        ctx.Send(ctx.SelfID, systemStatsUpdate.Release());
+        ctx.Schedule(TDuration::Seconds(30), new TEvPrivate::TEvUpdateRuntimeStats());
     }
 
     void Handle(TEvPrivate::TEvCleanupDeadTablets::TPtr &, const TActorContext &ctx) {
@@ -959,13 +953,6 @@ protected:
             }
         }
         ctx.Schedule(TDuration::Seconds(60), new TEvPrivate::TEvCleanupDeadTablets());
-    }
-
-    void Handle(TEvPrivate::TEvUpdateClockSkew::TPtr &, const TActorContext &ctx) {
-        SystemStateInfo.SetMaxClockSkewWithPeerUs(MaxClockSkewWithPeerUs);
-        SystemStateInfo.SetMaxClockSkewPeerId(MaxClockSkewPeerId);
-        MaxClockSkewWithPeerUs = 0;
-        ctx.Schedule(TDuration::Seconds(15), new TEvPrivate::TEvUpdateClockSkew());
     }
 };
 

@@ -4,7 +4,7 @@
 #include "blobstorage_syncquorum.h"
 #include <ydb/core/blobstorage/vdisk/common/sublog.h>
 
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 using namespace NKikimrServices;
 using namespace NKikimr::NSync;
@@ -168,7 +168,7 @@ namespace NKikimr {
                 case EDecision::Inconsistency:
                     str << " Explanation# \"" << Explanation << "\"";
                     break;
-                default: Y_ABORT("Unexpected case");
+                default: Y_FAIL("Unexpected case");
             }
             str << "]";
         }
@@ -229,7 +229,7 @@ namespace NKikimr {
                 }
 
                 void Setup(TVDiskEternalGuid guid, ESyncState state) {
-                    Y_ABORT_UNLESS(!Obtained);
+                    Y_VERIFY(!Obtained);
                     Obtained = true;
                     Guid = guid;
                     State = state;
@@ -321,7 +321,7 @@ namespace NKikimr {
             {}
 
             void SetResponse(const TVDiskID &vdisk, TVDiskEternalGuid guid, ESyncState state) {
-                Y_ABORT_UNLESS(Neighbors[vdisk].VDiskIdShort == vdisk);
+                Y_VERIFY(Neighbors[vdisk].VDiskIdShort == vdisk);
 
                 Sublog.Log() << "RESPONSE: vdisk# " << vdisk.ToString()
                     << " state# " << state << " guid# " << guid << "\n";
@@ -366,7 +366,7 @@ namespace NKikimr {
 
             // calculates final decision
             TDecision ReachAVerdict() const {
-                Y_ABORT_UNLESS(QuorumTracker.HasQuorum());
+                Y_VERIFY(QuorumTracker.HasQuorum());
 
                 TVDiskQuorumDecision quorumDecision = VDiskQuorumDecision();
                 if (quorumDecision.IsInconsistent) {
@@ -378,7 +378,7 @@ namespace NKikimr {
                     case TSyncVal::InProgress:  return HandleQuorumInProgress(quorumDecision);
                     case TSyncVal::Final:       return HandleQuorumFinal(quorumDecision);
                     default:
-                        Y_ABORT("Unexpected case");
+                        Y_FAIL("Unexpected case");
                 }
             }
 
@@ -415,7 +415,7 @@ namespace NKikimr {
                                 finalQuorum.Update(x.VDiskIdShort);
                                 break;
                             }
-                            default: Y_ABORT("Unexpected case");
+                            default: Y_FAIL("Unexpected case");
                         }
                     } else {
                         noAnswer++;
@@ -434,7 +434,7 @@ namespace NKikimr {
                         }
                         return TVDiskQuorumDecision::Inconsistent(str.Str());
                     }
-                    Y_ABORT_UNLESS(size == 1);
+                    Y_VERIFY(size == 1);
                     const TVDiskEternalGuid guid = finalGuidMap.begin()->first;
                     if (finalQuorum.HasQuorum()) {
                         return TVDiskQuorumDecision::Final(guid);
@@ -479,7 +479,7 @@ namespace NKikimr {
                             << LocallyRecoveredState;
                         return TDecision::Inconsistency(str.Str());
                     }
-                    default: Y_ABORT("Unexpected case");
+                    default: Y_FAIL("Unexpected case");
                 }
             }
 
@@ -501,7 +501,7 @@ namespace NKikimr {
                                 return TDecision::LostData(step, guid, false);
                             }
                             default:
-                                Y_ABORT("Unexpected case");
+                                Y_FAIL("Unexpected case");
                         }
                         break;
                     }
@@ -520,7 +520,7 @@ namespace NKikimr {
                                 return CheckLocalAndRemoteGuid(quorumDecision, d);
                             }
                             default:
-                                Y_ABORT("Unexpected case");
+                                Y_FAIL("Unexpected case");
                         }
                         break;
                     }
@@ -538,7 +538,7 @@ namespace NKikimr {
                                 return CheckLocalAndRemoteGuid(quorumDecision, d);
                             }
                             default:
-                                Y_ABORT("Unexpected case");
+                                Y_FAIL("Unexpected case");
                         }
                         break;
                     }
@@ -556,11 +556,11 @@ namespace NKikimr {
                                 return CheckLocalAndRemoteGuid(quorumDecision, d);
                             }
                             default:
-                                Y_ABORT("Unexpected case");
+                                Y_FAIL("Unexpected case");
                         }
                         break;
                     }
-                    default: Y_ABORT("Unexpected case");
+                    default: Y_FAIL("Unexpected case");
                 }
             }
 
@@ -588,7 +588,7 @@ namespace NKikimr {
                         auto d = TDecision::Good(guid);
                         return CheckLocalAndRemoteGuid(quorumDecision, d);
                     }
-                    default: Y_ABORT("Unexpected case");
+                    default: Y_FAIL("Unexpected case");
                 }
             }
 
@@ -638,7 +638,6 @@ namespace NKikimr {
             std::unique_ptr<TDecision> Decision;
             EPhase Phase = PhaseNotSet;
             TActorId FirstRunActorId;
-            const bool ReadOnly;
 
 
             ////////////////////////////////////////////////////////////////////////
@@ -672,7 +671,7 @@ namespace NKikimr {
                 // reconfigure every proxy that hasn't returned a value yet
                 auto reconfigureProxy = [&ctx] (std::unique_ptr<TEvVGenerationChange> &&msg,
                                                 TVDiskInfo<TNeighborVDiskState>& x) {
-                    Y_ABORT_UNLESS(!x.Get().Obtained);
+                    Y_VERIFY(!x.Get().Obtained);
                     ctx.Send(x.Get().ProxyId, msg.release());
                 };
 
@@ -751,7 +750,7 @@ namespace NKikimr {
                             Finish(ctx, *Decision);
                             break;
                         }
-                        default: Y_ABORT("Unexpected case");
+                        default: Y_FAIL("Unexpected case");
                     }
                 }
             }
@@ -778,14 +777,6 @@ namespace NKikimr {
             // FirstRun Phase
             ////////////////////////////////////////////////////////////////////////
             void FirstRunPhase(const TActorContext &ctx, EFirstRunStep f) {
-                if (ReadOnly) {
-                    const TString explanation = "unable to establish new GUID while in read-only";
-                    LOG_WARN(ctx, BS_SYNCER,
-                        VDISKP(VCtx->VDiskLogPrefix, "TVDiskGuidRecoveryActor: %s", explanation.data()));
-                    *Decision = TDecision::Inconsistency(explanation);
-                    Finish(ctx, *Decision);
-                    return;
-                }
                 auto guid = Decision->GetGuid();
                 Become(&TThis::WaitForFirstRunStateFunc);
                 FirstRunActorId = ctx.Register(CreateVDiskGuidFirstRunActor(VCtx, GInfo, CommitterId, ctx.SelfID, f, guid));
@@ -809,7 +800,7 @@ namespace NKikimr {
                         SettleDataLossPhase(ctx);
                         break;
                     }
-                    default: Y_ABORT("Unexpected case");
+                    default: Y_FAIL("Unexpected case");
                 }
             }
 
@@ -875,7 +866,7 @@ namespace NKikimr {
                         break;
                     case PhaseSettleDataLoss:
                         break;
-                    default: Y_ABORT("Unexpected case");
+                    default: Y_FAIL("Unexpected case");
                 }
             }
 
@@ -895,8 +886,7 @@ namespace NKikimr {
                                     TIntrusivePtr<TBlobStorageGroupInfo> info,
                                     const TActorId &committerId,
                                     const TActorId &notifyId,
-                                    const TLocalSyncerState &locallyRecoveredState,
-                                    bool readOnly)
+                                    const TLocalSyncerState &locallyRecoveredState)
                 : TActorBootstrapped<TVDiskGuidRecoveryActor>()
                 , VCtx(std::move(vctx))
                 , GInfo(std::move(info))
@@ -906,7 +896,6 @@ namespace NKikimr {
                                 GInfo->PickTopology(),
                                 locallyRecoveredState)
                 , Decision()
-                , ReadOnly(readOnly)
             {}
         };
 
@@ -916,10 +905,9 @@ namespace NKikimr {
                                          TIntrusivePtr<TBlobStorageGroupInfo> info,
                                          const TActorId &committerId,
                                          const TActorId &notifyId,
-                                         const NSyncer::TLocalSyncerState &localState,
-                                         bool readOnly) {
+                                         const NSyncer::TLocalSyncerState &localState) {
         return new NSyncer::TVDiskGuidRecoveryActor(std::move(vctx), std::move(info), committerId,
-            notifyId, localState, readOnly);
+            notifyId, localState);
     }
 
 } // NKikimr

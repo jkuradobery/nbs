@@ -7,7 +7,7 @@ IF (OS_LINUX AND NOT WITH_VALGRIND)
 
     TAG(ya:fat)
 
-    IF (BUILD_TYPE != "DEBUG")
+    IF (BUILD_TYPE == "RELEASE")
         SRCS(
             main.cpp
         )

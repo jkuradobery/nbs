@@ -25,7 +25,7 @@ public:
     }
 
     EExecutionStatus Execute(TOperation::TPtr op, TTransactionContext& txc, const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(op->IsCommitWritesTx());
+        Y_VERIFY(op->IsCommitWritesTx());
 
         TActiveTransaction* tx = dynamic_cast<TActiveTransaction*>(op.Get());
         Y_VERIFY_S(tx, "cannot cast operation of kind " << op->GetKind());
@@ -45,13 +45,10 @@ public:
         // FIXME: temporary break all locks, but we want to be smarter about which locks we break
         DataShard.SysLocksTable().BreakAllLocks(fullTableId);
         txc.DB.CommitTx(tableInfo.LocalTid, writeTxId, versions.WriteVersion);
-        DataShard.GetConflictsCache().GetTableCache(tableInfo.LocalTid).RemoveUncommittedWrites(writeTxId, txc.DB);
 
         if (Pipeline.AddLockDependencies(op, guardLocks)) {
-            if (txc.DB.HasChanges()) {
-                txc.DB.RollbackChanges();
-            }
-            return EExecutionStatus::Continue;
+            txc.Reschedule();
+            return EExecutionStatus::Restart;
         }
 
         BuildResult(op, NKikimrTxDataShard::TEvProposeTransactionResult::COMPLETE);

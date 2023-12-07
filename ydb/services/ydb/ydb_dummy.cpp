@@ -16,7 +16,7 @@ using namespace Draft::Dummy;
 
 using TEvInfiniteRequest = TGRpcRequestWrapper<0, InfiniteRequest, InfiniteResponse, true>;
 
-static void HandlePing(NYdbGrpc::IRequestContextBase* ctx) {
+static void HandlePing(NGrpc::IRequestContextBase* ctx) {
     auto req = static_cast<const PingRequest*>(ctx->GetRequest());
     auto resp = google::protobuf::Arena::CreateMessage<PingResponse>(ctx->GetArena());
     if (req->copy()) {
@@ -50,9 +50,9 @@ public:
     }
 
 private:
-    void StateWork(TAutoPtr<IEventHandle>& ev) {
+    void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
         switch (ev->GetTypeRewrite()) {
-            default: TBase::StateFuncBase(ev);
+            default: TBase::StateFuncBase(ev, ctx);
         }
     }
 };
@@ -101,6 +101,7 @@ public:
     }
 
     STFUNC(StateWork) {
+        Y_UNUSED(ctx);
         switch (ev->GetTypeRewrite()) {
             HFunc(IContext::TEvReadFinished, Handle);
             HFunc(TGRpcRequestProxy::TEvRefreshTokenResponse, Handle);
@@ -117,12 +118,12 @@ TGRpcYdbDummyService::TGRpcYdbDummyService(NActors::TActorSystem* system, TIntru
     , GRpcRequestProxyId_(proxyActorId)
 { }
 
-void TGRpcYdbDummyService::InitService(grpc::ServerCompletionQueue* cq, NYdbGrpc::TLoggerPtr logger) {
+void TGRpcYdbDummyService::InitService(grpc::ServerCompletionQueue* cq, NGrpc::TLoggerPtr logger) {
     CQ_ = cq;
     SetupIncomingRequests(std::move(logger));
 }
 
-void TGRpcYdbDummyService::SetGlobalLimiterHandle(NYdbGrpc::TGlobalLimiter* limiter) {
+void TGRpcYdbDummyService::SetGlobalLimiterHandle(NGrpc::TGlobalLimiter* limiter) {
     Limiter_ = limiter;
 }
 
@@ -135,7 +136,7 @@ void TGRpcYdbDummyService::DecRequest() {
     Y_ASSERT(Limiter_->GetCurrentInFlight() >= 0);
 }
 
-void TGRpcYdbDummyService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
+void TGRpcYdbDummyService::SetupIncomingRequests(NGrpc::TLoggerPtr logger) {
     auto getCounterBlock = CreateCounterCb(Counters_, ActorSystem_);
 
 #ifdef ADD_REQUEST
@@ -143,7 +144,7 @@ void TGRpcYdbDummyService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
 #endif
 #define ADD_REQUEST(NAME, IN, OUT, ACTION) \
     MakeIntrusive<TGRpcRequest<Draft::Dummy::IN, Draft::Dummy::OUT, TGRpcYdbDummyService>>(this, &Service_, CQ_, \
-        [this](NYdbGrpc::IRequestContextBase *ctx) { \
+        [this](NGrpc::IRequestContextBase *ctx) { \
             NGRpcService::ReportGrpcReqToMon(*ActorSystem_, ctx->GetPeer()); \
             ACTION; \
         }, &Draft::Dummy::DummyService::AsyncService::Request ## NAME, \
@@ -178,12 +179,12 @@ void TGRpcYdbDummyService::SetupIncomingRequests(NYdbGrpc::TLoggerPtr logger) {
             },
             *ActorSystem_,
             "DummyService/BiStreamPing",
-            getCounterBlock("dummy", "biStreamPing", true),
+            getCounterBlock("dummy", "biStreamPing", true, true),
             nullptr);
     }
 }
 
-void TGRpcRequestProxyHandleMethods::Handle(TEvBiStreamPingRequest::TPtr& ev, const TActorContext& ctx) {
+void TGRpcRequestProxy::Handle(TEvBiStreamPingRequest::TPtr& ev, const TActorContext& ctx) {
     ctx.Register(new TBiStreamPingRequestRPC(ev->Release().Release()));
 }
 

@@ -13,10 +13,9 @@ struct TDqMeteringStats {
 
     struct TInputStatsMeter {
         void Add(const NKikimr::NUdf::TUnboxedValue&);
-        void Add(const NKikimr::NUdf::TUnboxedValue* row, ui32 width);
         operator bool() { return Stats; }
 
-        TInputStats* Stats = nullptr;
+        TInputStats* Stats;
         NKikimr::NMiniKQL::TType* InputType = nullptr;
     };
 

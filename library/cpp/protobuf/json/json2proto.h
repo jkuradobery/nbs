@@ -2,12 +2,10 @@
 
 #include "string_transform.h"
 #include "name_generator.h"
-#include "unknown_fields_collector.h"
 
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/json/json_value.h>
 
-#include <util/generic/ptr.h>
 #include <util/stream/input.h>
 #include <util/stream/str.h>
 #include <util/stream/mem.h>
@@ -50,12 +48,6 @@ namespace NProtobufJson {
             return *this;
         }
 
-        TSelf& SetUseJsonEnumValue(bool jsonEnumValue) {
-            Y_ENSURE(!jsonEnumValue || EnumValueMode == EnumCaseSensetive, "EnumValueMode and UseJsonEnumValue are mutually exclusive");
-            UseJsonEnumValue = jsonEnumValue;
-            return *this;
-        }
-
         TSelf& AddStringTransform(TStringTransformPtr transform) {
             StringTransforms.push_back(transform);
             return *this;
@@ -92,7 +84,6 @@ namespace NProtobufJson {
         }
 
         TSelf& SetEnumValueMode(EnumValueMode enumValueMode) {
-            Y_ENSURE(!UseJsonEnumValue || enumValueMode == EnumCaseSensetive, "EnumValueMode and UseJsonEnumValue are mutually exclusive");
             EnumValueMode = enumValueMode;
             return *this;
         }
@@ -117,21 +108,12 @@ namespace NProtobufJson {
             return *this;
         }
 
-        TSelf& SetUnknownFieldsCollector(TSimpleSharedPtr<IUnknownFieldsCollector> value) {
-            UnknownFieldsCollector = std::move(value);
-            return *this;
-        }
-
         FldNameMode FieldNameMode = FieldNameOriginalCase;
         bool AllowUnknownFields = true;
 
         /// Use 'json_name' protobuf option for field name, mutually exclusive
         /// with FieldNameMode.
         bool UseJsonName = false;
-
-        /// Use 'json_enum_value' protobuf option for enum value, mutually exclusive
-        /// with EnumValueMode
-        bool UseJsonEnumValue = false;
 
         /// Transforms will be applied only to string values (== protobuf fields of string / bytes type).
         TVector<TStringTransformPtr> StringTransforms;
@@ -170,9 +152,6 @@ namespace NProtobufJson {
 
         /// Allow nonstandard conversions, e.g. google.protobuf.Duration from String
         bool AllowString2TimeConversion = false;
-
-        /// Stores information about unknown fields
-        TSimpleSharedPtr<IUnknownFieldsCollector> UnknownFieldsCollector = nullptr;
     };
 
     /// @throw yexception
@@ -223,7 +202,6 @@ namespace NProtobufJson {
     /// @throw yexception
     template <typename T>
     T Json2Proto(IInputStream& in, const TJson2ProtoConfig& config = TJson2ProtoConfig()) {
-        // NOTE: TJson2ProtoConfig.AllowComments=true doesn't work, when using TJsonReaderConfig
         NJson::TJsonReaderConfig readerConfig;
         readerConfig.DontValidateUtf8 = true;
         return Json2Proto<T>(in, readerConfig, config);
@@ -232,15 +210,15 @@ namespace NProtobufJson {
     /// @throw yexception
     template <typename T>
     T Json2Proto(const TString& value, const TJson2ProtoConfig& config = TJson2ProtoConfig()) {
-        return Json2Proto<T>(TStringBuf(value), config);
+        TStringInput in(value);
+        return Json2Proto<T>(in, config);
     }
 
     /// @throw yexception
     template <typename T>
     T Json2Proto(const TStringBuf& value, const TJson2ProtoConfig& config = TJson2ProtoConfig()) {
-        T protoValue;
-        Json2Proto(value, protoValue, config);
-        return protoValue;
+        TMemoryInput in(value);
+        return Json2Proto<T>(in, config);
     }
 
     /// @throw yexception

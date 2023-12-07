@@ -8,37 +8,26 @@ namespace {
 
     float unaryZeroWeigher(const char&) {
         return 0.0f;
-    }
+    };
 
     float unaryMaxWeigher(const char&) {
         return 1.0f;
-    }
+    };
 
     float binaryZeroWeigher(const char&, const char&) {
         return 0.0f;
-    }
+    };
 
     float binaryMaxWeigher(const char&, const char&) {
         return 1.0f;
-    }
+    };
 
 }
 
 Y_UNIT_TEST_SUITE(Levenstein) {
     Y_UNIT_TEST(Distance) {
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::Distance(TStringBuf("knight"), TStringBuf("king")), 4);
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::Distance(TStringBuf("life flies"), TStringBuf("fly lives")), 6);
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::Distance(TStringBuf("spot trail"), TStringBuf("stop trial")), 4);
         UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::Distance(TStringBuf("hello"), TStringBuf("hulloah")), 3);
         UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::Distance(TStringBuf("yeoman"), TStringBuf("yo man")), 2);
-    }
-
-    Y_UNIT_TEST(DamerauDistance) {
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::DamerauDistance(TStringBuf("knight"), TStringBuf("king")), 3);
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::DamerauDistance(TStringBuf("life flies"), TStringBuf("fly lives")), 6);
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::DamerauDistance(TStringBuf("spot trail"), TStringBuf("stop trial")), 3);
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::DamerauDistance(TStringBuf("status"), TStringBuf("tsatus")), 1);
-        UNIT_ASSERT_VALUES_EQUAL(NLevenshtein::DamerauDistance(TStringBuf("hello"), TStringBuf("heh lol")), 3);
     }
 }
 
@@ -197,25 +186,5 @@ Y_UNIT_TEST_SUITE(WeightedLevenstein) {
         UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[0]), static_cast<int>(NLevenshtein::EMT_REPLACE));
         UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[1]), static_cast<int>(NLevenshtein::EMT_REPLACE));
         UNIT_ASSERT_VALUES_EQUAL(distance, 1.0f);
-    }
-
-    Y_UNIT_TEST(DamerauLevenshtein) {
-        int distance;
-        NLevenshtein::TEditChain chain;
-        NLevenshtein::GetEditChainGeneric<TString, true>(TString("status"), TString("tsatus"), chain, &distance);
-        UNIT_ASSERT_VALUES_EQUAL(distance, 1);
-        UNIT_ASSERT_VALUES_EQUAL(chain.size(), 5);
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[0]), static_cast<int>(NLevenshtein::EMT_TRANSPOSE));
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[1]), static_cast<int>(NLevenshtein::EMT_PRESERVE));
-
-        NLevenshtein::GetEditChainGeneric<TString, true>(TString("hello"), TString("heh lol"), chain, &distance);
-        UNIT_ASSERT_VALUES_EQUAL(distance, 3);
-        UNIT_ASSERT_VALUES_EQUAL(chain.size(), 6);
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[0]), static_cast<int>(NLevenshtein::EMT_PRESERVE));
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[1]), static_cast<int>(NLevenshtein::EMT_PRESERVE));
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[2]), static_cast<int>(NLevenshtein::EMT_INSERT));
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[3]), static_cast<int>(NLevenshtein::EMT_INSERT));
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[4]), static_cast<int>(NLevenshtein::EMT_PRESERVE));
-        UNIT_ASSERT_VALUES_EQUAL(static_cast<int>(chain[5]), static_cast<int>(NLevenshtein::EMT_TRANSPOSE));
     }
 }

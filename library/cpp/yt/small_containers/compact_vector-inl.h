@@ -9,8 +9,6 @@
 
 #include <library/cpp/yt/malloc/malloc.h>
 
-#include <library/cpp/yt/misc/hash.h>
-
 #include <util/system/compiler.h>
 
 #include <algorithm>
@@ -23,7 +21,9 @@ namespace NYT {
 ////////////////////////////////////////////////////////////////////////////////
 
 static_assert(sizeof(uintptr_t) == 8);
-static_assert(std::endian::native == std::endian::little);
+
+// TODO(gritukan, babenko): Uncomment check below after DEVTOOLS-7870.
+// static_assert(std::endian::native == std::endian::little);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -992,14 +992,6 @@ bool operator<(const TCompactVector<T, LhsN>& lhs, const TCompactVector<T, RhsN>
     return std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-template <class T, size_t N>
-void swap(TCompactVector<T, N>& lhs, TCompactVector<T, N>& rhs) // NOLINT
-{
-    lhs.swap(rhs);
-}
-
 /////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT
@@ -1009,17 +1001,10 @@ namespace std {
 ////////////////////////////////////////////////////////////////////////////////
 
 template <class T, size_t N>
-struct hash<NYT::TCompactVector<T, N>>
+void swap(NYT::TCompactVector<T, N>& lhs, NYT::TCompactVector<T, N>& rhs)
 {
-    size_t operator()(const NYT::TCompactVector<T, N>& container) const
-    {
-        size_t result = 0;
-        for (const auto& element : container) {
-            NYT::HashCombine(result, element);
-        }
-        return result;
-    }
-};
+    lhs.swap(rhs);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 

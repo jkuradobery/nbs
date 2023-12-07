@@ -9,7 +9,7 @@ namespace NKikimr::NBlobDepot {
             ENUMERATE_INCOMING_EVENTS(XX)
 #undef XX
         }
-        Y_ABORT();
+        Y_FAIL();
     }
 
     void TBlobDepotAgent::HandleStorageProxy(TAutoPtr<IEventHandle> ev) {
@@ -17,20 +17,19 @@ namespace NKikimr::NBlobDepot {
 
         switch (ev->GetTypeRewrite()) {
             case TEvBlobStorage::EvGet:
-                doForward = ev->Get<TEvBlobStorage::TEvGet>()->Decommission
-                    || ev->Get<TEvBlobStorage::TEvGet>()->PhantomCheck;
-                Y_ABORT_UNLESS(!doForward || !ev->Get<TEvBlobStorage::TEvGet>()->MustRestoreFirst);
+                doForward = ev->Get<TEvBlobStorage::TEvGet>()->Decommission;
+                Y_VERIFY(!doForward || !ev->Get<TEvBlobStorage::TEvGet>()->MustRestoreFirst);
                 break;
 
             case TEvBlobStorage::EvRange:
                 doForward = ev->Get<TEvBlobStorage::TEvRange>()->Decommission;
-                Y_ABORT_UNLESS(!doForward || !ev->Get<TEvBlobStorage::TEvRange>()->MustRestoreFirst);
+                Y_VERIFY(!doForward || !ev->Get<TEvBlobStorage::TEvRange>()->MustRestoreFirst);
                 break;
         }
 
         if (doForward) {
             if (ProxyId) {
-                TActivationContext::Forward(ev, ProxyId);
+                TActivationContext::Send(ev->Forward(ProxyId));
             } else {
                 CreateQuery<0>(std::unique_ptr<IEventHandle>(ev.Release()))->EndWithError(NKikimrProto::ERROR, "proxy has vanished");
             }
@@ -63,14 +62,14 @@ namespace NKikimr::NBlobDepot {
     }
 
     void TBlobDepotAgent::HandleAssimilate(TAutoPtr<IEventHandle> ev) {
-        TActivationContext::Forward(ev, ProxyId);
+        TActivationContext::Send(ev->Forward(ProxyId));
     }
 
     void TBlobDepotAgent::HandlePendingEvent() {
         for (THPTimer timer; !PendingEventQ.empty(); ) {
             TPendingEvent& item = PendingEventQ.front();
             ProcessStorageEvent(std::move(item.Event));
-            Y_ABORT_UNLESS(PendingEventBytes >= item.Size);
+            Y_VERIFY(PendingEventBytes >= item.Size);
             PendingEventBytes -= item.Size;
             PendingEventQ.pop_front();
             if (!PendingEventQ.empty() && TDuration::Seconds(timer.Passed()) >= TDuration::MilliSeconds(1)) {
@@ -84,14 +83,14 @@ namespace NKikimr::NBlobDepot {
     }
 
     void TBlobDepotAgent::HandleProcessPendingEvent() {
-        Y_ABORT_UNLESS(ProcessPendingEventInFlight);
+        Y_VERIFY(ProcessPendingEventInFlight);
         ProcessPendingEventInFlight = false;
         HandlePendingEvent();
     }
 
     void TBlobDepotAgent::ClearPendingEventQueue(const TString& reason) {
         for (auto& item : std::exchange(PendingEventQ, {})) {
-            Y_ABORT_UNLESS(PendingEventBytes >= item.Size);
+            Y_VERIFY(PendingEventBytes >= item.Size);
             PendingEventBytes -= item.Size;
             CreateQuery<0>(std::move(item.Event))->EndWithError(NKikimrProto::ERROR, reason);
         }
@@ -185,7 +184,7 @@ namespace NKikimr::NBlobDepot {
             ENUMERATE_INCOMING_EVENTS(XX)
 #undef XX
         }
-        Y_ABORT_UNLESS(response);
+        Y_VERIFY(response);
         Agent.SelfId().Send(Event->Sender, response.release(), 0, Event->Cookie);
         OnDestroy(false);
         DoDestroy();
@@ -210,7 +209,7 @@ namespace NKikimr::NBlobDepot {
     }
 
     void TBlobDepotAgent::TQuery::DoDestroy() {
-        Y_ABORT_UNLESS(!Destroyed);
+        Y_VERIFY(!Destroyed);
         Destroyed = true;
         TIntrusiveListItem<TQuery, TExecutingQueries>::Unlink();
         TIntrusiveListItem<TQuery, TPendingBlockChecks>::Unlink();
@@ -242,7 +241,7 @@ namespace NKikimr::NBlobDepot {
             ENUMERATE_INCOMING_EVENTS(XX)
 #undef XX
         }
-        Y_ABORT();
+        Y_FAIL();
     }
 
 } // NKikimr::NBlobDepot

@@ -39,6 +39,7 @@ namespace NKikimr::NDataShard {
 
     private:
         STFUNC(StateWork) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 sFunc(TEvents::TEvPoison, PassAway);
                 hFunc(TEvPipeCache::TEvDeliveryProblem, Handle);

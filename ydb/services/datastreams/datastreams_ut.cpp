@@ -1,5 +1,6 @@
 #include <ydb/services/lib/sharding/sharding.h>
 #include <ydb/services/ydb/ydb_common_ut.h>
+#include <ydb/services/persqueue_v1/ut/persqueue_test_fixture.h>
 #include <ydb/services/ydb/ydb_keys_ut.h>
 
 #include <ydb/public/sdk/cpp/client/ydb_datastreams/datastreams.h>
@@ -13,13 +14,12 @@
 #include <library/cpp/json/json_reader.h>
 #include <library/cpp/digest/md5/md5.h>
 
-#include <util/system/tempfile.h>
-
 #include <random>
 
 
 using namespace NYdb;
 using namespace NYdb::NTable;
+using namespace NKikimr::NPersQueueTests;
 using namespace NKikimr::NDataStreams::V1;
 namespace YDS_V1 = Ydb::DataStreams::V1;
 namespace NYDS_V1 = NYdb::NDataStreams::V1;
@@ -79,7 +79,8 @@ public:
         limit->SetMinStorageMegabytes(50_KB);
         limit->SetMaxStorageMegabytes(1_MB);
 
-        MeteringFile = MakeHolder<TTempFileHandle>();
+
+        MeteringFile = MakeHolder<TTempFileHandle>("meteringData.txt");
         appConfig.MutableMeteringConfig()->SetMeteringFilePath(MeteringFile->Name());
 
         if (secure) {
@@ -437,14 +438,11 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         TInsecureDatastreamsTestServer testServer;
         const TString streamName = TStringBuilder() << "stream_" << Y_UNIT_TEST_NAME;
         const ui64 storageMb = 55_GB / 1_MB;
-        const ui32 shardCount = 2;
+        const ui32 shardCount = 5;
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamName,
-                NYDS_V1::TCreateStreamSettings()
-                                .ShardCount(shardCount)
-                                .RetentionStorageMegabytes(storageMb)
-                                .StreamMode(NYdb::NDataStreams::V1::ESM_PROVISIONED)
-                        ).ExtractValueSync();
+                NYDS_V1::TCreateStreamSettings().ShardCount(shardCount)
+                                                .RetentionStorageMegabytes(storageMb)).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
@@ -479,25 +477,20 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                                 UNIT_ASSERT_VALUES_EQUAL(
                                     labels.find("ydb_database")->second.GetString(), "root");
                             },
-                            [](const NJson::TJsonValue::TMapType& map) {
+                            [storageMb](const NJson::TJsonValue::TMapType& map) {
                                 UNIT_ASSERT(map.contains("usage"));
                                 auto& usage = map.find("usage")->second.GetMap();
-
-                                auto start = usage.find("start")->second.GetUInteger();
-                                auto finish = usage.find("finish")->second.GetUInteger();
-                                UNIT_ASSERT_LE(start, finish);
-
-                                auto now = TInstant::Now();
-                                UNIT_ASSERT_GT(start, now.Seconds() - 10);
-                                UNIT_ASSERT_GT(finish, now.Seconds() - 9);
+                                UNIT_ASSERT_GT(usage.find("start")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 10);
+                                UNIT_ASSERT_GT(usage.find("finish")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 9);
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "mbyte*second");
-
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetUInteger(),
-                                               storageMb * (finish - start));
+                                               storageMb);
 
                             });
-        UNIT_ASSERT_VALUES_EQUAL(storageSchemaFound, 8);
+        UNIT_ASSERT_VALUES_EQUAL(storageSchemaFound, 20);
 
         auto throughputSchemaFound =
             CheckMeteringFile(testServer.MeteringFile.Get(), "/Root/" + streamName,
@@ -524,20 +517,15 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                             [](const NJson::TJsonValue::TMapType& map) {
                                 UNIT_ASSERT(map.contains("usage"));
                                 auto& usage = map.find("usage")->second.GetMap();
-
-                                auto start = usage.find("start")->second.GetUInteger();
-                                auto finish = usage.find("finish")->second.GetUInteger();
-                                UNIT_ASSERT_LE(start, finish);
-
-                                UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetInteger(), finish - start);
-
-                                auto now = TInstant::Now();
-                                UNIT_ASSERT_GT(start, now.Seconds() - 10);
-                                UNIT_ASSERT_GT(finish, now.Seconds() - 9);
+                                UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetInteger(), 1);
+                                UNIT_ASSERT_GT(usage.find("start")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 10);
+                                UNIT_ASSERT_GT(usage.find("finish")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 9);
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "second");
                             });
-        UNIT_ASSERT_VALUES_EQUAL(throughputSchemaFound, 8);
+        UNIT_ASSERT_VALUES_EQUAL(throughputSchemaFound, 20);
 
         auto putUnitsSchemaFound =
             CheckMeteringFile(testServer.MeteringFile.Get(), "/Root/" + streamName, "yds.events.puts.v1",
@@ -564,7 +552,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "put_events");
                             });
-        UNIT_ASSERT_VALUES_EQUAL(putUnitsSchemaFound, 8);
+        UNIT_ASSERT_VALUES_EQUAL(putUnitsSchemaFound, 20);
 
         NYdb::NPersQueue::TPersQueueClient pqClient(*testServer.Driver);
         {
@@ -583,9 +571,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamName,
                 NYDS_V1::TCreateStreamSettings().ShardCount(shardCount)
-                                                .RetentionStorageMegabytes(storageMb)
-                                                .StreamMode(NYdb::NDataStreams::V1::ESM_PROVISIONED)
-                    ).ExtractValueSync();
+                                                .RetentionStorageMegabytes(storageMb)).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
@@ -704,16 +690,11 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                             [](const NJson::TJsonValue::TMapType& map) {
                                 UNIT_ASSERT(map.contains("usage"));
                                 auto& usage = map.find("usage")->second.GetMap();
-
-                                auto start = usage.find("start")->second.GetUInteger();
-                                auto finish = usage.find("finish")->second.GetUInteger();
-                                UNIT_ASSERT_LE(start, finish);
-
-                                UNIT_ASSERT_VALUES_EQUAL(usage.find("quantity")->second.GetInteger(), finish - start);
-
-                                auto now = TInstant::Now();
-                                UNIT_ASSERT_GT(start, now.Seconds() - 10);
-                                UNIT_ASSERT_GT(finish, now.Seconds() - 9);
+                                UNIT_ASSERT(usage.find("quantity")->second.GetInteger() <= 1);
+                                UNIT_ASSERT_GT(usage.find("start")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 10);
+                                UNIT_ASSERT_GT(usage.find("finish")->second.GetUInteger(),
+                                               TInstant::Now().Seconds() - 9);
                                 UNIT_ASSERT_VALUES_EQUAL(usage.find("unit")->second.GetString(),
                                                          "second");
                             });
@@ -728,9 +709,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         const TString streamPath = "/Root/" + streamName;
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamPath,
-                NYDS_V1::TCreateStreamSettings().ShardCount(1)
-                        .StreamMode(NYdb::NDataStreams::V1::ESM_PROVISIONED)
-                ).ExtractValueSync();
+                NYDS_V1::TCreateStreamSettings().ShardCount(1)).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
         }
@@ -898,7 +877,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                                      TDuration::Days(7).Hours());
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().stream_description().storage_limit_mb(), 50_GB / 1_MB);
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().stream_description().stream_mode_details().stream_mode(),
-                                     Ydb::DataStreams::V1::StreamMode::ON_DEMAND);
+                                     Ydb::DataStreams::V1::StreamMode::PROVISIONED);
 
 
         }
@@ -1674,7 +1653,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                 UNIT_ASSERT(false);
                 break;
             } else {
-                Y_ABORT("not a data!");
+                Y_FAIL("not a data!");
             }
         }
     }
@@ -1987,9 +1966,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
 
     Y_UNIT_TEST(TestGetRecordsStreamWithSingleShard) {
         TInsecureDatastreamsTestServer testServer;
-
         const TString streamName = TStringBuilder() << "stream_" << Y_UNIT_TEST_NAME;
-
         {
             auto result = testServer.DataStreamsClient->CreateStream(streamName,
                 NYDS_V1::TCreateStreamSettings().ShardCount(1)).ExtractValueSync();
@@ -2013,7 +1990,6 @@ Y_UNIT_TEST_SUITE(DataStreams) {
         }
 
         TString shardIterator;
-
         {
             auto result = testServer.DataStreamsClient->GetShardIterator(streamName, "shard-000000",
                 YDS_V1::ShardIteratorType::LATEST).ExtractValueSync();
@@ -2103,15 +2079,12 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             shardIterator = result.GetResult().shard_iterator();
         }
 
-        //
-        // in order to be sure that the value of WriteTimestampMs will be greater than the current time
-        //
-        Sleep(TDuration::Seconds(1));
-
         {
             auto result = testServer.DataStreamsClient->PutRecords(streamName, records).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
+            if (result.GetStatus() != EStatus::SUCCESS) {
+                result.GetIssues().PrintTo(Cerr);
+            }
         }
 
         {
@@ -2120,6 +2093,7 @@ Y_UNIT_TEST_SUITE(DataStreams) {
             UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
             UNIT_ASSERT_VALUES_EQUAL(result.GetResult().records().size(), recordsCount);
         }
+
     }
 
     Y_UNIT_TEST(TestGetRecordsWithoutPermission) {
@@ -2275,23 +2249,19 @@ Y_UNIT_TEST_SUITE(DataStreams) {
                 {
                     TString id = Sprintf("%04u", i);
                     NYDS_V1::TDataRecord dataRecord{{data.begin(), data.end()}, id, ""};
-                    //
-                    // we make sure that the value of WriteTimestampMs is between neighboring timestamps
-                    //
                     timestamps.push_back(TInstant::Now().MilliSeconds());
-                    Sleep(TDuration::MilliSeconds(500));
                     auto result = testServer.DataStreamsClient->PutRecord(streamName, dataRecord).ExtractValueSync();
                     UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
                     UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
                 }
-                Sleep(TDuration::MilliSeconds(500));
+                Sleep(TDuration::Seconds(1));
             }
         }
 
         for (ui32 i = 0; i < recordsCount; ++i) {
             TString shardIterator;
-
             {
+                TString id = Sprintf("%04u", i);
                 auto result = testServer.DataStreamsClient->GetShardIterator(streamName, "shard-000000",
                     YDS_V1::ShardIteratorType::AT_TIMESTAMP,
                      NYDS_V1::TGetShardIteratorSettings().Timestamp(timestamps[i])).ExtractValueSync();

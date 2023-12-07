@@ -4,7 +4,6 @@
 #include "flat_table_part.h"
 #include "flat_part_iface.h"
 #include "flat_part_slice.h"
-#include "flat_part_index_iter.h"
 
 #include <util/generic/bitmap.h>
 
@@ -14,10 +13,7 @@ namespace NTable {
     class TCharge {
     public:
         using TCells = NPage::TCells;
-        using TIter = NPage::TIndex::TIter;
-        using TDataPage = NPage::TDataPage;
-        using TGroupId = NPage::TGroupId;
-        
+
         struct TResult {
             bool Ready;     /* All required pages are already in memory */
             bool Overshot;  /* Search may start outside of bounds */
@@ -27,21 +23,21 @@ namespace NTable {
             : Env(env)
             , Part(&part)
             , Scheme(*Part->Scheme)
-            , Index(Part, Env, TGroupId())
+            , Index(Part->Index)
+            , HistoryIndex(
+                    includeHistory && Part->HistoricIndexes
+                    ? &Part->GetGroupIndex(NPage::TGroupId(0, true))
+                    : nullptr)
         {
-            if (includeHistory && Part->HistoricGroupsCount) {
-                HistoryIndex.emplace(Part, Env, TGroupId(0, true));
-            }
-
             TDynBitMap seen;
             for (TTag tag : tags) {
                 if (const auto* col = Scheme.FindColumnByTag(tag)) {
                     if (col->Group != 0 && !seen.Get(col->Group)) {
                         NPage::TGroupId groupId(col->Group);
-                        Groups.emplace_back(TPartIndexIt(Part, Env, groupId), groupId);
+                        Groups.emplace_back(Part->GetGroupIndex(groupId), groupId);
                         if (HistoryIndex) {
                             NPage::TGroupId historyGroupId(col->Group, true);
-                            HistoryGroups.emplace_back(TPartIndexIt(Part, Env, historyGroupId), historyGroupId);
+                            HistoryGroups.emplace_back(Part->GetGroupIndex(historyGroupId), groupId);
                         }
                         seen.Set(col->Group);
                     }
@@ -91,7 +87,7 @@ namespace NTable {
                         // Unfortunately key > key2 might be at the start of the next slice
                         TRowId firstRow = pos->Slice.BeginRowId();
                         // Precharge the first row on the next slice
-                        TCharge(env, *pos->Part, tags, includeHistory).Do(firstRow, firstRow, keyDefaults, items, bytes);
+                        TCharge(env, *pos->Part, tags, includeHistory).Do(firstRow, firstRow, items, bytes);
                     }
 
                     break;
@@ -153,7 +149,7 @@ namespace NTable {
                         // Unfortunately key <= key2 might be at the end of the previous slice
                         TRowId lastRow = pos->Slice.EndRowId() - 1;
                         // Precharge the last row on the previous slice
-                        TCharge(env, *pos->Part, tags, includeHistory).DoReverse(lastRow, lastRow, keyDefaults, items, bytes);
+                        TCharge(env, *pos->Part, tags, includeHistory).DoReverse(lastRow, lastRow, items, bytes);
                     }
 
                     break;
@@ -168,35 +164,89 @@ namespace NTable {
         }
 
         /**
+         * Precharges data around the specified splitKey
+         *
+         * This method will ensure pages with the first key >= splitKey and the
+         * last key < splitKey are precharged. This method will not try to
+         * load pages outside of [beginRowId, endRowId) range.
+         */
+        bool SplitKey(const TCells splitKey, const TKeyCellDefaults& keyDefaults,
+                const TRowId beginRowId, const TRowId endRowId) const noexcept
+        {
+            Y_VERIFY_DEBUG(beginRowId < endRowId, "Unexpected empty row range");
+            Y_VERIFY_DEBUG(!Groups, "Unexpected column groups during SplitKey precharge");
+
+            bool ready = true;
+
+            const auto cmp = NPage::TCompare<NPage::TIndex::TRecord>(Scheme.Groups[0].ColsKeyIdx, keyDefaults);
+
+            // The first page that may contain splitKey
+            auto found = Index.LookupKey(splitKey, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
+
+            // Do we need to load the previous page (e.g. splitKey <= foundKey)
+            bool needPrev = !found || !cmp(*found, splitKey);
+
+            if (needPrev) {
+                if (auto prev = found; --prev) {
+                    TRowId pageBegin = prev->GetRowId();
+                    TRowId pageEnd = found ? found->GetRowId() : Index.GetEndRowId();
+                    if (pageBegin < endRowId && beginRowId < pageEnd) {
+                        ready &= bool(Env->TryGetPage(Part, prev->GetPageId()));
+                    }
+                }
+            }
+
+            if (found && found->GetRowId() < endRowId) {
+                bool needNext = !needPrev;
+                if (found->GetRowId() < beginRowId) {
+                    // iterator may re-seek to the first page that's in range
+                    auto adjusted = Index.LookupRow(beginRowId, found);
+                    if (found != adjusted) {
+                        found = adjusted;
+                        needNext = false;
+                    }
+                }
+                if (found) {
+                    ready &= bool(Env->TryGetPage(Part, found->GetPageId()));
+                }
+                if (needNext) {
+                    // splitKey may be on the next page
+                    if (auto next = found; ++next) {
+                        if (next->GetRowId() < endRowId) {
+                            ready &= bool(Env->TryGetPage(Part, next->GetPageId()));
+                        }
+                    }
+                }
+            }
+
+            return ready;
+        }
+
+        /**
          * Precharges data for rows between row1 and row2 inclusive
          *
          * Important caveat: assumes iteration won't touch any row > row2
          */
-        bool Do(const TRowId row1, const TRowId row2,
-                    const TKeyCellDefaults &keyDefaults, ui64 itemsLimit, ui64 bytesLimit) const noexcept
+        bool Do(const TRowId row1, const TRowId row2, ui64 itemsLimit,
+                    ui64 bytesLimit) const noexcept
         {
-            auto index = Index.TryLoadRaw();
-            if (!index) {
-                return false;
-            }
-
             auto startRow = row1;
             auto endRow = row2;
 
             // Page that contains row1
-            auto first = index->LookupRow(row1);
+            auto first = Index.LookupRow(row1);
             if (Y_UNLIKELY(!first)) {
                 return true; // already out of bounds, nothing to precharge
             }
 
             // Page that contains row2
-            auto last = index->LookupRow(row2, first);
+            auto last = Index.LookupRow(row2, first);
             if (Y_UNLIKELY(last < first)) {
                 last = first;
-                endRow = Min(endRow, index->GetLastRowId(last));
+                endRow = Min(endRow, Index.GetLastRowId(last));
             }
 
-            return DoPrecharge(TCells{}, TCells{}, TIter{}, TIter{}, first, last, startRow, endRow, keyDefaults, itemsLimit, bytesLimit);
+            return DoPrecharge(first, last, startRow, endRow, true, itemsLimit, bytesLimit);
         }
 
         /**
@@ -204,36 +254,31 @@ namespace NTable {
          *
          * Important caveat: assumes iteration won't touch any row > row2
          */
-        bool DoReverse(const TRowId row1, const TRowId row2, 
-                const TKeyCellDefaults &keyDefaults, ui64 itemsLimit, ui64 bytesLimit) const noexcept
+        bool DoReverse(const TRowId row1, const TRowId row2, ui64 itemsLimit,
+                ui64 bytesLimit) const noexcept
         {
-            auto index = Index.TryLoadRaw();
-            if (!index) {
-                return false;
-            }
-
             auto startRow = row1;
             auto endRow = row2;
 
             // Page that contains row1
-            auto first = index->LookupRow(row1);
+            auto first = Index.LookupRow(row1);
             if (Y_UNLIKELY(!first)) {
                 // Looks like row1 is out of bounds, start from the last row
-                startRow = Min(row1, index->GetEndRowId() - 1);
-                first = --(*index)->End();
+                startRow = Min(row1, Index.GetEndRowId() - 1);
+                first = --Index->End();
                 if (Y_UNLIKELY(!first)) {
                     return true; // empty index?
                 }
             }
 
             // Page that contains row2
-            auto last = index->LookupRow(row2, first);
+            auto last = Index.LookupRow(row2, first);
             if (Y_UNLIKELY(last > first)) {
                 last = first; // will not go past the first page
                 endRow = Max(endRow, last->GetRowId());
             }
 
-            return DoPrechargeReverse(TCells{}, TCells{}, TIter{}, TIter{}, first, last, startRow, endRow, keyDefaults, itemsLimit, bytesLimit);
+            return DoPrechargeReverse(first, last, startRow, endRow, true, itemsLimit, bytesLimit);
         }
 
         /**
@@ -243,17 +288,13 @@ namespace NTable {
                 const TRowId row2, const TKeyCellDefaults &keyDefaults, ui64 itemsLimit,
                 ui64 bytesLimit) const noexcept
         {
-            auto index = Index.TryLoadRaw();
-            if (!index) {
-                return { false, false };
-            }
-
             auto startRow = row1;
             auto endRow = row2;
+            bool firstPageLimits = true;
             bool overshot = !key2; // +inf is always on the next slice
 
             // First page to precharge (contains row1)
-            auto first = index->LookupRow(row1);
+            auto first = Index.LookupRow(row1);
             if (Y_UNLIKELY(!first)) {
                 return { true, true }; // already out of bounds, nothing to precharge
             }
@@ -262,47 +303,47 @@ namespace NTable {
             auto firstExt = first;
 
             // Last page to precharge (contains row2)
-            auto last = index->LookupRow(row2, first);
+            auto last = Index.LookupRow(row2, first);
             if (Y_UNLIKELY(last < first)) {
                 last = first; // will not go past the first page
-                endRow = Min(endRow, index->GetLastRowId(last));
+                endRow = Min(endRow, Index.GetLastRowId(last));
             }
 
-            TIter key1Page;
             if (key1) {
                 // First page to precharge (may contain key >= key1)
-                key1Page = index->LookupKey(key1, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
-                if (!key1Page || key1Page > last) {
+                auto keyPage = Index.LookupKey(key1, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
+                if (!keyPage || keyPage > last) {
                     return { true, true }; // first key is outside of bounds
                 }
-                if (first <= key1Page) {
-                    first = key1Page; // use the maximum
-                    firstExt = key1Page + 1; // first key >= key1 might be on the next page
-                    startRow = Max(startRow, key1Page->GetRowId());
+                if (first <= keyPage) {
+                    first = keyPage; // use the maximum
+                    firstExt = keyPage + 1; // first key >= key1 might be on the next page
+                    startRow = Max(startRow, keyPage->GetRowId());
+                    firstPageLimits = false; // might find key1 after row1, don't count those rows
                     if (!firstExt || last < firstExt) {
                         firstExt = last; // never precharge past the last page
                         overshot = true; // may have to touch the next slice
                     }
-                } else {
-                    key1Page = {};
                 }
             }
 
-            TIter key2Page;
             if (key2) {
                 // Last page to precharge (may contain key >= key2)
                 // We actually use the next page since lookup is not exact
-                key2Page = index->LookupKey(key2, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
-                auto key2PageExt = key2Page + 1;
-                if (key2PageExt && key2PageExt <= last) {
-                    last = Max(key2PageExt, firstExt);
-                    endRow = Min(endRow, last->GetRowId()); // may load the first row of key2PageExt
+                auto keyPage = Index.LookupKey(key2, Scheme.Groups[0], ESeek::Lower, &keyDefaults) + 1;
+                if (keyPage && keyPage <= last) {
+                    if (keyPage >= firstExt) {
+                        last = keyPage; // precharge up to keyPage
+                    } else {
+                        last = firstExt; // precharge up to firstExt
+                    }
+                    endRow = Min(endRow, last->GetRowId()); // may load the first row of keyPage
                 } else {
-                    overshot = true; // may find first key > key2 on row > row2
+                    overshot = true; // may find key > key2 on row > row2
                 }
             }
 
-            bool ready = DoPrecharge(key1, key2, key1Page, key2Page, first, last, startRow, endRow, keyDefaults, itemsLimit, bytesLimit);
+            bool ready = DoPrecharge(first, last, startRow, endRow, firstPageLimits, itemsLimit, bytesLimit);
 
             return { ready, overshot };
         }
@@ -314,71 +355,58 @@ namespace NTable {
                 const TRowId row2, const TKeyCellDefaults &keyDefaults, ui64 itemsLimit,
                 ui64 bytesLimit) const noexcept
         {
-            auto index = Index.TryLoadRaw();
-            if (!index) {
-                return { false, false };
-            }
-
             auto startRow = row1;
             auto endRow = row2;
+            bool firstPageLimits = true;
             bool overshot = !key2; // +inf is always on the next slice
 
             // First page to precharge (contains row1)
-            auto first = index->LookupRow(row1);
+            auto first = Index.LookupRow(row1);
             if (Y_UNLIKELY(!first)) {
                 // Looks like row1 is out of bounds, start from the last row
-                startRow = Min(row1, index->GetEndRowId() - 1);
-                first = --(*index)->End();
+                startRow = Min(row1, Index.GetEndRowId() - 1);
+                first = --Index->End();
                 if (Y_UNLIKELY(!first)) {
                     return { true, true }; // empty index?
                 }
             }
 
-            // First extra page to precharge (when key placement is uncertain)
-            auto firstExt = first;
-
             // Last page to precharge (contains row2)
-            auto last = index->LookupRow(row2, first);
+            auto last = Index.LookupRow(row2, first);
             if (Y_UNLIKELY(last > first)) {
                 last = first; // will not go past the first page
                 endRow = Max(endRow, last->GetRowId());
             }
 
-            TIter key1Page;
             if (key1) {
                 // First page to precharge (may contain key <= key1)
-                key1Page = index->LookupKeyReverse(key1, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
-                if (!key1Page || key1Page < last) {
+                auto keyPage = Index.LookupKeyReverse(key1, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
+                if (!keyPage || keyPage < last) {
                     return { true, true }; // first key is outside of bounds
                 }
-                if (first >= key1Page) {
-                    first = key1Page; // use the minimum
-                    firstExt = key1Page - 1; // first key <= key1 might be on the next page
-                    startRow = Min(startRow, index->GetLastRowId(first));
-                    if (key1Page.Off() == 0 || last > firstExt) {
-                        firstExt = last; // never precharge past the last page
-                        overshot = true; // may have to touch the next slice
-                    }
-                } else {
-                    key1Page = {};
+                if (first >= keyPage) {
+                    first = keyPage; // use the minimum
+                    startRow = Min(startRow, Index.GetLastRowId(first));
+                    firstPageLimits = false; // might find key1 after row1, don't count those rows
                 }
             }
 
-            TIter key2Page;
             if (key2) {
                 // Last page to precharge (may contain key <= key2)
-                // We actually use the next page since lookup is not exact
-                key2Page = index->LookupKeyReverse(key2, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
-                auto key2PageExt = key2Page - 1;
-                if (key2Page && key2Page.Off() != 0 && key2PageExt >= last) {
-                    last = Min(key2PageExt, firstExt);
-                    endRow = Max(endRow, index->GetLastRowId(last)); // may load the last row of key2PageExt
+                auto keyPage = Index.LookupKeyReverse(key2, Scheme.Groups[0], ESeek::Lower, &keyDefaults);
+                if (keyPage && keyPage >= last) {
+                    if (keyPage <= first) {
+                        last = keyPage; // precharge up to keyPage
+                    } else {
+                        last = first; // precharge up to first
+                    }
+                    endRow = Max(endRow, last->GetRowId());
                 } else {
-                    overshot = true; // may find first key < key2 on row < row2
+                    overshot = true; // may find key <= key2 on row < row2
                 }
             }
 
-            bool ready = DoPrechargeReverse(key1, key2, key1Page, key2Page, first, last, startRow, endRow, keyDefaults, itemsLimit, bytesLimit);
+            bool ready = DoPrechargeReverse(first, last, startRow, endRow, firstPageLimits, itemsLimit, bytesLimit);
 
             return { ready, overshot };
         }
@@ -387,94 +415,81 @@ namespace NTable {
         /**
          * Precharges data from first to last page inclusive
          *
-         * Precharges data only in [ @param startRowId, @param endRowId ] range.
-         *
-         * If keys provided, precharges only foolproof needed pages between them.
-         * 
-         * If items limit specified also touches [@param startRowId + itemsLimit] row.
-         *
-         * If @param key1Page specified, @param first should be the same.
+         * Assumes worst case first page will start iteration from startRowId
+         * Assumes worst case last page will end iteration on endRowId
          */
-        bool DoPrecharge(const TCells key1, const TCells key2, 
-                const TIter key1Page, const TIter key2Page,
-                const TIter first, const TIter last,
-                TRowId startRowId, TRowId endRowId,
-                const TKeyCellDefaults &keyDefaults, ui64 itemsLimit, ui64 bytesLimit) const noexcept
+        bool DoPrecharge(NPage::TIndex::TIter first, NPage::TIndex::TIter last,
+                TRowId startRowId, TRowId endRowId, bool firstPageLimits,
+                ui64 itemsLimit, ui64 bytesLimit) const noexcept
         {
             bool ready = true;
 
             if (first) {
-                Y_DEBUG_ABORT_UNLESS(first <= last);
-                Y_DEBUG_ABORT_UNLESS(!key1Page || key1Page == first);
+                Y_VERIFY_DEBUG(first <= last);
 
                 ui64 items = 0;
                 ui64 bytes = 0;
 
-                TRowId prechargedFirstRowId, prechargedLastRowId;
-                bool needExactBounds = Groups || HistoryIndex;
+                TRowId prechargedFirstRowId = startRowId;
 
-                for (auto current = first; 
-                        current && current <= last && !LimitExceeded(items, itemsLimit) && !LimitExceeded(bytes, bytesLimit); 
-                        current++) {
-                    auto currentExt = current + 1;
-                    auto currentFirstRowId = current->GetRowId();
-                    auto currentLastRowId = currentExt ? (currentExt->GetRowId() - 1) : Max<TRowId>();
+                for (;;) {
+                    auto page = first->GetPageId();
+                    ready &= bool(Env->TryGetPage(Part, page));
 
-                    auto page = Env->TryGetPage(Part, current->GetPageId());
-                    if (bytesLimit) {
-                        bytes += Part->GetPageSize(current->GetPageId());
-                    }
-                    ready &= bool(page);
+                    if (Groups) {
+                        auto next = first;
+                        ++next;
+                        TRowId lastRowId = Min(
+                            next ? (next->GetRowId() - 1) : Max<TRowId>(),
+                            endRowId);
 
-                    auto prechargeCurrentFirstRowId = Max(currentFirstRowId, startRowId);
-                    auto prechargeCurrentLastRowId = Min(currentLastRowId, endRowId);
-                    
-                    if (key1Page && key1Page == current) {
-                        if (needExactBounds && page) {
-                            auto key1RowId = LookupRowId(key1, page, Scheme.Groups[0], ESeek::Lower, keyDefaults);
-                            prechargeCurrentFirstRowId = Max(prechargeCurrentFirstRowId, key1RowId);
-                        } else {
-                            prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
-                        }
-                    }
-                    if (key2Page && key2Page <= current) {
-                        if (key2Page == current) {
-                            if (needExactBounds && page) {
-                                auto key2RowId = LookupRowId(key2, page, Scheme.Groups[0], ESeek::Upper, keyDefaults);
-                                if (key2RowId) {
-                                    prechargeCurrentLastRowId = Min(prechargeCurrentLastRowId, key2RowId - 1);
-                                } else {
-                                    prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
+                        if (Y_LIKELY(startRowId <= lastRowId)) {
+                            if (itemsLimit && firstPageLimits) {
+                                ui64 left = itemsLimit - items + 1;
+                                if (lastRowId - startRowId > left - 1) {
+                                    lastRowId = startRowId + left - 1;
                                 }
-                            } else {
-                                prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
                             }
-                        } else {
-                            prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
-                        }
-                    }
-                    if (itemsLimit && prechargeCurrentFirstRowId <= prechargeCurrentLastRowId) {
-                        ui64 left = itemsLimit - items; // we count only foolprof taken rows, so here we may precharge some extra rows
-                        if (prechargeCurrentLastRowId - prechargeCurrentFirstRowId > left) {
-                            prechargeCurrentLastRowId = prechargeCurrentFirstRowId + left;
+
+                            for (auto& g : Groups) {
+                                ready &= DoPrechargeGroup(g, startRowId, lastRowId, bytes);
+                            }
                         }
                     }
 
-                    if (prechargeCurrentFirstRowId <= prechargeCurrentLastRowId) {
-                        if (!items) {
-                            prechargedFirstRowId = prechargeCurrentFirstRowId;
-                        }
-                        prechargedLastRowId = prechargeCurrentLastRowId;
-                        if (Groups) {
-                            for (auto& g : Groups) {
-                                ready &= DoPrechargeGroup(g, prechargeCurrentFirstRowId, prechargeCurrentLastRowId, bytes);
-                            }
-                        }
-                        items += prechargeCurrentLastRowId - prechargeCurrentFirstRowId + 1;
+                    if (first == last) {
+                        // This was the last page to precharge
+                        // Make sure first points after the precharged page
+                        ++first;
+                        break;
                     }
+
+                    if (!++first) {
+                        // Next page doesn't exist for some reason
+                        break;
+                    }
+
+                    if (itemsLimit && firstPageLimits && first->GetRowId() > startRowId) {
+                        items += first->GetRowId() - startRowId;
+                        if (items > itemsLimit)
+                            break;
+                    }
+
+                    if (bytesLimit) {
+                        bytes += Part->GetPageSize(page);
+                        if (bytes > bytesLimit)
+                            break;
+                    }
+
+                    startRowId = first->GetRowId();
+                    firstPageLimits = true;
                 }
 
-                if (items && HistoryIndex) {
+                if (HistoryIndex) {
+                    TRowId prechargedLastRowId = Min(
+                        first ? (first->GetRowId() - 1) : Max<TRowId>(),
+                        endRowId);
+
                     ready &= DoPrechargeHistory(prechargedFirstRowId, prechargedLastRowId);
                 }
             }
@@ -485,97 +500,66 @@ namespace NTable {
         /**
          * Precharges data from first to last page inclusive in reverse
          *
-         * Precharges data only in [ @param endRowId, @param startRowId ] range.
-         *
-         * If keys provided, precharges only foolproof needed pages between them.
-         * 
-         * If items limit specified also touches [@param startRowId + itemsLimit] row.
-         *
-         * If @param key1Page specified, @param first should be the same.
+         * Assumes worst case first page will start iteration from startRowId
          */
-        bool DoPrechargeReverse(const TCells key1, const TCells key2, 
-                const TIter key1Page, const TIter key2Page,
-                TIter first, TIter last,
-                TRowId startRowId, TRowId endRowId,
-                const TKeyCellDefaults &keyDefaults, ui64 itemsLimit, ui64 bytesLimit) const noexcept
+        bool DoPrechargeReverse(NPage::TIndex::TIter first, NPage::TIndex::TIter last,
+                TRowId startRowId, TRowId endRowId, bool firstPageLimits,
+                ui64 itemsLimit, ui64 bytesLimit) const noexcept
         {
             bool ready = true;
 
             if (first) {
-                Y_DEBUG_ABORT_UNLESS(first >= last);
-                Y_DEBUG_ABORT_UNLESS(!key1Page || key1Page == first);
+                Y_VERIFY_DEBUG(first >= last);
 
                 ui64 items = 0;
                 ui64 bytes = 0;
 
-                TRowId prechargedFirstRowId, prechargedLastRowId;
-                bool needExactBounds = Groups || HistoryIndex;
+                TRowId prechargedFirstRowId = startRowId;
 
-                for (auto current = first;
-                        current >= last && !LimitExceeded(items, itemsLimit) && !LimitExceeded(bytes, bytesLimit);
-                        current--) {
-                    auto currentExt = current + 1;
-                    auto currentFirstRowId = currentExt ? (currentExt->GetRowId() - 1) : Max<TRowId>();
-                    auto currentLastRowId = current->GetRowId();
+                for (;;) {
+                    auto page = first->GetPageId();
+                    ready &= bool(Env->TryGetPage(Part, page));
 
-                    auto page = Env->TryGetPage(Part, current->GetPageId());
-                    if (bytesLimit) {
-                        bytes += Part->GetPageSize(current->GetPageId());
-                    }
-                    ready &= bool(page);
-
-                    auto prechargeCurrentFirstRowId = Min(currentFirstRowId, startRowId);
-                    auto prechargeCurrentLastRowId = Max(currentLastRowId, endRowId);
-
-                    if (key1Page && key1Page == current) {
-                        if (needExactBounds && page) {
-                            auto key1RowId = LookupRowIdReverse(key1, page, Scheme.Groups[0], ESeek::Lower, keyDefaults);
-                            prechargeCurrentFirstRowId = Min(prechargeCurrentFirstRowId, key1RowId);
-                        } else {
-                            prechargeCurrentLastRowId = Max<TRowId>(); // no precharge
-                        }
-                    }
-                    if (key2Page && key2Page >= current) {
-                        if (key2Page == current) {
-                            if (needExactBounds && page) {
-                                auto key2RowId = LookupRowIdReverse(key2, page, Scheme.Groups[0], ESeek::Upper, keyDefaults);
-                                if (key2RowId != Max<TRowId>()) { // Max<TRowId>() means that upper bound is before current page, so doesn't limit current page
-                                    prechargeCurrentLastRowId = Max(prechargeCurrentLastRowId, key2RowId + 1);
+                    if (Groups) {
+                        TRowId lastRowId = Max(first->GetRowId(), endRowId);
+                        if (Y_LIKELY(lastRowId <= startRowId)) {
+                            if (itemsLimit && firstPageLimits) {
+                                ui64 left = itemsLimit - items + 1;
+                                if (startRowId - lastRowId > left - 1) {
+                                    lastRowId = startRowId - left - 1;
                                 }
-                            } else {
-                                prechargeCurrentLastRowId = Max<TRowId>(); // no precharge
                             }
-                        } else {
-                            prechargeCurrentLastRowId = Max<TRowId>(); // no precharge
-                        }
-                    }
 
-                    if (itemsLimit && prechargeCurrentFirstRowId >= prechargeCurrentLastRowId) {
-                        ui64 left = itemsLimit - items; // we count only foolprof taken rows, so here we may precharge some extra rows
-                        if (prechargeCurrentFirstRowId - prechargeCurrentLastRowId > left) {
-                            prechargeCurrentLastRowId = prechargeCurrentFirstRowId - left;
-                        }
-                    }
-
-                    if (prechargeCurrentFirstRowId >= prechargeCurrentLastRowId) {
-                        if (!items) {
-                            prechargedFirstRowId = prechargeCurrentFirstRowId;
-                        }
-                        prechargedLastRowId = prechargeCurrentLastRowId;
-                        if (Groups) {
                             for (auto& g : Groups) {
-                                ready &= DoPrechargeGroupReverse(g, prechargeCurrentFirstRowId, prechargeCurrentLastRowId, bytes);
+                                ready &= DoPrechargeGroupReverse(g, startRowId, lastRowId, bytes);
                             }
                         }
-                        items += prechargeCurrentFirstRowId - prechargeCurrentLastRowId + 1;
                     }
 
-                    if (current.Off() == 0) {
-                        break;
+                    if (first == last || first.Off() == 0) {
+                        break; // this was the last page to precharge
                     }
+
+                    if (itemsLimit && firstPageLimits && first->GetRowId() <= startRowId) {
+                        items += startRowId + 1 - first->GetRowId();
+                        if (items > itemsLimit)
+                            break;
+                    }
+
+                    if (bytesLimit) {
+                        bytes += Part->GetPageSize(page);
+                        if (bytes > bytesLimit)
+                            break;
+                    }
+
+                    startRowId = first->GetRowId() - 1;
+                    firstPageLimits = true;
+                    --first;
                 }
 
-                if (items && HistoryIndex) {
+                if (HistoryIndex) {
+                    TRowId prechargedLastRowId = Max(first->GetRowId(), endRowId);
+
                     ready &= DoPrechargeHistory(prechargedFirstRowId, prechargedLastRowId);
                 }
             }
@@ -585,10 +569,7 @@ namespace NTable {
 
     private:
         bool DoPrechargeHistory(TRowId startRowId, TRowId endRowId) const noexcept {
-            auto index = HistoryIndex->TryLoadRaw();
-            if (!index) {
-                return false;
-            }
+            using TCells = NPage::TCells;
 
             if (endRowId < startRowId) {
                 using std::swap;
@@ -617,66 +598,39 @@ namespace NTable {
 
             // Directly use the history group scheme
             const auto& scheme = Part->Scheme->HistoryGroup;
-            Y_DEBUG_ABORT_UNLESS(scheme.ColsKeyIdx.size() == 3);
+            Y_VERIFY_DEBUG(scheme.ColsKeyIdx.size() == 3);
 
             // Directly use the histroy key defaults with correct sort order
             const TKeyCellDefaults* keyDefaults = Part->Scheme->HistoryKeys.Get();
 
-            auto first = index->LookupKey(startKey, scheme, ESeek::Lower, keyDefaults);
+            auto first = HistoryIndex->LookupKey(startKey, scheme, ESeek::Lower, keyDefaults);
             if (!first) {
                 return true;
             }
 
-            auto last = index->LookupKey(endKey, scheme, ESeek::Lower, keyDefaults);
+            auto last = HistoryIndex->LookupKey(endKey, scheme, ESeek::Lower, keyDefaults);
 
             bool ready = true;
-            bool hasItems = false;
-            TRowId prechargedFirstRowId, prechargedLastRowId;
 
-            for (auto current = first; current && current <= last; current++) {
-                auto page = Env->TryGetPage(Part, current->GetPageId(), NPage::TGroupId(0, true));
-                ready &= bool(page);
+            TRowId prechargedFirstRowId = first->GetRowId();
 
-                if (!HistoryGroups) {
-                    // don't need to caclulate prechargedFirstRowId/prechargedLastRowId
-                    continue;
+            for (;;) {
+                auto page = first->GetPageId();
+                ready &= bool(Env->TryGetPage(Part, page, NPage::TGroupId(0, true)));
+
+                if (first == last) {
+                    ++first;
+                    break;
                 }
 
-                auto currentExt = current + 1;
-                auto prechargeCurrentFirstRowId = current->GetRowId();
-                auto prechargeCurrentLastRowId = currentExt ? (currentExt->GetRowId() - 1) : Max<TRowId>();
-
-                if (first == current) {
-                    if (page) {
-                        auto startKeyRowId = LookupRowId(startKey, page, scheme, ESeek::Lower, *keyDefaults);
-                        prechargeCurrentFirstRowId = Max(prechargeCurrentFirstRowId, startKeyRowId);
-                    } else {
-                        prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
-                    }
-                }
-                if (last == current) {
-                    if (page) {
-                        auto endKeyRowId = LookupRowId(endKey, page, scheme, ESeek::Upper, *keyDefaults);
-                        if (endKeyRowId) {
-                            prechargeCurrentLastRowId = Min(prechargeCurrentLastRowId, endKeyRowId - 1);
-                        } else {
-                            prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
-                        }
-                    } else {
-                        prechargeCurrentFirstRowId = Max<TRowId>(); // no precharge
-                    }
-                }
-
-                if (prechargeCurrentFirstRowId <= prechargeCurrentLastRowId) {
-                    if (!hasItems) {
-                        prechargedFirstRowId = prechargeCurrentFirstRowId;
-                        hasItems = true;
-                    }
-                    prechargedLastRowId = prechargeCurrentLastRowId;
+                if (!++first) {
+                    break;
                 }
             }
 
-            if (hasItems && HistoryGroups) {
+            if (HistoryGroups) {
+                TRowId prechargedLastRowId = first ? (first->GetRowId() - 1) : Max<TRowId>();
+
                 for (auto& g : HistoryGroups) {
                     ui64 bytes = 0;
                     ready &= DoPrechargeGroup(g, prechargedFirstRowId, prechargedLastRowId, bytes);
@@ -688,12 +642,12 @@ namespace NTable {
 
     private:
         struct TGroupState {
-            TPartIndexIt GroupIndex;
-            TIter Index;
+            const NPage::TIndex& GroupIndex;
+            NPage::TIndex::TIter Index;
             TRowId LastRowId = Max<TRowId>();
             const NPage::TGroupId GroupId;
 
-            TGroupState(TPartIndexIt&& groupIndex, NPage::TGroupId groupId)
+            TGroupState(const NPage::TIndex& groupIndex, NPage::TGroupId groupId)
                 : GroupIndex(groupIndex)
                 , GroupId(groupId)
             { }
@@ -704,25 +658,16 @@ namespace NTable {
          * Precharges pages that contain row1 to row2 inclusive
          */
         bool DoPrechargeGroup(TGroupState& g, TRowId row1, TRowId row2, ui64& bytes) const noexcept {
-            auto groupIndex = g.GroupIndex.TryLoadRaw();
-            if (!groupIndex) {
-                if (bytes) {
-                    // Note: we can't continue if we have bytes limit
-                    bytes = Max<ui64>();
-                }
-                return false;
-            }
-
             bool ready = true;
 
             if (!g.Index || row1 < g.Index->GetRowId() || row1 > g.LastRowId) {
-                g.Index = groupIndex->LookupRow(row1, g.Index);
+                g.Index = g.GroupIndex.LookupRow(row1, g.Index);
                 if (Y_UNLIKELY(!g.Index)) {
                     // Looks like row1 doesn't even exist
                     g.LastRowId = Max<TRowId>();
                     return ready;
                 }
-                g.LastRowId = groupIndex->GetLastRowId(g.Index);
+                g.LastRowId = g.GroupIndex.GetLastRowId(g.Index);
                 auto pageId = g.Index->GetPageId();
                 ready &= bool(Env->TryGetPage(Part, pageId, g.GroupId));
                 bytes += Part->GetPageSize(pageId, g.GroupId);
@@ -734,7 +679,7 @@ namespace NTable {
                     g.LastRowId = Max<TRowId>();
                     return ready;
                 }
-                g.LastRowId = groupIndex->GetLastRowId(g.Index);
+                g.LastRowId = g.GroupIndex.GetLastRowId(g.Index);
                 auto pageId = g.Index->GetPageId();
                 ready &= bool(Env->TryGetPage(Part, pageId, g.GroupId));
                 bytes += Part->GetPageSize(pageId, g.GroupId);
@@ -747,25 +692,16 @@ namespace NTable {
          * Precharges pages that contain row1 to row2 inclusive in reverse
          */
         bool DoPrechargeGroupReverse(TGroupState& g, TRowId row1, TRowId row2, ui64& bytes) const noexcept {
-            auto groupIndex = g.GroupIndex.TryLoadRaw();
-            if (!groupIndex) {
-                if (bytes) {
-                    // Note: we can't continue if we have bytes limit
-                    bytes = Max<ui64>();
-                }
-                return false;
-            }
-
             bool ready = true;
 
             if (!g.Index || row1 < g.Index->GetRowId() || row1 > g.LastRowId) {
-                g.Index = groupIndex->LookupRow(row1, g.Index);
+                g.Index = g.GroupIndex.LookupRow(row1, g.Index);
                 if (Y_UNLIKELY(!g.Index)) {
                     // Looks like row1 doesn't even exist
                     g.LastRowId = Max<TRowId>();
                     return ready;
                 }
-                g.LastRowId = groupIndex->GetLastRowId(g.Index);
+                g.LastRowId = g.GroupIndex.GetLastRowId(g.Index);
                 auto pageId = g.Index->GetPageId();
                 ready &= bool(Env->TryGetPage(Part, pageId, g.GroupId));
                 bytes += Part->GetPageSize(pageId, g.GroupId);
@@ -787,36 +723,11 @@ namespace NTable {
         }
 
     private:
-        TRowId LookupRowId(const TCells key, const TSharedData* page, const TPartScheme::TGroupInfo &group, ESeek seek, const TKeyCellDefaults &keyDefaults) const noexcept
-        {
-            auto data = TDataPage(page);
-            auto lookup = data.LookupKey(key, group, seek, &keyDefaults);
-            auto rowId = data.BaseRow() + lookup.Off();
-            return rowId;
-        }
-
-    private:
-        TRowId LookupRowIdReverse(const TCells key, const TSharedData* page, const TPartScheme::TGroupInfo &group, ESeek seek, const TKeyCellDefaults &keyDefaults) const noexcept
-        {
-            auto data = TDataPage(page);
-            auto lookup = data.LookupKeyReverse(key, group, seek, &keyDefaults);
-            auto rowId = lookup
-                ? data.BaseRow() + lookup.Off()
-                : Max<TRowId>();
-            return rowId;
-        }
-
-    private:
-        bool LimitExceeded(ui64 value, ui64 limit) const noexcept {
-            return limit && value > limit;
-        }
-
-    private:
         IPages * const Env = nullptr;
         const TPart * const Part = nullptr;
         const TPartScheme &Scheme;
-        mutable TPartIndexIt Index;
-        mutable std::optional<TPartIndexIt> HistoryIndex;
+        const NPage::TIndex &Index;
+        const NPage::TIndex* const HistoryIndex;
         mutable TSmallVec<TGroupState> Groups;
         mutable TSmallVec<TGroupState> HistoryGroups;
     };

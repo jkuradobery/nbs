@@ -2,7 +2,6 @@
 
 #include "defs.h"
 #include "node_warden.h"
-#include "node_warden_events.h"
 
 #include <ydb/core/blobstorage/dsproxy/group_sessions.h>
 #include <ydb/core/node_whiteboard/node_whiteboard.h>
@@ -64,24 +63,11 @@ namespace NKikimr::NStorage {
         {}
     };
 
-    struct TDrivePathCounters {
-        ::NMonitoring::TDynamicCounters::TCounterPtr BadSerialsRead;
-
-        TDrivePathCounters(const TIntrusivePtr<::NMonitoring::TDynamicCounters>& counters, const TString& path) {
-            auto driveGroup = GetServiceCounters(counters, "pdisks")->GetSubgroup("path", path);
-
-            BadSerialsRead = driveGroup->GetCounter("BadSerialsRead");
-        }
-    };
-
     class TNodeWarden : public TActorBootstrapped<TNodeWarden> {
         TIntrusivePtr<TNodeWardenConfig> Cfg;
         TIntrusivePtr<TDsProxyNodeMon> DsProxyNodeMon;
         TActorId DsProxyNodeMonActor;
         TIntrusivePtr<TDsProxyPerPoolCounters> DsProxyPerPoolCounters;
-
-        // Counters for drives by drive path.
-        TMap<TString, TDrivePathCounters> ByPathDriveCounters;
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -138,9 +124,9 @@ namespace NKikimr::NStorage {
             , EnablePutBatching(Cfg->FeatureFlags.GetEnablePutBatchingForBlobStorage(), false, true)
             , EnableVPatch(Cfg->FeatureFlags.GetEnableVPatch(), false, true)
         {
-            Y_ABORT_UNLESS(Cfg->BlobStorageConfig.GetServiceSet().AvailabilityDomainsSize() <= 1);
+            Y_VERIFY(Cfg->ServiceSet.AvailabilityDomainsSize() <= 1);
             AvailDomainId = 1;
-            for (const auto& domain : Cfg->BlobStorageConfig.GetServiceSet().GetAvailabilityDomains()) {
+            for (const auto& domain : Cfg->ServiceSet.GetAvailabilityDomains()) {
                 AvailDomainId = domain;
             }
         }
@@ -172,27 +158,7 @@ namespace NKikimr::NStorage {
         void StartVirtualGroupAgent(ui32 groupId);
         void StartStaticProxies();
 
-        /**
-         * Removes drives with bad serial numbers and reports them to monitoring.
-         *
-         * This method scans a vector of drive data and checks for drives with bad serial numbers.
-         * Drives with bad serial numbers are removed from the vector and reported to the monitoring.
-         *
-         * @param drives A vector of data representing disk drives.
-         * @param details A string stream with details about drives.
-         */
-        void RemoveDrivesWithBadSerialsAndReport(TVector<NPDisk::TDriveData>& drives, TStringStream& details);
         TVector<NPDisk::TDriveData> ListLocalDrives();
-
-        TVector<TString> DrivePathCounterKeys() const {
-            TVector<TString> keys;
-
-            for (const auto& [key, _] : ByPathDriveCounters) {
-                keys.push_back(key);
-            }
-
-            return keys;
-        }
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         // Pipe management
@@ -288,7 +254,6 @@ namespace NKikimr::NStorage {
                 TIntrusivePtr<TBlobStorageGroupInfo> GroupInfo;
                 ui32 OrderNumber;
                 bool DonorMode;
-                bool ReadOnly;
             };
             std::optional<TRuntimeData> RuntimeData;
 
@@ -297,9 +262,7 @@ namespace NKikimr::NStorage {
             ui64 WhiteboardInstanceGuid;
 
             NKikimrBlobStorage::EVDiskStatus Status = NKikimrBlobStorage::EVDiskStatus::INIT_PENDING;
-            bool OnlyPhantomsRemain = false;
             std::optional<NKikimrBlobStorage::EVDiskStatus> ReportedVDiskStatus; // last reported to BSC
-            std::optional<bool> ReportedOnlyPhantomsRemain;
 
             enum EScrubState : ui32 {
                 IDLE,
@@ -464,7 +427,6 @@ namespace NKikimr::NStorage {
 
         void Handle(TEvBlobStorage::TEvDropDonor::TPtr ev);
         void Handle(TEvBlobStorage::TEvAskRestartPDisk::TPtr ev);
-        void Handle(TEvBlobStorage::TEvAskRestartVDisk::TPtr ev);
         void Handle(TEvBlobStorage::TEvRestartPDiskResult::TPtr ev);
 
         void FillInVDiskStatus(google::protobuf::RepeatedPtrField<NKikimrBlobStorage::TVDiskStatus> *pb, bool initial);
@@ -478,20 +440,6 @@ namespace NKikimr::NStorage {
         void SendScrubRequests();
 
         void Handle(NNodeWhiteboard::TEvWhiteboard::TEvBSGroupStateUpdate::TPtr ev);
-
-        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-        TActorId DistributedConfigKeeperId;
-
-        void StartDistributedConfigKeeper();
-        void ForwardToDistributedConfigKeeper(STATEFN_SIG);
-
-        NKikimrBlobStorage::TStorageConfig StorageConfig;
-        THashSet<TActorId> StorageConfigSubscribers;
-
-        void Handle(TEvNodeWardenQueryStorageConfig::TPtr ev);
-        void Handle(TEvNodeWardenStorageConfig::TPtr ev);
-        void HandleUnsubscribe(STATEFN_SIG);
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -536,7 +484,6 @@ namespace NKikimr::NStorage {
                 hFunc(TEvStatusUpdate, Handle);
                 hFunc(TEvBlobStorage::TEvDropDonor, Handle);
                 hFunc(TEvBlobStorage::TEvAskRestartPDisk, Handle);
-                hFunc(TEvBlobStorage::TEvAskRestartVDisk, Handle);
                 hFunc(TEvBlobStorage::TEvRestartPDiskResult, Handle);
 
                 hFunc(TEvGroupStatReport, Handle);
@@ -557,9 +504,6 @@ namespace NKikimr::NStorage {
                 hFunc(TEvents::TEvInvokeResult, Handle);
 
                 hFunc(TEvNodeWardenQueryGroupInfo, Handle);
-                hFunc(TEvNodeWardenQueryStorageConfig, Handle);
-                hFunc(TEvNodeWardenStorageConfig, Handle);
-                fFunc(TEvents::TSystem::Unsubscribe, HandleUnsubscribe);
 
                 // proxy requests for the NodeWhiteboard to prevent races
                 hFunc(NNodeWhiteboard::TEvWhiteboard::TEvBSGroupStateUpdate, Handle);
@@ -569,12 +513,6 @@ namespace NKikimr::NStorage {
 
                 cFunc(TEvPrivate::EvReadCache, HandleReadCache);
                 fFunc(TEvPrivate::EvGetGroup, HandleGetGroup);
-
-                fFunc(TEvBlobStorage::EvNodeConfigPush, ForwardToDistributedConfigKeeper);
-                fFunc(TEvBlobStorage::EvNodeConfigReversePush, ForwardToDistributedConfigKeeper);
-                fFunc(TEvBlobStorage::EvNodeConfigUnbind, ForwardToDistributedConfigKeeper);
-                fFunc(TEvBlobStorage::EvNodeConfigScatter, ForwardToDistributedConfigKeeper);
-                fFunc(TEvBlobStorage::EvNodeConfigGather, ForwardToDistributedConfigKeeper);
 
                 default:
                     EnqueuePendingMessage(ev);

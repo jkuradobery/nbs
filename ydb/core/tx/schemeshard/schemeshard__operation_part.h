@@ -30,7 +30,6 @@
     action(TEvHive::TEvAdoptTabletReply,         NSchemeShard::TXTYPE_CREATE_TABLET_REPLY)               \
     action(TEvHive::TEvDeleteTabletReply,        NSchemeShard::TXTYPE_FREE_TABLET_RESULT)                \
     action(TEvHive::TEvDeleteOwnerTabletsReply,           NSchemeShard::TXTYPE_FREE_OWNER_TABLETS_RESULT)\
-    action(TEvHive::TEvUpdateTabletsObjectReply, NSchemeShard::TXTYPE_CREATE_TABLET_REPLY)               \
 \
     action(TEvDataShard::TEvProposeTransactionResult,     NSchemeShard::TXTYPE_DATASHARD_PROPOSE_RESULT) \
     action(TEvDataShard::TEvSchemaChanged,       NSchemeShard::TXTYPE_DATASHARD_SCHEMA_CHANGED)          \
@@ -69,14 +68,11 @@
     action(NKesus::TEvKesus::TEvSetConfigResult,          NSchemeShard::TXTYPE_KESUS_CONFIG_RESULT)      \
     action(TEvPersQueue::TEvDropTabletReply,              NSchemeShard::TXTYPE_DROP_TABLET_RESULT)       \
     action(TEvPersQueue::TEvUpdateConfigResponse,         NSchemeShard::TXTYPE_PERSQUEUE_CONFIG_RESULT)  \
-    action(TEvPersQueue::TEvProposeTransactionResult,     NSchemeShard::TXTYPE_PERSQUEUE_PROPOSE_RESULT) \
     action(TEvBlobDepot::TEvApplyConfigResult,            NSchemeShard::TXTYPE_BLOB_DEPOT_CONFIG_RESULT) \
 \
     action(TEvPrivate::TEvOperationPlan,                   NSchemeShard::TXTYPE_PLAN_STEP)                             \
     action(TEvPrivate::TEvPrivate::TEvCompletePublication, NSchemeShard::TXTYPE_NOTIFY_OPERATION_COMPLETE_PUBLICATION) \
     action(TEvPrivate::TEvPrivate::TEvCompleteBarrier,     NSchemeShard::TXTYPE_NOTIFY_OPERATION_COMPLETE_BARRIER)     \
-\
-    action(TEvPersQueue::TEvProposeTransactionAttachResult, NSchemeShard::TXTYPE_PERSQUEUE_PROPOSE_ATTACH_RESULT)
 
 
 namespace NKikimr {
@@ -163,43 +159,28 @@ using TProposeRequest = NKikimr::NSchemeShard::TEvSchemeShard::TEvModifySchemeTr
 using TProposeResponse = NKikimr::NSchemeShard::TEvSchemeShard::TEvModifySchemeTransactionResult;
 using TTxTransaction = NKikimrSchemeOp::TModifyScheme;
 
-class ISubOperationState {
+class IOperationBase {
 public:
-    virtual ~ISubOperationState() = default;
+    virtual ~IOperationBase() = default;
 
-    template <EventBasePtr TEvPtr>
-    static TString DebugReply(const TEvPtr& ev);
+#define DefaultDebugReply(TEvType, TxType) \
+    static TString DebugReply(const TEvType::TPtr&);
+
+    SCHEMESHARD_INCOMING_EVENTS(DefaultDebugReply)
+#undef DefaultDebugReply
 
 #define DefaultHandleReply(TEvType, ...) \
-    virtual bool HandleReply(TEvType::TPtr& ev, TOperationContext& context);
+    virtual void HandleReply(TEvType::TPtr&, TOperationContext&);
 
     SCHEMESHARD_INCOMING_EVENTS(DefaultHandleReply)
 #undef DefaultHandleReply
 
-    virtual bool ProgressState(TOperationContext& context) = 0;
+    virtual void ProgressState(TOperationContext& context) = 0;
 };
 
-class TSubOperationState: public ISubOperationState {
-    TString LogHint;
-    TSet<ui32> MsgToIgnore;
-
-    virtual TString DebugHint() const = 0;
-
+class ISubOperationBase: public TSimpleRefCount<ISubOperationBase>, public IOperationBase {
 public:
-    using TPtr = THolder<TSubOperationState>;
-
-#define DefaultHandleReply(TEvType, ...) \
-    bool HandleReply(TEvType::TPtr& ev, TOperationContext& context) override;
-
-    SCHEMESHARD_INCOMING_EVENTS(DefaultHandleReply)
-#undef DefaultHandleReply
-
-    void IgnoreMessages(TString debugHint, TSet<ui32> mgsIds);
-};
-
-class ISubOperation: public TSimpleRefCount<ISubOperation>, public ISubOperationState {
-public:
-    using TPtr = TIntrusivePtr<ISubOperation>;
+    using TPtr = TIntrusivePtr<ISubOperationBase>;
 
     virtual THolder<TProposeResponse> Propose(const TString& owner, TOperationContext& context) = 0;
 
@@ -214,7 +195,36 @@ public:
     virtual const TTxTransaction& GetTransaction() const = 0;
 };
 
-class TSubOperationBase: public ISubOperation {
+class TSubOperationState {
+private:
+    TString LogHint;
+    TSet<ui32> MsgToIgnore;
+
+    virtual TString DebugHint() const = 0;
+
+public:
+
+    using TPtr = THolder<TSubOperationState>;
+    virtual ~TSubOperationState() = default;
+
+#define DefaultDebugReply(TEvType, TxType) \
+    TString DebugReply(const TEvType::TPtr&);
+
+    SCHEMESHARD_INCOMING_EVENTS(DefaultDebugReply)
+#undef DefaultDebugReply
+
+#define DefaultHandleReply(TEvType, ...)          \
+    virtual bool HandleReply(TEvType::TPtr&, TOperationContext&);
+
+    SCHEMESHARD_INCOMING_EVENTS(DefaultHandleReply)
+#undef DefaultHandleReply
+
+    void IgnoreMessages(TString debugHint, TSet<ui32> mgsIds);
+
+    virtual bool ProgressState(TOperationContext& context) = 0;
+};
+
+class TSubOperationBase: public ISubOperationBase {
 protected:
     const TOperationId OperationId;
     const TTxTransaction Transaction;
@@ -242,7 +252,7 @@ public:
 
 class TSubOperation: public TSubOperationBase {
     TTxState::ETxState State = TTxState::Invalid;
-    TSubOperationState::TPtr StateFunc = nullptr;
+    TSubOperationState::TPtr Base = nullptr;
 
 protected:
     virtual TTxState::ETxState NextState(TTxState::ETxState state) const = 0;
@@ -272,322 +282,291 @@ public:
 
     void SetState(TTxState::ETxState state) {
         State = state;
-        StateFunc = SelectStateFunc(state);
+        Base = SelectStateFunc(state);
     }
 
-    bool ProgressState(TOperationContext& context) override {
-        return Progress(context, &ISubOperationState::ProgressState, context);
-    }
-
-    #define DefaultHandleReply(TEvType, ...) \
-        bool HandleReply(TEvType::TPtr& ev, TOperationContext& context) override;
-
-        SCHEMESHARD_INCOMING_EVENTS(DefaultHandleReply)
-    #undef DefaultHandleReply
-
-private:
-    template <typename... Args>
-    using TFunc = bool(ISubOperationState::*)(Args...);
-
-    template <typename... Args>
-    bool Progress(TOperationContext& context, TFunc<Args...> func, Args&&... args) {
-        Y_ABORT_UNLESS(StateFunc);
-        const bool isDone = std::invoke(func, StateFunc.Get(), std::forward<Args>(args)...);
+    void ProgressState(TOperationContext& context) override {
+        Y_VERIFY(Base);
+        const bool isDone = Base->ProgressState(context);
         if (isDone) {
             StateDone(context);
         }
-
-        return true;
     }
+
+    #define DefaultHandleReply(TEvType, ...)                                       \
+        void HandleReply(TEvType::TPtr& ev, TOperationContext& context) override { \
+            Y_VERIFY(Base);                                                        \
+            bool isDone = Base->HandleReply(ev, context);                          \
+            if (isDone) {                                                          \
+                StateDone(context);                                                \
+            }                                                                      \
+        }
+
+        SCHEMESHARD_INCOMING_EVENTS(DefaultHandleReply)
+    #undef DefaultHandleReply
 };
 
 template <typename T>
-ISubOperation::TPtr MakeSubOperation(const TOperationId& id) {
+ISubOperationBase::TPtr MakeSubOperation(const TOperationId& id) {
     return new T(id);
 }
 
 template <typename T, typename... Args>
-ISubOperation::TPtr MakeSubOperation(const TOperationId& id, const TTxTransaction& tx, Args&&... args) {
+ISubOperationBase::TPtr MakeSubOperation(const TOperationId& id, const TTxTransaction& tx, Args&&... args) {
     return new T(id, tx, std::forward<Args>(args)...);
 }
 
 template <typename T, typename... Args>
-ISubOperation::TPtr MakeSubOperation(const TOperationId& id, TTxState::ETxState state, Args&&... args) {
+ISubOperationBase::TPtr MakeSubOperation(const TOperationId& id, TTxState::ETxState state, Args&&... args) {
     auto result = MakeHolder<T>(id, state, std::forward<Args>(args)...);
     result->SetState(state);
     return result.Release();
 }
 
-ISubOperation::TPtr CreateReject(TOperationId id, THolder<TProposeResponse> response);
-ISubOperation::TPtr CreateReject(TOperationId id, NKikimrScheme::EStatus status, const TString& message);
+ISubOperationBase::TPtr CreateReject(TOperationId id, THolder<TProposeResponse> response);
+ISubOperationBase::TPtr CreateReject(TOperationId id, NKikimrScheme::EStatus status, const TString& message);
 
-ISubOperation::TPtr CreateMkDir(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateMkDir(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateMkDir(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateMkDir(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateRmDir(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateRmDir(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateRmDir(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateRmDir(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateModifyACL(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateModifyACL(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateModifyACL(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateModifyACL(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterUserAttrs(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterUserAttrs(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterUserAttrs(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterUserAttrs(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateForceDropUnsafe(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateForceDropUnsafe(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateForceDropUnsafe(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateForceDropUnsafe(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewTable(TOperationId id, const TTxTransaction& tx, const THashSet<TString>& localSequences = { });
-ISubOperation::TPtr CreateNewTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewTable(TOperationId id, const TTxTransaction& tx, const THashSet<TString>& localSequences = { });
+ISubOperationBase::TPtr CreateNewTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateCopyTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateCopyTable(TOperationId id, TTxState::ETxState state);
-TVector<ISubOperation::TPtr> CreateCopyTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateCopyTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateCopyTable(TOperationId id, TTxState::ETxState state);
+TVector<ISubOperationBase::TPtr> CreateCopyTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
 
-ISubOperation::TPtr CreateAlterTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterTable(TOperationId id, TTxState::ETxState state);
-TVector<ISubOperation::TPtr> CreateConsistentAlterTable(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateAlterTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterTable(TOperationId id, TTxState::ETxState state);
+TVector<ISubOperationBase::TPtr> CreateConsistentAlterTable(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
 
-ISubOperation::TPtr CreateSplitMerge(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateSplitMerge(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateSplitMerge(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateSplitMerge(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropTable(TOperationId id, TTxState::ETxState state);
 
-TVector<ISubOperation::TPtr> CreateBuildColumn(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> ApplyBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CancelBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
 
-TVector<ISubOperation::TPtr> CreateBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-TVector<ISubOperation::TPtr> ApplyBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-TVector<ISubOperation::TPtr> CancelBuildIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateDropIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateDropTableIndexAtMainTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropTableIndexAtMainTable(TOperationId id, TTxState::ETxState state);
 
-TVector<ISubOperation::TPtr> CreateDropIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-ISubOperation::TPtr CreateDropTableIndexAtMainTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropTableIndexAtMainTable(TOperationId id, TTxState::ETxState state);
-
-ISubOperation::TPtr CreateUpdateMainTableOnIndexMove(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateUpdateMainTableOnIndexMove(TOperationId id, TTxState::ETxState state);
-
-// External Table
-// Create
-ISubOperation::TPtr CreateNewExternalTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewExternalTable(TOperationId id, TTxState::ETxState state);
-// Drop
-ISubOperation::TPtr CreateDropExternalTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropExternalTable(TOperationId id, TTxState::ETxState state);
-
-// External Data Source
-// Create
-ISubOperation::TPtr CreateNewExternalDataSource(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewExternalDataSource(TOperationId id, TTxState::ETxState state);
-// Drop
-ISubOperation::TPtr CreateDropExternalDataSource(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropExternalDataSource(TOperationId id, TTxState::ETxState state);
-
-// View
-// Create
-ISubOperation::TPtr CreateNewView(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewView(TOperationId id, TTxState::ETxState state);
-// Drop
-ISubOperation::TPtr CreateDropView(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropView(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateUpdateMainTableOnIndexMove(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateUpdateMainTableOnIndexMove(TOperationId id, TTxState::ETxState state);
 
 /// CDC
 // Create
-TVector<ISubOperation::TPtr> CreateNewCdcStream(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-ISubOperation::TPtr CreateNewCdcStreamImpl(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewCdcStreamImpl(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateNewCdcStreamAtTable(TOperationId id, const TTxTransaction& tx, bool initialScan);
-ISubOperation::TPtr CreateNewCdcStreamAtTable(TOperationId id, TTxState::ETxState state, bool initialScan);
+TVector<ISubOperationBase::TPtr> CreateNewCdcStream(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateNewCdcStreamImpl(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewCdcStreamImpl(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewCdcStreamAtTable(TOperationId id, const TTxTransaction& tx, bool initialScan);
+ISubOperationBase::TPtr CreateNewCdcStreamAtTable(TOperationId id, TTxState::ETxState state, bool initialScan);
 // Alter
-TVector<ISubOperation::TPtr> CreateAlterCdcStream(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-ISubOperation::TPtr CreateAlterCdcStreamImpl(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterCdcStreamImpl(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterCdcStreamAtTable(TOperationId id, const TTxTransaction& tx, bool dropSnapshot);
-ISubOperation::TPtr CreateAlterCdcStreamAtTable(TOperationId id, TTxState::ETxState state, bool dropSnapshot);
+TVector<ISubOperationBase::TPtr> CreateAlterCdcStream(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateAlterCdcStreamImpl(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterCdcStreamImpl(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterCdcStreamAtTable(TOperationId id, const TTxTransaction& tx, bool dropSnapshot);
+ISubOperationBase::TPtr CreateAlterCdcStreamAtTable(TOperationId id, TTxState::ETxState state, bool dropSnapshot);
 // Drop
-TVector<ISubOperation::TPtr> CreateDropCdcStream(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-ISubOperation::TPtr CreateDropCdcStreamImpl(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropCdcStreamImpl(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropCdcStreamAtTable(TOperationId id, const TTxTransaction& tx, bool dropSnapshot);
-ISubOperation::TPtr CreateDropCdcStreamAtTable(TOperationId id, TTxState::ETxState state, bool dropSnapshot);
+TVector<ISubOperationBase::TPtr> CreateDropCdcStream(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateDropCdcStreamImpl(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropCdcStreamImpl(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropCdcStreamAtTable(TOperationId id, const TTxTransaction& tx, bool dropSnapshot);
+ISubOperationBase::TPtr CreateDropCdcStreamAtTable(TOperationId id, TTxState::ETxState state, bool dropSnapshot);
 
-ISubOperation::TPtr CreateBackup(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateBackup(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateBackup(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateBackup(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateRestore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateRestore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateRestore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateRestore(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateTxCancelTx(TEvSchemeShard::TEvCancelTx::TPtr ev);
+ISubOperationBase::TPtr CreateTxCancelTx(TEvSchemeShard::TEvCancelTx::TPtr ev);
 
-TVector<ISubOperation::TPtr> CreateIndexedTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
-TVector<ISubOperation::TPtr> CreateDropIndexedTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateIndexedTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateDropIndexedTable(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
 
-ISubOperation::TPtr CreateNewTableIndex(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewTableIndex(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropTableIndex(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropTableIndex(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterTableIndex(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterTableIndex(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewTableIndex(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewTableIndex(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropTableIndex(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropTableIndex(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterTableIndex(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterTableIndex(TOperationId id, TTxState::ETxState state);
 
-TVector<ISubOperation::TPtr> CreateConsistentCopyTables(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateConsistentCopyTables(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
 
-ISubOperation::TPtr CreateNewOlapStore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewOlapStore(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterOlapStore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterOlapStore(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropOlapStore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropOlapStore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewOlapStore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewOlapStore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterOlapStore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterOlapStore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropOlapStore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropOlapStore(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewColumnTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewColumnTable(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterColumnTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterColumnTable(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropColumnTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropColumnTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewColumnTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewColumnTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterColumnTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterColumnTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropColumnTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropColumnTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewBSV(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewBSV(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewBSV(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewBSV(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterBSV(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterBSV(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterBSV(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterBSV(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAssignBSV(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAssignBSV(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAssignBSV(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAssignBSV(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropBSV(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropBSV(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropBSV(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropBSV(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewPQ(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewPQ(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewPQ(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewPQ(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterPQ(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterPQ(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterPQ(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterPQ(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropPQ(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropPQ(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropPQ(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropPQ(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAllocatePQ(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAllocatePQ(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAllocatePQ(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAllocatePQ(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDeallocatePQ(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDeallocatePQ(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDeallocatePQ(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDeallocatePQ(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateSubDomain(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterSubDomain(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateCompatibleSubdomainDrop(TSchemeShard* ss, TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateCompatibleSubdomainAlter(TSchemeShard* ss, TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateCompatibleSubdomainDrop(TSchemeShard* ss, TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateCompatibleSubdomainAlter(TSchemeShard* ss, TOperationId id, const TTxTransaction& tx);
 
-ISubOperation::TPtr CreateUpgradeSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateUpgradeSubDomain(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateUpgradeSubDomainDecision(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateUpgradeSubDomainDecision(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateUpgradeSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateUpgradeSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateUpgradeSubDomainDecision(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateUpgradeSubDomainDecision(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropSubdomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropSubdomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropSubdomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropSubdomain(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateForceDropSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateForceDropSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateForceDropSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateForceDropSubDomain(TOperationId id, TTxState::ETxState state);
 
 
 /// ExtSubDomain
 // Create
-ISubOperation::TPtr CreateExtSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateExtSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateExtSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateExtSubDomain(TOperationId id, TTxState::ETxState state);
 
 // Alter
-TVector<ISubOperation::TPtr> CreateCompatibleAlterExtSubDomain(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
-ISubOperation::TPtr CreateAlterExtSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterExtSubDomain(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterExtSubDomainCreateHive(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterExtSubDomainCreateHive(TOperationId id, TTxState::ETxState state);
+TVector<ISubOperationBase::TPtr> CreateCompatibleAlterExtSubDomain(TOperationId nextId, const TTxTransaction& tx, TOperationContext& context);
+ISubOperationBase::TPtr CreateAlterExtSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterExtSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterExtSubDomainCreateHive(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterExtSubDomainCreateHive(TOperationId id, TTxState::ETxState state);
 
 // Drop
-ISubOperation::TPtr CreateForceDropExtSubDomain(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateForceDropExtSubDomain(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateForceDropExtSubDomain(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateForceDropExtSubDomain(TOperationId id, TTxState::ETxState state);
 
 
-ISubOperation::TPtr CreateNewKesus(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewKesus(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewKesus(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewKesus(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterKesus(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterKesus(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterKesus(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterKesus(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropKesus(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropKesus(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropKesus(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropKesus(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewRTMR(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewRTMR(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewRTMR(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewRTMR(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewSolomon(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewSolomon(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewSolomon(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewSolomon(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterSolomon(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterSolomon(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterSolomon(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterSolomon(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropSolomon(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropSolomon(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropSolomon(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropSolomon(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateInitializeBuildIndexMainTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateInitializeBuildIndexMainTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateInitializeBuildIndexMainTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateInitializeBuildIndexMainTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateInitializeBuildIndexImplTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateInitializeBuildIndexImplTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateInitializeBuildIndexImplTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateInitializeBuildIndexImplTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateFinalizeBuildIndexImplTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateFinalizeBuildIndexImplTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateFinalizeBuildIndexImplTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateFinalizeBuildIndexImplTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateFinalizeBuildIndexMainTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateFinalizeBuildIndexMainTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateFinalizeBuildIndexMainTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateFinalizeBuildIndexMainTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateLock(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateLock(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateLock(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateLock(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr DropLock(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr DropLock(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr DropLock(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr DropLock(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewFileStore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewFileStore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewFileStore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewFileStore(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterFileStore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterFileStore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterFileStore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterFileStore(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateDropFileStore(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropFileStore(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropFileStore(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropFileStore(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateAlterLogin(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterLogin(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterLogin(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterLogin(TOperationId id, TTxState::ETxState state);
 
-TVector<ISubOperation::TPtr> CreateConsistentMoveTable(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
-TVector<ISubOperation::TPtr> CreateConsistentMoveIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateConsistentMoveTable(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
+TVector<ISubOperationBase::TPtr> CreateConsistentMoveIndex(TOperationId id, const TTxTransaction& tx, TOperationContext& context);
 
-ISubOperation::TPtr CreateMoveTable(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateMoveTable(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateMoveTable(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateMoveTable(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateMoveIndex(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateMoveIndex(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateMoveIndex(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateMoveIndex(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateMoveTableIndex(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateMoveTableIndex(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateMoveTableIndex(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateMoveTableIndex(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewSequence(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewSequence(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropSequence(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropSequence(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewSequence(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewSequence(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropSequence(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropSequence(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewReplication(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewReplication(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropReplication(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropReplication(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewReplication(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewReplication(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropReplication(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropReplication(TOperationId id, TTxState::ETxState state);
 
-ISubOperation::TPtr CreateNewBlobDepot(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateNewBlobDepot(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateAlterBlobDepot(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateAlterBlobDepot(TOperationId id, TTxState::ETxState state);
-ISubOperation::TPtr CreateDropBlobDepot(TOperationId id, const TTxTransaction& tx);
-ISubOperation::TPtr CreateDropBlobDepot(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateNewBlobDepot(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateNewBlobDepot(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateAlterBlobDepot(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateAlterBlobDepot(TOperationId id, TTxState::ETxState state);
+ISubOperationBase::TPtr CreateDropBlobDepot(TOperationId id, const TTxTransaction& tx);
+ISubOperationBase::TPtr CreateDropBlobDepot(TOperationId id, TTxState::ETxState state);
 
 }
 }

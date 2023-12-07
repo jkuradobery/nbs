@@ -3,7 +3,7 @@
 #include "world.h"
 #include "events.h"
 #include <util/system/type_name.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/tablet.h>
@@ -31,7 +31,7 @@ namespace NFake {
             , Limit(Max(ui32(1), limit))
             , FollowerId(followerId)
         {
-            Y_ABORT_UNLESS(TTabletTypes::TypeInvalid != Info->TabletType);
+            Y_VERIFY(TTabletTypes::TypeInvalid != Info->TabletType);
         }
 
     private:
@@ -43,7 +43,7 @@ namespace NFake {
             sys->Send(SelfId(), new TEvents::TEvBootstrap);
         }
 
-        void Inbox(TEventHandlePtr &eh)
+        void Inbox(TEventHandlePtr &eh, const ::NActors::TActorContext &ctx)
         {
             if (auto *ev = eh->CastAsLocal<TEvTablet::TEvTabletDead>()) {
 
@@ -62,7 +62,7 @@ namespace NFake {
                 } else if (Borns >= Limit) {
                     DoSuicide();
                 } else {
-                    Alive = false, Agent = { }, Start(this->ActorContext());
+                    Alive = false, Agent = { }, Start(ctx);
                 }
 
             } else if (eh->CastAsLocal<TEvTablet::TEvRestored>()) {
@@ -70,22 +70,20 @@ namespace NFake {
             } else if (eh->CastAsLocal<TEvLocal::TEvTabletMetrics>()) {
 
             } else if (eh->CastAsLocal<TEvents::TEvBootstrap>()) {
-                Start(this->ActorContext());
+                Start(ctx);
             } else if (eh->CastAsLocal<TEvents::TEvPoison>()) {
                 if (auto logl = Logger->Log(ELnLev::Debug))
                     logl << "Got kill req for Tablet " << Info->TabletID;
 
                 Send(Agent, new TEvents::TEvPoison);
-            } else if (eh->CastAsLocal<TEvTablet::TEvReady>()) {
-
             } else {
-                Y_Fail("Unexpected event " << eh->GetTypeName());
+                Y_Fail("Unexpected event " << TypeName(*eh->GetBase()));
             }
         }
 
         void Start(const TActorContext &ctx) noexcept
         {
-            Y_ABORT_UNLESS(!Agent, "Tablet actor is already started");
+            Y_VERIFY(!Agent, "Tablet actor is already started");
 
             if (auto logl = Logger->Log(ELnLev::Debug)) {
                 logl
@@ -101,7 +99,7 @@ namespace NFake {
                 Agent = Setup->Follower(Info.Get(), SelfId(), ctx, FollowerId, profile);
             }
 
-            Y_ABORT_UNLESS(Agent, "Failed to start new tablet actor");
+            Y_VERIFY(Agent, "Failed to start new tablet actor");
 
             Borns += 1;
         }

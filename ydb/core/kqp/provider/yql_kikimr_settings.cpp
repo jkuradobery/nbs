@@ -1,8 +1,5 @@
 #include "yql_kikimr_settings.h"
 
-#include <ydb/core/protos/config.pb.h>
-#include <util/generic/size_literals.h>
-
 namespace NYql {
 
 using namespace NCommon;
@@ -44,7 +41,6 @@ TKikimrConfiguration::TKikimrConfiguration() {
     REGISTER_SETTING(*this, _KqpMaxComputeActors);
     REGISTER_SETTING(*this, _KqpEnableSpilling);
     REGISTER_SETTING(*this, _KqpDisableLlvmForUdfStages);
-    REGISTER_SETTING(*this, _KqpYqlCombinerMemoryLimit).Lower(0ULL).Upper(1_GB);
 
     REGISTER_SETTING(*this, KqpPushOlapProcess);
 
@@ -53,9 +49,7 @@ TKikimrConfiguration::TKikimrConfiguration() {
     REGISTER_SETTING(*this, _DefaultCluster);
     REGISTER_SETTING(*this, _ResultRowsLimit);
     REGISTER_SETTING(*this, EnableSystemColumns);
-    REGISTER_SETTING(*this, UseLlvm);
     REGISTER_SETTING(*this, EnableLlvm);
-    REGISTER_SETTING(*this, HashJoinMode).Parser([](const TString& v) { return FromString<NDq::EHashJoinMode>(v); });
 
     REGISTER_SETTING(*this, OptDisableJoinRewrite);
     REGISTER_SETTING(*this, OptDisableJoinTableLookup);
@@ -66,18 +60,10 @@ TKikimrConfiguration::TKikimrConfiguration() {
     REGISTER_SETTING(*this, OptEnableInplaceUpdate);
     REGISTER_SETTING(*this, OptEnablePredicateExtract);
     REGISTER_SETTING(*this, OptEnableOlapPushdown);
-    REGISTER_SETTING(*this, OptEnableOlapProvideComputeSharding);
-
     REGISTER_SETTING(*this, OptUseFinalizeByKey);
-    REGISTER_SETTING(*this, OptEnableCostBasedOptimization);
-    REGISTER_SETTING(*this, MaxDPccpDPTableSize);
-
-    REGISTER_SETTING(*this, MaxTasksPerStage);
 
     /* Runtime */
     REGISTER_SETTING(*this, ScanQuery);
-
-    IndexAutoChooserMode = NKikimrConfig::TTableServiceConfig_EIndexAutoChooseMode_DISABLED;
 }
 
 bool TKikimrSettings::HasAllowKqpUnsafeCommit() const {
@@ -132,34 +118,16 @@ bool TKikimrSettings::HasOptEnableOlapPushdown() const {
     return GetOptionalFlagValue(OptEnableOlapPushdown.Get()) != EOptionalFlag::Disabled;
 }
 
-bool TKikimrSettings::HasOptEnableOlapProvideComputeSharding() const {
-    return GetOptionalFlagValue(OptEnableOlapProvideComputeSharding.Get()) == EOptionalFlag::Enabled;
-}
-
 bool TKikimrSettings::HasOptUseFinalizeByKey() const {
-    return GetOptionalFlagValue(OptUseFinalizeByKey.Get()) != EOptionalFlag::Disabled;
+    return GetOptionalFlagValue(OptUseFinalizeByKey.Get()) == EOptionalFlag::Enabled;
 }
-
-bool TKikimrSettings::HasOptEnableCostBasedOptimization() const {
-    return GetOptionalFlagValue(OptEnableCostBasedOptimization.Get()) == EOptionalFlag::Enabled;
-}
-
 
 EOptionalFlag TKikimrSettings::GetOptPredicateExtract() const {
     return GetOptionalFlagValue(OptEnablePredicateExtract.Get());
 }
 
-EOptionalFlag TKikimrSettings::GetUseLlvm() const {
-    auto optionalFlag = GetOptionalFlagValue(UseLlvm.Get());
-    if (optionalFlag == EOptionalFlag::Auto) {
-        optionalFlag = GetOptionalFlagValue(EnableLlvm.Get());
-    }
-    return optionalFlag;
-}
-
-NDq::EHashJoinMode TKikimrSettings::GetHashJoinMode() const {
-    auto maybeHashJoinMode = HashJoinMode.Get();
-    return maybeHashJoinMode ? *maybeHashJoinMode : NDq::EHashJoinMode::Off;
+EOptionalFlag TKikimrSettings::GetEnableLlvm() const {
+    return GetOptionalFlagValue(EnableLlvm.Get());
 }
 
 TKikimrSettings::TConstPtr TKikimrConfiguration::Snapshot() const {

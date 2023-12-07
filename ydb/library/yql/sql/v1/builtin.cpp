@@ -2,7 +2,6 @@
 #include "context.h"
 
 #include "list_builtin.h"
-#include "match_recognize.h"
 
 #include <ydb/library/yql/ast/yql_type_string.h>
 #include <ydb/library/yql/core/yql_expr_type_annotation.h>
@@ -275,11 +274,10 @@ typedef THolder<TBasicAggrFunc> TAggrFuncPtr;
 
 class TLiteralStringAtom: public INode {
 public:
-    TLiteralStringAtom(TPosition pos, TNodePtr node, const TString& info, const TString& prefix = {})
+    TLiteralStringAtom(TPosition pos, TNodePtr node, const TString& info)
         : INode(pos)
         , Node(node)
         , Info(info)
-        , Prefix(prefix)
     {
     }
 
@@ -294,7 +292,7 @@ public:
             return false;
         }
 
-        Atom = MakeAtomFromExpression(ctx, Node, Prefix).Build();
+        Atom = MakeAtomFromExpression(ctx, Node).Build();
         return true;
     }
 
@@ -328,7 +326,6 @@ private:
     TNodePtr Node;
     TNodePtr Atom;
     TString Info;
-    TString Prefix;
 };
 
 class TYqlAsAtom: public TLiteralStringAtom {
@@ -421,7 +418,7 @@ public:
                 }
                 break;
             default:
-                Y_ABORT("Unexpected data slot");
+                Y_FAIL("Unexpected data slot");
             }
 
             if (NUdf::GetDataTypeInfo(*slot).Features & NUdf::TzDateType) {
@@ -483,7 +480,7 @@ public:
             if (src->HasAggregations()) {
                 ctx.Warning(Pos,
                     TIssuesIds::YQL_EMPTY_TABLENAME_RESULT) << "TableName() will produce empty result when used with aggregation.\n"
-                                                               "Please consult documentation for possible workaround";
+                                                               "Please consult https://yql.yandex-team.ru/docs/yt/builtins/basic/#tablepath for possible workaround";
             }
 
             Args.push_back(Y("TablePath", Y("DependsOn", "row")));
@@ -499,7 +496,7 @@ public:
             Args[1] = BuildQuotedAtom(Args[1]->GetPos(), *literal);
         } else {
             if (Service.empty()) {
-                ctx.Error(GetPos()) << GetOpName() << " requires either service name as second argument or current cluster name";
+                ctx.Error(GetPos()) << GetOpName() << " requires either one of \"yt\"/\"kikimr\"/\"rtmr\" as second argument or current cluster name";
                 return false;
             }
 
@@ -732,7 +729,6 @@ public:
     }
 };
 
-template <bool RangeFunction>
 class TYqlPgCall : public TCallNode {
 public:
     TYqlPgCall(TPosition pos, const TVector<TNodePtr>& args)
@@ -755,12 +751,12 @@ public:
         }
 
         Args[0] = BuildQuotedAtom(Args[0]->GetPos(), Args[0]->GetLiteralValue());
-        Args.insert(Args.begin() + 1, RangeFunction ? Q(Y(Q(Y(Q("range"))))) : Q(Y()));
+        Args.insert(Args.begin() + 1, Q(Y()));
         return TCallNode::DoInit(ctx, src);
     }
 
     TNodePtr DoClone() const final {
-        return new TYqlPgCall<RangeFunction>(Pos, CloneContainer(Args));
+        return new TYqlPgCall(Pos, CloneContainer(Args));
     }
 };
 
@@ -1004,26 +1000,25 @@ public:
     }
 };
 
-TNodePtr BuildFileNameArgument(TPosition pos, const TNodePtr& argument, const TString& prefix) {
-    return new TLiteralStringAtom(pos, argument, "FilePath requires string literal as parameter", prefix);
+TNodePtr BuildFileNameArgument(TPosition pos, const TNodePtr& argument) {
+    return new TLiteralStringAtom(pos, argument, "FilePath requires string literal as parameter");
 }
 
-template <typename TDerived, bool IsFile>
-class TYqlAtomBase: public TCallNode {
+class TYqlAtom final: public TCallNode {
 public:
-    TYqlAtomBase(TPosition pos, const TString& opName, const TVector<TNodePtr>& args)
+    TYqlAtom(TPosition pos, const TString& opName, const TVector<TNodePtr>& args)
         : TCallNode(pos, opName, 1, 1, args)
     {}
 
     bool DoInit(TContext& ctx, ISource* src) override {
         if (!Args.empty()) {
-            Args[0] = BuildFileNameArgument(ctx.Pos(), Args[0], IsFile ? ctx.Settings.FileAliasPrefix : TString());
+            Args[0] = BuildFileNameArgument(ctx.Pos(), Args[0]);
         }
         return TCallNode::DoInit(ctx, src);
     }
 
     TNodePtr DoClone() const final {
-        return new TDerived(Pos, OpName, Args);
+        return new TYqlAtom(Pos, OpName, Args);
     }
 
     bool IsLiteral() const override {
@@ -1037,18 +1032,6 @@ public:
     TString GetLiteralValue() const override {
         return !Args.empty() ? Args[0]->GetLiteralValue() : "";
     }
-};
-
-class TYqlAtom final : public TYqlAtomBase<TYqlAtom, false>
-{
-    using TBase = TYqlAtomBase<TYqlAtom, false>;
-    using TBase::TBase;
-};
-
-class TFileYqlAtom final : public TYqlAtomBase<TFileYqlAtom, true>
-{
-    using TBase = TYqlAtomBase<TFileYqlAtom, true>;
-    using TBase::TBase;
 };
 
 class TTryMember final: public TCallNode {
@@ -1073,33 +1056,6 @@ public:
 
     TNodePtr DoClone() const final {
         return new TTryMember(Pos, OpName, Args);
-    }
-};
-
-template<bool Pretty>
-class TFormatTypeDiff final: public TCallNode {
-public:
-    TFormatTypeDiff(TPosition pos, const TString& opName, const TVector<TNodePtr>& args)
-        : TCallNode(pos, opName, 3, 3, args)
-    {}
-
-    bool DoInit(TContext& ctx, ISource* src) override {
-        if (Args.size() != 2) {
-            ctx.Error(Pos) << OpName << " requires exactly 2 arguments";
-            return false;
-        }
-        for (const auto& arg : Args) {
-            if (!arg->Init(ctx, src)) {
-                return false;
-            }
-        }
-        Args.push_back(Q(Pretty ? "true" : "false"));
-        OpName = "FormatTypeDiff";
-        return TCallNode::DoInit(ctx, src);
-    }
-
-    TNodePtr DoClone() const final {
-        return new TFormatTypeDiff<Pretty>(GetPos(), OpName, CloneContainer(Args));
     }
 };
 
@@ -1269,7 +1225,7 @@ public:
         if (!dataTypeStringNode) {
             return false;
         }
-        auto aliasNode = BuildFileNameArgument(Args[1]->GetPos(), Args[1], ctx.Settings.FileAliasPrefix);
+        auto aliasNode = BuildFileNameArgument(Args[1]->GetPos(), Args[1]);
         OpName = "Apply";
         Args[0] = Y("Udf", Q("File.ByLines"), Y("Void"),
             Y("TupleType",
@@ -1875,7 +1831,7 @@ public:
     }
 
     TAstNode* Translate(TContext& ctx) const override {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -1911,7 +1867,7 @@ bool TTableRows::DoInit(TContext& ctx, ISource* /*src*/) {
 }
 
 TAstNode* TTableRows::Translate(TContext& ctx) const {
-    Y_DEBUG_ABORT_UNLESS(Node);
+    Y_VERIFY_DEBUG(Node);
     return Node->Translate(ctx);
 }
 
@@ -2097,7 +2053,7 @@ private:
     }
 
     TAstNode* Translate(TContext& ctx) const override {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -2380,7 +2336,7 @@ public:
     }
 
     TAstNode* Translate(TContext& ctx) const override {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -2402,7 +2358,7 @@ public:
     }
 
     void DoVisitChildren(const TVisitFunc& func, TVisitNodeSet& visited) const final {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         Node->VisitTree(func, visited);
     }
 private:
@@ -2488,7 +2444,7 @@ public:
 
     TAstNode* Translate(TContext& ctx) const override {
         Y_UNUSED(ctx);
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         return Node->Translate(ctx);
     }
 
@@ -2501,7 +2457,7 @@ public:
     }
 
     void DoVisitChildren(const TVisitFunc& func, TVisitNodeSet& visited) const final {
-        Y_DEBUG_ABORT_UNLESS(Node);
+        Y_VERIFY_DEBUG(Node);
         Node->VisitTree(func, visited);
     }
 private:
@@ -2511,7 +2467,7 @@ private:
     TNodePtr Node;
 };
 
-template <bool Sorted, bool Hashed>
+template <bool Sorted>
 class TYqlToDict final: public TCallNode {
 public:
     TYqlToDict(TPosition pos, const TString& mode, const TVector<TNodePtr>& args)
@@ -2521,7 +2477,7 @@ public:
 
 private:
     TCallNode::TPtr DoClone() const override {
-       return new TYqlToDict<Sorted, Hashed>(GetPos(), Mode, CloneContainer(Args));
+       return new TYqlToDict<Sorted>(GetPos(), Mode, CloneContainer(Args));
     }
 
     bool DoInit(TContext& ctx, ISource* src) override {
@@ -2531,7 +2487,7 @@ private:
         }
         Args.push_back(BuildLambda(Pos, Y("val"), Y("Nth", "val", Q("0"))));
         Args.push_back(BuildLambda(Pos, Y("val"), Y("Nth", "val", Q("1"))));
-        Args.push_back(Q(Y(Q(Sorted ? "Sorted" : Hashed ? "Hashed" : "Auto"), Q(Mode))));
+        Args.push_back(Q(Y(Q(Sorted ? "Sorted" : "Hashed"), Q(Mode))));
         return TCallNode::DoInit(ctx, src);
     }
 private:
@@ -2869,8 +2825,7 @@ struct TBuiltinFuncData {
             {"listavg", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("ListAvg", 1, 1)},
             {"listconcat", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("ListConcat", 1, 2)},
             {"listextract", BuildSimpleBuiltinFactoryCallback<TListExtractBuiltin>()},
-            {"listuniq", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("ListUniq", 1, 1)},
-            {"listuniqstable", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("ListUniqStable", 1, 1)},
+            {"listuniq", BuildSimpleBuiltinFactoryCallback<TListUniqBuiltin>()},
             {"listcreate", BuildSimpleBuiltinFactoryCallback<TListCreateBuiltin>()},
             {"listfromrange", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("ListFromRange", 2, 3) },
             {"listreplicate", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("Replicate", 2, 2) },
@@ -2891,12 +2846,10 @@ struct TBuiltinFuncData {
             {"asdictstrict", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("AsDictStrict", 0, -1)},
             {"asset", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("AsSet", 0, -1)},
             {"assetstrict", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("AsSetStrict", 0, -1)},
-            {"todict", BuildNamedBuiltinFactoryCallback<TYqlToDict<false, false>>("One")},
-            {"tomultidict", BuildNamedBuiltinFactoryCallback<TYqlToDict<false, false>>("Many")},
-            {"tosorteddict", BuildNamedBuiltinFactoryCallback<TYqlToDict<true, false>>("One")},
-            {"tosortedmultidict", BuildNamedBuiltinFactoryCallback<TYqlToDict<true, false>>("Many")},
-            {"tohasheddict", BuildNamedBuiltinFactoryCallback<TYqlToDict<false, true>>("One")},
-            {"tohashedmultidict", BuildNamedBuiltinFactoryCallback<TYqlToDict<false, true>>("Many")},
+            {"todict", BuildNamedBuiltinFactoryCallback<TYqlToDict<false>>("One")},
+            {"tomultidict", BuildNamedBuiltinFactoryCallback<TYqlToDict<false>>("Many")},
+            {"tosorteddict", BuildNamedBuiltinFactoryCallback<TYqlToDict<true>>("One")},
+            {"tosortedmultidict", BuildNamedBuiltinFactoryCallback<TYqlToDict<true>>("Many")},
             {"dictkeys", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("DictKeys", 1, 1) },
             {"dictpayloads", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("DictPayloads", 1, 1) },
             {"dictitems", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("DictItems", 1, 1) },
@@ -2929,13 +2882,10 @@ struct TBuiltinFuncData {
             {"just", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("Just", 1, 1) },
             {"nothing", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("Nothing", 1, 1) },
             {"formattype", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("FormatType", 1, 1) },
-            {"formattypediff", BuildNamedBuiltinFactoryCallback<TFormatTypeDiff<false>>("FormatTypeDiff") },
-            {"formattypediffpretty", BuildNamedBuiltinFactoryCallback<TFormatTypeDiff<true>>("FormatTypeDiffPretty") },
             {"pgtype", BuildSimpleBuiltinFactoryCallback<TYqlPgType>() },
             {"pgconst", BuildSimpleBuiltinFactoryCallback<TYqlPgConst>() },
             {"pgop", BuildSimpleBuiltinFactoryCallback<TYqlPgOp>() },
-            {"pgcall", BuildSimpleBuiltinFactoryCallback<TYqlPgCall<false>>() },
-            {"pgrangecall", BuildSimpleBuiltinFactoryCallback<TYqlPgCall<true>>() },
+            {"pgcall", BuildSimpleBuiltinFactoryCallback<TYqlPgCall>() },
             {"pgcast", BuildSimpleBuiltinFactoryCallback<TYqlPgCast>() },
             {"frompg", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("FromPg", 1, 1) },
             {"topg", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("ToPg", 1, 1) },
@@ -3047,10 +2997,10 @@ struct TBuiltinFuncData {
             {"staticzip", BuildNamedArgcBuiltinFactoryCallback<TCallNodeImpl>("StaticZip", 1, -1) },
 
             // File builtins
-            {"filepath", BuildNamedBuiltinFactoryCallback<TFileYqlAtom>("FilePath")},
-            {"filecontent", BuildNamedBuiltinFactoryCallback<TFileYqlAtom>("FileContent")},
-            {"folderpath", BuildNamedBuiltinFactoryCallback<TFileYqlAtom>("FolderPath") },
-            {"files", BuildNamedBuiltinFactoryCallback<TFileYqlAtom>("Files")},
+            {"filepath", BuildNamedBuiltinFactoryCallback<TYqlAtom>("FilePath")},
+            {"filecontent", BuildNamedBuiltinFactoryCallback<TYqlAtom>("FileContent")},
+            {"folderpath", BuildNamedBuiltinFactoryCallback<TYqlAtom>("FolderPath") },
+            {"files", BuildNamedBuiltinFactoryCallback<TYqlAtom>("Files")},
             {"parsefile", BuildSimpleBuiltinFactoryCallback<TYqlParseFileOp>()},
 
             // Misc builtins
@@ -3092,10 +3042,6 @@ struct TBuiltinFuncData {
             // Hopping intervals time functions
             {"hopstart", BuildSimpleBuiltinFactoryCallback<THoppingTime<true>>()},
             {"hopend", BuildSimpleBuiltinFactoryCallback<THoppingTime<false>>()},
-
-            //MatchRecognize navigation functions
-            {"first", BuildNamedBuiltinFactoryCallback<TMatchRecognizeNavigate>("FIRST")},
-            {"last", BuildNamedBuiltinFactoryCallback<TMatchRecognizeNavigate>("LAST")},
         };
         return builtinFuncs;
     }
@@ -3242,8 +3188,6 @@ struct TBuiltinFuncData {
             {"forcerenamemembers", { "ForceRenameMembers", 2, 2}},
             {"spreadmembers", { "SpreadMembers", 2, 2}},
             {"forcespreadmembers", { "ForceSpreadMembers", 2, 2}},
-            {"listfromtuple", { "ListFromTuple", 1, 1}},
-            {"listtotuple", { "ListToTuple", 2, 2}},
         };
         return coreFuncs;
     }
@@ -3383,7 +3327,7 @@ TNodePtr BuildBuiltinFunc(TContext& ctx, TPosition pos, TString name, const TVec
             TVector<TNodePtr> pgCallArgs;
             pgCallArgs.push_back(BuildLiteralRawString(pos, name));
             pgCallArgs.insert(pgCallArgs.end(), args.begin(), args.end());
-            return new TYqlPgCall<false>(pos, pgCallArgs);
+            return new TYqlPgCall(pos, pgCallArgs);
         }
     } else if (name == "MakeLibraPreprocessor") {
         if (args.size() != 1) {
@@ -3589,13 +3533,13 @@ TNodePtr BuildBuiltinFunc(TContext& ctx, TPosition pos, TString name, const TVec
             if (mustUseNamed && *mustUseNamed) {
                 *mustUseNamed = false;
                 YQL_ENSURE(args.size() == 2);
-                Y_DEBUG_ABORT_UNLESS(dynamic_cast<TTupleNode*>(args[0].Get()));
+                Y_VERIFY_DEBUG(dynamic_cast<TTupleNode*>(args[0].Get()));
                 auto posArgs = static_cast<TTupleNode*>(args[0].Get());
                 if (posArgs->IsEmpty()) {
                     if (normalizedName == "asstruct") {
                         return args[1];
                     } else {
-                        Y_DEBUG_ABORT_UNLESS(dynamic_cast<TStructNode*>(args[1].Get()));
+                        Y_VERIFY_DEBUG(dynamic_cast<TStructNode*>(args[1].Get()));
                         auto namedArgs = static_cast<TStructNode*>(args[1].Get());
                         return new TStructTypeNode(pos, namedArgs->GetExprs());
                     }
@@ -3613,8 +3557,8 @@ TNodePtr BuildBuiltinFunc(TContext& ctx, TPosition pos, TString name, const TVec
             }
             YQL_ENSURE(args.size() == 2);
             auto posArgs = static_cast<TTupleNode*>(args[0].Get());
-            Y_DEBUG_ABORT_UNLESS(dynamic_cast<TTupleNode*>(args[0].Get()));
-            Y_DEBUG_ABORT_UNLESS(dynamic_cast<TStructNode*>(args[1].Get()));
+            Y_VERIFY_DEBUG(dynamic_cast<TTupleNode*>(args[0].Get()));
+            Y_VERIFY_DEBUG(dynamic_cast<TStructNode*>(args[1].Get()));
             if (posArgs->GetTupleSize() != 1) {
                 return new TInvalidBuiltin(pos, TStringBuilder() << "ExpandStruct requires all arguments except first to be named");
             }
@@ -3700,7 +3644,7 @@ TNodePtr BuildBuiltinFunc(TContext& ctx, TPosition pos, TString name, const TVec
     if (ns == "datetime2" && name == "Update") {
         if (namedArgs) {
             TStructNode* castedNamedArgs = dynamic_cast<TStructNode*>(namedArgs.Get());
-            Y_DEBUG_ABORT_UNLESS(castedNamedArgs);
+            Y_VERIFY_DEBUG(castedNamedArgs);
             auto exprs = castedNamedArgs->GetExprs();
             for (auto& arg : exprs) {
                 if (arg->GetLabel() == "Timezone") {

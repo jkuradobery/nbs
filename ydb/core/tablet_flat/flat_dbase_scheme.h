@@ -122,7 +122,7 @@ public:
     };
 
     struct TExecutorInfo {
-        ui64 CacheSize = 384 * 1024; // (DEPRECATED)
+        ui64 CacheSize = 384 * 1024;
         bool AllowLogBatching = false;
         bool LogFastTactic = true;
         TDuration LogFlushPeriod = TDuration::MicroSeconds(500);
@@ -168,13 +168,20 @@ public:
         return nullptr;
     }
 
+    ECache CachePolicy(ui32 id) const noexcept
+    {
+        auto *family = DefaultFamilyFor(id);
+
+        return family ? family->Cache : ECache::None;
+    }
+
     ECompactionStrategy CompactionStrategyFor(ui32 id) const noexcept
     {
         if (auto *table = GetTableInfo(id)) {
             auto strategy = table->CompactionPolicy->CompactionStrategy;
             if (strategy != NKikimrSchemeOp::CompactionStrategyUnset) {
-                if (strategy == NKikimrSchemeOp::CompactionStrategySharded) {
-                    // Sharded strategy doesn't exist anymore
+                if (table->ColdBorrow && strategy == NKikimrSchemeOp::CompactionStrategySharded) {
+                    // Sharded strategy does not support cold borrow
                     // Use the safe generational strategy instead
                     strategy = NKikimrSchemeOp::CompactionStrategyGenerational;
                 }
@@ -240,7 +247,7 @@ public:
     TAlter& AddTable(const TString& name, ui32 id);
     TAlter& DropTable(ui32 id);
     TAlter& AddColumn(ui32 table, const TString& name, ui32 id, ui32 type, bool notNull, TCell null = { });
-    TAlter& AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type, ui32 pgType, const TString& pgTypeMod, bool notNull, TCell null = { });
+    TAlter& AddPgColumn(ui32 table, const TString& name, ui32 id, ui32 type, ui32 pgType, bool notNull, TCell null = { });
     TAlter& DropColumn(ui32 table, ui32 id);
     TAlter& AddColumnToFamily(ui32 table, ui32 column, ui32 family);
     TAlter& AddFamily(ui32 table, ui32 family, ui32 room);

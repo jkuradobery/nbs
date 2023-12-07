@@ -19,15 +19,11 @@ public:
     }
 
     bool IsReadyToExecute(TOperation::TPtr op) const override {
-        return !op->HasRuntimeConflicts() && !op->HasWaitingForGlobalTxIdFlag();
+        return !op->HasRuntimeConflicts();
     }
 
     EExecutionStatus Execute(TOperation::TPtr op, TTransactionContext& txc, const TActorContext& ctx) override {
         Y_UNUSED(ctx);
-
-        if (op->HasWaitingForGlobalTxIdFlag()) {
-            return EExecutionStatus::Continue;
-        }
 
         if (op->IsImmediate()) {
             // Every time we execute immediate transaction we may choose a new mvcc version
@@ -38,34 +34,15 @@ public:
         TSetupSysLocks guardLocks(op, DataShard, &locksDb);
 
         TDirectTransaction* tx = dynamic_cast<TDirectTransaction*>(op.Get());
-        Y_ABORT_UNLESS(tx != nullptr);
+        Y_VERIFY(tx != nullptr);
 
-        try {
-            if (!tx->Execute(&DataShard, txc)) {
-                return EExecutionStatus::Restart;
-            }
-        } catch (const TNeedGlobalTxId&) {
-            Y_VERIFY_S(op->GetGlobalTxId() == 0,
-                "Unexpected TNeedGlobalTxId exception for direct operation with TxId# " << op->GetGlobalTxId());
-            Y_VERIFY_S(op->IsImmediate(),
-                "Unexpected TNeedGlobalTxId exception for a non-immediate operation with TxId# " << op->GetTxId());
-
-            ctx.Send(MakeTxProxyID(),
-                new TEvTxUserProxy::TEvAllocateTxId(),
-                0, op->GetTxId());
-            op->SetWaitingForGlobalTxIdFlag();
-
-            if (txc.DB.HasChanges()) {
-                txc.DB.RollbackChanges();
-            }
-            return EExecutionStatus::Continue;
+        if (!tx->Execute(&DataShard, txc)) {
+            return EExecutionStatus::Restart;
         }
 
         if (Pipeline.AddLockDependencies(op, guardLocks)) {
-            if (txc.DB.HasChanges()) {
-                txc.DB.RollbackChanges();
-            }
-            return EExecutionStatus::Continue;
+            txc.Reschedule();
+            return EExecutionStatus::Restart;
         }
 
         op->ChangeRecords() = std::move(tx->GetCollectedChanges());
@@ -80,10 +57,9 @@ public:
     void Complete(TOperation::TPtr op, const TActorContext& ctx) override {
         Pipeline.RemoveCommittingOp(op);
         DataShard.EnqueueChangeRecords(std::move(op->ChangeRecords()));
-        DataShard.EmitHeartbeats(ctx);
 
         TDirectTransaction* tx = dynamic_cast<TDirectTransaction*>(op.Get());
-        Y_ABORT_UNLESS(tx != nullptr);
+        Y_VERIFY(tx != nullptr);
 
         tx->SendResult(&DataShard, ctx);
     }

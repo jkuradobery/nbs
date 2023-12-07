@@ -5,7 +5,6 @@
 
 #include <ydb/library/yql/core/yql_data_provider.h>
 #include <ydb/library/yql/dq/common/dq_common.h>
-#include <ydb/library/yql/dq/proto/dq_transport.pb.h>
 
 #include <library/cpp/string_utils/parse_size/parse_size.h>
 
@@ -16,18 +15,6 @@ namespace NYql {
 
 struct TDqSettings {
 
-    enum class ETaskRunnerStats {
-        Disable,
-        Basic,
-        Full,
-        Profile
-    };
-
-    enum class ESpillingEngine {
-        Disable     /* "disable" */,
-        File        /* "file" */,
-    };
-
     struct TDefault {
         static constexpr ui32 MaxTasksPerStage = 20U;
         static constexpr ui32 MaxTasksPerOperation = 70U;
@@ -37,8 +24,6 @@ struct TDqSettings {
         static constexpr int MaxNetworkRetries = 5;
         static constexpr ui64 LiteralTimeout = 60000; // 1 minutes
         static constexpr ui64 TableTimeout = 600000; // 10 minutes
-        static constexpr ui64 LongWorkersAllocationFailTimeout = TableTimeout;
-        static constexpr ui64 LongWorkersAllocationWarnTimeout = 30000; // 30 seconds
         static constexpr ui32 CloudFunctionConcurrency = 10;
         static constexpr ui64 ChannelBufferSize = 2000_MB;
         static constexpr ui64 OutputChunkMaxSize = 4_MB;
@@ -49,15 +34,6 @@ struct TDqSettings {
         static constexpr ui64 ParallelOperationsLimit = 16;
         static constexpr double HashShuffleTasksRatio = 0.5;
         static constexpr ui32 HashShuffleMaxTasks = 24;
-        static constexpr bool UseFastPickleTransport = false;
-        static constexpr bool UseOOBTransport = false;
-        static constexpr bool AggregateStatsByStage = true;
-        static constexpr bool EnableChannelStats = false;
-        static constexpr bool ExportStats = false;
-        static constexpr ETaskRunnerStats TaskRunnerStats = ETaskRunnerStats::Basic;
-        static constexpr ESpillingEngine SpillingEngine = ESpillingEngine::Disable;
-        static constexpr ui32 MaxDPccpDPTableSize = 10000U;
-
     };
 
     using TPtr = std::shared_ptr<TDqSettings>;
@@ -75,7 +51,7 @@ struct TDqSettings {
     NCommon::TConfSetting<int, false> MaxNetworkRetries;
     NCommon::TConfSetting<ui64, false> RetryBackoffMs;
     NCommon::TConfSetting<bool, false> CollectCoreDumps;
-    NCommon::TConfSetting<EFallbackPolicy, false> FallbackPolicy;
+    NCommon::TConfSetting<TString, false> FallbackPolicy;
     NCommon::TConfSetting<ui64, false> PullRequestTimeoutMs;
     NCommon::TConfSetting<ui64, false> PingTimeoutMs;
     NCommon::TConfSetting<bool, false> UseSimpleYtReader;
@@ -114,20 +90,6 @@ struct TDqSettings {
     NCommon::TConfSetting<double, false> HashShuffleTasksRatio;
     NCommon::TConfSetting<ui32, false> HashShuffleMaxTasks;
 
-    NCommon::TConfSetting<bool, false> UseWideChannels;
-    NCommon::TConfSetting<bool, false> UseWideBlockChannels;
-    NCommon::TConfSetting<bool, false> UseFastPickleTransport;
-    NCommon::TConfSetting<bool, false> UseOOBTransport;
-
-    NCommon::TConfSetting<bool, false> AggregateStatsByStage;
-    NCommon::TConfSetting<bool, false> EnableChannelStats;
-    NCommon::TConfSetting<bool, false> ExportStats;
-    NCommon::TConfSetting<ETaskRunnerStats, false> TaskRunnerStats;
-    NCommon::TConfSetting<bool, false> _SkipRevisionCheck;
-    NCommon::TConfSetting<bool, false> UseBlockReader;
-    NCommon::TConfSetting<ESpillingEngine, false> SpillingEngine;
-    NCommon::TConfSetting<bool, false> DisableLLVMForBlockStages;
-
     // This options will be passed to executor_actor and worker_actor
     template <typename TProtoConfig>
     void Save(TProtoConfig& config) {
@@ -138,8 +100,6 @@ struct TDqSettings {
             s->SetValue(ToString(*this->name.Get())); \
         }
 
-        // The below pragmas are intended to be used in actors (like Compute Actor, Executer, Worker Managers ...) and TaskRunner only.
-        // If your pragma is used only in graph transformer don't place it here.
         SAVE_SETTING(AnalyticsHopping);
         SAVE_SETTING(MaxRetries);
         SAVE_SETTING(MaxNetworkRetries);
@@ -165,19 +125,16 @@ struct TDqSettings {
         SAVE_SETTING(EnableFullResultWrite);
         SAVE_SETTING(_FallbackOnRuntimeErrors);
         SAVE_SETTING(WorkerFilter);
+        SAVE_SETTING(UseFinalizeByKey);
         SAVE_SETTING(ComputeActorType);
         SAVE_SETTING(WatermarksMode);
         SAVE_SETTING(WatermarksEnableIdlePartitions);
         SAVE_SETTING(WatermarksGranularityMs);
         SAVE_SETTING(WatermarksLateArrivalDelayMs);
-        SAVE_SETTING(UseWideChannels);
-        SAVE_SETTING(UseWideBlockChannels);
-        SAVE_SETTING(UseFastPickleTransport);
-        SAVE_SETTING(UseOOBTransport);
-        SAVE_SETTING(AggregateStatsByStage);
-        SAVE_SETTING(EnableChannelStats);
-        SAVE_SETTING(ExportStats);
-        SAVE_SETTING(TaskRunnerStats);
+        SAVE_SETTING(UseAggPhases);
+        SAVE_SETTING(HashJoinMode);
+        SAVE_SETTING(HashShuffleTasksRatio);        
+        SAVE_SETTING(HashShuffleMaxTasks);    
 #undef SAVE_SETTING
     }
 
@@ -192,16 +149,6 @@ struct TDqSettings {
 
         return copy;
     }
-
-    NDqProto::EDataTransportVersion GetDataTransportVersion() const {
-        const bool fastPickle = UseFastPickleTransport.Get().GetOrElse(TDqSettings::TDefault::UseFastPickleTransport);
-        const bool oob = UseOOBTransport.Get().GetOrElse(TDqSettings::TDefault::UseOOBTransport);
-        if (oob) {
-            return fastPickle ? NDqProto::EDataTransportVersion::DATA_TRANSPORT_OOB_FAST_PICKLE_1_0 : NDqProto::EDataTransportVersion::DATA_TRANSPORT_OOB_PICKLE_1_0;
-        } else {
-            return fastPickle ? NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_FAST_PICKLE_1_0 : NDqProto::EDataTransportVersion::DATA_TRANSPORT_UV_PICKLE_1_0;
-        }
-    }
 };
 
 struct TDqConfiguration: public TDqSettings, public NCommon::TSettingDispatcher {
@@ -210,10 +157,29 @@ struct TDqConfiguration: public TDqSettings, public NCommon::TSettingDispatcher 
     TDqConfiguration();
     TDqConfiguration(const TDqConfiguration&) = delete;
 
-    template <class TProtoConfig, typename TFilter>
-    void Init(const TProtoConfig& config, const TFilter& filter) {
+    template <class TProtoConfig>
+    void Init(const TProtoConfig& config, const TString& userName)
+    {
         // Init settings from config
-        this->Dispatch(config.GetDefaultSettings(), filter);
+        this->Dispatch(config.GetDefaultSettings(), userName);
+
+        // TODO: drop after releasing new gateways config
+        if (this->AnalyzeQuery.Get().Empty()) {
+            int percent = 0;
+
+            if ((percent = this->_AnalyzeQueryPercentage.Get().GetOrElse(0)) &&
+                RandomNumber<ui8>(100) < percent)
+            {
+                this->Dispatch(NCommon::ALL_CLUSTERS, "AnalyzeQuery", "true", TDqConfiguration::EStage::STATIC);
+            }
+
+            for (const auto& userFromConfig : config.GetDefaultAnalyzeQueryForUsers()) {
+                if (userFromConfig == userName) {
+                    this->Dispatch(NCommon::ALL_CLUSTERS, "AnalyzeQuery", "true", TDqConfiguration::EStage::STATIC);
+                    break;
+                }
+            }
+        }
 
         this->FreezeDefaults();
     }

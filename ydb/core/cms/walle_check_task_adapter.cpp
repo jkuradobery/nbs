@@ -1,7 +1,7 @@
 #include "walle.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 namespace NKikimr::NCms {
 
@@ -22,7 +22,8 @@ public:
     {
     }
 
-    void Bootstrap(const TActorContext &ctx) {
+    void Bootstrap(const TActorContext &ctx)
+    {
         TString id = RequestEvent->Get()->Record.GetTaskId();
 
         LOG_INFO(ctx, NKikimrServices::CMS, "Processing Wall-E request: %s",
@@ -69,38 +70,43 @@ public:
     }
 
 private:
-    STFUNC(StateWork) {
+    STFUNC(StateWork)
+    {
         switch (ev->GetTypeRewrite()) {
             HFunc(TEvCms::TEvPermissionResponse, Handle);
             CFunc(TEvents::TSystem::Wakeup, Timeout);
         default:
-            LOG_DEBUG(*TlsActivationContext, NKikimrServices::CMS,
+            LOG_DEBUG(ctx, NKikimrServices::CMS,
                       "TWalleRemoveTaskAdapter::StateWork ignored event type: %" PRIx32 " event: %s",
-                      ev->GetTypeRewrite(), ev->ToString().data());
+                      ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
         }
     }
 
-    void ReplyWithErrorAndDie(TStatus::ECode code, const TString &err, const TActorContext &ctx) {
+    void ReplyWithErrorAndDie(TStatus::ECode code, const TString &err, const TActorContext &ctx)
+    {
         TAutoPtr<TEvCms::TEvWalleCheckTaskResponse> resp = new TEvCms::TEvWalleCheckTaskResponse;
         resp->Record.MutableStatus()->SetCode(code);
         resp->Record.MutableStatus()->SetReason(err);
         ReplyAndDie(resp.Release(), ctx);
     }
 
-    void ReplyAndDie(TAutoPtr<TEvCms::TEvWalleCheckTaskResponse> resp, const TActorContext &ctx) {
+    void ReplyAndDie(TAutoPtr<TEvCms::TEvWalleCheckTaskResponse> resp, const TActorContext &ctx)
+    {
         WalleAuditLog(RequestEvent->Get(), resp.Get(), ctx);
         ctx.Send(RequestEvent->Sender, resp.Release());
         Die(ctx);
     }
 
-    void Handle(TEvCms::TEvPermissionResponse::TPtr &ev, const TActorContext &ctx) {
+    void Handle(TEvCms::TEvPermissionResponse::TPtr &ev, const TActorContext &ctx)
+    {
         auto &rec = ev->Get()->Record;
 
         Response->Record.MutableStatus()->CopyFrom(rec.GetStatus());
         ReplyAndDie(Response, ctx);
     }
 
-    void Timeout(const TActorContext &ctx) {
+    void Timeout(const TActorContext& ctx)
+    {
         ReplyWithErrorAndDie(TStatus::ERROR_TEMP, "Timeout", ctx);
     }
 
@@ -110,7 +116,10 @@ private:
     TActorId Cms;
 };
 
-IActor *CreateWalleAdapter(TEvCms::TEvWalleCheckTaskRequest::TPtr &ev, const TCmsStatePtr state, TActorId cms) {
+
+IActor *CreateWalleAdapter(TEvCms::TEvWalleCheckTaskRequest::TPtr &ev,
+                           const TCmsStatePtr state, TActorId cms)
+{
     return new TWalleCheckTaskAdapter(ev, state, cms);
 }
 

@@ -8,47 +8,27 @@ namespace NKikimr::NConsole {
 using namespace NKikimrConsole;
 
 class TConfigsManager::TTxReplaceYamlConfig : public TTransactionBase<TConfigsManager> {
-    template <class T>
-    TTxReplaceYamlConfig(TConfigsManager *self,
-                         T &ev,
-                         bool force)
-        : TBase(self)
-        , Config(ev->Get()->Record.GetRequest().config())
-        , Sender(ev->Sender)
-        , Force(force)
-        , AllowUnknownFields(ev->Get()->Record.GetRequest().allow_unknown_fields())
-        , DryRun(ev->Get()->Record.GetRequest().dry_run())
-    {
-    }
-
 public:
     TTxReplaceYamlConfig(TConfigsManager *self,
-                         TEvConsole::TEvReplaceYamlConfigRequest::TPtr &ev)
-        : TTxReplaceYamlConfig(self, ev, false)
-    {
-    }
-
-    TTxReplaceYamlConfig(TConfigsManager *self,
-                         TEvConsole::TEvSetYamlConfigRequest::TPtr &ev)
-        : TTxReplaceYamlConfig(self, ev, true)
+                       TEvConsole::TEvReplaceYamlConfigRequest::TPtr &ev)
+        : TBase(self)
+        , Request(std::move(ev))
     {
     }
 
     bool Execute(TTransactionContext &txc, const TActorContext &ctx) override
     {
+        auto &req = Request->Get()->Record;
+
         NIceDb::TNiceDb db(txc.DB);
 
-        try {
-            if (!Force) {
-                auto metadata = NYamlConfig::GetMetadata(Config);
-                Cluster = metadata.Cluster.value_or(TString("unknown"));
-                Version = metadata.Version.value_or(0);
-            } else {
-               Cluster = Self->ClusterName;
-               Version = Self->YamlVersion;
-            }
+        auto config = req.GetRequest().config();
 
-            UpdatedConfig = NYamlConfig::ReplaceMetadata(Config, NYamlConfig::TMetadata{
+        try {
+            auto metadata = NYamlConfig::GetMetadata(config);
+            Cluster = metadata.Cluster.value_or(TString("unknown"));
+            Version = metadata.Version.value_or(0);
+            UpdatedConfig = NYamlConfig::ReplaceMetadata(config, NYamlConfig::TMetadata{
                     .Version = Version + 1,
                     .Cluster = Cluster,
                 });
@@ -67,19 +47,11 @@ public:
                     ythrow yexception() << "Version mismatch";
                 }
 
-                if (AllowUnknownFields) {
-                    UnknownFieldsCollector = new NYamlConfig::TBasicUnknownFieldsCollector;
-                }
-
                 for (auto& [_, config] : resolved.Configs) {
-                    auto cfg = NYamlConfig::YamlToProto(
-                        config.second,
-                        AllowUnknownFields,
-                        true,
-                        UnknownFieldsCollector);
+                    auto cfg = NYamlConfig::YamlToProto(config.second);
                 }
 
-                if (!DryRun) {
+                if (!req.GetRequest().dry_run()) {
                     db.Table<Schema::YamlConfig>().Key(Version + 1)
                         .Update<Schema::YamlConfig::Config>(UpdatedConfig)
                         // set config dropped by default to support rollback to previous versions
@@ -93,26 +65,7 @@ public:
                 }
             }
 
-            auto fillResponse = [&](auto& ev){
-                if (UnknownFieldsCollector) {
-                    for (auto& [path, info] : UnknownFieldsCollector->GetUnknownKeys()) {
-                        auto *issue = ev->Record.AddIssues();
-                            issue->set_severity(NYql::TSeverityIds::S_WARNING);
-                            issue->set_message(TStringBuilder{} << "Unknown key# " << info.first << " in proto# " << info.second << " found in path# " << path);
-                    }
-                }
-
-                Response = MakeHolder<NActors::IEventHandle>(Sender, ctx.SelfID, ev.Release());
-            };
-
-
-            if (!Force) {
-                auto ev = MakeHolder<TEvConsole::TEvReplaceYamlConfigResponse>();
-                fillResponse(ev);
-            } else {
-                auto ev = MakeHolder<TEvConsole::TEvSetYamlConfigResponse>();
-                fillResponse(ev);
-            }
+            Response = MakeHolder<NActors::IEventHandle>(Request->Sender, ctx.SelfID, new TEvConsole::TEvReplaceYamlConfigResponse());
         } catch (const yexception& ex) {
             Error = true;
 
@@ -121,7 +74,7 @@ public:
             auto *issue = ev->Record.AddIssues();
             issue->set_severity(NYql::TSeverityIds::S_ERROR);
             issue->set_message(ex.what());
-            Response = MakeHolder<NActors::IEventHandle>(Sender, ctx.SelfID, ev.Release());
+            Response = MakeHolder<NActors::IEventHandle>(Request->Sender, ctx.SelfID, ev.Release());
         }
 
         return true;
@@ -131,9 +84,11 @@ public:
     {
         LOG_DEBUG(ctx, NKikimrServices::CMS_CONFIGS, "TTxReplaceYamlConfig Complete");
 
+        auto &req = Request->Get()->Record;
+
         ctx.Send(Response.Release());
 
-        if (!Error && Modify && !DryRun) {
+        if (!Error && Modify && !req.GetRequest().dry_run()) {
             Self->YamlVersion = Version + 1;
             Self->YamlConfig = UpdatedConfig;
             Self->YamlDropped = false;
@@ -148,26 +103,16 @@ public:
     }
 
 private:
-    const TString Config;
-    const TActorId Sender;
-    const bool Force = false;
-    const bool AllowUnknownFields = false;
-    const bool DryRun = false;
+    TEvConsole::TEvReplaceYamlConfigRequest::TPtr Request;
     THolder<NActors::IEventHandle> Response;
     bool Error = false;
     bool Modify = false;
-    TSimpleSharedPtr<NYamlConfig::TBasicUnknownFieldsCollector> UnknownFieldsCollector = nullptr;
     ui32 Version;
     TString Cluster;
     TString UpdatedConfig;
 };
 
 ITransaction *TConfigsManager::CreateTxReplaceYamlConfig(TEvConsole::TEvReplaceYamlConfigRequest::TPtr &ev)
-{
-    return new TTxReplaceYamlConfig(this, ev);
-}
-
-ITransaction *TConfigsManager::CreateTxSetYamlConfig(TEvConsole::TEvSetYamlConfigRequest::TPtr &ev)
 {
     return new TTxReplaceYamlConfig(this, ev);
 }

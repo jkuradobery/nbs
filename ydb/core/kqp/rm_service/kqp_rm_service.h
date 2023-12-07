@@ -1,11 +1,10 @@
 #pragma once
 
 #include <ydb/core/protos/config.pb.h>
-#include <ydb/core/kqp/common/simple/kqp_event_ids.h>
 #include <ydb/core/kqp/counters/kqp_counters.h>
 #include <ydb/library/yql/minikql/computation/mkql_computation_pattern_cache.h>
 
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/actor.h>
 
 #include <util/datetime/base.h>
 #include <util/string/builder.h>
@@ -71,22 +70,20 @@ class IKqpResourceManager : private TNonCopyable {
 public:
     virtual ~IKqpResourceManager() = default;
 
-    virtual bool AllocateResources(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources,
+    virtual bool AllocateResources(ui64 queryId, ui64 taskId, const TKqpResourcesRequest& resources,
         TKqpNotEnoughResources* details = nullptr) = 0;
 
     using TResourcesAllocatedCallback = std::function<void(NActors::TActorSystem* as)>;
     using TNotEnoughtResourcesCallback = std::function<void(NActors::TActorSystem* as, const TString& reason, bool byTimeout)>;
 
-    virtual bool AllocateResources(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources,
+    virtual bool AllocateResources(ui64 queryId, ui64 taskId, const TKqpResourcesRequest& resources,
         TResourcesAllocatedCallback&& onSuccess, TNotEnoughtResourcesCallback&& onFail, TDuration timeout = {}) = 0;
 
-    virtual void FreeResources(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources) = 0;
-    virtual void FreeResources(ui64 txId, ui64 taskId) = 0;
-    virtual void FreeResources(ui64 txId) = 0;
+    virtual void FreeResources(ui64 queryId, ui64 taskId) = 0;
+    virtual void FreeResources(ui64 queryId) = 0;
 
-    virtual void NotifyExternalResourcesAllocated(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources) = 0;
-    virtual void NotifyExternalResourcesFreed(ui64 txId, ui64 taskId, const TKqpResourcesRequest& resources) = 0;
-    virtual void NotifyExternalResourcesFreed(ui64 txId, ui64 taskId) = 0;
+    virtual void NotifyExternalResourcesAllocated(ui64 queryId, ui64 taskId, const TKqpResourcesRequest& resources) = 0;
+    virtual void NotifyExternalResourcesFreed(ui64 queryId, ui64 taskId) = 0;
 
     virtual void RequestClusterResourcesInfo(TOnResourcesSnapshotCallback&& callback) = 0;
 
@@ -94,10 +91,6 @@ public:
     virtual NKikimrConfig::TTableServiceConfig::TResourceManager GetConfig() = 0;
 
     virtual std::shared_ptr<NMiniKQL::TComputationPatternLRUCache> GetPatternCache() = 0;
-
-    virtual ui32 GetNodeId() {
-        return 0;
-    }
 };
 
 
@@ -105,42 +98,13 @@ NActors::IActor* CreateTakeResourcesSnapshotActor(
     const TString& boardPath, ui32 stateStorageGroupId,
     std::function<void(TVector<NKikimrKqp::TKqpNodeResources>&&)>&& callback);
 
-
-struct TResourceSnapshotState {
-    std::shared_ptr<TVector<NKikimrKqp::TKqpNodeResources>> Snapshot;
-    TMutex Lock;
-};
-
-struct TEvKqpResourceInfoExchanger {
-    struct TEvPublishResource : public TEventLocal<TEvPublishResource,
-        TKqpResourceInfoExchangerEvents::EvPublishResource>
-    {
-        const NKikimrKqp::TKqpNodeResources Resources;
-        TEvPublishResource(NKikimrKqp::TKqpNodeResources resources) : Resources(std::move(resources)) {
-        }
-    };
-
-    struct TEvSendResources : public TEventPB<TEvSendResources, NKikimrKqp::TResourceExchangeSnapshot,
-        TKqpResourceInfoExchangerEvents::EvSendResources>
-    {};
-};
-
-NActors::IActor* CreateKqpResourceInfoExchangerActor(TIntrusivePtr<TKqpCounters> counters,
-    std::shared_ptr<TResourceSnapshotState> resourceSnapshotState,
-    const NKikimrConfig::TTableServiceConfig::TResourceManager::TInfoExchangerSettings& settings);
-
 } // namespace NRm
 
-struct TKqpProxySharedResources {
-    std::atomic<ui32> AtomicLocalSessionCount{0};
-};
-
 NActors::IActor* CreateKqpResourceManagerActor(const NKikimrConfig::TTableServiceConfig::TResourceManager& config,
-    TIntrusivePtr<TKqpCounters> counters, NActors::TActorId resourceBroker = {},
-    std::shared_ptr<TKqpProxySharedResources> kqpProxySharedResources = nullptr);
+    TIntrusivePtr<TKqpCounters> counters, NActors::TActorId resourceBroker = {});
 
-std::shared_ptr<NRm::IKqpResourceManager> GetKqpResourceManager(TMaybe<ui32> nodeId = Nothing());
-std::shared_ptr<NRm::IKqpResourceManager> TryGetKqpResourceManager(TMaybe<ui32> nodeId = Nothing());
+NRm::IKqpResourceManager* GetKqpResourceManager(TMaybe<ui32> nodeId = Nothing());
+NRm::IKqpResourceManager* TryGetKqpResourceManager(TMaybe<ui32> nodeId = Nothing());
 
 } // namespace NKqp
 } // namespace NKikimr

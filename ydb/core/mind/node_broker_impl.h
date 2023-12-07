@@ -9,8 +9,8 @@
 #include <ydb/core/engine/minikql/flat_local_tx_factory.h>
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 #include <util/generic/bitmap.h>
 
@@ -24,18 +24,6 @@ using NTabletFlatExecutor::TTransactionContext;
 using NConsole::TEvConsole;
 using NConsole::ITxExecutor;
 using NConsole::TTxProcessor;
-
-class INodeBrokerHooks {
-protected:
-    ~INodeBrokerHooks() = default;
-
-public:
-    virtual void OnActivateExecutor(ui64 tabletId);
-
-public:
-    static INodeBrokerHooks* Get();
-    static void Set(INodeBrokerHooks* hooks);
-};
 
 class TNodeBroker : public TActor<TNodeBroker>
                   , public TTabletExecutedFlat
@@ -79,10 +67,12 @@ private:
                   const TString &host,
                   const TString &resolveHost,
                   ui16 port,
-                  const TNodeLocation &location)
+                  const TNodeLocation &location,
+                  bool legacyUpdatePending)
             : TEvInterconnect::TNodeInfo(nodeId, address, host, resolveHost,
                                          port, location)
             , Lease(0)
+            , LegacyUpdatePending(legacyUpdatePending)
         {
         }
 
@@ -113,6 +103,7 @@ private:
         // Lease is incremented each time node extends its lifetime.
         ui32 Lease;
         TInstant Expire;
+        bool LegacyUpdatePending = false;
         bool AuthorizedByCertificate = false;
     };
 
@@ -167,9 +158,9 @@ private:
 
     STFUNC(StateInit)
     {
-        LOG_DEBUG(*TlsActivationContext, NKikimrServices::NODE_BROKER, "StateInit event type: %" PRIx32 " event: %s",
-                  ev->GetTypeRewrite(), ev->ToString().data());
-        StateInitImpl(ev, SelfId());
+        LOG_DEBUG(ctx, NKikimrServices::NODE_BROKER, "StateInit event type: %" PRIx32 " event: %s",
+                  ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
+        StateInitImpl(ev, ctx);
     }
 
     STFUNC(StateWork)
@@ -178,11 +169,11 @@ private:
         switch (ev->GetTypeRewrite()) {
             HFuncTraced(TEvConsole::TEvConfigNotificationRequest, Handle);
             HFuncTraced(TEvConsole::TEvReplaceConfigSubscriptionsResponse, Handle);
+            HFuncTraced(TEvents::TEvPoisonPill, Handle);
             HFuncTraced(TEvNodeBroker::TEvListNodes, Handle);
             HFuncTraced(TEvNodeBroker::TEvResolveNode, Handle);
             HFuncTraced(TEvNodeBroker::TEvRegistrationRequest, Handle);
             HFuncTraced(TEvNodeBroker::TEvExtendLeaseRequest, Handle);
-            HFuncTraced(TEvNodeBroker::TEvCompactTables, Handle);
             HFuncTraced(TEvNodeBroker::TEvGetConfigRequest, Handle);
             HFuncTraced(TEvNodeBroker::TEvSetConfigRequest, Handle);
             HFuncTraced(TEvPrivate::TEvUpdateEpoch, Handle);
@@ -192,9 +183,9 @@ private:
             IgnoreFunc(NConsole::TEvConfigsDispatcher::TEvRemoveConfigSubscriptionResponse);
 
         default:
-            if (!HandleDefaultEvents(ev, SelfId())) {
-                Y_ABORT("TNodeBroker::StateWork unexpected event type: %" PRIx32 " event: %s from %s",
-                       ev->GetTypeRewrite(), ev->ToString().data(),
+            if (!HandleDefaultEvents(ev, ctx)) {
+                Y_FAIL("TNodeBroker::StateWork unexpected event type: %" PRIx32 " event: %s from %s",
+                       ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?",
                        ev->Sender.ToString().data());
             }
         }
@@ -280,6 +271,8 @@ private:
                 const TActorContext &ctx);
     void Handle(TEvConsole::TEvReplaceConfigSubscriptionsResponse::TPtr &ev,
                 const TActorContext &ctx);
+    void Handle(TEvents::TEvPoisonPill::TPtr &ev,
+                const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvListNodes::TPtr &ev,
                 const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvResolveNode::TPtr &ev,
@@ -287,8 +280,6 @@ private:
     void Handle(TEvNodeBroker::TEvRegistrationRequest::TPtr &ev,
                 const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvExtendLeaseRequest::TPtr &ev,
-                const TActorContext &ctx);
-    void Handle(TEvNodeBroker::TEvCompactTables::TPtr &ev,
                 const TActorContext &ctx);
     void Handle(TEvNodeBroker::TEvGetConfigRequest::TPtr &ev,
                 const TActorContext &ctx);
@@ -311,7 +302,6 @@ private:
     // Current config.
     NKikimrNodeBroker::TConfig Config;
     ui64 MaxStaticId;
-    ui64 MinDynamicId;
     ui64 MaxDynamicId;
     TDuration EpochDuration;
     TVector<std::pair<ui32, ui32>> BannedIds;

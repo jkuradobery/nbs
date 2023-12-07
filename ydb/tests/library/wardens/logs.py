@@ -4,11 +4,11 @@
 import os
 
 # noinspection PyUnresolvedReferences
-from contrib.ydb.tests.library.nemesis.safety_warden import GrepLogFileForMarkers, GrepDMesgForPatternsSafetyWarden
+from ydb.tests.library.nemesis.safety_warden import GrepLogFileForMarkers, GrepDMesgForPatternsSafetyWarden
 # noinspection PyUnresolvedReferences
-from contrib.ydb.tests.library.nemesis.safety_warden import GrepGzippedLogFilesForMarkersSafetyWarden
+from ydb.tests.library.nemesis.safety_warden import GrepGzippedLogFilesForMarkersSafetyWarden
 
-from contrib.ydb.tests.library.harness import param_constants
+from ydb.tests.library.harness import param_constants
 
 
 def kikimr_start_logs_safety_warden_factory(

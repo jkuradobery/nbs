@@ -50,7 +50,7 @@ struct TEnvironmentSetup {
     TEnvironmentSetup(TSettings&& settings)
         : Settings(std::move(settings))
     {
-        Y_ABORT_UNLESS(!Env);
+        Y_VERIFY(!Env);
         Env = this;
 
         struct TSetupEnv { TSetupEnv() { TEnvironmentSetup::SetupEnv(); } };
@@ -60,7 +60,7 @@ struct TEnvironmentSetup {
 
     ~TEnvironmentSetup() {
         Cleanup();
-        Y_ABORT_UNLESS(Env == this);
+        Y_VERIFY(Env == this);
         Env = nullptr;
     }
 
@@ -185,8 +185,8 @@ struct TEnvironmentSetup {
 //            NKikimrServices::BS_PROXY_INDEXRESTOREGET,
 //            NKikimrServices::BS_PROXY_STATUS,
             NActorsServices::TEST,
-//            NKikimrServices::BLOB_DEPOT,
-//            NKikimrServices::BLOB_DEPOT_AGENT,
+            NKikimrServices::BLOB_DEPOT,
+            NKikimrServices::BLOB_DEPOT_AGENT,
 //            NKikimrServices::HIVE,
 //            NKikimrServices::LOCAL,
 //            NKikimrServices::TEST_SHARD,
@@ -197,7 +197,7 @@ struct TEnvironmentSetup {
             Runtime->SetLogPriority(comp, NLog::PRI_DEBUG);
         }
 
-//        Runtime->SetLogPriority(NKikimrServices::TEST_SHARD, NLog::PRI_INFO);
+        Runtime->SetLogPriority(NKikimrServices::TEST_SHARD, NLog::PRI_INFO);
     }
 
     void SetupStaticStorage() {
@@ -214,7 +214,7 @@ struct TEnvironmentSetup {
             }
 
             auto config = MakeIntrusive<TNodeWardenConfig>(new TMockPDiskServiceFactory(*this));
-            config->BlobStorageConfig.MutableServiceSet()->AddAvailabilityDomains(DomainId);
+            config->ServiceSet.AddAvailabilityDomains(DomainId);
             std::unique_ptr<IActor> warden(CreateBSNodeWarden(config));
 
             const TActorId wardenId = Runtime->Register(warden.release(), nodeId);

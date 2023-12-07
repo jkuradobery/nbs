@@ -24,8 +24,8 @@ public:
     TString ToString() const;
     void Out(IOutputStream& o) const;
 
+private:
     const Ydb::Type& GetProto() const;
-    Ydb::Type& GetProto();
 
 private:
     class TImpl;
@@ -70,16 +70,14 @@ struct TDecimalType {
 };
 
 struct TPgType {
-    TString TypeName;
-    TString TypeModifier;
+    ui32 Oid;
+    i32 Typlen;
+    i32 Typmod;
 
-    ui32 Oid = 0;
-    i16 Typlen = 0;
-    i32 Typmod = 0;
-
-    TPgType(const TString& typeName, const TString& typeModifier = {})
-        : TypeName(typeName)
-        , TypeModifier(typeModifier)
+    TPgType(ui32 oid, i32 typlen, i32 typmod)
+        : Oid(oid)
+        , Typlen(typlen)
+        , Typmod(typmod)
     {}
 };
 
@@ -265,10 +263,9 @@ public:
     TValue(const TType& type, Ydb::Value&& valueProto);
 
     const TType& GetType() const;
-    TType & GetType();
 
+private:
     const Ydb::Value& GetProto() const;
-    Ydb::Value& GetProto();
 
 private:
     class TImpl;
@@ -457,7 +454,6 @@ public:
     TDerived& BeginList();
     TDerived& AddListItem();
     TDerived& AddListItem(const TValue& itemValue);
-    TDerived& AddListItem(TValue&& itemValue);
     TDerived& EndList();
     TDerived& EmptyList(const TType& itemType);
     TDerived& EmptyList();
@@ -466,7 +462,6 @@ public:
     TDerived& BeginStruct();
     TDerived& AddMember(const TString& memberName);
     TDerived& AddMember(const TString& memberName, const TValue& memberValue);
-    TDerived& AddMember(const TString& memberName, TValue&& memberValue);
     TDerived& EndStruct();
 
     // Tuple

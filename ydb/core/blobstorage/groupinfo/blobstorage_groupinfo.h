@@ -3,21 +3,16 @@
 #include "defs.h"
 #include <ydb/core/blobstorage/base/blobstorage_vdiskid.h>
 #include <ydb/core/blobstorage/crypto/crypto.h>
-#include <ydb/core/protos/blobstorage.pb.h>
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/base/blobstorage.h>
 #include <ydb/core/base/event_filter.h>
-#include <ydb/core/protos/blobstorage_base3.pb.h>
+#include <ydb/core/protos/blobstorage.pb.h>
 #include <ydb/core/util/log_priority_mute_checker.h>
 
 #include <util/str_stl.h>
 #include <util/digest/numeric.h>
 #include <util/generic/hash_set.h>
-
-namespace NKikimrBlobStorage {
-    class TGroupInfo;
-};
 
 namespace NActors {
     class TNodeLocation;

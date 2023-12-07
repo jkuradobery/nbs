@@ -1,9 +1,9 @@
 #pragma once
 
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/events.h>
-#include <ydb/library/actors/core/interconnect.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/events.h>
+#include <library/cpp/actors/core/interconnect.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/library/yql/utils/actors/rich_actor.h>
 
 #include <ydb/library/yql/utils/log/log.h>
@@ -132,18 +132,18 @@ private:
     ui32 ExpectedEventType_{0};
     THashSet<ui32> CriticalEventTypes_{};
 
-    void SyncHandler(TAutoPtr<NActors::IEventHandle>& ev) {
+    void SyncHandler(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext& ctx) {
         const ui32 etype = ev->GetTypeRewrite();
         if (etype == ExpectedEventType_) {
-            OnSync(ev);
+            OnSync(ev, ctx);
         } else if (CriticalEventTypes_.contains(etype)) {
-            (this->*InterruptedHandler_)(ev);
+            (this->*InterruptedHandler_)(ev, ctx);
         } else {
             EnqueueEvent(ev);
         }
     }
 
-    void OnSync(TAutoPtr<NActors::IEventHandle>& ev) {
+    void OnSync(TAutoPtr<NActors::IEventHandle>& ev, const NActors::TActorContext& ctx) {
         YQL_CLOG(DEBUG, ProviderDq) << "OnSync(): delayed messages " << DelayedEvents_.size();
         SyncState_ = E_SYNC_RECEIVED;
         TBase::Become(InterruptedHandler_);
@@ -157,7 +157,7 @@ private:
             auto event = std::move(DelayedEvents_.front());
             DelayedEvents_.pop_front();
             InterruptedHandler_ = TBase::CurrentStateFunc();
-            (this->*InterruptedHandler_)(event);
+            (this->*InterruptedHandler_)(event, ctx);
             if (SyncState_ == E_SYNC_REQUESTED) {
                 return;
             }

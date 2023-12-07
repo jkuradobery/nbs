@@ -5,6 +5,5 @@ namespace NDataShard {
 
 TCancelTxFailPoint gCancelTxFailPoint;
 TSkipRepliesFailPoint gSkipRepliesFailPoint;
-TSkipReadIteratorResultFailPoint gSkipReadIteratorResultFailPoint;
 
 }}

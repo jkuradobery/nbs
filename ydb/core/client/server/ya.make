@@ -1,6 +1,7 @@
 LIBRARY()
 
 SRCS(
+    dynamic_node_auth_processor.cpp
     document_conversion.h
     http_ping.cpp
     http_ping.h
@@ -56,11 +57,10 @@ SRCS(
     grpc_server.h
     grpc_proxy_status.h
     grpc_proxy_status.cpp
-    ic_nodes_cache_service.cpp
 )
 
 PEERDIR(
-    ydb/library/actors/helpers
+    library/cpp/actors/helpers
     library/cpp/json
     library/cpp/messagebus
     library/cpp/messagebus/protobuf
@@ -76,7 +76,6 @@ PEERDIR(
     ydb/core/engine
     ydb/core/engine/minikql
     ydb/core/grpc_services
-    ydb/core/grpc_services/auth_processor
     ydb/core/grpc_services/base
     ydb/core/keyvalue
     ydb/core/kqp/common

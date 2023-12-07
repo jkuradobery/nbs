@@ -1,7 +1,6 @@
 LIBRARY()
 
 SRCS(
-    dq_task_runner_exec_ctx.cpp
     dq_async_compute_actor.cpp
     dq_compute_actor_async_io_factory.cpp
     dq_compute_actor_channels.cpp
@@ -12,23 +11,19 @@ SRCS(
     dq_compute_actor.cpp
     dq_compute_issues_buffer.cpp
     retry_queue.cpp
-    dq_request_context.h
-    dq_request_context.cpp
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/wilson/protos
-    ydb/library/services
-    ydb/library/ydb_issue/proto
+    library/cpp/actors/core
+    ydb/core/base
+    ydb/core/protos
     ydb/library/yql/dq/common
     ydb/library/yql/dq/proto
     ydb/library/yql/dq/runtime
     ydb/library/yql/dq/tasks
-    ydb/library/yql/dq/actors/spilling
-    ydb/library/yql/minikql/comp_nodes/llvm
+    ydb/library/yql/minikql/comp_nodes
+    ydb/library/yql/minikql/computation
     ydb/library/yql/public/issue
-    ydb/core/quoter/public
 )
 
 YQL_LAST_ABI_VERSION()

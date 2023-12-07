@@ -4,11 +4,10 @@
 #include <ydb/core/tx/long_tx_service/public/events.h>
 #include <ydb/core/util/intrusive_heap.h>
 #include <ydb/core/util/ulid.h>
-#include <ydb/library/services/services.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/interconnect.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/interconnect.h>
 
 namespace NKikimr {
 namespace NLongTxService {
@@ -34,9 +33,8 @@ namespace NLongTxService {
             TLongTxId TxId;
             TString DatabaseName;
             ETxState State = ETxState::Uninitialized;
-            // Maps column shards to known write ids by partId
-            using TShardWriteIds = std::vector<ui64>;
-            THashMap<ui64, TShardWriteIds> ColumnShardWrites;
+            // Maps column shards to known write ids
+            THashMap<ui64, ui64> ColumnShardWrites;
             // A list of currently known committers
             TVector<TSenderId> Committers;
             // The currently running commit actor
@@ -123,7 +121,6 @@ namespace NLongTxService {
         struct TAcquireSnapshotUserRequest {
             TActorId Sender;
             ui64 Cookie;
-            NLWTrace::TOrbit Orbit;
         };
 
         struct TAcquireSnapshotBeginTxRequest {
@@ -237,6 +234,7 @@ namespace NLongTxService {
             }
 
             STFUNC(StateWork) {
+                Y_UNUSED(ctx);
                 switch (ev->GetTypeRewrite()) {
                     hFunc(TEvInterconnect::TEvNodeConnected, Handle);
                     hFunc(TEvInterconnect::TEvNodeDisconnected, Handle);
@@ -279,6 +277,7 @@ namespace NLongTxService {
 
     private:
         STFUNC(StateWork) {
+            Y_UNUSED(ctx);
             switch (ev->GetTypeRewrite()) {
                 sFunc(TEvents::TEvPoison, HandlePoison);
                 hFunc(TEvLongTxService::TEvBeginTx, Handle);

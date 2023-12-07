@@ -129,7 +129,7 @@ public:
 
     void RequestMemory(ui64 bytes)
     {
-        Y_ABORT_UNLESS(!MemoryGCToken);
+        Y_VERIFY(!MemoryGCToken);
         RequestedMemory += bytes;
     }
 
@@ -153,16 +153,16 @@ public:
 
     TAutoPtr<TMemoryToken> HoldMemory(ui64 size)
     {
-        Y_ABORT_UNLESS(!MemoryGCToken);
-        Y_ABORT_UNLESS(size <= MemoryLimit);
-        Y_ABORT_UNLESS(size > 0);
+        Y_VERIFY(!MemoryGCToken);
+        Y_VERIFY(size <= MemoryLimit);
+        Y_VERIFY(size > 0);
         MemoryGCToken = new TMemoryGCToken(size, TaskId);
         return new TMemoryToken(MemoryGCToken);
     }
 
     void UseMemoryToken(TAutoPtr<TMemoryToken> token)
     {
-        Y_ABORT_UNLESS(!MemoryToken);
+        Y_VERIFY(!MemoryToken);
         MemoryToken = std::move(token);
     }
 
@@ -211,10 +211,22 @@ public:
 
     ~TTransactionContext() {}
 
+    void OnCommit(std::function<void()> callback) {
+        OnCommit_.emplace_back(std::move(callback));
+    }
+
+    void OnRollback(std::function<void()> callback) {
+        OnRollback_.emplace_back(std::move(callback));
+    }
+
+    void OnCommitted(std::function<void()> callback) {
+        OnCommitted_.emplace_back(std::move(callback));
+    }
+
     /**
-     * Request transaction to restart at some later time
+     * Will rollback any changes and reschedule transaction for a retry
      *
-     * Transaction's Execute method must return false after calling this method.
+     * Transaction must return false from its Execute after calling this method.
      */
     void Reschedule() {
         Rescheduled_ = true;
@@ -232,6 +244,9 @@ public:
     NTable::TDatabase &DB;
 
 private:
+    TVector<std::function<void()>> OnCommit_;
+    TVector<std::function<void()>> OnRollback_;
+    TVector<std::function<void()>> OnCommitted_;
     bool Rescheduled_ = false;
 };
 
@@ -279,7 +294,7 @@ public:
     virtual bool Execute(TTransactionContext &txc, const TActorContext &ctx) = 0;
     virtual void Complete(const TActorContext &ctx) = 0;
     virtual void Terminate(ETerminationReason reason, const TActorContext &/*ctx*/) {
-        Y_ABORT("Unexpected transaction termination (reason %" PRIu32 ")", (ui32)reason);
+        Y_FAIL("Unexpected transaction termination (reason %" PRIu32 ")", (ui32)reason);
     }
     virtual void ReleaseTxData(TTxMemoryProvider &/*provider*/, const TActorContext &/*ctx*/) {}
     virtual TTxType GetTxType() const { return UnknownTxType; }
@@ -323,8 +338,6 @@ struct TExecutorStats {
 
     TVector<ui32> YellowMoveChannels;
     TVector<ui32> YellowStopChannels;
-
-    ui32 FollowersCount = 0;
 
     bool IsYellowMoveChannel(ui32 channel) const {
         auto it = std::lower_bound(YellowMoveChannels.begin(), YellowMoveChannels.end(), channel);
@@ -457,8 +470,6 @@ namespace NFlatExecutorSetup {
         virtual void ScanComplete(NTable::EAbort status, TAutoPtr<IDestructable> prod, ui64 cookie, const TActorContext &ctx);
 
         virtual bool ReassignChannelsEnabled() const;
-        virtual void OnYellowChannelsChanged();
-        virtual void OnRejectProbabilityRelaxed();
 
         // memory usage excluding transactions and executor cache.
         virtual ui64 GetMemoryUsage() const { return 50 << 10; }
@@ -469,15 +480,13 @@ namespace NFlatExecutorSetup {
         virtual TDuration ReadOnlyLeaseDuration();
         virtual void ReadOnlyLeaseDropped();
 
-        virtual void OnFollowersCountChanged();
-
         // create transaction?
     protected:
         ITablet(TTabletStorageInfo *info, const TActorId &tablet)
             : TabletActorID(tablet)
             , TabletInfo(info)
         {
-            Y_ABORT_UNLESS(TTabletTypes::TypeInvalid != TabletInfo->TabletType);
+            Y_VERIFY(TTabletTypes::TypeInvalid != TabletInfo->TabletType);
         }
 
         TActorId ExecutorActorID;
@@ -507,8 +516,7 @@ namespace NFlatExecutorSetup {
         // next follower incremental update
         virtual void FollowerUpdate(THolder<TEvTablet::TFUpdateBody> upd) = 0;
         virtual void FollowerAuxUpdate(TString upd) = 0;
-        virtual void FollowerAttached(ui32 totalFollowers) = 0;
-        virtual void FollowerDetached(ui32 totalFollowers) = 0;
+        virtual void FollowerAttached() = 0;
         // all known followers are synced to us (called once)
         virtual void FollowerSyncComplete() = 0;
         // all followers had completed log with requested gc-barrier

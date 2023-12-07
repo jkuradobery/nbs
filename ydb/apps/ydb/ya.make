@@ -14,22 +14,12 @@ RESOURCE(
     ydb/apps/ydb/version.txt version.txt
 )
 
-IF (NOT USE_SSE4 AND NOT OPENSOURCE)
-    # contrib/libs/glibasm can not be built without SSE4
-    # Replace it with contrib/libs/asmlib which can be built this way.
-    DISABLE(USE_ASMLIB)
-    PEERDIR(
-        contrib/libs/asmlib
-    )
-ENDIF()
-
 #
 # DON'T ALLOW NEW DEPENDENCIES WITHOUT EXPLICIT APPROVE FROM  kikimr-dev@ or fomichev@
 #
 CHECK_DEPENDENT_DIRS(
     ALLOW_ONLY
     PEERDIRS
-    build/internal/platform
     build/platform
     certs
     contrib
@@ -40,8 +30,8 @@ CHECK_DEPENDENT_DIRS(
     tools/rorescompiler
     util
     ydb/apps/ydb
-    ydb/core/fq/libs/protos
     ydb/core/grpc_services/validation
+    ydb/core/yq/libs/protos
     ydb/library
     ydb/public
     ydb/library/yql/public/decimal
@@ -50,9 +40,3 @@ CHECK_DEPENDENT_DIRS(
 )
 
 END()
-
-IF (OS_LINUX)
-    RECURSE_FOR_TESTS(
-        ut
-    )
-ENDIF()

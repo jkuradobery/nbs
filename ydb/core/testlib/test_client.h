@@ -5,7 +5,6 @@
 #include <ydb/core/base/subdomain.h>
 #include <ydb/core/base/tablet_types.h>
 #include <ydb/core/base/domain.h>
-#include <ydb/core/driver_lib/run/config.h>
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 #include <ydb/public/lib/deprecated/client/msgbus_client.h>
 #include <ydb/core/client/server/grpc_server.h>
@@ -22,15 +21,14 @@
 #include <ydb/core/testlib/basics/appdata.h>
 #include <ydb/core/protos/kesus.pb.h>
 #include <ydb/core/kesus/tablet/events.h>
-#include <ydb/core/kqp/federated_query/kqp_federated_query_helpers.h>
 #include <ydb/core/security/ticket_parser.h>
 #include <ydb/core/base/grpc_service_factory.h>
 #include <ydb/core/persqueue/actor_persqueue_client_iface.h>
-#include <ydb/core/fq/libs/shared_resources/interface/shared_resources.h>
+#include <ydb/core/yq/libs/shared_resources/interface/shared_resources.h>
 #include <ydb/core/http_proxy/auth_factory.h>
 #include <ydb/library/accessor/accessor.h>
 
-#include <ydb/library/grpc/server/grpc_server.h>
+#include <library/cpp/grpc/server/grpc_server.h>
 
 #include <google/protobuf/text_format.h>
 
@@ -96,7 +94,6 @@ namespace Tests {
 
         ui16 Port;
         ui16 GrpcPort = 0;
-        int GrpcMaxMessageSize = 0;  // 0 - default (4_MB), -1 - no limit
         NKikimrProto::TAuthConfig AuthConfig;
         NKikimrPQ::TPQConfig PQConfig;
         NKikimrPQ::TPQClusterDiscoveryConfig PQClusterDiscoveryConfig;
@@ -128,7 +125,6 @@ namespace Tests {
         ui64 ChangesQueueItemsLimit = 0;
         ui64 ChangesQueueBytesLimit = 0;
         NKikimrConfig::TAppConfig AppConfig;
-        std::shared_ptr<TKikimrRunConfig> KikimrRunConfig;
         NKikimrConfig::TCompactionConfig CompactionConfig;
         TMap<ui32, TString> NodeKeys;
         ui64 DomainPlanResolution = 0;
@@ -138,15 +134,11 @@ namespace Tests {
         bool EnableMetering = false;
         TString MeteringFilePath;
         TString AwsRegion;
-        NKqp::IKqpFederatedQuerySetupFactory::TPtr FederatedQuerySetupFactory = std::make_shared<NKqp::TKqpFederatedQuerySetupFactoryNoop>();
-        NYql::ISecuredServiceAccountCredentialsFactory::TPtr CredentialsFactory;
-        bool InitializeFederatedQuerySetupFactory = false;
 
         std::function<IActor*(const NKikimrProto::TAuthConfig&)> CreateTicketParser = NKikimr::CreateTicketParser;
         std::shared_ptr<TGrpcServiceFactory> GrpcServiceFactory;
 
         TServerSettings& SetGrpcPort(ui16 value) { GrpcPort = value; return *this; }
-        TServerSettings& SetGrpcMaxMessageSize(int value) { GrpcMaxMessageSize = value; return *this; }
         TServerSettings& SetSupportsRedirect(bool value) { SupportsRedirect = value; return *this; }
         TServerSettings& SetTracePath(const TString& value) { TracePath = value; return *this; }
         TServerSettings& SetDomain(ui32 value) { Domain = value; return *this; }
@@ -168,7 +160,6 @@ namespace Tests {
         TServerSettings& SetEnableConfigsDispatcher(bool value) { EnableConfigsDispatcher = value; return *this; }
         TServerSettings& SetUseRealThreads(bool value) { UseRealThreads = value; return *this; }
         TServerSettings& SetAppConfig(const NKikimrConfig::TAppConfig value) { AppConfig = value; return *this; }
-        TServerSettings& InitKikimrRunConfig() { KikimrRunConfig = std::make_shared<TKikimrRunConfig>(AppConfig); return *this; }
         TServerSettings& SetKeyFor(ui32 nodeId, TString keyValue) { NodeKeys[nodeId] = keyValue; return *this; }
         TServerSettings& SetEnableKqpSpilling(bool value) { EnableKqpSpilling = value; return *this; }
         TServerSettings& SetEnableForceFollowers(bool value) { EnableForceFollowers = value; return *this; }
@@ -183,9 +174,6 @@ namespace Tests {
         TServerSettings& SetChangesQueueBytesLimit(ui64 value) { ChangesQueueBytesLimit = value; return *this; }
         TServerSettings& SetMeteringFilePath(const TString& path) { EnableMetering = true; MeteringFilePath = path; return *this; }
         TServerSettings& SetAwsRegion(const TString& value) { AwsRegion = value; return *this; }
-        TServerSettings& SetFederatedQuerySetupFactory(NKqp::IKqpFederatedQuerySetupFactory::TPtr value) { FederatedQuerySetupFactory = value; return *this; }
-        TServerSettings& SetCredentialsFactory(NYql::ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory) { CredentialsFactory = std::move(credentialsFactory); return *this; }
-        TServerSettings& SetInitializeFederatedQuerySetupFactory(bool value) { InitializeFederatedQuerySetupFactory = value; return *this; }
         TServerSettings& SetPersQueueGetReadSessionsInfoWorkerFactory(
             std::shared_ptr<NKikimr::NMsgBusProxy::IPersQueueGetReadSessionsInfoWorkerFactory> factory
         ) {
@@ -221,13 +209,6 @@ namespace Tests {
             AddStoragePool("test", "/" + DomainName + ":test");
             AppConfig.MutableTableServiceConfig()->MutableResourceManager()->MutableShardsScanningPolicy()->SetParallelScanningAvailable(true);
             AppConfig.MutableTableServiceConfig()->MutableResourceManager()->MutableShardsScanningPolicy()->SetShardSplitFactor(16);
-            AppConfig.MutableHiveConfig()->SetWarmUpBootWaitingPeriod(10);
-            AppConfig.MutableHiveConfig()->SetMaxNodeUsageToKick(100);
-            AppConfig.MutableHiveConfig()->SetMinCounterScatterToBalance(100);
-            AppConfig.MutableHiveConfig()->SetMinScatterToBalance(100);
-            AppConfig.MutableHiveConfig()->SetObjectImbalanceToBalance(100);
-            AppConfig.MutableColumnShardConfig()->SetDisabledOnSchemeShard(false);
-            FeatureFlags.SetEnableSeparationComputeActorsFromRead(true);
         }
 
         TServerSettings(const TServerSettings& settings) = default;
@@ -235,7 +216,6 @@ namespace Tests {
     private:
         YDB_FLAG_ACCESSOR(EnableMetadataProvider, true);
         YDB_FLAG_ACCESSOR(EnableBackgroundTasks, false);
-        YDB_FLAG_ACCESSOR(EnableExternalIndex, false);
     };
 
     class TServer : public TThrRefBase, TMoveOnly {
@@ -265,7 +245,7 @@ namespace Tests {
         TServer& operator =(TServer&& server) = default;
         virtual ~TServer();
 
-        void EnableGRpc(const NYdbGrpc::TServerOptions& options);
+        void EnableGRpc(const NGrpc::TServerOptions& options);
         void EnableGRpc(ui16 port);
         void SetupRootStoragePools(const TActorId sender) const;
 
@@ -288,7 +268,6 @@ namespace Tests {
         const NScheme::TTypeRegistry* GetTypeRegistry();
         const NMiniKQL::IFunctionRegistry* GetFunctionRegistry();
         const NYdb::TDriver& GetDriver() const;
-        const NYdbGrpc::TGRpcServer& GetGRpcServer() const;
 
         ui32 StaticNodes() const {
             return Settings->NodeCount;
@@ -303,15 +282,14 @@ namespace Tests {
         const TServerSettings::TConstPtr Settings;
         const bool UseStoragePools;
 
-        std::shared_ptr<void> KqpLoggerScope;
         THolder<TTestActorRuntime> Runtime;
         THolder<NYdb::TDriver> Driver;
         TIntrusivePtr<NBus::TBusMessageQueue> Bus;
         const NBus::TBusServerSessionConfig BusServerSessionConfig; //BusServer hold const & on config
         TAutoPtr<NMsgBusProxy::IMessageBusServer> BusServer;
-        std::unique_ptr<NYdbGrpc::TGRpcServer> GRpcServer;
+        std::unique_ptr<NGrpc::TGRpcServer> GRpcServer;
         TIntrusivePtr<::NMonitoring::TDynamicCounters> GRpcServerRootCounters;
-        NFq::IYqSharedResources::TPtr YqSharedResources;
+        NYq::IYqSharedResources::TPtr YqSharedResources;
     };
 
     class TClient {
@@ -501,20 +479,16 @@ namespace Tests {
         THolder<NKesus::TEvKesus::TEvGetConfigResult> GetKesusConfig(TTestActorRuntime* runtime, const TString& kesusPath);
 
     protected:
-        TString PrintToString(const ::google::protobuf::Message& msg, size_t maxSz = 1000) {
+        template <class TMsg>
+        TString PrintResult(NBus::TBusMessage* msg, size_t maxSz = 1000) {
+            auto res = dynamic_cast<TMsg*>(msg);
             TString s;
-            ::google::protobuf::TextFormat::PrintToString(msg, &s);
+            ::google::protobuf::TextFormat::PrintToString(res->Record, &s);
             if (s.size() > maxSz) {
                 s.resize(maxSz);
                 s += "...\n(TRUNCATED)\n";
             }
             return s;
-        }
-
-        template <class TMsg>
-        TString PrintToString(const NBus::TBusMessage* msg, size_t maxSz = 1000) {
-            auto res = dynamic_cast<const TMsg*>(msg);
-            return PrintToString(res->Record, maxSz);
         }
 
         // Waits for kikimr server to become ready
@@ -555,7 +529,7 @@ namespace Tests {
 
         ui32 NodeIdToIndex(TTestActorRuntime* runtime, ui32 id) {
             ui32 offset = runtime->GetNodeId(0);
-            Y_ABORT_UNLESS(id >= offset, "NodeId# %" PRIu32 " offset# %" PRIu32, id, offset);
+            Y_VERIFY(id >= offset, "NodeId# %" PRIu32 " offset# %" PRIu32, id, offset);
             return id - offset;
         }
 

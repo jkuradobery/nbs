@@ -6,8 +6,7 @@
 
 #include <ydb/library/yql/public/issue/yql_issue.h>
 #include <ydb/library/yql/public/issue/yql_issue_message.h>
-#include <ydb/core/formats/arrow/arrow_helpers.h>
-#include <ydb/core/formats/arrow/size_calcer.h>
+#include <ydb/core/formats/arrow_helpers.h>
 
 using namespace NYdb;
 
@@ -51,11 +50,7 @@ std::vector<TString> ScanQuerySelectSimple(
                 for (auto& [colName, colType] : ydbSchema) {
                     switch (colType) {
                         case NYdb::EPrimitiveType::Timestamp:
-                            if (colName == "timestamp") {
-                                ss << parser.ColumnParser(colName).GetTimestamp() << ",";
-                            } else {
-                                ss << parser.ColumnParser(colName).GetOptionalTimestamp() << ",";
-                            }
+                            ss << parser.ColumnParser(colName).GetOptionalTimestamp() << ",";
                             break;
                         case NYdb::EPrimitiveType::Datetime:
                             ss << parser.ColumnParser(colName).GetOptionalDatetime() << ",";
@@ -70,11 +65,7 @@ std::vector<TString> ScanQuerySelectSimple(
                             break;
                         }
                         case NYdb::EPrimitiveType::Utf8:
-                            if (colName == "uid") {
-                                ss << parser.ColumnParser(colName).GetUtf8() << ",";
-                            } else {
-                                ss << parser.ColumnParser(colName).GetOptionalUtf8() << ",";
-                            }
+                            ss << parser.ColumnParser(colName).GetOptionalUtf8() << ",";
                             break;
                         case NYdb::EPrimitiveType::Int32:
                             ss << parser.ColumnParser(colName).GetOptionalInt32() << ",";
@@ -204,75 +195,7 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
         }
     }
 
-    Y_UNIT_TEST(UpsertArrowDupField) {
-        NKikimrConfig::TAppConfig appConfig;
-        TKikimrWithGrpcAndRootSchema server(appConfig);
-        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_COLUMNSHARD, NActors::NLog::PRI_DEBUG);
-
-        ui16 grpc = server.GetPort();
-        TString location = TStringBuilder() << "localhost:" << grpc;
-        auto connection = NYdb::TDriver(TDriverConfig().SetEndpoint(location));
-
-        NYdb::NTable::TTableClient client(connection);
-        auto session = client.GetSession().ExtractValueSync().GetSession();
-        TString tablePath = TTestOlap::TablePath;
-
-        // KIKIMR-18866
-        for (ui32 i = 0; i < 2; ++i) {
-            // CREATE TABLE import1(a Text NOT NULL, b Text, c Text, PRIMARY KEY(a))
-            std::vector<std::pair<TString, NYdb::EPrimitiveType>> ydbSchema = {
-                { "a", NYdb::EPrimitiveType::Utf8 },
-                { "b", NYdb::EPrimitiveType::Utf8 },
-                { "c", NYdb::EPrimitiveType::Utf8 }
-            };
-
-            auto tableBuilder = client.GetTableBuilder();
-            for (auto& [name, type] : ydbSchema) {
-                if (name == "a") {
-                    tableBuilder.AddNonNullableColumn(name, type);
-                } else {
-                    tableBuilder.AddNullableColumn(name, type);
-                }
-            }
-            tableBuilder.SetPrimaryKeyColumns({"a"});
-            auto result = session.CreateTable(tablePath, tableBuilder.Build(), {}).ExtractValueSync();
-
-            UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-
-            std::vector<std::shared_ptr<arrow::Field>> fields;
-            fields.push_back(std::make_shared<arrow::Field>("a", arrow::utf8()));
-            fields.push_back(std::make_shared<arrow::Field>("b", arrow::utf8()));
-            fields.push_back(std::make_shared<arrow::Field>("b", arrow::utf8())); // not unique column
-            if (i) {
-                fields.push_back(std::make_shared<arrow::Field>("c", arrow::utf8()));
-            }
-
-            auto schema = std::make_shared<arrow::Schema>(fields);
-            std::unique_ptr<arrow::RecordBatchBuilder> builder;
-            arrow::RecordBatchBuilder::Make(schema, arrow::default_memory_pool(), 1, &builder).ok();
-            for (i64 i = 0; i < schema->num_fields(); ++i) {
-                builder->GetFieldAs<arrow::StringBuilder>(i)->Append("test").ok();
-            }
-            std::shared_ptr<arrow::RecordBatch> batch;
-            builder->Flush(false, &batch).ok();
-
-            TString strSchema = NArrow::SerializeSchema(*schema);
-            TString strBatch = NArrow::SerializeBatchNoCompression(batch);
-
-            auto res = client.BulkUpsert(tablePath,
-                NYdb::NTable::EDataFormat::ApacheArrow, strBatch, strSchema).GetValueSync();
-
-            Cerr << res.GetStatus() << Endl;
-            UNIT_ASSERT_EQUAL_C(res.GetStatus(), EStatus::BAD_REQUEST, res.GetIssues().ToString());
-
-            result = session.DropTable(tablePath).GetValueSync();
-            UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-        }
-    }
-
-    void ParquetImportBug(bool columnTable) {
+    Y_UNIT_TEST(ParquetImportBug) {
         NKikimrConfig::TAppConfig appConfig;
         TKikimrWithGrpcAndRootSchema server(appConfig);
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_COLUMNSHARD, NActors::NLog::PRI_DEBUG);
@@ -288,65 +211,37 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
         std::vector<std::pair<TString, NYdb::EPrimitiveType>> schema = {
                 { "id", NYdb::EPrimitiveType::Uint32 },
                 { "timestamp", NYdb::EPrimitiveType::Timestamp },
-                { "dateTimeS", NYdb::EPrimitiveType::Datetime },
-                { "dateTimeU", NYdb::EPrimitiveType::Datetime },
-                { "date", NYdb::EPrimitiveType::Date },
-                { "utf8ToString", NYdb::EPrimitiveType::String },
-                { "stringToString", NYdb::EPrimitiveType::String },
+                { "date", NYdb::EPrimitiveType::Date }
             };
 
         auto tableBuilder = client.GetTableBuilder();
-        auto tableType = columnTable ? NYdb::NTable::EStoreType::Column : NYdb::NTable::EStoreType::Row;
-        tableBuilder.SetStoreType(tableType);
         for (auto& [name, type] : schema) {
-            if (name == "id" || name == "timestamp") {
+            if (name == "id") {
                 tableBuilder.AddNonNullableColumn(name, type);
             } else {
                 tableBuilder.AddNullableColumn(name, type);
             }
         }
         tableBuilder.SetPrimaryKeyColumns({"id"});
-        if (columnTable) {
-            NYdb::NTable::TTablePartitioningSettingsBuilder partsBuilder(tableBuilder);
-            partsBuilder.SetMinPartitionsCount(1);
-            partsBuilder.EndPartitioningSettings();
-        }
         auto result = session.CreateTable(tablePath, tableBuilder.Build(), {}).ExtractValueSync();
 
         UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
         UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
 
-        {
-            auto descResult = session.DescribeTable(tablePath, {}).ExtractValueSync();
-            UNIT_ASSERT_EQUAL(descResult.IsTransportError(), false);
-            UNIT_ASSERT_VALUES_EQUAL(descResult.GetStatus(), EStatus::SUCCESS);
-
-            Cerr << "Table type: " << (ui32) descResult.GetTableDescription().GetStoreType() << Endl;
-            UNIT_ASSERT_EQUAL(descResult.GetTableDescription().GetStoreType(), tableType);
-        }
-
         auto batchSchema = std::make_shared<arrow::Schema>(
             std::vector<std::shared_ptr<arrow::Field>>{
-                arrow::field("id", arrow::uint32(), false),
-                arrow::field("timestamp", arrow::int64(), false),
-                arrow::field("dateTimeS", arrow::int32()),
-                arrow::field("dateTimeU", arrow::uint32()),
-                arrow::field("date", arrow::uint16()),
-                arrow::field("utf8ToString", arrow::utf8()),
-                arrow::field("stringToString", arrow::binary()),
+                arrow::field("id", arrow::uint32()),
+                arrow::field("timestamp", arrow::int64()),
+                arrow::field("date", arrow::uint16())
             });
-
+        
         size_t rowsCount = 100;
         auto builders = NArrow::MakeBuilders(batchSchema, rowsCount);
 
         for (size_t i = 0; i < rowsCount; ++i) {
-            Y_ABORT_UNLESS(NArrow::Append<arrow::UInt32Type>(*builders[0], i));
-            Y_ABORT_UNLESS(NArrow::Append<arrow::Int64Type>(*builders[1], i));
-            Y_ABORT_UNLESS(NArrow::Append<arrow::Int32Type>(*builders[2], i));
-            Y_ABORT_UNLESS(NArrow::Append<arrow::Int32Type>(*builders[3], i));
-            Y_ABORT_UNLESS(NArrow::Append<arrow::UInt16Type>(*builders[4], i));
-            Y_ABORT_UNLESS(NArrow::Append<arrow::StringType>(*builders[5], std::to_string(i)));
-            Y_ABORT_UNLESS(NArrow::Append<arrow::BinaryType>(*builders[6], std::to_string(i)));
+            Y_VERIFY(NArrow::Append<arrow::UInt32Type>(*builders[0], i));
+            Y_VERIFY(NArrow::Append<arrow::Int64Type>(*builders[1], i));
+            Y_VERIFY(NArrow::Append<arrow::UInt16Type>(*builders[2], i));
         }
 
         auto srcBatch = arrow::RecordBatch::Make(batchSchema, rowsCount, NArrow::Finish(std::move(builders)));
@@ -367,14 +262,6 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
             auto rows = ScanQuerySelect(client, tablePath, schema);
             UNIT_ASSERT_GT(rows.size(), 0);
         }
-    }
-
-    Y_UNIT_TEST(ParquetImportBug) {
-        ParquetImportBug(true);
-    }
-
-    Y_UNIT_TEST(ParquetImportBug_Datashard) {
-        ParquetImportBug(false);
     }
 
     Y_UNIT_TEST(UpsertCsvBug) {
@@ -513,55 +400,6 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
         }
-
-        // Excess columns
-        {
-            // CREATE TABLE import1(a Text NOT NULL, b Text, PRIMARY KEY(a))
-            std::vector<std::pair<TString, NYdb::EPrimitiveType>> schema = {
-                { "a", NYdb::EPrimitiveType::Utf8 },
-                { "b", NYdb::EPrimitiveType::Utf8 }
-            };
-
-            auto tableBuilder = client.GetTableBuilder();
-            for (auto& [name, type] : schema) {
-                if (name == "a") {
-                    tableBuilder.AddNonNullableColumn(name, type);
-                } else {
-                    tableBuilder.AddNullableColumn(name, type);
-                }
-            }
-            tableBuilder.SetPrimaryKeyColumns({"a"});
-            auto result = session.CreateTable(tablePath, tableBuilder.Build(), {}).ExtractValueSync();
-
-            UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-
-            TString csv;
-            csv += "a,b,c\n"; // header have more columns than table
-            for (size_t i = 0; i < 100; ++i) {
-                csv += TString("aaa") + ToString(i) + ",bbb,ccc\n";
-            }
-
-            Ydb::Formats::CsvSettings csvSettings;
-            csvSettings.set_header(true);
-            csvSettings.set_delimiter(",");
-
-            TString formatSettings;
-            Y_PROTOBUF_SUPPRESS_NODISCARD csvSettings.SerializeToString(&formatSettings);
-
-            NYdb::NTable::TBulkUpsertSettings upsertSettings;
-            upsertSettings.FormatSettings(formatSettings);
-
-            auto res = client.BulkUpsert(tablePath,
-                NYdb::NTable::EDataFormat::CSV, csv, {}, upsertSettings).GetValueSync();
-
-            Cerr << res.GetStatus() << Endl;
-            UNIT_ASSERT_EQUAL_C(res.GetStatus(), EStatus::SUCCESS, res.GetIssues().ToString());
-
-            result = session.DropTable(tablePath).GetValueSync();
-            UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-        }
     }
 
     Y_UNIT_TEST(UpsertCSV) {
@@ -673,8 +511,8 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
             auto bigBatch = TTestOlap::SampleBatch(true, 130000);
             ui32 batchSize = NArrow::GetBatchDataSize(bigBatch);
             Cerr << "rows: " << bigBatch->num_rows() << " batch size: " << batchSize << Endl;
-            UNIT_ASSERT(batchSize > 15 * 1024 * 1024 + 130000 * 4 * (ui32)bigBatch->num_columns());
-            UNIT_ASSERT(batchSize < 17 * 1024 * 1024 + 130000 * 4 * (ui32)bigBatch->num_columns());
+            UNIT_ASSERT(batchSize > 15 * 1024 * 1024);
+            UNIT_ASSERT(batchSize < 17 * 1024 * 1024);
 
             TString bigCsv = TTestOlap::ToCSV(bigBatch);
 
@@ -689,16 +527,16 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
             auto bigBatch = TTestOlap::SampleBatch(true, 150000); // 2 shards, greater then 8 Mb per shard
             ui32 batchSize = NArrow::GetBatchDataSize(bigBatch);
             Cerr << "rows: " << bigBatch->num_rows() << " batch size: " << batchSize << Endl;
-            UNIT_ASSERT(batchSize > 16 * 1024 * 1024 + 150000 * 4 * (ui32)bigBatch->num_columns());
-            UNIT_ASSERT(batchSize < 20 * 1024 * 1024 + 150000 * 4 * (ui32)bigBatch->num_columns());
+            UNIT_ASSERT(batchSize > 16 * 1024 * 1024);
+            UNIT_ASSERT(batchSize < 20 * 1024 * 1024);
 
             TString bigCsv = TTestOlap::ToCSV(bigBatch);
 
             auto res = client.BulkUpsert(tablePath,
                 NYdb::NTable::EDataFormat::CSV, bigCsv).GetValueSync();
 
-            Cerr << "big batch: " << res.GetStatus() << Endl;
-            UNIT_ASSERT(res.GetStatus() == EStatus::SUCCESS);
+            Cerr << "Negative (big batch): " << res.GetStatus() << Endl;
+            UNIT_ASSERT(res.GetStatus() != EStatus::SUCCESS);
         }
     }
 
@@ -717,14 +555,12 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
         { // CREATE TABLE /Root/Logs (timestamp Timestamp, ... PK timestamp)
             auto tableBuilder = client.GetTableBuilder();
             for (auto& [name, type] : TTestOlap::PublicSchema()) {
-                if (name == "uid" || name == "timestamp") {
-                    tableBuilder.AddNonNullableColumn(name, type);
-                } else {
-                    tableBuilder.AddNullableColumn(name, type);
-                }
+                tableBuilder.AddNullableColumn(name, type);
             }
-            tableBuilder.SetPrimaryKeyColumns({"uid", "timestamp"});
-            auto result = session.CreateTable(tablePath, tableBuilder.Build(), {}).ExtractValueSync();
+            tableBuilder.SetPrimaryKeyColumns({"timestamp"});
+            NYdb::NTable::TCreateTableSettings tableSettings;
+            //tableSettings.PartitioningPolicy(NYdb::NTable::TPartitioningPolicy().UniformPartitions(2));
+            auto result = session.CreateTable(tablePath, tableBuilder.Build(), tableSettings).ExtractValueSync();
 
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);
@@ -828,14 +664,12 @@ Y_UNIT_TEST_SUITE(YdbTableBulkUpsertOlap) {
         { // CREATE TABLE /Root/Logs (timestamp Timestamp, ... PK timestamp)
             auto tableBuilder = client.GetTableBuilder();
             for (auto& [name, type] : TTestOlap::PublicSchema()) {
-                if (name == "uid" || name == "timestamp") {
-                    tableBuilder.AddNonNullableColumn(name, type);
-                } else {
-                    tableBuilder.AddNullableColumn(name, type);
-                }
+                tableBuilder.AddNullableColumn(name, type);
             }
-            tableBuilder.SetPrimaryKeyColumns({"uid", "timestamp"});
-            auto result = session.CreateTable(tablePath, tableBuilder.Build(), {}).ExtractValueSync();
+            tableBuilder.SetPrimaryKeyColumns({"timestamp"});
+            NYdb::NTable::TCreateTableSettings tableSettings;
+            //tableSettings.PartitioningPolicy(NYdb::NTable::TPartitioningPolicy().UniformPartitions(2));
+            auto result = session.CreateTable(tablePath, tableBuilder.Build(), tableSettings).ExtractValueSync();
 
             UNIT_ASSERT_EQUAL(result.IsTransportError(), false);
             UNIT_ASSERT_EQUAL(result.GetStatus(), EStatus::SUCCESS);

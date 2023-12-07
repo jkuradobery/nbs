@@ -76,73 +76,15 @@ private:
         }
         return true;
     }
-    explicit TSecretIdOrValue(const TSecretId& id)
+public:
+    TSecretIdOrValue(const TSecretId& id)
         : SecretId(id) {
 
     }
 
-    explicit TSecretIdOrValue(const TString& value)
+    TSecretIdOrValue(const TString& value)
         : Value(value) {
 
-    }
-
-public:
-    bool operator!() const {
-        return !Value && !SecretId;
-    }
-
-    static TSecretIdOrValue BuildAsValue(const TString& value) {
-        return TSecretIdOrValue(value);
-    }
-
-    static TSecretIdOrValue BuildEmpty() {
-        return TSecretIdOrValue();
-    }
-
-    static TSecretIdOrValue BuildAsId(const TSecretId& id) {
-        return TSecretIdOrValue(id);
-    }
-
-    static std::optional<TSecretIdOrValue> DeserializeFromOptional(const NKikimrSchemeOp::TSecretableVariable& proto, const TString& secretInfo, const TString& defaultOwnerId = Default<TString>()) {
-        if (proto.HasSecretId()) {
-            return DeserializeFromProto(proto, defaultOwnerId);
-        } else if (secretInfo) {
-            return DeserializeFromString(secretInfo, defaultOwnerId);
-        } else {
-            return {};
-        }
-    }
-
-    NKikimrSchemeOp::TSecretableVariable SerializeToProto() const {
-        NKikimrSchemeOp::TSecretableVariable result;
-        if (SecretId) {
-            result.MutableSecretId()->SetId(SecretId->GetSecretId());
-            result.MutableSecretId()->SetOwnerId(SecretId->GetOwnerUserId());
-        } else if (Value) {
-            result.MutableValue()->SetData(*Value);
-        }
-        return result;
-    }
-
-    static std::optional<TSecretIdOrValue> DeserializeFromProto(const NKikimrSchemeOp::TSecretableVariable& proto, const TString& defaultOwnerId = Default<TString>()) {
-        if (proto.HasSecretId()) {
-            TString ownerId;
-            TString secretId;
-            if (!proto.GetSecretId().HasOwnerId() || !proto.GetSecretId().GetOwnerId()) {
-                ownerId = defaultOwnerId;
-            } else {
-                ownerId = proto.GetSecretId().GetOwnerId();
-            }
-            secretId = proto.GetSecretId().GetId();
-            if (!ownerId || !secretId) {
-                return {};
-            }
-            return TSecretIdOrValue::BuildAsId(TSecretId(ownerId, secretId));
-        } else if (proto.HasValue()) {
-            return TSecretIdOrValue::BuildAsValue(proto.GetValue().GetData());
-        } else {
-            return {};
-        }
     }
 
     static std::optional<TSecretIdOrValue> DeserializeFromString(const TString& info, const TString& defaultOwnerId = Default<TString>()) {
@@ -160,10 +102,9 @@ public:
         } else if (Value) {
             return *Value;
         }
+        Y_VERIFY(false);
         return "";
     }
-
-    TString DebugString() const;
 };
 
 class TSecret: public TSecretId, public NModifications::TObject<TSecret> {

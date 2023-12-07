@@ -3,8 +3,8 @@
 #include "private_events.h"
 #include "util.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 #include <ydb/core/base/tablet_pipecache.h>
 #include <ydb/core/tx/replication/ydb_proxy/ydb_proxy.h>
@@ -12,7 +12,9 @@
 #include <ydb/core/tx/tx_proxy/proxy.h>
 #include <ydb/core/ydb_convert/table_description.h>
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 using namespace NSchemeShard;
 
@@ -32,14 +34,14 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
             hFunc(TEvYdbProxy::TEvDescribeTableResponse, Handle);
             sFunc(TEvents::TEvWakeup, DescribeSrcPath);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
     void Handle(TEvYdbProxy::TEvDescribeTableResponse::TPtr& ev) {
         LOG_T("Handle " << ev->Get()->ToString());
 
-        Y_ABORT_UNLESS(Kind == TReplication::ETargetKind::Table);
+        Y_VERIFY(Kind == TReplication::ETargetKind::Table);
         const auto& result = ev->Get()->Result;
 
         if (!result.IsSuccess()) {
@@ -75,7 +77,7 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvTxUserProxy::TEvAllocateTxIdResult, Handle);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -101,8 +103,14 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
             hFunc(TEvSchemeShard::TEvNotifyTxCompletionResult, Handle);
             sFunc(TEvents::TEvWakeup, AllocateTxId);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
+    }
+
+    void SubscribeTx(ui64 txId) {
+        LOG_D("Subscribe tx"
+            << ": txId# " << txId);
+        Send(PipeCache, new TEvPipeCache::TEvForward(new TEvSchemeShard::TEvNotifyTxCompletion(txId), SchemeShardId));
     }
 
     void Handle(TEvSchemeShard::TEvModifySchemeTransactionResult::TPtr& ev) {
@@ -112,7 +120,7 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
         switch (record.GetStatus()) {
         case NKikimrScheme::StatusAccepted:
             DstPathId = TPathId(SchemeShardId, record.GetPathId());
-            Y_DEBUG_ABORT_UNLESS(TxId == record.GetTxId());
+            Y_VERIFY_DEBUG(TxId == record.GetTxId());
             return SubscribeTx(record.GetTxId());
         case NKikimrScheme::StatusMultipleModifications:
             if (record.HasPathCreateTxId()) {
@@ -127,12 +135,6 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
         default:
             return Error(record.GetStatus(), record.GetReason());
         }
-    }
-
-    void SubscribeTx(ui64 txId) {
-        LOG_D("Subscribe tx"
-            << ": txId# " << txId);
-        Send(PipeCache, new TEvPipeCache::TEvForward(new TEvSchemeShard::TEvNotifyTxCompletion(txId), SchemeShardId));
     }
 
     void Handle(TEvSchemeShard::TEvNotifyTxCompletionResult::TPtr& ev) {
@@ -155,7 +157,7 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
             hFunc(TEvSchemeShard::TEvDescribeSchemeResult, Handle);
             sFunc(TEvents::TEvWakeup, DescribeDstPath);
         default:
-            return StateBase(ev);
+            return StateBase(ev, TlsActivationContext->AsActorContext());
         }
     }
 
@@ -333,7 +335,7 @@ class TDstCreator: public TActorBootstrapped<TDstCreator> {
     }
 
     void Success() {
-        Y_ABORT_UNLESS(DstPathId);
+        Y_VERIFY(DstPathId);
         LOG_I("Success"
             << ": dstPathId# " << DstPathId);
 
@@ -419,4 +421,6 @@ IActor* CreateDstCreator(const TActorId& parent, ui64 schemeShardId, const TActo
     return new TDstCreator(parent, schemeShardId, proxy, rid, tid, kind, srcPath, dstPath);
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

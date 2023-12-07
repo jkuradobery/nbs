@@ -5,7 +5,7 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/grpc/server
+    library/cpp/grpc/server
     ydb/core/grpc_services
     ydb/core/kesus/tablet
     ydb/public/api/grpc

@@ -3,9 +3,9 @@
 
 #include <ydb/core/base/counters.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/process_stats.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/process_stats.h>
 #include <library/cpp/lfalloc/dbg_info/dbg_info.h>
 #include <library/cpp/malloc/api/malloc.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
@@ -224,7 +224,7 @@ namespace NKikimr {
 
         public:
             static constexpr EActivityType ActorActivityType() {
-                return EActivityType::ACTORLIB_STATS;
+                return ACTORLIB_STATS;
             }
 
             TMemStatsCollector(TDuration interval, std::unique_ptr<IAllocStats> allocStats)
@@ -297,14 +297,12 @@ namespace NKikimr {
         return AllocState->GetAllocatedMemoryEstimate();
     }
 
-    std::optional<TMemoryUsage> TAllocState::TryGetMemoryUsage() {
+    double TAllocState::GetMemoryUsage() {
         NActors::TProcStat procStat;
-        if (!procStat.Fill(getpid())) {
-            return { };
+        procStat.Fill(getpid());
+        if (!procStat.CGroupMemLim) {
+            return 0;
         }
-        return TMemoryUsage {
-            .AnonRss = procStat.AnonRss,
-            .CGroupLimit = procStat.CGroupMemLim
-        };
+        return (double)procStat.AnonRss / procStat.CGroupMemLim;
     }
 }

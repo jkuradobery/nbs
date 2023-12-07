@@ -7,7 +7,7 @@ import time
 import pprint
 from concurrent import futures
 
-import contrib.ydb.tests.library.common.yatest_common as yatest_common
+import ydb.tests.library.common.yatest_common as yatest_common
 import ydb
 
 from . import param_constants

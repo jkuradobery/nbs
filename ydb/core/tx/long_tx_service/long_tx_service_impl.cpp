@@ -1,10 +1,7 @@
 #include "long_tx_service_impl.h"
-#include "lwtrace_probes.h"
 
 #include <ydb/core/base/appdata.h>
-#include <ydb/core/base/domain.h>
-#include <ydb/library/actors/core/log.h>
-#include <ydb/library/actors/core/actor.h>
+#include <library/cpp/actors/core/log.h>
 #include <util/string/builder.h>
 
 #define TXLOG_LOG(priority, stream) \
@@ -13,19 +10,16 @@
 #define TXLOG_NOTICE(stream) TXLOG_LOG(NActors::NLog::PRI_NOTICE, stream)
 #define TXLOG_ERROR(stream) TXLOG_LOG(NActors::NLog::PRI_ERROR, stream)
 
-LWTRACE_USING(LONG_TX_SERVICE_PROVIDER)
-
 namespace NKikimr {
 namespace NLongTxService {
 
 static constexpr size_t MaxAcquireSnapshotInFlight = 4;
-static constexpr TDuration AcquireSnapshotBatchDelay = TDuration::MicroSeconds(100);
+static constexpr TDuration AcquireSnapshotBatchDelay = TDuration::MicroSeconds(500);
 static constexpr TDuration RemoteLockTimeout = TDuration::Seconds(15);
 static constexpr bool InterconnectUndeliveryBroken = true;
 
 void TLongTxServiceActor::Bootstrap() {
     LogPrefix = TStringBuilder() << "TLongTxService [Node " << SelfId().NodeId() << "] ";
-    RegisterLongTxServiceProbes();
     Become(&TThis::StateWork);
 }
 
@@ -115,7 +109,7 @@ void TLongTxServiceActor::Handle(TEvLongTxService::TEvBeginTx::TPtr& ev) {
             auto now = TActivationContext::Now();
             txId.UniqueId = IdGenerator.Next(now);
             txId.NodeId = SelfId().NodeId();
-            Y_ABORT_UNLESS(!Transactions.contains(txId.UniqueId));
+            Y_VERIFY(!Transactions.contains(txId.UniqueId));
             auto& tx = Transactions[txId.UniqueId];
             tx.TxId = txId;
             tx.DatabaseName = databaseName;
@@ -169,8 +163,8 @@ void TLongTxServiceActor::Handle(TEvLongTxService::TEvCommitTx::TPtr& ev) {
         return;
     }
 
-    Y_ABORT_UNLESS(tx.State == ETxState::Active);
-    Y_ABORT_UNLESS(!tx.CommitActor);
+    Y_VERIFY(tx.State == ETxState::Active);
+    Y_VERIFY(!tx.CommitActor);
     StartCommitActor(tx);
 }
 
@@ -196,9 +190,9 @@ void TLongTxServiceActor::Handle(TEvPrivate::TEvCommitFinished::TPtr& ev) {
     const auto* msg = ev->Get();
 
     auto it = Transactions.find(msg->TxId.UniqueId);
-    Y_ABORT_UNLESS(it != Transactions.end());
+    Y_VERIFY(it != Transactions.end());
     auto& tx = it->second;
-    Y_DEBUG_ABORT_UNLESS(tx.TxId == msg->TxId);
+    Y_VERIFY_DEBUG(tx.TxId == msg->TxId);
 
     for (auto& c : tx.Committers) {
         SendReplyIssues(ERequestType::Commit, c.Sender, c.Cookie, msg->Status, msg->Issues);
@@ -288,13 +282,18 @@ void TLongTxServiceActor::Handle(TEvLongTxService::TEvAttachColumnShardWrites::T
     }
 
     for (const auto& write : msg->Record.GetWrites()) {
-        const ui64 shardId = write.GetColumnShard();
-        const ui64 writeId = write.GetWriteId();
+        ui64 shardId = write.GetColumnShard();
+        ui64 writeId = write.GetWriteId();
         auto it = tx.ColumnShardWrites.find(shardId);
         if (it == tx.ColumnShardWrites.end()) {
-            it = tx.ColumnShardWrites.emplace(shardId, TTransaction::TShardWriteIds()).first;
+            tx.ColumnShardWrites[shardId] = writeId;
+            continue;
         }
-        it->second.emplace_back(writeId);
+        if (it->second == writeId) {
+            continue;
+        }
+        return SendReply(ERequestType::AttachColumnShardWrites, ev->Sender, ev->Cookie,
+            Ydb::StatusIds::GENERIC_ERROR, "Shard write id change detected, transaction may be broken");
     }
 
     Send(ev->Sender, new TEvLongTxService::TEvAttachColumnShardWritesResult(Ydb::StatusIds::SUCCESS), 0, ev->Cookie);
@@ -325,8 +324,8 @@ const TString& TLongTxServiceActor::GetDatabaseNameOrLegacyDefault(const TString
 
     if (DefaultDatabaseName.empty()) {
         auto* appData = AppData();
-        Y_ABORT_UNLESS(appData);
-        Y_ABORT_UNLESS(appData->DomainsInfo);
+        Y_VERIFY(appData);
+        Y_VERIFY(appData->DomainsInfo);
         // Usually there's exactly one domain
         if (appData->EnableMvccSnapshotWithLegacyDomainRoot && Y_LIKELY(appData->DomainsInfo->Domains.size() == 1)) {
             DefaultDatabaseName = appData->DomainsInfo->Domains.begin()->second->Name;
@@ -337,20 +336,14 @@ const TString& TLongTxServiceActor::GetDatabaseNameOrLegacyDefault(const TString
 }
 
 void TLongTxServiceActor::Handle(TEvLongTxService::TEvAcquireReadSnapshot::TPtr& ev) {
-    if (Settings.Counters) {
-        Settings.Counters->AcquireReadSnapshotInRequests->Inc();
-    }
-
-    auto* msg = ev->Get();
+    const auto* msg = ev->Get();
     const TString& databaseName = GetDatabaseNameOrLegacyDefault(msg->Record.GetDatabaseName());
     TXLOG_DEBUG("Received TEvAcquireReadSnapshot from " << ev->Sender << " for database " << databaseName);
-
-    LWTRACK(AcquireReadSnapshotRequest, msg->Orbit, databaseName);
 
     if (databaseName.empty()) {
         NYql::TIssues issues;
         issues.AddIssue("Cannot acquire snapshot for an unspecified database");
-        Send(ev->Sender, new TEvLongTxService::TEvAcquireReadSnapshotResult(Ydb::StatusIds::SCHEME_ERROR, std::move(issues), std::move(msg->Orbit)), 0, ev->Cookie);
+        Send(ev->Sender, new TEvLongTxService::TEvAcquireReadSnapshotResult(Ydb::StatusIds::SCHEME_ERROR, std::move(issues)), 0, ev->Cookie);
         return;
     }
 
@@ -361,18 +354,12 @@ void TLongTxServiceActor::Handle(TEvLongTxService::TEvAcquireReadSnapshot::TPtr&
         auto& req = state.PendingUserRequests.emplace_back();
         req.Sender = ev->Sender;
         req.Cookie = ev->Cookie;
-        req.Orbit = std::move(msg->Orbit);
     }
-
-    if (Settings.Counters) {
-        Settings.Counters->AcquireReadSnapshotInInFlight->Inc();
-    }
-
     ScheduleAcquireSnapshot(databaseName, state);
 }
 
 void TLongTxServiceActor::ScheduleAcquireSnapshot(const TString& databaseName, TDatabaseSnapshotState& state) {
-    Y_ABORT_UNLESS(state.PendingUserRequests || state.PendingBeginTxRequests);
+    Y_VERIFY(state.PendingUserRequests || state.PendingBeginTxRequests);
 
     if (state.FlushPending || state.ActiveRequests.size() >= MaxAcquireSnapshotInFlight) {
         return;
@@ -388,8 +375,8 @@ void TLongTxServiceActor::Handle(TEvPrivate::TEvAcquireSnapshotFlush::TPtr& ev) 
     TXLOG_DEBUG("Received TEvAcquireSnapshotFlush for database " << msg->DatabaseName);
 
     auto& state = DatabaseSnapshots[msg->DatabaseName];
-    Y_ABORT_UNLESS(state.FlushPending);
-    Y_ABORT_UNLESS(state.PendingUserRequests || state.PendingBeginTxRequests);
+    Y_VERIFY(state.FlushPending);
+    Y_VERIFY(state.PendingUserRequests || state.PendingBeginTxRequests);
     state.FlushPending = false;
 
     StartAcquireSnapshotActor(msg->DatabaseName, state);
@@ -400,22 +387,21 @@ void TLongTxServiceActor::Handle(TEvPrivate::TEvAcquireSnapshotFinished::TPtr& e
     TXLOG_DEBUG("Received TEvAcquireSnapshotFinished, cookie = " << ev->Cookie);
 
     auto* req = AcquireSnapshotInFlight.FindPtr(ev->Cookie);
-    Y_ABORT_UNLESS(req, "Unexpected reply for request that is not inflight");
+    Y_VERIFY(req, "Unexpected reply for request that is not inflight");
     TString databaseName = req->DatabaseName;
 
     auto* state = DatabaseSnapshots.FindPtr(databaseName);
-    Y_ABORT_UNLESS(state && state->ActiveRequests.contains(ev->Cookie), "Unexpected database snapshot state");
+    Y_VERIFY(state && state->ActiveRequests.contains(ev->Cookie), "Unexpected database snapshot state");
 
     if (msg->Status == Ydb::StatusIds::SUCCESS) {
         for (auto& userReq : req->UserRequests) {
-            LWTRACK(AcquireReadSnapshotSuccess, userReq.Orbit, msg->Snapshot.Step, msg->Snapshot.TxId);
-            Send(userReq.Sender, new TEvLongTxService::TEvAcquireReadSnapshotResult(databaseName, msg->Snapshot, std::move(userReq.Orbit)), 0, userReq.Cookie);
+            Send(userReq.Sender, new TEvLongTxService::TEvAcquireReadSnapshotResult(databaseName, msg->Snapshot), 0, userReq.Cookie);
         }
         for (auto& beginReq : req->BeginTxRequests) {
             auto txId = beginReq.TxId;
             txId.Snapshot = msg->Snapshot;
             if (txId.IsWritable()) {
-                Y_ABORT_UNLESS(!Transactions.contains(txId.UniqueId));
+                Y_VERIFY(!Transactions.contains(txId.UniqueId));
                 auto& tx = Transactions[txId.UniqueId];
                 tx.TxId = txId;
                 tx.DatabaseName = databaseName;
@@ -428,17 +414,11 @@ void TLongTxServiceActor::Handle(TEvPrivate::TEvAcquireSnapshotFinished::TPtr& e
         }
     } else {
         for (auto& userReq : req->UserRequests) {
-            LWTRACK(AcquireReadSnapshotFailure, userReq.Orbit, int(msg->Status));
-            Send(userReq.Sender, new TEvLongTxService::TEvAcquireReadSnapshotResult(msg->Status, msg->Issues, std::move(userReq.Orbit)), 0, userReq.Cookie);
+            Send(userReq.Sender, new TEvLongTxService::TEvAcquireReadSnapshotResult(msg->Status, msg->Issues), 0, userReq.Cookie);
         }
         for (auto& beginReq : req->BeginTxRequests) {
             Send(beginReq.Sender, new TEvLongTxService::TEvBeginTxResult(msg->Status, msg->Issues), 0, beginReq.Cookie);
         }
-    }
-
-    if (Settings.Counters) {
-        Settings.Counters->AcquireReadSnapshotInInFlight->Sub(req->UserRequests.size());
-        Settings.Counters->AcquireReadSnapshotOutInFlight->Dec();
     }
 
     state->ActiveRequests.erase(ev->Cookie);
@@ -467,7 +447,7 @@ void TLongTxServiceActor::Handle(TEvLongTxService::TEvRegisterLock::TPtr& ev) {
     ui64 lockId = msg->LockId;
     TXLOG_DEBUG("Received TEvRegisterLock for LockId# " << lockId);
 
-    Y_ABORT_UNLESS(lockId, "Unexpected registration of a zero LockId");
+    Y_VERIFY(lockId, "Unexpected registration of a zero LockId");
 
     auto& lock = Locks[lockId];
     ++lock.RefCount;
@@ -484,7 +464,7 @@ void TLongTxServiceActor::Handle(TEvLongTxService::TEvUnregisterLock::TPtr& ev) 
     }
 
     auto& lock = it->second;
-    Y_ABORT_UNLESS(lock.RefCount > 0);
+    Y_VERIFY(lock.RefCount > 0);
     if (0 == --lock.RefCount) {
         for (auto& pr : lock.LocalSubscribers) {
             Send(pr.first,
@@ -813,7 +793,7 @@ void TLongTxServiceActor::SendProxyRequest(ui32 nodeId, ERequestType type, THold
         auto event = ev->ReleaseBase();
         pendingEv.Reset(new IEventHandle(target, SelfId(), event.Release(), flags, cookie));
     }
-    Y_ABORT_UNLESS(pendingEv->Recipient.NodeId() == nodeId);
+    Y_VERIFY(pendingEv->Recipient.NodeId() == nodeId);
 
     if (node.State == EProxyState::Connecting) {
         auto& pending = node.Pending.emplace_back();
@@ -822,7 +802,7 @@ void TLongTxServiceActor::SendProxyRequest(ui32 nodeId, ERequestType type, THold
         return;
     }
 
-    Y_DEBUG_ABORT_UNLESS(node.State == EProxyState::Connected);
+    Y_VERIFY_DEBUG(node.State == EProxyState::Connected);
     pendingEv->Rewrite(TEvInterconnect::EvForward, node.Session);
     TActivationContext::Send(pendingEv.Release());
     req.State = ERequestState::Sent;

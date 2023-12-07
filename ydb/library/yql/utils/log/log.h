@@ -85,17 +85,10 @@
 
 
 namespace NYql {
-
-namespace NProto {
-    class TLoggingConfig;
-} // NProto
-
 namespace NLog {
 
 using TComponentLevels =
         std::array<ELevel, EComponentHelpers::ToInt(EComponent::MaxValue)>;
-
-void WriteLocalTime(IOutputStream* out);
 
 /**
  * @brief Component based logger frontend.
@@ -157,11 +150,6 @@ inline bool IsYqlLoggerInitialized() {
 void InitLogger(const TString& log, bool startAsDaemon = false);
 
 /**
- * @brief Initialize logger with backends described in config.
-*/
-void InitLogger(const NProto::TLoggingConfig& loggingConfig, bool startAsDaemon = false);
-
-/**
  * @brief Initialize logger with concrete backend.
  *
  * @param backend - logger backend
@@ -176,8 +164,6 @@ void InitLogger(TAutoPtr<TLogBackend> backend);
 void InitLogger(IOutputStream* out);
 
 void CleanupLogger();
-
-void ReopenLog();
 
 class YqlLoggerScope {
 public:

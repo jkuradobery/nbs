@@ -1,11 +1,7 @@
 #pragma once
 #include "defs.h"
 #include "tablet_counters.h"
-
-#include <ydb/library/services/services.pb.h>
-
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 
 namespace NKikimr {
 
@@ -29,7 +25,7 @@ public:
 
     void Bootstrap(const TActorContext &ctx);
 
-    void OnAnyEvent();
+    void OnAnyEvent(const TActorContext &ctx);
     void Detach(const TActorContext &ctx);
 };
 

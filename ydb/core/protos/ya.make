@@ -13,19 +13,14 @@ SRCS(
     blob_depot.proto
     blob_depot_config.proto
     blobstorage.proto
-    blobstorage_base.proto
-    blobstorage_base3.proto
+    blobstorage_controller.proto
     blobstorage_disk.proto
     blobstorage_disk_color.proto
-    blobstorage_distributed_config.proto
     blobstorage_pdisk_config.proto
     blobstorage_vdisk_config.proto
     blobstorage_vdisk_internal.proto
     blobstorage_config.proto
     blockstore_config.proto
-    datashard_config.proto
-    db_metadata_cache.proto
-    feature_flags.proto
     filestore_config.proto
     bootstrapper.proto
     change_exchange.proto
@@ -51,18 +46,15 @@ SRCS(
     counters_replication.proto
     counters_schemeshard.proto
     counters_sequenceshard.proto
-    counters_statistics_aggregator.proto
     counters_sysview_processor.proto
     counters_testshard.proto
     counters_tx_proxy.proto
     counters_mediator.proto
     counters.proto
     database_basic_sausage_metainfo.proto
-    data_events.proto
     datashard_load.proto
     drivemodel.proto
     export.proto
-    external_sources.proto
     flat_tx_scheme.proto
     flat_scheme_op.proto
     health.proto
@@ -70,6 +62,7 @@ SRCS(
     http_config.proto
     import.proto
     index_builder.proto
+    issue_id.proto
     kesus.proto
     kqp_physical.proto
     kqp_stats.proto
@@ -78,7 +71,6 @@ SRCS(
     load_test.proto
     local.proto
     long_tx_service.proto
-    maintenance.proto
     metrics.proto
     minikql_engine.proto
     mon.proto
@@ -97,15 +89,14 @@ SRCS(
     scheme_type_metadata.proto
     scheme_type_operation.proto
     serverless_proxy_config.proto
+    services.proto
     shared_cache.proto
     sqs.proto
     follower_group.proto
     ssa.proto
     statestorage.proto
-    statistics.proto
     stream.proto
     subdomains.proto
-    table_service_config.proto
     table_stats.proto
     tablet.proto
     tablet_counters.proto
@@ -126,6 +117,7 @@ SRCS(
     tx_proxy.proto
     tx_scheme.proto
     tx_sequenceshard.proto
+    type_info.proto
     pdiskfit.proto
     pqconfig.proto
     auth.proto
@@ -144,20 +136,16 @@ GENERATE_ENUM_SERIALIZATION(blobstorage_pdisk_config.pb.h)
 GENERATE_ENUM_SERIALIZATION(datashard_load.pb.h)
 
 PEERDIR(
-    ydb/library/actors/protos
-    ydb/core/fq/libs/config/protos
-    ydb/core/scheme/protos
+    library/cpp/actors/protos
+    ydb/core/yq/libs/config/protos
     ydb/library/login/protos
     ydb/library/mkql_proto/protos
     ydb/public/api/protos
     ydb/library/yql/core/issue/protos
     ydb/library/yql/dq/actors/protos
     ydb/library/yql/dq/proto
-    ydb/library/yql/providers/common/proto
     ydb/library/yql/public/issue/protos
     ydb/library/yql/public/types
-    ydb/library/services
-    ydb/library/ydb_issue/proto
 )
 
 EXCLUDE_TAGS(GO_PROTO)

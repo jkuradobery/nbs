@@ -10,7 +10,6 @@
 #include <arrow/array/builder_primitive.h>
 #include <arrow/c/abi.h>
 #include <arrow/scalar.h>
-#include <arrow/chunked_array.h>
 
 namespace NYql {
 namespace NCommon {
@@ -122,21 +121,21 @@ private:
             TStringValue error("");
             auto r = GetPgBuilder().ValueFromText(BoolOid, "", error);
             UNIT_ASSERT(!r);
-            UNIT_ASSERT_STRING_CONTAINS(AsString(error), "ERROR:  invalid input syntax for type boolean: \"\"");
+            UNIT_ASSERT_STRING_CONTAINS(AsString(error), "invalid input syntax for type boolean: \"\"");
         }
 
         {
             TStringValue error("");
             auto r = GetPgBuilder().ValueFromText(BoolOid, "zzzz", error);
             UNIT_ASSERT(!r);
-            UNIT_ASSERT_STRING_CONTAINS(AsString(error), "ERROR:  invalid input syntax for type boolean: \"zzzz\"");
+            UNIT_ASSERT_STRING_CONTAINS(AsString(error), "Terminate was called, reason(85): Error in 'in' function: boolin, reason: invalid input syntax for type boolean: \"zzzz\"");
         }
 
         {
             TStringValue error("");
             auto r = GetPgBuilder().ValueFromBinary(BoolOid, "", error);
             UNIT_ASSERT(!r);
-            UNIT_ASSERT_STRING_CONTAINS(AsString(error), "ERROR:  no data left in message");
+            UNIT_ASSERT_STRING_CONTAINS(AsString(error), "Error in 'recv' function: boolrecv, reason: no data left in message");
         }
 
         {
@@ -268,18 +267,13 @@ private:
 
         {
             arrow::Datum d1(std::make_shared<arrow::UInt64Scalar>(123));
-            NUdf::TUnboxedValue val1 = HolderFactory.CreateArrowBlock(std::move(d1));
-            bool isScalar;
-            ui64 length;
-            auto chunks = Builder.GetArrowBlockChunks(val1, isScalar, length);
-            UNIT_ASSERT_VALUES_EQUAL(chunks, 1);
-            UNIT_ASSERT(isScalar);
-            UNIT_ASSERT_VALUES_EQUAL(length, 1);
-
+            auto val1 = HolderFactory.CreateArrowBlock(std::move(d1));
             ArrowArray arr1;
-            Builder.ExportArrowBlock(val1, 0, &arr1);
-            NUdf::TUnboxedValue val2 = Builder.ImportArrowBlock(&arr1, 1, isScalar, *atype);
-            const auto& d2 = TArrowBlock::From(val2).GetDatum();
+            bool isScalar;
+            Builder.ExportArrowBlock(val1, isScalar, &arr1);
+            UNIT_ASSERT(isScalar);
+            auto val2 = Builder.ImportArrowBlock(&arr1, *atype, isScalar);
+            const auto d2 = TArrowBlock::From(val2).GetDatum();
             UNIT_ASSERT(d2.is_scalar());
             UNIT_ASSERT_VALUES_EQUAL(d2.scalar_as<arrow::UInt64Scalar>().value, 123);
         }
@@ -293,19 +287,13 @@ private:
             std::shared_ptr<arrow::ArrayData> builderResult;
             UNIT_ASSERT(builder.FinishInternal(&builderResult).ok());
             arrow::Datum d1(builderResult);
-            NUdf::TUnboxedValue val1 = HolderFactory.CreateArrowBlock(std::move(d1));
-
-            bool isScalar;
-            ui64 length;
-            auto chunks = Builder.GetArrowBlockChunks(val1, isScalar, length);
-            UNIT_ASSERT_VALUES_EQUAL(chunks, 1);
-            UNIT_ASSERT(!isScalar);
-            UNIT_ASSERT_VALUES_EQUAL(length, 3);
-
+            auto val1 = HolderFactory.CreateArrowBlock(std::move(d1));
             ArrowArray arr1;
-            Builder.ExportArrowBlock(val1, 0, &arr1);
-            NUdf::TUnboxedValue val2 = Builder.ImportArrowBlock(&arr1, 1, isScalar, *atype);
-            const auto& d2 = TArrowBlock::From(val2).GetDatum();
+            bool isScalar;
+            Builder.ExportArrowBlock(val1, isScalar, &arr1);
+            UNIT_ASSERT(!isScalar);
+            auto val2 = Builder.ImportArrowBlock(&arr1, *atype, isScalar);
+            const auto d2 = TArrowBlock::From(val2).GetDatum();
             UNIT_ASSERT(d2.is_array());
             UNIT_ASSERT_VALUES_EQUAL(d2.array()->length, 3);
             UNIT_ASSERT_VALUES_EQUAL(d2.array()->GetNullCount(), 0);
@@ -313,56 +301,6 @@ private:
             UNIT_ASSERT_VALUES_EQUAL(flat[0], 10);
             UNIT_ASSERT_VALUES_EQUAL(flat[1], 20);
             UNIT_ASSERT_VALUES_EQUAL(flat[2], 30);
-        }
-
-        {
-            arrow::UInt64Builder builder1;
-            UNIT_ASSERT(builder1.Reserve(3).ok());
-            builder1.UnsafeAppend(ui64(10));
-            builder1.UnsafeAppend(ui64(20));
-            builder1.UnsafeAppend(ui64(30));
-            std::shared_ptr<arrow::Array> builder1Result;
-            UNIT_ASSERT(builder1.Finish(&builder1Result).ok());
-
-            arrow::UInt64Builder builder2;
-            UNIT_ASSERT(builder2.Reserve(2).ok());
-            builder2.UnsafeAppend(ui64(40));
-            builder2.UnsafeAppend(ui64(50));
-            std::shared_ptr<arrow::Array> builder2Result;
-            UNIT_ASSERT(builder2.Finish(&builder2Result).ok());
-
-            auto chunked = arrow::ChunkedArray::Make({ builder1Result, builder2Result }).ValueOrDie();
-            arrow::Datum d1(chunked);
-            NUdf::TUnboxedValue val1 = HolderFactory.CreateArrowBlock(std::move(d1));
-
-            bool isScalar;
-            ui64 length;
-            auto chunks = Builder.GetArrowBlockChunks(val1, isScalar, length);
-            UNIT_ASSERT_VALUES_EQUAL(chunks, 2);
-            UNIT_ASSERT(!isScalar);
-            UNIT_ASSERT_VALUES_EQUAL(length, 5);
-
-            ArrowArray arrs[2];
-            Builder.ExportArrowBlock(val1, 0, &arrs[0]);
-            Builder.ExportArrowBlock(val1, 1, &arrs[1]);
-            NUdf::TUnboxedValue val2 = Builder.ImportArrowBlock(arrs, 2, isScalar, *atype);
-            const auto& d2 = TArrowBlock::From(val2).GetDatum();
-            UNIT_ASSERT(d2.is_arraylike() && !d2.is_array());
-            UNIT_ASSERT_VALUES_EQUAL(d2.length(), 5);
-            UNIT_ASSERT_VALUES_EQUAL(d2.chunks().size(), 2);
-
-            UNIT_ASSERT_VALUES_EQUAL(d2.chunks()[0]->data()->length, 3);
-            UNIT_ASSERT_VALUES_EQUAL(d2.chunks()[0]->data()->GetNullCount(), 0);
-            auto flat = d2.chunks()[0]->data()->GetValues<ui64>(1);
-            UNIT_ASSERT_VALUES_EQUAL(flat[0], 10);
-            UNIT_ASSERT_VALUES_EQUAL(flat[1], 20);
-            UNIT_ASSERT_VALUES_EQUAL(flat[2], 30);
-
-            UNIT_ASSERT_VALUES_EQUAL(d2.chunks()[1]->data()->length, 2);
-            UNIT_ASSERT_VALUES_EQUAL(d2.chunks()[1]->data()->GetNullCount(), 0);
-            flat = d2.chunks()[1]->data()->GetValues<ui64>(1);
-            UNIT_ASSERT_VALUES_EQUAL(flat[0], 40);
-            UNIT_ASSERT_VALUES_EQUAL(flat[1], 50);
         }
     }
 };

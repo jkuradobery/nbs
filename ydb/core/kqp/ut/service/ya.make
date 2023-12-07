@@ -14,8 +14,7 @@ ENDIF()
 
 SRCS(
     kqp_document_api_ut.cpp
-    kqp_qs_queries_ut.cpp
-    kqp_qs_scripts_ut.cpp
+    kqp_query_service_ut.cpp
     kqp_service_ut.cpp
 )
 
@@ -23,11 +22,7 @@ PEERDIR(
     library/cpp/threading/local_executor
     ydb/core/kqp
     ydb/core/kqp/ut/common
-    ydb/library/yql/sql/pg
-    ydb/library/yql/parser/pg_wrapper
-    ydb/public/lib/ut_helpers
-    ydb/public/sdk/cpp/client/ydb_operation
-    ydb/public/sdk/cpp/client/ydb_types/operation
+    ydb/library/yql/sql/pg_dummy
 )
 
 YQL_LAST_ABI_VERSION()

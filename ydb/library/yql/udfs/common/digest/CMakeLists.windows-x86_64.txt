@@ -1,0 +1,42 @@
+
+# This file was gererated by the build system used internally in the Yandex monorepo.
+# Only simple modifications are allowed (adding source-files to targets, adding simple properties
+# like target_include_directories). These modifications will be ported to original
+# ya.make files by maintainers. Any complex modifications which can't be ported back to the
+# original buildsystem will not be accepted.
+
+
+find_package(OpenSSL REQUIRED)
+
+add_library(digest_udf INTERFACE)
+target_link_libraries(digest_udf INTERFACE
+  contrib-libs-cxxsupp
+  yutil
+  yql-public-udf
+  public-udf-support
+  contrib-libs-farmhash
+  contrib-libs-highwayhash
+  OpenSSL::OpenSSL
+  contrib-libs-xxhash
+  cpp-digest-argonish
+  cpp-digest-crc32c
+  cpp-digest-md5
+  cpp-digest-old_crc
+  cpp-digest-sfh
+  contrib-libs-cxxsupp
+  yutil
+  yql-public-udf
+  public-udf-support
+  contrib-libs-farmhash
+  contrib-libs-highwayhash
+  OpenSSL::OpenSSL
+  contrib-libs-xxhash
+  cpp-digest-argonish
+  cpp-digest-crc32c
+  cpp-digest-md5
+  cpp-digest-old_crc
+  cpp-digest-sfh
+)
+target_sources(digest_udf INTERFACE
+  ${CMAKE_SOURCE_DIR}/ydb/library/yql/udfs/common/digest/digest_udf.cpp
+)

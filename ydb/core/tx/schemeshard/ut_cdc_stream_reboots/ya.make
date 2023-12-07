@@ -2,9 +2,9 @@ UNITTEST_FOR(ydb/core/tx/schemeshard)
 
 FORK_SUBTESTS()
 
-SPLIT_FACTOR(80)
+SPLIT_FACTOR(10)
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(3600)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -15,7 +15,6 @@ ENDIF()
 
 PEERDIR(
     ydb/core/tx/schemeshard/ut_helpers
-    ydb/core/persqueue/writer
     ydb/library/yql/sql/pg_dummy
 )
 

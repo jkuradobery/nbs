@@ -8,7 +8,6 @@ SRCS(
 
 PEERDIR(
     library/cpp/cgiparam
-    library/cpp/lwtrace
     library/cpp/uri
     ydb/core/base
     ydb/core/protos

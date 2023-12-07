@@ -3,9 +3,9 @@
 
 #include "rpc_calls.h"
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
-#include <ydb/core/quoter/public/quoter.h>
+#include <ydb/core/base/quoter.h>
 #include <ydb/core/kesus/tablet/events.h>
 
 namespace NKikimr::NGRpcService {
@@ -82,18 +82,18 @@ public:
     void Bootstrap(const TActorContext& ctx) {
         TBase::Bootstrap(ctx);
 
-        this->UnsafeBecome(&TRateLimiterControlRequest::StateFunc);
+        this->Become(&TRateLimiterControlRequest::StateFunc);
 
         Ydb::StatusIds::StatusCode status = Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
         NYql::TIssues issues;
 
         if (!this->ValidateCoordinationNodePath(status, issues)) {
-            this->Reply(status, issues, this->ActorContext());
+            this->Reply(status, issues, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
         if (!ValidateRequest(status, issues)) {
-            this->Reply(status, issues, this->ActorContext());
+            this->Reply(status, issues, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
@@ -107,14 +107,14 @@ protected:
             hFunc(TEvTabletPipe::TEvClientConnected, Handle);
             hFunc(TEvTabletPipe::TEvClientDestroyed, Handle);
         default:
-            return TBase::StateFuncBase(ev);
+            return TBase::StateFuncBase(ev, ctx);
         }
     }
 
     void ResolveCoordinationPath() {
         TVector<TString> path = NKikimr::SplitPath(this->GetCoordinationNodePath());
         if (path.empty()) {
-            this->Reply(StatusIds::BAD_REQUEST, "Empty path.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, this->ActorContext());
+            this->Reply(StatusIds::BAD_REQUEST, "Empty path.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
@@ -128,30 +128,30 @@ protected:
     void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
         THolder<NSchemeCache::TSchemeCacheNavigate> navigate = std::move(ev->Get()->Request);
         if (navigate->ResultSet.size() != 1 || navigate->ErrorCount > 0) {
-            this->Reply(StatusIds::INTERNAL_ERROR, this->ActorContext());
+            this->Reply(StatusIds::INTERNAL_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
         const auto& entry = navigate->ResultSet.front();
         if (entry.Status != NSchemeCache::TSchemeCacheNavigate::EStatus::Ok) {
-            this->Reply(StatusIds::SCHEME_ERROR, this->ActorContext());
+            this->Reply(StatusIds::SCHEME_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
         if (entry.Kind != NSchemeCache::TSchemeCacheNavigate::KindKesus) {
-            this->Reply(StatusIds::BAD_REQUEST, "Path is not a coordination node path.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, this->ActorContext());
+            this->Reply(StatusIds::BAD_REQUEST, "Path is not a coordination node path.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
         if (!entry.KesusInfo) {
-            this->Reply(StatusIds::BAD_REQUEST, "Bad request: no coordination node info found.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, this->ActorContext());
+            this->Reply(StatusIds::BAD_REQUEST, "Bad request: no coordination node info found.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
         KesusTabletId = entry.KesusInfo->Description.GetKesusTabletId();
 
         if (!KesusTabletId) {
-            this->Reply(StatusIds::BAD_REQUEST, "Bad request: no coordination node id found.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, this->ActorContext());
+            this->Reply(StatusIds::BAD_REQUEST, "Bad request: no coordination node id found.", NKikimrIssues::TIssuesIds::GENERIC_RESOLVE_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
             return;
         }
 
@@ -174,16 +174,16 @@ protected:
 
     void Handle(TEvTabletPipe::TEvClientConnected::TPtr& ev) {
         if (ev->Get()->Status != NKikimrProto::OK) {
-            this->Reply(StatusIds::UNAVAILABLE, "Failed to connect to coordination node.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, this->ActorContext());
+            this->Reply(StatusIds::UNAVAILABLE, "Failed to connect to coordination node.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, TActivationContext::ActorContextFor(this->SelfId()));
         }
     }
 
     void Handle(TEvTabletPipe::TEvClientDestroyed::TPtr&) {
-        this->Reply(StatusIds::UNAVAILABLE, "Connection to coordination node was lost.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, this->ActorContext());
+        this->Reply(StatusIds::UNAVAILABLE, "Connection to coordination node was lost.", NKikimrIssues::TIssuesIds::SHARD_NOT_AVAILABLE, TActivationContext::ActorContextFor(this->SelfId()));
     }
 
     void ReplyFromKesusError(const NKikimrKesus::TKesusError& err) {
-        this->Reply(err.GetStatus(), err.GetIssues(), this->ActorContext());
+        this->Reply(err.GetStatus(), err.GetIssues(), TActivationContext::ActorContextFor(this->SelfId()));
     }
 
     virtual bool ValidateRequest(Ydb::StatusIds::StatusCode& status, NYql::TIssues& issues) = 0;
@@ -206,7 +206,7 @@ protected:
 static void CopyProps(const Ydb::RateLimiter::Resource& src, NKikimrKesus::TStreamingQuoterResource& dst) {
     dst.SetResourcePath(src.resource_path());
     const auto& srcProps = src.hierarchical_drr();
-    auto& props = *dst.MutableHierarchicalDRRResourceConfig();
+    auto& props = *dst.MutableHierarhicalDRRResourceConfig();
     props.SetMaxUnitsPerSecond(srcProps.max_units_per_second());
     props.SetMaxBurstSizeCoefficient(srcProps.max_burst_size_coefficient());
     props.SetPrefetchCoefficient(srcProps.prefetch_coefficient());
@@ -215,7 +215,7 @@ static void CopyProps(const Ydb::RateLimiter::Resource& src, NKikimrKesus::TStre
 
 static void CopyProps(const NKikimrKesus::TStreamingQuoterResource& src, Ydb::RateLimiter::Resource& dst) {
     dst.set_resource_path(src.GetResourcePath());
-    const auto& srcProps = src.GetHierarchicalDRRResourceConfig();
+    const auto& srcProps = src.GetHierarhicalDRRResourceConfig();
     auto& props = *dst.mutable_hierarchical_drr();
     props.set_max_units_per_second(srcProps.GetMaxUnitsPerSecond());
     props.set_max_burst_size_coefficient(srcProps.GetMaxBurstSizeCoefficient());
@@ -234,7 +234,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvKesus::TEvAddQuoterResourceResult, Handle);
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
 
@@ -243,7 +243,7 @@ public:
     }
 
     void SendRequest() override {
-        UnsafeBecome(&TCreateRateLimiterResourceRPC::StateFunc);
+        Become(&TCreateRateLimiterResourceRPC::StateFunc);
 
         THolder<TEvKesus::TEvAddQuoterResource> req = MakeHolder<TEvKesus::TEvAddQuoterResource>();
         CopyProps(GetProtoRequest()->resource(), *req->Record.MutableResource());
@@ -265,7 +265,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvKesus::TEvUpdateQuoterResourceResult, Handle);
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
 
@@ -274,7 +274,7 @@ public:
     }
 
     void SendRequest() override {
-        UnsafeBecome(&TAlterRateLimiterResourceRPC::StateFunc);
+        Become(&TAlterRateLimiterResourceRPC::StateFunc);
 
         THolder<TEvKesus::TEvUpdateQuoterResource> req = MakeHolder<TEvKesus::TEvUpdateQuoterResource>();
         CopyProps(GetProtoRequest()->resource(), *req->Record.MutableResource());
@@ -296,7 +296,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvKesus::TEvDeleteQuoterResourceResult, Handle);
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
 
@@ -305,7 +305,7 @@ public:
     }
 
     void SendRequest() override {
-        UnsafeBecome(&TDropRateLimiterResourceRPC::StateFunc);
+        Become(&TDropRateLimiterResourceRPC::StateFunc);
 
         THolder<TEvKesus::TEvDeleteQuoterResource> req = MakeHolder<TEvKesus::TEvDeleteQuoterResource>();
         req->Record.SetResourcePath(GetProtoRequest()->resource_path());
@@ -327,7 +327,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvKesus::TEvDescribeQuoterResourcesResult, Handle);
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
 
@@ -339,7 +339,7 @@ public:
     }
 
     void SendRequest() override {
-        UnsafeBecome(&TListRateLimiterResourcesRPC::StateFunc);
+        Become(&TListRateLimiterResourcesRPC::StateFunc);
 
         THolder<TEvKesus::TEvDescribeQuoterResources> req = MakeHolder<TEvKesus::TEvDescribeQuoterResources>();
         if (const TString& path = GetProtoRequest()->resource_path()) {
@@ -374,7 +374,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvKesus::TEvDescribeQuoterResourcesResult, Handle);
         default:
-            return TBase::StateFunc(ev);
+            return TBase::StateFunc(ev, ctx);
         }
     }
 
@@ -383,7 +383,7 @@ public:
     }
 
     void SendRequest() override {
-        UnsafeBecome(&TDescribeRateLimiterResourceRPC::StateFunc);
+        Become(&TDescribeRateLimiterResourceRPC::StateFunc);
 
         THolder<TEvKesus::TEvDescribeQuoterResources> req = MakeHolder<TEvKesus::TEvDescribeQuoterResources>();
         req->Record.AddResourcePaths(GetProtoRequest()->resource_path());
@@ -395,7 +395,7 @@ public:
         if (kesusError.GetStatus() == Ydb::StatusIds::SUCCESS) {
             Ydb::RateLimiter::DescribeResourceResult result;
             if (ev->Get()->Record.ResourcesSize() == 0) {
-                this->Reply(StatusIds::INTERNAL_ERROR, "No resource properties found.", NKikimrIssues::TIssuesIds::DEFAULT_ERROR, this->ActorContext());
+                this->Reply(StatusIds::INTERNAL_ERROR, "No resource properties found.", NKikimrIssues::TIssuesIds::DEFAULT_ERROR, TActivationContext::ActorContextFor(this->SelfId()));
                 return;
             }
             CopyProps(ev->Get()->Record.GetResources(0), *result.mutable_resource());
@@ -415,7 +415,7 @@ public:
     void Bootstrap(const TActorContext& ctx) {
         TBase::Bootstrap(ctx);
 
-        UnsafeBecome(&TAcquireRateLimiterResourceRPC::StateFunc);
+        Become(&TAcquireRateLimiterResourceRPC::StateFunc);
 
         Ydb::StatusIds::StatusCode status = Ydb::StatusIds::STATUS_CODE_UNSPECIFIED;
         NYql::TIssues issues;
@@ -433,16 +433,11 @@ public:
         SendRequest();
     }
 
-    void OnOperationTimeout(const TActorContext& ctx) {
-        Send(MakeQuoterServiceID(), new TEvQuota::TEvRpcTimeout(GetProtoRequest()->coordination_node_path(), GetProtoRequest()->resource_path()), 0, 0);
-        TBase::OnOperationTimeout(ctx);
-    }
-
     STFUNC(StateFunc) {
         switch (ev->GetTypeRewrite()) {
             hFunc(TEvQuota::TEvClearance, Handle);
         default:
-            return TBase::StateFuncBase(ev);
+            return TBase::StateFuncBase(ev, ctx);
         }
     }
 
@@ -459,7 +454,7 @@ public:
     }
 
     void SendRequest() {
-        UnsafeBecome(&TAcquireRateLimiterResourceRPC::StateFunc);
+        Become(&TAcquireRateLimiterResourceRPC::StateFunc);
 
         if (GetProtoRequest()->units_case() == Ydb::RateLimiter::AcquireResourceRequest::UnitsCase::kRequired) {
             SendLeaf(
@@ -500,28 +495,28 @@ public:
 
 } // namespace
 
-void DoCreateRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TCreateRateLimiterResourceRPC(p.release()));
+void DoCreateRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TCreateRateLimiterResourceRPC(p.release()));
 }
 
-void DoAlterRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TAlterRateLimiterResourceRPC(p.release()));
+void DoAlterRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TAlterRateLimiterResourceRPC(p.release()));
 }
 
-void DoDropRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDropRateLimiterResourceRPC(p.release()));
+void DoDropRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDropRateLimiterResourceRPC(p.release()));
 }
 
-void DoListRateLimiterResources(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TListRateLimiterResourcesRPC(p.release()));
+void DoListRateLimiterResources(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TListRateLimiterResourcesRPC(p.release()));
 }
 
-void DoDescribeRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TDescribeRateLimiterResourceRPC(p.release()));
+void DoDescribeRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TDescribeRateLimiterResourceRPC(p.release()));
 }
 
-void DoAcquireRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TAcquireRateLimiterResourceRPC(p.release()));
+void DoAcquireRateLimiterResource(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider&) {
+    TActivationContext::AsActorContext().Register(new TAcquireRateLimiterResourceRPC(p.release()));
 }
 
 template<>

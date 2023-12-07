@@ -26,11 +26,11 @@ void TRulePreparationActor::StartChecker() {
             if (!tier) {
                 Controller->OnPreparationProblem("unknown tier usage: " + interval.GetTierName());
                 return;
-            } else if (!Secrets->CheckSecretAccess(tier->GetAccessKey(), Context.GetExternalData().GetUserToken())) {
-                Controller->OnPreparationProblem("no access for secret: " + tier->GetAccessKey().DebugString());
+            } else if (!Secrets->CheckSecretAccess(tier->GetProtoConfig().GetObjectStorage().GetAccessKey(), Context.GetUserToken())) {
+                Controller->OnPreparationProblem("no access for secret: " + tier->GetProtoConfig().GetObjectStorage().GetAccessKey());
                 return;
-            } else if (!Secrets->CheckSecretAccess(tier->GetSecretKey(), Context.GetExternalData().GetUserToken())) {
-                Controller->OnPreparationProblem("no access for secret: " + tier->GetSecretKey().DebugString());
+            } else if (!Secrets->CheckSecretAccess(tier->GetProtoConfig().GetObjectStorage().GetSecretKey(), Context.GetUserToken())) {
+                Controller->OnPreparationProblem("no access for secret: " + tier->GetProtoConfig().GetObjectStorage().GetSecretKey());
                 return;
             }
         }
@@ -52,7 +52,7 @@ void TRulePreparationActor::Handle(NSchemeShard::TEvSchemeShard::TEvProcessingRe
             StartChecker();
         }
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
 }
 
@@ -62,7 +62,7 @@ void TRulePreparationActor::Handle(NMetadata::NProvider::TEvRefreshSubscriberDat
     } else if (auto snapshot = ev->Get()->GetSnapshotPtrAs<NMetadata::NSecret::TSnapshot>()) {
         Secrets = snapshot;
     } else {
-        Y_ABORT_UNLESS(false);
+        Y_VERIFY(false);
     }
     StartChecker();
 }
@@ -75,7 +75,7 @@ void TRulePreparationActor::Bootstrap() {
         new NMetadata::NProvider::TEvAskSnapshot(std::make_shared<NMetadata::NSecret::TSnapshotsFetcher>()));
     {
         SSFetcher = std::make_shared<TFetcherCheckUserTieringPermissions>();
-        SSFetcher->SetUserToken(Context.GetExternalData().GetUserToken());
+        SSFetcher->SetUserToken(Context.GetUserToken());
         SSFetcher->SetActivityType(Context.GetActivityType());
         for (auto&& i : Objects) {
             SSFetcher->MutableTieringRuleIds().emplace(i.GetTieringRuleId());
@@ -86,7 +86,7 @@ void TRulePreparationActor::Bootstrap() {
 
 TRulePreparationActor::TRulePreparationActor(std::vector<TTieringRule>&& objects,
     NMetadata::NModifications::IAlterPreparationController<TTieringRule>::TPtr controller,
-    const NMetadata::NModifications::IOperationsManager::TInternalModificationContext& context)
+    const NMetadata::NModifications::IOperationsManager::TModificationContext& context)
     : Objects(std::move(objects))
     , Controller(controller)
     , Context(context)

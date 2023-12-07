@@ -1,9 +1,9 @@
 #include "recursive_list.h"
-#include "sys.h"
 
 #include <util/string/join.h>
 
-namespace NYdb::NConsoleClient {
+namespace NYdb {
+namespace NConsoleClient {
 
 using namespace NScheme;
 
@@ -16,9 +16,9 @@ namespace {
     }
 
     TStatus RecursiveList(TVector<TSchemeEntry>& dst, TSchemeClient& client,
-            const TString& path, const TRecursiveListSettings& settings, bool addSelf = false)
-    {
-        auto list = client.ListDirectory(path, settings.ListDirectorySettings_).ExtractValueSync();
+            const TString& path, const TRecursiveListSettings& settings, bool addSelf = false) {
+
+        auto list = client.ListDirectory(path, settings.ListDirectorySettings_).GetValueSync();
         if (!list.IsSuccess()) {
             return list;
         }
@@ -29,7 +29,7 @@ namespace {
         }
 
         for (const auto& child : list.GetChildren()) {
-            if (settings.SkipSys_ && IsSystemObject(child)) {
+            if (settings.SkipSys_ && child.Name.StartsWith(".sys")) {
                 continue;
             }
 
@@ -39,7 +39,6 @@ namespace {
 
             switch (child.Type) {
                 case ESchemeEntryType::SubDomain:
-                case ESchemeEntryType::ColumnStore:
                 case ESchemeEntryType::Directory: {
                     auto status = RecursiveList(dst, client, Join('/', path, child.Name), settings);
                     if (!status.IsSuccess()) {
@@ -58,11 +57,12 @@ namespace {
 } // anonymous
 
 TRecursiveListResult RecursiveList(TSchemeClient& client, const TString& path,
-        const TRecursiveListSettings& settings, bool addSelf)
-{
+        const TRecursiveListSettings& settings, bool addSelf) {
+
     TVector<TSchemeEntry> entries;
     auto status = RecursiveList(entries, client, path, settings, addSelf);
     return {entries, status};
 }
 
+}
 }

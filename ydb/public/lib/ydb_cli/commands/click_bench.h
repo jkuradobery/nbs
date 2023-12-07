@@ -1,10 +1,8 @@
 #pragma once
 
-#include <library/cpp/string_utils/csv/csv.h>
 #include <util/generic/set.h>
 
 #include "ydb_command.h"
-#include "benchmark_utils.h"
 
 namespace NYdb::NConsoleClient {
 
@@ -36,58 +34,16 @@ protected:
     TVector<TString> QuerySettings;
     TString ExternalQueries;
     TString ExternalQueriesFile;
-    TString ExternalQueriesDir;
-    TString ExternalResultsDir;
-    TString ExternalVariablesString;
-    TString QueryExecutorType;
 
-    TMap<ui32, TString> LoadExternalResults() const;
 public:
     TClickBenchCommandRun();
     void Config(TConfig& config);
     int Run(TConfig& config);
     TString PatchQuery(const TStringBuf& original) const;
     bool NeedRun(const ui32 queryIdx) const;
-
-    template <typename TClient>
     bool RunBench(TConfig& config);
 
-    class TQueryFullInfo {
-    private:
-        TString Query;
-        TString ExpectedResult;
-
-        template <class T>
-        bool CompareValueImpl(const T valResult, const TStringBuf vExpected) const {
-            T valExpected;
-            if (!TryFromString<T>(vExpected, valExpected)) {
-                Cerr << "cannot parse expected as " << typeid(valResult).name() << "(" << vExpected << ")" << Endl;
-                return false;
-            }
-            return valResult == valExpected;
-        }
-
-        bool CompareValue(const NYdb::TValue& v, const TStringBuf vExpected) const;
-    public:
-        TQueryFullInfo(const TString& query, const TString& expectedResult)
-            : Query(query)
-            , ExpectedResult(expectedResult)
-        {
-
-        }
-
-        bool IsCorrectResult(const BenchmarkUtils::TQueryResultInfo& result) const;
-
-        const TString& GetQuery() const {
-            return Query;
-        }
-
-        const TString& GetExpectedResult() const {
-            return ExpectedResult;
-        }
-    };
-
-    TVector<TQueryFullInfo> GetQueries(const TString& fullTablePath) const;
+    TString GetQueries(const TString& fullTablePath) const;
 
     TString OutFilePath;
     ui32 IterationsCount;

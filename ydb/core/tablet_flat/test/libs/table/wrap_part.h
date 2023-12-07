@@ -39,7 +39,7 @@ namespace NTest {
         {
             for (const auto &slice : slices) {
                 auto got = Run.FindInsertHint(part.Get(), slice);
-                Y_ABORT_UNLESS(got.second, "Unexpected slices intersection");
+                Y_VERIFY(got.second, "Unexpected slices intersection");
                 Run.Insert(got.first, part, slice);
             }
         }
@@ -79,7 +79,7 @@ namespace NTest {
             if (Ready == EReady::Data)
                 Ready = RollUp();
 
-            Y_ABORT_UNLESS(Ready != EReady::Data || Iter->IsValid());
+            Y_VERIFY(Ready != EReady::Data || Iter->IsValid());
 
             return Ready;
         }
@@ -92,14 +92,14 @@ namespace NTest {
             if (Ready == EReady::Data)
                 Ready = RollUp();
 
-            Y_ABORT_UNLESS(Ready != EReady::Data || Iter->IsValid());
+            Y_VERIFY(Ready != EReady::Data || Iter->IsValid());
 
             return Ready;
         }
 
         TRowVersion GetRowVersion() const noexcept
         {
-            Y_ABORT_UNLESS(Ready == EReady::Data);
+            Y_VERIFY(Ready == EReady::Data);
 
             return Iter->GetRowVersion();
         }
@@ -113,10 +113,6 @@ namespace NTest {
             }
         }
 
-        void StopAfter(TArrayRef<const TCell> key) {
-            StopKey = TOwnedCellVec::Make(key);
-        }
-
         EReady Next() noexcept
         {
             if (std::exchange(NoBlobs, false)) {
@@ -124,14 +120,14 @@ namespace NTest {
             } else if (EReady::Data == (Ready = DoIterNext()))
                 Ready = RollUp();
 
-            Y_ABORT_UNLESS(Ready != EReady::Data || Iter->IsValid());
+            Y_VERIFY(Ready != EReady::Data || Iter->IsValid());
 
             return Ready;
         }
 
         const TRowState& Apply() noexcept
         {
-            Y_ABORT_UNLESS(Ready == EReady::Data, "Row state isn't ready");
+            Y_VERIFY(Ready == EReady::Data, "Row state isn't ready");
 
             return State;
         }
@@ -145,13 +141,6 @@ namespace NTest {
             }
 
             TDbTupleRef key = Iter->GetKey();
-
-            if (StopKey) {
-                auto cmp = CompareTypedCellVectors(key.Cells().data(), StopKey.data(), Scheme->Keys->Types.data(), StopKey.size());
-                if (Direction == EDirection::Forward && cmp > 0 || Direction == EDirection::Reverse && cmp < 0) {
-                   return EReady::Gone;
-                }
-            }
 
             for (auto &pin: Remap_.KeyPins())
                 State.Set(pin.Pos, ECellOp::Set, key.Columns[pin.Key]);
@@ -172,7 +161,6 @@ namespace NTest {
         TRowState State;
         TRun Run;
         THolder<TRunIt> Iter;
-        TOwnedCellVec StopKey;
     };
 
     using TWrapPart = TWrapPartImpl<EDirection::Forward>;

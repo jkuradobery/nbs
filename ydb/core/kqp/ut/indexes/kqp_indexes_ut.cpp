@@ -2,9 +2,8 @@
 
 #include <ydb/core/client/minikql_compile/mkql_compile_service.h>
 #include <ydb/core/kqp/common/kqp_yql.h>
-#include <ydb/core/kqp/common/kqp.h>
 #include <ydb/core/kqp/gateway/kqp_metadata_loader.h>
-#include <ydb/core/kqp/host/kqp_host_impl.h>
+#include <ydb/core/kqp/host/kqp_host.h>
 
 #include <ydb/public/sdk/cpp/client/ydb_proto/accessor.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
@@ -34,8 +33,8 @@ TIntrusivePtr<NKqp::IKqpGateway> GetIcGateway(Tests::TServer& server) {
     auto counters = MakeIntrusive<TKqpRequestCounters>();
     counters->Counters = new TKqpCounters(server.GetRuntime()->GetAppData(0).Counters);
     counters->TxProxyMon = new NTxProxy::TTxProxyMon(server.GetRuntime()->GetAppData(0).Counters);
-    std::shared_ptr<NYql::IKikimrGateway::IKqpTableMetadataLoader> loader = std::make_shared<TKqpTableMetadataLoader>(server.GetRuntime()->GetAnyNodeActorSystem(),TIntrusivePtr<NYql::TKikimrConfiguration>(nullptr),false);
-    return NKqp::CreateKikimrIcGateway(TestCluster, NKikimrKqp::QUERY_TYPE_SQL_GENERIC_QUERY, "/Root", std::move(loader), server.GetRuntime()->GetAnyNodeActorSystem(),
+    std::shared_ptr<NYql::IKikimrGateway::IKqpTableMetadataLoader> loader = std::make_shared<TKqpTableMetadataLoader>(server.GetRuntime()->GetAnyNodeActorSystem(), false);
+    return NKqp::CreateKikimrIcGateway(TestCluster, "/Root", std::move(loader), server.GetRuntime()->GetAnyNodeActorSystem(),
         server.GetRuntime()->GetNodeId(0), counters);
 }
 
@@ -52,16 +51,15 @@ TIntrusivePtr<IKqpHost> CreateKikimrQueryProcessor(TIntrusivePtr<IKqpGateway> ga
     UNIT_ASSERT(TryParseFromTextFormat(defaultSettingsStream, defaultSettings));
     kikimrConfig->Init(defaultSettings.GetDefaultSettings(), cluster, settings, true);
 
-    auto federatedQuerySetup = std::make_optional<TKqpFederatedQuerySetup>({NYql::IHTTPGateway::Make(), nullptr, nullptr, nullptr, {}, {}});
-    return NKqp::CreateKqpHost(gateway, cluster, "/Root", kikimrConfig, moduleResolver,
-                               federatedQuerySetup, funcRegistry, funcRegistry, keepConfigChanges);
+    return NKqp::CreateKqpHost(gateway, cluster, "/Root", kikimrConfig, moduleResolver, funcRegistry,
+        keepConfigChanges);
 }
 
 NYql::NNodes::TExprBase GetExpr(const TString& ast, NYql::TExprContext& ctx, NYql::IModuleResolver* moduleResolver) {
     NYql::TAstParseResult astRes = NYql::ParseAst(ast);
     YQL_ENSURE(astRes.IsOk());
     NYql::TExprNode::TPtr result;
-    YQL_ENSURE(CompileExpr(*astRes.Root, result, ctx, moduleResolver, nullptr));
+    YQL_ENSURE(CompileExpr(*astRes.Root, result, ctx, moduleResolver));
     return NYql::NNodes::TExprBase(result);
 }
 
@@ -95,8 +93,7 @@ void CreateTableWithIndexWithState(
     metadata->KeyColumnNames.push_back("key");
 
     {
-        auto gatewayProxy = CreateKqpGatewayProxy(gateway, nullptr);
-        auto result = gatewayProxy->CreateTable(metadata, true).ExtractValueSync();
+        auto result = gateway->CreateTable(metadata, true).ExtractValueSync();
         UNIT_ASSERT(result.Success());
     }
 }
@@ -156,110 +153,6 @@ Y_UNIT_TEST_SUITE(KqpIndexMetadata) {
             UNIT_ASSERT(!result.Success());
             UNIT_ASSERT_C(result.Issues().ToString().Contains("No global indexes for table"), result.Issues().ToString());
         }
-    }
-
-    void TestNoReadFromMainTableBeforeJoin(bool UseExtractPredicates) {
-        using namespace NYql;
-        using namespace NYql::NNodes;
-
-        TKikimrSettings settings;
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetPredicateExtract20(UseExtractPredicates);
-        settings.SetAppConfig(appConfig);
-
-        TKikimrRunner kikimr(settings);
-
-        auto& server = kikimr.GetTestServer();
-        auto gateway = GetIcGateway(server);
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        {
-            const TString createTableSql(R"(
-                --!syntax_v1
-                CREATE TABLE `/Root/tg` (
-                    id Utf8, b Utf8, am Decimal(22, 9), cur Utf8, pa_id Utf8, system_date Timestamp, status Utf8, type Utf8, product Utf8,
-                    PRIMARY KEY (b, id),
-                    INDEX tg_index GLOBAL SYNC ON (`b`, `pa_id`, `system_date`, `id`)
-                    COVER(status, type, product, am)
-                );)");
-            auto result = session.ExecuteSchemeQuery(createTableSql).GetValueSync();
-            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-        }
-
-        // core optimizer should inject CoExtractMembert over KqlReadTableIndex with columns set based on ORDER BY
-        // after that KqlReadTableIndex has all columns present in index and should be rewriten in to index read
-        // limit must be applied in to this (index read) stage.
-        // As result we have limited numbers of lookups from main table
-
-        {
-            const TString query(Q1_(R"(
-                --!syntax_v1
-
-                DECLARE $b_1 AS Text;
-                DECLARE $pa_id_1 AS Text;
-                DECLARE $b_2 AS Text;
-                DECLARE $constant_param_1 AS Timestamp;
-                DECLARE $constant_param_2 AS Text;
-                DECLARE $type_1 AS List<Text>;
-                DECLARE $status_1 AS Text;
-                DECLARE $am_1 AS Decimal(22, 9);
-
-                SELECT *
-                FROM tg
-                WHERE (`tg`.`b` = $b_1) AND (`tg`.`id` IN (
-                    SELECT `id`
-                    FROM (
-                        SELECT *
-                        FROM `/Root/tg` VIEW tg_index AS tg
-                        WHERE (`tg`.`pa_id` = $pa_id_1)
-                            AND (`tg`.`b` = $b_2)
-                            AND ((`tg`.`system_date`, `tg`.`id`) <= ($constant_param_1, $constant_param_2))
-                            AND (`tg`.`type` NOT IN $type_1)
-                            AND (`tg`.`status` <> $status_1)
-                            AND (`tg`.`am` <> $am_1)
-                        ORDER BY
-                            `tg`.`b` DESC,
-                            `tg`.`pa_id` DESC,
-                            `tg`.`system_date` DESC,
-                            `tg`.`id` DESC
-                        LIMIT 11)
-                    ))
-                ORDER BY
-                    `tg`.`system_date` DESC,
-                    `tg`.`id` DESC
-
-            )"));
-
-            auto explainResult = session.ExplainDataQuery(query).GetValueSync();
-            UNIT_ASSERT_C(explainResult.IsSuccess(), explainResult.GetIssues().ToString());
-
-            Cerr << explainResult.GetAst() << Endl;
-            UNIT_ASSERT_C(explainResult.GetAst().Contains("'('\"Reverse\")"), explainResult.GetAst());
-            UNIT_ASSERT_C(explainResult.GetAst().Contains("'('\"Sorted\")"), explainResult.GetAst());
-
-            NJson::TJsonValue plan;
-            NJson::ReadJsonTree(explainResult.GetPlan(), &plan, true);
-            UNIT_ASSERT(ValidatePlanNodeIds(plan));
-            Cerr << plan << Endl;
-            auto mainTableAccess = CountPlanNodesByKv(plan, "Table", "tg");
-            UNIT_ASSERT_VALUES_EQUAL(mainTableAccess, 1);
-
-            auto indexTableAccess = CountPlanNodesByKv(plan, "Table", "tg/tg_index/indexImplTable");
-            UNIT_ASSERT_VALUES_EQUAL(indexTableAccess, 1);
-
-            auto filterOnIndex = CountPlanNodesByKv(plan, "Node Type", "Limit-Filter-TablePointLookup");
-            UNIT_ASSERT_VALUES_EQUAL(filterOnIndex, 1);
-
-            auto limitFilterNode = FindPlanNodeByKv(plan, "Node Type", "Limit-Filter-TablePointLookup");
-            auto val = FindPlanNodes(limitFilterNode, "Limit");
-            UNIT_ASSERT_VALUES_EQUAL(val.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(val[0], "11");
-        }
-    }
-
-    Y_UNIT_TEST_TWIN(TestNoReadFromMainTableBeforeJoin, ExtractPredicate) {
-        TestNoReadFromMainTableBeforeJoin(ExtractPredicate);
     }
 
     Y_UNIT_TEST(HandleWriteOnlyIndex) {
@@ -346,9 +239,9 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
             UNIT_ASSERT_VALUES_EQUAL(NYdb::FormatResultSetYson(result.GetResultSet(0)), "[[#];[[7]]]");
 
             auto& stats = NYdb::TProtoAccessor::GetProto(*result.GetStats());
-            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 1);
+            UNIT_ASSERT_VALUES_EQUAL(stats.query_phases().size(), 2);
 
-            int phase = 0;
+            int phase = 1;
             UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access().size(), 1);
             UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).name(), "/Root/SecondaryKeys/Index/indexImplTable");
             UNIT_ASSERT_VALUES_EQUAL(stats.query_phases(phase).table_access(0).reads().rows(), 2);
@@ -1422,10 +1315,13 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
         }
     }
 
-    Y_UNIT_TEST(SecondaryIndexOrderBy) {
+    Y_UNIT_TEST_TWIN(SecondaryIndexOrderBy, SourceRead) {
         auto setting = NKikimrKqp::TKqpSetting();
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(SourceRead);
         auto serverSettings = TKikimrSettings()
-            .SetKqpSettings({setting});
+            .SetKqpSettings({setting})
+            .SetAppConfig(appConfig);
 
         TKikimrRunner kikimr(serverSettings);
         auto db = kikimr.GetTableClient();
@@ -1624,7 +1520,7 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
                     query)
                     .ExtractValueSync();
                 UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-                UNIT_ASSERT_C(result.GetAst().Contains("('\"ItemsLimit\""), result.GetAst());
+                UNIT_ASSERT_C(result.GetAst().Contains("('\"ItemsLimit\"") || SourceRead, result.GetAst());
                 UNIT_ASSERT_C(!result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
             }
 
@@ -1650,7 +1546,7 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
                     query)
                     .ExtractValueSync();
                 UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-                UNIT_ASSERT_C(result.GetAst().Contains("('\"ItemsLimit\""), result.GetAst());
+                UNIT_ASSERT_C(result.GetAst().Contains("('\"ItemsLimit\"") || SourceRead, result.GetAst());
                 UNIT_ASSERT_C(!result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
             }
 
@@ -1677,7 +1573,7 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
                     query)
                     .ExtractValueSync();
                 UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-                UNIT_ASSERT_C(result.GetAst().Contains("('\"ItemsLimit\""), result.GetAst());
+                UNIT_ASSERT_C(result.GetAst().Contains("('\"ItemsLimit\"") || SourceRead, result.GetAst());
                 UNIT_ASSERT_C(!result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
             }
 
@@ -1719,87 +1615,13 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
         }
     }
 
-    Y_UNIT_TEST(ExplainCollectFullDiagnostics) {
+    Y_UNIT_TEST_TWIN(SecondaryIndexOrderBy2, SourceRead) {
         auto setting = NKikimrKqp::TKqpSetting();
+        NKikimrConfig::TAppConfig appConfig;
+        appConfig.MutableTableServiceConfig()->SetEnableKqpDataQuerySourceRead(SourceRead);
         auto serverSettings = TKikimrSettings()
-            .SetKqpSettings({setting});
-
-        TKikimrRunner kikimr(serverSettings);
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        {
-            auto tableBuilder = db.GetTableBuilder();
-            tableBuilder
-                .AddNullableColumn("Key", EPrimitiveType::Int64)
-                .AddNullableColumn("Index2", EPrimitiveType::Int64)
-                .AddNullableColumn("Value", EPrimitiveType::String);
-            tableBuilder.SetPrimaryKeyColumns(TVector<TString>{"Key"});
-            tableBuilder.AddSecondaryIndex("Index", TVector<TString>{"Index2"});
-            auto result = session.CreateTable("/Root/TestTable", tableBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-        }
-
-        {
-            const TString query(Q1_(R"(
-                SELECT * FROM `/Root/TestTable` VIEW Index as t ORDER BY t.Index2 DESC;
-            )"));
-
-            {
-                auto settings = TExplainDataQuerySettings();
-                settings.WithCollectFullDiagnostics(true);
-            
-                auto result = session.ExplainDataQuery(
-                    query, settings)
-                    .ExtractValueSync();
-
-                UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString().c_str());
-
-                UNIT_ASSERT_C(result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
-
-                UNIT_ASSERT_C(!result.GetDiagnostics().empty(), "Query result diagnostics is empty");
-
-                TStringStream in;
-                in << result.GetDiagnostics();
-                NJson::TJsonValue value;
-                ReadJsonTree(&in, &value);
-
-                UNIT_ASSERT_C(value.IsMap(), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_id"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("version"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_text"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_parameter_types"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("table_metadata"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value["table_metadata"].IsArray(), "Incorrect Diagnostics: table_metadata type should be an array");
-                UNIT_ASSERT_C(value.Has("created_at"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_syntax"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_database"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_cluster"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_plan"), "Incorrect Diagnostics");
-                UNIT_ASSERT_C(value.Has("query_type"), "Incorrect Diagnostics");
-            }
-
-            {
-                auto settings = TExplainDataQuerySettings();
-            
-                auto result = session.ExplainDataQuery(
-                    query, settings)
-                    .ExtractValueSync();
-
-                UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString().c_str());
-
-                UNIT_ASSERT_C(result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
-
-                UNIT_ASSERT_C(result.GetDiagnostics().empty(), "Query result diagnostics should be empty, but it's not");
-            }
-        }
-    }
-
-    Y_UNIT_TEST(SecondaryIndexOrderBy2) {
-        auto setting = NKikimrKqp::TKqpSetting();
-        auto serverSettings = TKikimrSettings()
-            .SetKqpSettings({setting});
+            .SetKqpSettings({setting})
+            .SetAppConfig(appConfig);
         TKikimrRunner kikimr(serverSettings);
         auto db = kikimr.GetTableClient();
         auto session = db.CreateSession().GetValueSync().GetSession();
@@ -1899,7 +1721,7 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
 
                 UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString().c_str());
 
-                UNIT_ASSERT_C(result.GetAst().Contains("'('\"ItemsLimit"), result.GetAst());
+                UNIT_ASSERT_C(result.GetAst().Contains("'('\"ItemsLimit") || SourceRead, result.GetAst());
                 UNIT_ASSERT_C(result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
             }
 
@@ -1946,7 +1768,7 @@ Y_UNIT_TEST_SUITE(KqpIndexes) {
                     .ExtractValueSync();
 
                 UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString().c_str());
-                UNIT_ASSERT_C(result.GetAst().Contains("'('\"ItemsLimit"), result.GetAst());
+                UNIT_ASSERT_C(result.GetAst().Contains("'('\"ItemsLimit") || SourceRead, result.GetAst());
                 UNIT_ASSERT_C(result.GetAst().Contains("'('\"Reverse\")"), result.GetAst());
             }
 
@@ -2152,251 +1974,6 @@ R"([[#;#;["Primary1"];[41u]];[["Secondary2"];[2u];["Primary2"];[42u]];[["Seconda
             UNIT_ASSERT_VALUES_EQUAL(yson, expected);
         }
     }
-
-    Y_UNIT_TEST(UniqAndNoUniqSecondaryIndex) {
-        auto setting = NKikimrKqp::TKqpSetting();
-        auto serverSettings = TKikimrSettings()
-            .SetKqpSettings({setting});
-        TKikimrRunner kikimr(serverSettings);
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        {
-            auto tableBuilder = db.GetTableBuilder();
-            tableBuilder
-                .AddNullableColumn("Key", EPrimitiveType::String)
-                .AddNullableColumn("Value1", EPrimitiveType::String)
-                .AddNullableColumn("Value2", EPrimitiveType::String);
-            tableBuilder.SetPrimaryKeyColumns(TVector<TString>{"Key"});
-            tableBuilder.AddUniqueSecondaryIndex("Index1Uniq", {"Value1"});
-            tableBuilder.AddSecondaryIndex("Index2NotUniq", "Value2");
-            auto result = session.CreateTable("/Root/TestTable", tableBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-        }
-
-        {
-            const TString query1(Q_(R"(
-                UPSERT INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                ("Primary1", "Val1", "Val2");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT(result.IsSuccess());
-       }
-
-       {
-            const TString query1(Q_(R"(
-                UPSERT INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                    ("Primary2", "Val1", "blabla");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED, result.GetIssues().ToString());
-        }
-
-        {
-            const TString query1(Q_(R"(
-                INSERT INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                    ("Primary3", "Val1", "blabla");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED, result.GetIssues().ToString());
-        }
-
-        {
-            const TString query1(Q_(R"(
-                REPLACE INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                    ("Primary3", "Val1", "blabla");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED, result.GetIssues().ToString());
-        }
-
-        {
-
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index1Uniq/indexImplTable");
-                const TString expected = R"([[["Val1"];["Primary1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index2NotUniq/indexImplTable");
-                const TString expected = R"([[["Val2"];["Primary1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable");
-                const TString expected = R"([[["Primary1"];["Val1"];["Val2"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-        }
-
-        {
-            const TString query1(Q_(R"(
-                UPDATE `/Root/TestTable` SET Value2 = "Val2_1" WHERE Key = "Primary1";
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT(result.IsSuccess());
-
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index1Uniq/indexImplTable");
-                const TString expected = R"([[["Val1"];["Primary1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index2NotUniq/indexImplTable");
-                const TString expected = R"([[["Val2_1"];["Primary1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable");
-                const TString expected = R"([[["Primary1"];["Val1"];["Val2_1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-        }
-    }
-
-    Y_UNIT_TEST(UniqAndNoUniqSecondaryIndexWithCover) {
-        auto setting = NKikimrKqp::TKqpSetting();
-        auto serverSettings = TKikimrSettings()
-            .SetKqpSettings({setting});
-        TKikimrRunner kikimr(serverSettings);
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-
-        {
-            auto tableBuilder = db.GetTableBuilder();
-            tableBuilder
-                .AddNullableColumn("Key", EPrimitiveType::String)
-                .AddNullableColumn("Value1", EPrimitiveType::String)
-                .AddNullableColumn("Value2", EPrimitiveType::String);
-            tableBuilder.SetPrimaryKeyColumns(TVector<TString>{"Key"});
-            tableBuilder.AddUniqueSecondaryIndex("Index1Uniq", {"Value1"}, {"Value2"});
-            tableBuilder.AddSecondaryIndex("Index2NotUniq", {"Value2"}, {"Value1"});
-            auto result = session.CreateTable("/Root/TestTable", tableBuilder.Build()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL(result.IsTransportError(), false);
-            UNIT_ASSERT_VALUES_EQUAL(result.GetStatus(), EStatus::SUCCESS);
-        }
-
-        {
-            const TString query1(Q_(R"(
-                UPSERT INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                ("Primary1", "Val1", "Val2");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT(result.IsSuccess());
-       }
-
-       {
-            const TString query1(Q_(R"(
-                UPSERT INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                    ("Primary2", "Val1", "blabla");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED, result.GetIssues().ToString());
-        }
-
-        {
-            const TString query1(Q_(R"(
-                INSERT INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                    ("Primary3", "Val1", "blabla");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED, result.GetIssues().ToString());
-        }
-
-        {
-            const TString query1(Q_(R"(
-                REPLACE INTO `/Root/TestTable` (Key, Value1, Value2) VALUES
-                    ("Primary3", "Val1", "blabla");
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), NYdb::EStatus::PRECONDITION_FAILED, result.GetIssues().ToString());
-        }
-
-        {
-
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index1Uniq/indexImplTable");
-                const TString expected = R"([[["Val1"];["Primary1"];["Val2"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index2NotUniq/indexImplTable");
-                const TString expected = R"([[["Val2"];["Primary1"];["Val1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable");
-                const TString expected = R"([[["Primary1"];["Val1"];["Val2"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-        }
-
-        {
-            const TString query1(Q_(R"(
-                UPDATE `/Root/TestTable` SET Value2 = "Val2_1" WHERE Key = "Primary1";
-            )"));
-
-            auto result = session.ExecuteDataQuery(
-                    query1,
-                    TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
-                .ExtractValueSync();
-            UNIT_ASSERT_C(result.IsSuccess(), result.GetIssues().ToString());
-
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index1Uniq/indexImplTable");
-                const TString expected = R"([[["Val1"];["Primary1"];["Val2_1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index2NotUniq/indexImplTable");
-                const TString expected = R"([[["Val2_1"];["Primary1"];["Val1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-            {
-                const auto& yson = ReadTablePartToYson(session, "/Root/TestTable");
-                const TString expected = R"([[["Primary1"];["Val1"];["Val2_1"]]])";
-                UNIT_ASSERT_VALUES_EQUAL(yson, expected);
-            }
-        }
-    }
-
 
     Y_UNIT_TEST(MultipleSecondaryIndexWithSameComulns) {
         auto setting = NKikimrKqp::TKqpSetting();
@@ -3630,7 +3207,7 @@ R"([[#;#;["Primary1"];[41u]];[["Secondary2"];[2u];["Primary2"];[42u]];[["Seconda
             )"));
 
             result = session.ExecuteDataQuery(query2, TTxControl::Tx(*tx).CommitTx()).ExtractValueSync();
-            UNIT_ASSERT(result.IsSuccess());
+            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::GENERIC_ERROR, result.GetIssues().ToString());
 
             const auto& yson = ReadTablePartToYson(session, "/Root/TestTable/Index/indexImplTable");
             UNIT_ASSERT_VALUES_EQUAL(yson, "[]");
@@ -3904,7 +3481,6 @@ R"([[#;#;["Primary1"];[41u]];[["Secondary2"];[2u];["Primary2"];[42u]];[["Seconda
                 query1,
                 TTxControl::BeginTx(TTxSettings::SerializableRW()).CommitTx())
             .ExtractValueSync();
-
             UNIT_ASSERT(result.IsSuccess());
         }
 
@@ -4326,7 +3902,6 @@ R"([[#;#;["Primary1"];[41u]];[["Secondary2"];[2u];["Primary2"];[42u]];[["Seconda
         ])", FormatResultSetYson(result.GetResultSet(0)));
     }
 
-    /* Doesn't work with readranges because of limits/column sets
     Y_UNIT_TEST(IndexMultipleRead) {
         TKikimrRunner kikimr;
 
@@ -4364,363 +3939,6 @@ R"([[#;#;["Primary1"];[41u]];[["Secondary2"];[2u];["Primary2"];[42u]];[["Seconda
 
         CompareYson(R"([[[5];[5];["Payload5"]]])", FormatResultSetYson(result.GetResultSet(0)));
         CompareYson(R"([[1u]])", FormatResultSetYson(result.GetResultSet(1)));
-    }
-    */
-
-    Y_UNIT_TEST(IndexOr) {
-        TKikimrRunner kikimr;
-
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-        CreateSampleTablesWithIndex(session);
-
-        NYdb::NTable::TExecDataQuerySettings execSettings;
-        execSettings.CollectQueryStats(ECollectQueryStatsMode::Basic);
-
-        auto params = db.GetParamsBuilder()
-            .AddParam("$A")
-                .Int32(1)
-                .Build()
-            .AddParam("$B")
-                .Int32(5)
-                .Build()
-            .Build();
-
-        auto result = session.ExecuteDataQuery(Q1_(R"(
-            DECLARE $A AS Int32;
-            DECLARE $B AS Int32;
-
-            SELECT * FROM SecondaryKeys VIEW Index WHERE Fk = $A OR Fk = $B;
-        )"), TTxControl::BeginTx().CommitTx(), params, execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        AssertTableStats(result, "/Root/SecondaryKeys", {
-            .ExpectedReads = 2
-        });
-
-        AssertTableStats(result, "/Root/SecondaryKeys/Index/indexImplTable", {
-            .ExpectedReads = 2,
-        });
-
-        CompareYson(R"([[[1];[1];["Payload1"]];[[5];[5];["Payload5"]]])", FormatResultSetYson(result.GetResultSet(0)));
-    }
-
-    Y_UNIT_TEST(IndexFilterPushDown) {
-        TKikimrRunner kikimr;
-
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-        CreateSampleTablesWithIndex(session, false /*populateTables*/);
-
-        NYdb::NTable::TExecDataQuerySettings execSettings;
-        execSettings.CollectQueryStats(ECollectQueryStatsMode::Basic);
-
-        auto result = session.ExecuteDataQuery(Q1_(R"(
-            REPLACE INTO `/Root/SecondaryKeys` (Key, Fk, Value) VALUES
-                (0,    0,    "Value0"),
-                (1,    0,    "Value1"),
-                (2,    1,    "Value2");
-        )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        result = session.ExecuteDataQuery(Q1_(R"(
-            SELECT Fk, Value FROM `/Root/SecondaryKeys` VIEW Index WHERE Fk = CAST(0 AS UInt32) LIMIT 1;
-        )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        AssertTableStats(result, "/Root/SecondaryKeys", {
-            .ExpectedReads = 1
-        });
-
-        AssertTableStats(result, "/Root/SecondaryKeys/Index/indexImplTable", {
-            .ExpectedReads = 1
-        });
-
-        result = session.ExecuteDataQuery(Q1_(R"(
-            SELECT Fk, Value FROM `/Root/SecondaryKeys` VIEW Index WHERE Fk = CAST(0 AS UInt32) AND Fk + Fk >= 0 LIMIT 1;
-        )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        AssertTableStats(result, "/Root/SecondaryKeys", {
-            .ExpectedReads = 1
-        });
-
-        AssertTableStats(result, "/Root/SecondaryKeys/Index/indexImplTable", {
-            .ExpectedReads = 1
-        });
-
-        result = session.ExecuteDataQuery(Q1_(R"(
-            SELECT Fk, Value FROM `/Root/SecondaryKeys` VIEW Index WHERE Fk = CAST(0 AS UInt32) ORDER BY Fk LIMIT 1;
-        )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        AssertTableStats(result, "/Root/SecondaryKeys", {
-            .ExpectedReads = 1
-        });
-
-        AssertTableStats(result, "/Root/SecondaryKeys/Index/indexImplTable", {
-            .ExpectedReads = 1
-        });
-
-        result = session.ExecuteDataQuery(Q1_(R"(
-            SELECT Fk, Value FROM `/Root/SecondaryKeys` VIEW Index WHERE Fk = CAST(0 AS UInt32) AND Fk + Fk >= 0 ORDER BY Fk LIMIT 1;
-        )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        AssertTableStats(result, "/Root/SecondaryKeys", {
-            .ExpectedReads = 1
-        });
-
-        AssertTableStats(result, "/Root/SecondaryKeys/Index/indexImplTable", {
-            .ExpectedReads = 1
-        });
-    }
-    Y_UNIT_TEST(IndexTopSortPushDown) {
-        TKikimrRunner kikimr;
-
-        auto db = kikimr.GetTableClient();
-        auto session = db.CreateSession().GetValueSync().GetSession();
-        CreateSampleTablesWithIndex(session, false /*populateTables*/);
-
-        NYdb::NTable::TExecDataQuerySettings execSettings;
-        execSettings.CollectQueryStats(ECollectQueryStatsMode::Basic);
-
-        auto result = session.ExecuteDataQuery(Q1_(R"(
-            REPLACE INTO `/Root/SecondaryWithDataColumns` (Key, Index2, Value) VALUES
-                ("0",    "0",    "Value2"),
-                ("1",    "0",    "Value1"),
-                ("2",    "1",    "Value0"),
-                ("3",    "1",    "Value0"),
-                ("4",    "1",    "Value0");
-        )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-
-        {
-            // Use top without sort if ORDER BY is index key columns
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT Index2, Key, Value, ExtPayload FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Index2, Key
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 2
-            });
-            CompareYson(R"([
-                [["0"];["0"];["Value2"];#];
-                [["0"];["1"];["Value1"];#]
-            ])", FormatResultSetYson(result.GetResultSet(0)));
-        }
-        {
-            // Use top without sort if ORDER BY is prefix of index key columns
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT Index2, Key, Value, ExtPayload FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Index2
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 2
-            });
-        }
-        {
-            // Use push down for top sort if ORDER BY exist column from idex data columns
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT Index2, Key, Value, ExtPayload FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Index2, Key, Value
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 5
-            });
-        }
-        {
-            // Use push down for top sort if ORDER BY exist column from idex data columns
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT * FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Index2, Value
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 5
-            });
-        }
-        {
-            // Use push down for top sort if all columns in ORDER BY are in data columns
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT * FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Value
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 5
-            });
-        }
-        {
-            // Use push down for top sort if columns in ORDER BY in wrong order
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT * FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Key, Index2, Value
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 5
-            });
-        }
-        {
-            // Don't use push down for top sort if columns in ORDER BY in wrong order
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT * FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Index2, Value, Key
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 2
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 5
-            });
-        }
-        {
-            // Don't use push down if ORDER BY exists column not from index
-            result = session.ExecuteDataQuery(Q1_(R"(
-                SELECT * FROM `/Root/SecondaryWithDataColumns` VIEW Index
-                ORDER BY Index2, Key, Value, ExtPayload
-                LIMIT 2;
-            )"), TTxControl::BeginTx().CommitTx(), execSettings).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns", {
-                .ExpectedReads = 5
-            });
-            AssertTableStats(result, "/Root/SecondaryWithDataColumns/Index/indexImplTable", {
-                .ExpectedReads = 5
-            });
-        }
-    }
-    Y_UNIT_TEST(UpdateOnReadColumns) {
-        {
-            // Check that keys from non involved index are not in read columns
-            TKikimrRunner kikimr;
-            auto db = kikimr.GetTableClient();
-            auto session = db.CreateSession().GetValueSync().GetSession();
-            CreateSampleTablesWithIndex(session);
-
-            auto result = session.ExplainDataQuery(R"(
-                UPDATE `/Root/SecondaryKeys` ON (Key, Value) VALUES (1, "New");
-            )").ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            NJson::TJsonValue plan;
-            NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto table = plan["tables"][0];
-            UNIT_ASSERT_VALUES_EQUAL(table["name"], "/Root/SecondaryKeys");
-            auto reads = table["reads"].GetArraySafe();
-            UNIT_ASSERT_VALUES_EQUAL(reads.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["type"], "Lookup");
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["columns"].GetArraySafe().size(), 1);
-        }
-        {
-            // Check that keys from involved index are in read columns
-            TKikimrRunner kikimr;
-            auto db = kikimr.GetTableClient();
-            auto session = db.CreateSession().GetValueSync().GetSession();
-            CreateSampleTablesWithIndex(session);
-
-            auto result = session.ExplainDataQuery(R"(
-                UPDATE `/Root/SecondaryComplexKeys` ON (Key, Fk1, Value) VALUES (1, 1, "New");
-            )").ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            NJson::TJsonValue plan;
-            NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto table = plan["tables"][0];
-            UNIT_ASSERT_VALUES_EQUAL(table["name"], "/Root/SecondaryComplexKeys");
-            auto reads = table["reads"].GetArraySafe();
-            UNIT_ASSERT_VALUES_EQUAL(reads.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["type"], "Lookup");
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["columns"].GetArraySafe().size(), 3);
-        }
-        {
-            // Check that all keys from involved index are in read columns
-            TKikimrRunner kikimr;
-            auto db = kikimr.GetTableClient();
-            auto session = db.CreateSession().GetValueSync().GetSession();
-            CreateSampleTablesWithIndex(session);
-
-            auto result = session.ExplainDataQuery(R"(
-                UPDATE `/Root/SecondaryComplexKeys` ON (Key, Fk1, Value) VALUES (1, 1, "New");
-            )").ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            NJson::TJsonValue plan;
-            NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto table = plan["tables"][0];
-            UNIT_ASSERT_VALUES_EQUAL(table["name"], "/Root/SecondaryComplexKeys");
-            auto reads = table["reads"].GetArraySafe();
-            UNIT_ASSERT_VALUES_EQUAL(reads.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["type"], "Lookup");
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["columns"].GetArraySafe().size(), 3);
-        }
-        {
-            // Check that data colomns from involved index are in read columns
-            TKikimrRunner kikimr;
-            auto db = kikimr.GetTableClient();
-            auto session = db.CreateSession().GetValueSync().GetSession();
-            CreateSampleTablesWithIndex(session);
-
-            auto result = session.ExplainDataQuery(R"(
-                UPDATE `/Root/SecondaryWithDataColumns` ON (Key, Value) VALUES ("1", "New");
-            )").ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            NJson::TJsonValue plan;
-            NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto table = plan["tables"][0];
-            UNIT_ASSERT_VALUES_EQUAL(table["name"], "/Root/SecondaryWithDataColumns");
-            auto reads = table["reads"].GetArraySafe();
-            UNIT_ASSERT_VALUES_EQUAL(reads.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["type"], "Lookup");
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["columns"].GetArraySafe().size(), 2);
-        }
-        {
-            // Check that data colomns not from involved index aren't in read columns
-            TKikimrRunner kikimr;
-            auto db = kikimr.GetTableClient();
-            auto session = db.CreateSession().GetValueSync().GetSession();
-            CreateSampleTablesWithIndex(session);
-
-            auto result = session.ExplainDataQuery(R"(
-                UPDATE `/Root/SecondaryWithDataColumns` ON (Key, ExtPayload) VALUES ("1", "New");
-            )").ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(result.GetStatus(), EStatus::SUCCESS, result.GetIssues().ToString());
-            NJson::TJsonValue plan;
-            NJson::ReadJsonTree(result.GetPlan(), &plan, true);
-            auto table = plan["tables"][0];
-            UNIT_ASSERT_VALUES_EQUAL(table["name"], "/Root/SecondaryWithDataColumns");
-            auto reads = table["reads"].GetArraySafe();
-            UNIT_ASSERT_VALUES_EQUAL(reads.size(), 1);
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["type"], "Lookup");
-            UNIT_ASSERT_VALUES_EQUAL(reads[0]["columns"].GetArraySafe().size(), 1);
-        }
     }
 }
 

@@ -23,15 +23,6 @@ TTableId ParseTableId(const TRuntimeNode& node) {
     return TTableId(ownerId, tableId, sysViewInfo, schemeVersion);
 }
 
-bool StructHoldsPgType(const TStructType& structType, ui32 index) {
-    return (structType.GetMemberType(index)->GetKind() == TType::EKind::Pg);
-}
-
-NScheme::TTypeInfo UnwrapPgTypeFromStruct(const TStructType& structType, ui32 index) {
-    TPgType* type = AS_TYPE(TPgType, structType.GetMemberType(index));
-    return NScheme::TTypeInfo(NScheme::NTypeIds::Pg, NPg::TypeDescFromPgTypeId(type->GetTypeId()));
-}
-
 NUdf::TDataTypeId UnwrapDataTypeFromStruct(const TStructType& structType, ui32 index) {
     if (structType.GetMemberType(index)->GetKind() == TType::EKind::Optional) {
         auto type = AS_TYPE(TDataType, AS_TYPE(TOptionalType, structType.GetMemberType(index))->GetItemType());
@@ -247,7 +238,7 @@ public:
 
 #ifndef MKQL_DISABLE_CODEGEN
     ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
+        auto& context = ctx.Codegen->GetContext();
         const auto size = Representations.size();
 
         Row.resize(size);
@@ -266,7 +257,7 @@ public:
                     {ConstantInt::get(indexType, i)},
                     (TString("loadPtr_") += ToString(i)).c_str(),
                     block);
-                return new LoadInst(valueType, loadPtr, "load", block);
+                return new LoadInst(loadPtr, "load", block);
             };
         }
 
@@ -291,7 +282,7 @@ public:
         const auto self = CastInst::Create(Instruction::IntToPtr, ConstantInt::get(Type::getInt64Ty(context), uintptr_t(this)), ptrType, "self", block);
         const auto funcType = FunctionType::get(Type::getInt32Ty(context), { self->getType(), ctx.Ctx->getType(), fields->getType() }, false);
         const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funcType), "fetch_func", block);
-        const auto result = CallInst::Create(funcType, funcPtr, { self, ctx.Ctx, fields }, "fetch", block);
+        const auto result = CallInst::Create(funcPtr, { self, ctx.Ctx, fields }, "fetch", block);
 
         return {result, std::move(getters)};
     }
@@ -364,165 +355,51 @@ private:
     TParseReadTableRangesResult ParseResult;
 };
 
-class TKqpScanBlockReadTableWrapperBase : public TStatelessWideFlowCodegeneratorNode<TKqpScanBlockReadTableWrapperBase> {
-    using TBase = TStatelessWideFlowCodegeneratorNode<TKqpScanBlockReadTableWrapperBase>;
-public:
-    TKqpScanBlockReadTableWrapperBase(TKqpScanComputeContext& computeCtx, std::vector<EValueRepresentation>&& representations)
-        : TBase(this)
-        , ComputeCtx(computeCtx)
-        , Representations(std::move(representations)) {}
-
-    EFetchResult DoCalculate(TComputationContext& ctx, NUdf::TUnboxedValue* const* output) const {
-        Y_UNUSED(ctx);
-
-        if (!TableReader) {
-            TableReader = ComputeCtx.ReadTable(GetCallableId());
-        }
-
-        return TableReader->Next(output);
-    }
-
-#ifndef MKQL_DISABLE_CODEGEN
-    ICodegeneratorInlineWideNode::TGenerateResult DoGenGetValues(const TCodegenContext& ctx, BasicBlock*& block) const {
-        auto& context = ctx.Codegen.GetContext();
-        const auto size = Representations.size();
-
-        Block.resize(size);
-
-        const auto valueType = Type::getInt128Ty(context);
-        const auto valuePtrType = PointerType::getUnqual(valueType);
-        const auto valuesPtr = CastInst::Create(Instruction::IntToPtr,
-            ConstantInt::get(Type::getInt64Ty(context), uintptr_t(Block.data())),
-            valuePtrType, "values", &ctx.Func->getEntryBlock().back());
-
-        ICodegeneratorInlineWideNode::TGettersList getters(size);
-        const auto indexType = Type::getInt32Ty(context);
-        for (auto i = 0U; i < size; ++i) {
-            getters[i] = [i, valueType, valuesPtr, indexType] (const TCodegenContext&, BasicBlock*& block) {
-                const auto loadPtr = GetElementPtrInst::Create(valueType, valuesPtr,
-                    {ConstantInt::get(indexType, i)},
-                    (TString("loadPtr_") += ToString(i)).c_str(),
-                    block);
-                return new LoadInst(valueType, loadPtr, "load", block);
-            };
-        }
-
-        const auto fieldsType = ArrayType::get(valuePtrType, size);
-        const auto fields = new AllocaInst(fieldsType, 0U, "fields", &ctx.Func->getEntryBlock().back());
-
-        Value* init = UndefValue::get(fieldsType);
-        for (auto i = 0U; i < size; ++i) {
-            const auto pointer = GetElementPtrInst::Create(valueType, valuesPtr,
-                    {ConstantInt::get(indexType, i)},
-                    (TString("ptr_") += ToString(i)).c_str(),
-                    &ctx.Func->getEntryBlock().back());
-
-            init = InsertValueInst::Create(init, pointer, {i}, (TString("insert_") += ToString(i)).c_str(),
-                &ctx.Func->getEntryBlock().back());
-        }
-
-        new StoreInst(init, fields, &ctx.Func->getEntryBlock().back());
-
-        const auto ptrType = PointerType::getUnqual(StructType::get(context));
-        const auto func = ConstantInt::get(Type::getInt64Ty(context), GetMethodPtr(&TKqpScanBlockReadTableWrapperBase::DoCalculate));
-        const auto self = CastInst::Create(Instruction::IntToPtr, ConstantInt::get(Type::getInt64Ty(context), uintptr_t(this)), ptrType, "self", block);
-        const auto funcType = FunctionType::get(Type::getInt32Ty(context), { self->getType(), ctx.Ctx->getType(), fields->getType() }, false);
-        const auto funcPtr = CastInst::Create(Instruction::IntToPtr, func, PointerType::getUnqual(funcType), "fetch_func", block);
-        const auto result = CallInst::Create(funcType, funcPtr, { self, ctx.Ctx, fields }, "fetch", block);
-
-        return {result, std::move(getters)};
-    }
-#endif
-
-    virtual ui32 GetCallableId() const = 0;
-    virtual ui32 GetAllColumnsSize() const = 0;
-
-private:
-    TKqpScanComputeContext& ComputeCtx;
-    // Mutable is bad for computation pattern cache.
-    // Probably this hack is necessary for LLVM. Need to review
-    mutable TIntrusivePtr<IKqpTableReader> TableReader;
-    const std::vector<EValueRepresentation> Representations;
-    mutable std::vector<NUdf::TUnboxedValue> Block;
-};
-
-class TKqpScanBlockReadTableRangesWrapper : public TKqpScanBlockReadTableWrapperBase {
-public:
-    TKqpScanBlockReadTableRangesWrapper(TKqpScanComputeContext& computeCtx, const TParseReadTableRangesResult& parseResult,
-        IComputationNode* rangesNode, std::vector<EValueRepresentation>&& representations)
-        : TKqpScanBlockReadTableWrapperBase(computeCtx, std::move(representations))
-        , RangesNode(rangesNode)
-        , ParseResult(parseResult)
-    {}
-
-private:
-    ui32 GetCallableId() const {
-        return ParseResult.CallableId;
-    }
-
-    ui32 GetAllColumnsSize() const {
-        return ParseResult.Columns.size() + ParseResult.SystemColumns.size();
-    }
-
-    void RegisterDependencies() const {
-        this->FlowDependsOn(RangesNode);
-    }
-
-private:
-    IComputationNode* RangesNode;
-    TParseReadTableRangesResult ParseResult;
-};
-
-std::vector<EValueRepresentation> BuildRepresentations(const TType* type) {
-    std::vector<EValueRepresentation> representations;
-
-    auto wideComponents = type->IsFlow() ?
-        GetWideComponents(AS_TYPE(TFlowType, type)) :
-        AS_TYPE(TTupleType, AS_TYPE(TStreamType, type)->GetItemType())->GetElements();
-
-    representations.reserve(wideComponents.size());
-    for (ui32 i = 0U; i < wideComponents.size(); ++i) {
-        representations.emplace_back(GetValueRepresentation(wideComponents[i]));
-    }
-
-    return representations;
-}
-
 } // namespace
 
 IComputationNode* WrapKqpScanWideReadTableRanges(TCallable& callable, const TComputationNodeFactoryContext& ctx,
     TKqpScanComputeContext& computeCtx)
 {
+    std::vector<EValueRepresentation> representations;
+
     auto parseResult = ParseWideReadTableRanges(callable);
     auto rangesNode = LocateNode(ctx.NodeLocator, *parseResult.Ranges);
 
     const auto type = callable.GetType()->GetReturnType();
-    auto representations = BuildRepresentations(type);
+    const auto returnItemType = type->IsFlow() ?
+        AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType():
+        AS_TYPE(TStreamType, callable.GetType()->GetReturnType())->GetItemType();
+
+    const auto tupleType = AS_TYPE(TTupleType, returnItemType);
+
+    representations.reserve(tupleType->GetElementsCount());
+    for (ui32 i = 0U; i < tupleType->GetElementsCount(); ++i)
+        representations.emplace_back(GetValueRepresentation(tupleType->GetElementType(i)));
+
     return new TKqpScanWideReadTableRangesWrapper(computeCtx, parseResult, rangesNode, std::move(representations));
 }
 
 IComputationNode* WrapKqpScanWideReadTable(TCallable& callable, const TComputationNodeFactoryContext& ctx,
     TKqpScanComputeContext& computeCtx)
 {
+    std::vector<EValueRepresentation> representations;
+
     auto parseResult = ParseWideReadTable(callable);
     auto fromNode = LocateNode(ctx.NodeLocator, *parseResult.FromTuple);
     auto toNode = LocateNode(ctx.NodeLocator, *parseResult.ToTuple);
 
     const auto type = callable.GetType()->GetReturnType();
-    auto representations = BuildRepresentations(type);
+    const auto returnItemType = type->IsFlow() ?
+        AS_TYPE(TFlowType, callable.GetType()->GetReturnType())->GetItemType():
+        AS_TYPE(TStreamType, callable.GetType()->GetReturnType())->GetItemType();
+
+    const auto tupleType = AS_TYPE(TTupleType, returnItemType);
+
+    representations.reserve(tupleType->GetElementsCount());
+    for (ui32 i = 0U; i < tupleType->GetElementsCount(); ++i)
+        representations.emplace_back(GetValueRepresentation(tupleType->GetElementType(i)));
 
     return new TKqpScanWideReadTableWrapper(computeCtx, parseResult, fromNode, toNode, std::move(representations));
-}
-
-IComputationNode* WrapKqpScanBlockReadTableRanges(TCallable& callable, const TComputationNodeFactoryContext& ctx,
-    TKqpScanComputeContext& computeCtx)
-{
-    auto parseResult = ParseWideReadTableRanges(callable);
-    auto rangesNode = LocateNode(ctx.NodeLocator, *parseResult.Ranges);
-
-    const auto type = callable.GetType()->GetReturnType();
-    auto representations = BuildRepresentations(type);
-    return new TKqpScanBlockReadTableRangesWrapper(computeCtx, parseResult, rangesNode, std::move(representations));
 }
 
 } // namespace NMiniKQL

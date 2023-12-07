@@ -43,7 +43,7 @@ private:
     void Handle(NSchemeShard::TEvSchemeShard::TEvProcessingResponse::TPtr& ev);
 protected:
     virtual void OnBootstrap() override {
-        UnsafeBecome(&TSSFetchingActor::StateMain);
+        Become(&TSSFetchingActor::StateMain);
         TBase::OnBootstrap();
     }
     virtual void OnFail(const TString& errorMessage) override {
@@ -59,7 +59,7 @@ public:
         switch (ev->GetTypeRewrite()) {
             hFunc(NSchemeShard::TEvSchemeShard::TEvProcessingResponse, Handle);
             default:
-                TBase::StateMain(ev);
+                TBase::StateMain(ev, ctx);
         }
     }
     TSSFetchingActor(NSchemeShard::ISSDataProcessor::TPtr processor, ISSFetchingController::TPtr controller, const TDuration livetime);

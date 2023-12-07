@@ -3,7 +3,7 @@
 
 #include "rpc_calls.h"
 #include "rpc_scheme_base.h"
-#include "rpc_common/rpc_common.h"
+#include "rpc_common.h"
 
 namespace NKikimr {
 namespace NGRpcService {
@@ -54,8 +54,8 @@ private:
     }
 };
 
-void DoCopyTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider& f) {
-    f.RegisterActor(new TCopyTableRPC(p.release()));
+void DoCopyTableRequest(std::unique_ptr<IRequestOpCtx> p, const IFacilityProvider &) {
+    TActivationContext::AsActorContext().Register(new TCopyTableRPC(p.release()));
 }
 
 } // namespace NKikimr

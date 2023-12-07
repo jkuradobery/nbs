@@ -1,7 +1,6 @@
 #pragma once
 
 #include <ydb/core/persqueue/pq.h>
-#include <ydb/core/persqueue/events/internal.h>
 #include <ydb/core/persqueue/user_info.h>
 #include <ydb/core/testlib/actors/test_runtime.h>
 #include <ydb/core/testlib/basics/runtime.h>
@@ -21,50 +20,19 @@ inline constexpr static T PlainOrSoSlow(T plain, T slow) noexcept {
     );
 }
 
-constexpr ui32 NUM_WRITES = PlainOrSoSlow(50, 1);
+constexpr ui32 NUM_WRITES = PlainOrSoSlow(100, 1);
 
 void FillPQConfig(NKikimrPQ::TPQConfig& pqConfig, const TString& dbRoot, bool isFirstClass);
 
-enum EventKing {
-    TabletPipe,
-    NPDisk,
-    KeyValue,
-    PQ
-};
-
 class TInitialEventsFilter : TNonCopyable {
-    std::unordered_set<TString> Events;
+    bool IsDone;
 public:
-    TInitialEventsFilter() = default;
+    TInitialEventsFilter()
+        : IsDone(false)
+    {}
 
-    TTestActorRuntime::TEventFilter Prepare(const std::unordered_set<EventKing>& eventKings = {TabletPipe, NPDisk, KeyValue, PQ}, 
-                         const std::unordered_set<TString>& eventTypeNames = {}) {
-        Events.clear();
-
-        if (eventKings.contains(TabletPipe)) {
-            Events.insert("NKikimr::TEvTabletPipe::TEvClientConnected");
-            Events.insert("NKikimr::TEvTabletPipe::TEvClientDestroyed");
-            Events.insert("NKikimr::TEvTabletPipe::TEvServerConnected");
-        }
-        if (eventKings.contains(NPDisk)) {
-            Events.insert("NKikimr::NPDisk::TEvLog");
-            Events.insert("NKikimr::NPDisk::TEvLogResult");
-        }
-        if (eventKings.contains(KeyValue)) {
-            Events.insert("NKikimr::TEvKeyValue::TEvCollect");
-            Events.insert("NKikimr::TEvKeyValue::TEvCompleteGC");
-            Events.insert("NKikimr::TEvKeyValue::TEvIntermediate");
-            Events.insert("NKikimr::TEvKeyValue::TEvPartialCompleteGC");
-        }
-        if (eventKings.contains(PQ)) {
-            Events.insert("NKikimr::TEvPQ::TEvPartitionLabeledCounters");
-            Events.insert("NKikimr::TEvPQ::TEvProxyResponse");
-        }
-
-        for(const auto& v : eventTypeNames) {
-            Events.insert(v);
-        }
-
+    TTestActorRuntime::TEventFilter Prepare() {
+        IsDone = false;
         return [&](TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
             return (*this)(runtime, event);
         };
@@ -72,8 +40,8 @@ public:
 
     bool operator()(TTestActorRuntimeBase& runtime, TAutoPtr<IEventHandle>& event) {
         Y_UNUSED(runtime);
-
-        return Events.contains(event->GetTypeName());
+        Y_UNUSED(event);
+        return false;
     }
 };
 
@@ -103,7 +71,6 @@ struct TTestContext {
         NActors::NLog::EPriority otherPriority = NLog::PRI_INFO;
 
         runtime.SetLogPriority(NKikimrServices::PERSQUEUE, pqPriority);
-
         runtime.SetLogPriority(NKikimrServices::SYSTEM_VIEWS, pqPriority);
         runtime.SetLogPriority(NKikimrServices::KEYVALUE, priority);
         runtime.SetLogPriority(NKikimrServices::BOOTSTRAPPER, priority);
@@ -132,10 +99,9 @@ struct TTestContext {
             }
         }
 
-        if (event->GetTypeRewrite() == TEvPQ::EvUpdateAvailableSize) {
-            deadline = runtime.GetTimeProvider()->Now() + duration;
-            runtime.UpdateCurrentTime(deadline);
-        }
+        Y_UNUSED(deadline);
+        Y_UNUSED(duration);
+
         return false;
     }
 
@@ -153,11 +119,10 @@ struct TTestContext {
                  bool enableMonitoring = false, bool enableDbCounters = false) {
         Y_UNUSED(dispatchName);
         outActiveZone = false;
-        TTestBasicRuntime* runtime = new TTestBasicRuntime();
+        TTestBasicRuntime* runtime = new TTestBasicRuntime;
         if (enableMonitoring) {
             runtime->SetupMonitoring();
         }
-
         Runtime.Reset(runtime);
         Runtime->SetScheduledLimit(200);
 
@@ -167,8 +132,6 @@ struct TTestContext {
         SetupLogging(*Runtime);
         SetupTabletServices(*Runtime, &appData);
         setup(*Runtime);
-
-
         CreateTestBootstrapper(*Runtime,
             CreateTestTabletInfo(TabletId, PQTabletType, TErasureType::ErasureNone),
             &CreatePersQueue);
@@ -252,7 +215,6 @@ struct TTabletPreparationParameters {
     ui64 readFromTimestampsMs{0};
     ui64 sidMaxCount{0};
     ui32 specVersion{0};
-    ui32 writeSpeed{0};
     i32 storageLimitBytes{0};
     TString folderId{"somefolder"};
     TString cloudId{"somecloud"};
@@ -275,8 +237,7 @@ void PQBalancerPrepare(
     TTestActorRuntime& runtime,
     ui64 tabletId,
     TActorId edge,
-    const bool requireAuth = false,
-    bool kill = true);
+    const bool requireAuth = false);
 
 void PQTabletRestart(
     TTestActorRuntime& runtime,
@@ -298,8 +259,7 @@ void PQBalancerPrepare(
     const TVector<std::pair<ui32, std::pair<ui64, ui32>>>& map,
     const ui64 ssId,
     TTestContext& context,
-    const bool requireAuth = false,
-    bool kill = true);
+    const bool requireAuth = false);
 
 void PQTabletRestart(TTestContext& context);
 
@@ -459,8 +419,7 @@ void CmdRead(
     TTestContext& tc,
     TVector<i32> offsets = {},
     const ui32 maxTimeLagMs = 0,
-    const ui64 readTimestampMs = 0,
-    const TString user = "user");
+    const ui64 readTimestampMs = 0);
 
 void CmdReserveBytes(
     const ui32 partition,

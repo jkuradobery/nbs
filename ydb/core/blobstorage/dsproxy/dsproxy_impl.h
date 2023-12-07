@@ -46,9 +46,9 @@ class TBlobStorageGroupProxy : public TActorBootstrapped<TBlobStorageGroupProxy>
             : HandleClass(handleClass)
             , Tactic(tactic)
         {
-            Y_ABORT_UNLESS(NKikimrBlobStorage::EPutHandleClass_MIN <= handleClass &&
+            Y_VERIFY(NKikimrBlobStorage::EPutHandleClass_MIN <= handleClass &&
                     NKikimrBlobStorage::EPutHandleClass_MAX >= handleClass, "incorrect PutHandleClass");
-            Y_ABORT_UNLESS(0 <= tactic && tactic < TEvBlobStorage::TEvPut::TacticCount, "incorrect PutTactic");
+            Y_VERIFY(0 <= tactic && tactic < TEvBlobStorage::TEvPut::TacticCount, "incorrect PutTactic");
         }
     };
 
@@ -67,7 +67,6 @@ class TBlobStorageGroupProxy : public TActorBootstrapped<TBlobStorageGroupProxy>
     bool ForceWaitAllDrives;
     bool IsLimitedKeyless = false;
     bool IsFullMonitoring = false; // current state of monitoring
-    ui32 MinREALHugeBlobInBytes = 0;
 
     TActorId MonActor;
     TIntrusivePtr<TBlobStorageGroupProxyMon> Mon;
@@ -374,14 +373,14 @@ public:
         switch (ev->GetTypeRewrite()) {
             HANDLE_EVENTS(HandleEnqueue);
             hFunc(TEvConfigureQueryTimeout, WakeupUnconfigured);
-            default: return StateCommon(ev);
+            default: return StateCommon(ev, ctx);
         }
     }
 
     STFUNC(StateUnconfiguredTimeout) {
         switch (ev->GetTypeRewrite()) {
             HANDLE_EVENTS(HandleError);
-            default: return StateUnconfigured(ev);
+            default: return StateUnconfigured(ev, ctx);
         }
     }
 
@@ -389,28 +388,28 @@ public:
         switch (ev->GetTypeRewrite()) {
             HANDLE_EVENTS(HandleEnqueue);
             hFunc(TEvEstablishingSessionTimeout, WakeupEstablishingSessions);
-            default: return StateCommon(ev);
+            default: return StateCommon(ev, ctx);
         }
     }
 
     STFUNC(StateEstablishingSessionsTimeout) {
         switch (ev->GetTypeRewrite()) {
             HANDLE_EVENTS(HandleError);
-            default: return StateEstablishingSessions(ev);
+            default: return StateEstablishingSessions(ev, ctx);
         }
     }
 
     STFUNC(StateWork) {
         switch (ev->GetTypeRewrite()) {
             HANDLE_EVENTS(HandleNormal);
-            default: return StateCommon(ev);
+            default: return StateCommon(ev, ctx);
         }
     }
 
     STFUNC(StateEjected) {
         switch (ev->GetTypeRewrite()) {
             HANDLE_EVENTS(HandleError);
-            default: return StateCommon(ev);
+            default: return StateCommon(ev, ctx);
         }
     }
 };

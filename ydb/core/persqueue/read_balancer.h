@@ -7,7 +7,7 @@
 #include <ydb/core/tablet_flat/tablet_flat_executed.h>
 #include <ydb/core/base/tablet_pipe.h>
 #include <ydb/core/base/appdata.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/hfunc.h>
 #include <ydb/core/persqueue/events/global.h>
 #include <ydb/core/persqueue/events/internal.h>
 #include <ydb/core/tablet_flat/flat_dbase_scheme.h>
@@ -179,6 +179,11 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
 
     friend struct TTxWrite;
 
+    void Handle(TEvents::TEvPoisonPill::TPtr&, const TActorContext &ctx) {
+        Become(&TThis::StateBroken);
+        ctx.Send(Tablet(), new TEvents::TEvPoisonPill);
+    }
+
     void HandleWakeup(TEvents::TEvWakeup::TPtr&, const TActorContext &ctx) {
         LOG_DEBUG(ctx, NKikimrServices::PERSQUEUE_READ_BALANCER, TStringBuilder() << "TPersQueueReadBalancer::HandleWakeup");
 
@@ -196,7 +201,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         StopWatchingSubDomainPathId();
 
         for (auto& pipe : TabletPipes) {
-            NTabletPipe::CloseClient(ctx, pipe.second.PipeActor);
+            NTabletPipe::CloseClient(ctx, pipe.second);
         }
         TabletPipes.clear();
         TActor<TPersQueueReadBalancer>::Die(ctx);
@@ -206,7 +211,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         ResourceMetrics = Executor()->GetResourceMetrics();
         Become(&TThis::StateWork);
         if (Executor()->GetStats().IsFollower)
-            Y_ABORT("is follower works well with Balancer?");
+            Y_FAIL("is follower works well with Balancer?");
         else
             Execute(new TTxPreInit(this), ctx);
     }
@@ -219,8 +224,8 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         Die(ctx);
     }
 
-    void DefaultSignalTabletActive(const TActorContext &) override {
-        // must be empty
+    void DefaultSignalTabletActive(const TActorContext &ctx) override {
+        Y_UNUSED(ctx); //TODO: this is signal that tablet is ready for work
     }
 
     void InitDone(const TActorContext &ctx) {
@@ -254,7 +259,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         }
         RegisterEvents.clear();
 
-        Y_ABORT_UNLESS(0 < AppData(ctx)->PQConfig.GetBalancerWakeupIntervalSec());
+        Y_VERIFY(0 < AppData(ctx)->PQConfig.GetBalancerWakeupIntervalSec());
         ctx.Schedule(TDuration::Seconds(AppData(ctx)->PQConfig.GetBalancerWakeupIntervalSec()), new TEvents::TEvWakeup()); //TODO: remove it
         ctx.Send(ctx.SelfID, new TEvPersQueue::TEvUpdateACL());
     }
@@ -270,9 +275,6 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
 
     void HandleOnInit(TEvPersQueue::TEvRegisterReadSession::TPtr &ev, const TActorContext& ctx);
     void Handle(TEvPersQueue::TEvRegisterReadSession::TPtr &ev, const TActorContext& ctx);
-
-    void HandleOnInit(TEvPersQueue::TEvGetPartitionsLocation::TPtr& ev, const TActorContext& ctx);
-    void Handle(TEvPersQueue::TEvGetPartitionsLocation::TPtr& ev, const TActorContext& ctx);
 
     void Handle(TEvPersQueue::TEvGetReadSessionsInfo::TPtr &ev, const TActorContext& ctx);
     void Handle(TEvPersQueue::TEvCheckACL::TPtr&, const TActorContext&);
@@ -291,7 +293,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
 
     TActorId GetPipeClient(const ui64 tabletId, const TActorContext&);
     void RequestTabletIfNeeded(const ui64 tabletId, const TActorContext&);
-    void ClosePipe(const ui64 tabletId, const TActorContext&);
+    void RestartPipe(const ui64 tabletId, const TActorContext&);
     void CheckStat(const TActorContext&);
     void UpdateCounters(const TActorContext&);
 
@@ -307,6 +309,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
     void AnswerWaitingRequests(const TActorContext& ctx);
 
     void Handle(TEvPersQueue::TEvPartitionReleased::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvents::TEvPoisonPill &ev, const TActorContext& ctx);
 
     void Handle(TEvPersQueue::TEvStatusResponse::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPQ::TEvStatsWakeup::TPtr& ev, const TActorContext& ctx);
@@ -401,7 +404,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         ui64 TabletId;
         TString Path;
         ui32 Generation = 0;
-        ui64 SessionKeySalt = 0;
+        ui64 RandomNumber = 0;
         ui32* Step = nullptr;
 
         ui32 Group = 0;
@@ -410,14 +413,10 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         std::deque<ui32> FreePartitions;
         THashMap<std::pair<TActorId, ui64>, TSessionInfo> SessionsInfo; //map from ActorID and random value - need for reordering sessions in different topics
 
-        std::pair<TActorId, ui64> SessionKey(const TActorId pipe) const;
-        bool EraseSession(const TActorId pipe);
-        TSessionInfo* FindSession(const TActorId pipe);
-
         void ScheduleBalance(const TActorContext& ctx);
         void Balance(const TActorContext& ctx);
-        void LockPartition(const TActorId pipe, TSessionInfo& sessionInfo, ui32 partition, const TActorContext& ctx);
-        void ReleasePartition(const TActorId pipe, TSessionInfo& sessionInfo, const ui32 group, const ui32 count, const TActorContext& ctx);
+        void LockPartition(const TActorId pipe, ui32 partition, const TActorContext& ctx);
+        void ReleasePartition(const TActorId pipe, const ui32 group, const ui32 count, const TActorContext& ctx);
         TStringBuilder GetPrefix() const;
 
         bool WakeupScheduled = false;
@@ -437,8 +436,6 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
 
 
     struct TClientInfo {
-        constexpr static ui32 MAIN_GROUP = 0;
-
         THashMap<ui32, TClientGroupInfo> ClientGroupsInfo; //map from group to info
         ui32 SessionsWithGroup = 0;
 
@@ -449,7 +446,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
         ui32 Generation = 0;
         ui32 Step = 0;
 
-        void KillSessionsWithoutGroup(const TActorContext& ctx);
+        void KillGroup(const ui32 group, const TActorContext& ctx);
         void MergeGroups(const TActorContext& ctx);
         TClientGroupInfo& AddGroup(const ui32 group);
         void FillEmptyGroup(const ui32 group, const THashMap<ui32, TPartitionInfo>& partitionsInfo);
@@ -464,14 +461,7 @@ class TPersQueueReadBalancer : public TActor<TPersQueueReadBalancer>, public TTa
 
     NMetrics::TResourceMetrics *ResourceMetrics;
 
-    struct TPipeLocation {
-        TActorId PipeActor;
-        TMaybe<ui64> NodeId;
-        TMaybe<ui32> Generation;
-    };
-
-    THashMap<ui64, TPipeLocation> TabletPipes;
-    THashSet<ui64> PipesRequested;
+    THashMap<ui64, TActorId> TabletPipes;
 
     bool WaitingForACL;
 
@@ -563,10 +553,10 @@ public:
     {}
 
     STFUNC(StateInit) {
-        auto ctx(ActorContext());
         TMetricsTimeKeeper keeper(ResourceMetrics, ctx);
 
         switch (ev->GetTypeRewrite()) {
+            HFunc(TEvents::TEvPoisonPill, Handle);
             HFunc(TEvPersQueue::TEvUpdateBalancerConfig, HandleOnInit);
             HFunc(TEvPersQueue::TEvWakeupClient, Handle);
             HFunc(TEvPersQueue::TEvDescribe, Handle);
@@ -578,18 +568,17 @@ public:
             HFunc(TEvPersQueue::TEvGetPartitionIdForWrite, Handle);
             HFunc(NSchemeShard::TEvSchemeShard::TEvSubDomainPathIdFound, Handle);
             HFunc(TEvTxProxySchemeCache::TEvWatchNotifyUpdated, Handle);
-            HFunc(TEvPersQueue::TEvGetPartitionsLocation, HandleOnInit);
             default:
-                StateInitImpl(ev, SelfId());
+                StateInitImpl(ev, ctx);
                 break;
         }
     }
 
     STFUNC(StateWork) {
-        auto ctx(ActorContext());
         TMetricsTimeKeeper keeper(ResourceMetrics, ctx);
 
         switch (ev->GetTypeRewrite()) {
+            HFunc(TEvents::TEvPoisonPill, Handle);
             HFunc(TEvents::TEvWakeup, HandleWakeup);
             HFunc(TEvPersQueue::TEvUpdateACL, HandleUpdateACL);
             HFunc(TEvPersQueue::TEvCheckACL, Handle);
@@ -610,11 +599,18 @@ public:
             HFunc(NSchemeShard::TEvSchemeShard::TEvSubDomainPathIdFound, Handle);
             HFunc(TEvTxProxySchemeCache::TEvWatchNotifyUpdated, Handle);
             HFunc(TEvPersQueue::TEvStatus, Handle);
-            HFunc(TEvPersQueue::TEvGetPartitionsLocation, Handle);
 
             default:
-                HandleDefaultEvents(ev, SelfId());
+                HandleDefaultEvents(ev, ctx);
                 break;
+        }
+    }
+
+    STFUNC(StateBroken) {
+        TMetricsTimeKeeper keeper(ResourceMetrics, ctx);
+
+        switch (ev->GetTypeRewrite()) {
+            HFunc(TEvTablet::TEvTabletDead, HandleTabletDead)
         }
     }
 

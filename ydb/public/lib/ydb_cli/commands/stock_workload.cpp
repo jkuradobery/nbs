@@ -26,7 +26,6 @@ TCommandStockInit::TCommandStockInit()
     , Quantity(0)
     , MinPartitions(0)
     , PartitionsByLoad(true)
-    , EnableCdc(false)
 {}
 
 void TCommandStockInit::Config(TConfig& config) {
@@ -44,8 +43,6 @@ void TCommandStockInit::Config(TConfig& config) {
         .DefaultValue(40).StoreResult(&MinPartitions);
     config.Opts->AddLongOption("auto-partition", "Enable auto partitioning by load.")
         .DefaultValue(true).StoreResult(&PartitionsByLoad);
-    config.Opts->AddLongOption("enable-cdc", "Create changefeeds on tables.")
-        .DefaultValue(false).StoreTrue(&EnableCdc).Hidden();
 }
 
 void TCommandStockInit::Parse(TConfig& config) {
@@ -66,7 +63,6 @@ int TCommandStockInit::Run(TConfig& config) {
     params.OrderCount = OrderCount;
     params.MinPartitions = MinPartitions;
     params.PartitionsByLoad = PartitionsByLoad;
-    params.EnableCdc = EnableCdc;
 
     NYdbWorkload::TWorkloadFactory factory;
     auto workloadGen = factory.GetWorkloadQueryGenerator(NYdbWorkload::EWorkload::STOCK, &params);

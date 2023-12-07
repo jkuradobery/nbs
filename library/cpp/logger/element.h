@@ -1,20 +1,18 @@
 #pragma once
 
 #include "priority.h"
-#include "record.h"
 
-
-#include <util/string/cast.h>
 #include <util/stream/tempbuf.h>
-
 
 class TLog;
 
-/// @warning Better don't use directly.
+/*
+ * better do not use directly
+ */
 class TLogElement: public TTempBufOutput {
 public:
-    explicit TLogElement(const TLog* parent);
-    explicit TLogElement(const TLog* parent, ELogPriority priority);
+    TLogElement(const TLog* parent);
+    TLogElement(const TLog* parent, ELogPriority priority);
 
     TLogElement(TLogElement&&) noexcept = default;
     TLogElement& operator=(TLogElement&&) noexcept = default;
@@ -28,17 +26,12 @@ public:
         return *this;
     }
 
-    /// @note For pretty usage: logger << TLOG_ERROR << "Error description";
+    /*
+         * for pretty usage: logger << TLOG_ERROR << "Error description";
+         */
     inline TLogElement& operator<<(ELogPriority priority) {
         Flush();
         Priority_ = priority;
-        return *this;
-    }
-
-    template<typename T>
-    TLogElement& With(const TStringBuf key, const T value) {
-        Context_.emplace_back(key, ToString(value));
-
         return *this;
     }
 
@@ -50,7 +43,6 @@ protected:
     void DoFlush() override;
 
 protected:
-    const TLog* Parent_ = nullptr;
+    const TLog* Parent_;
     ELogPriority Priority_;
-    TLogRecord::TMetaFlags Context_;
 };

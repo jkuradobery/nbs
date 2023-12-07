@@ -176,11 +176,6 @@ void TThrowingNodeVisitor::Visit(TBlockType& node) {
     ThrowUnexpectedNodeType();
 }
 
-void TThrowingNodeVisitor::Visit(TMultiType& node) {
-    Y_UNUSED(node);
-    ThrowUnexpectedNodeType();
-}
-
 void TThrowingNodeVisitor::ThrowUnexpectedNodeType() {
     THROW yexception() << "Unexpected node type";
 }
@@ -317,12 +312,8 @@ void TEmptyNodeVisitor::Visit(TBlockType& node) {
     Y_UNUSED(node);
 }
 
-void TEmptyNodeVisitor::Visit(TMultiType& node) {
-    Y_UNUSED(node);
-}
-
 void TExploringNodeVisitor::Visit(TTypeType& node) {
-    Y_DEBUG_ABORT_UNLESS(node.GetType() == &node);
+    Y_VERIFY_DEBUG(node.GetType() == &node);
 }
 
 void TExploringNodeVisitor::Visit(TVoidType& node) {
@@ -503,13 +494,6 @@ void TExploringNodeVisitor::Visit(TBlockType& node) {
     AddChildNode(&node, *node.GetItemType());
 }
 
-void TExploringNodeVisitor::Visit(TMultiType& node) {
-    AddChildNode(&node, *node.GetType());
-    for (ui32 i = 0, e = node.GetElementsCount(); i < e; ++i) {
-        AddChildNode(&node, *node.GetElementType(i));
-    }
-}
-
 void TExploringNodeVisitor::AddChildNode(TNode* parent, TNode& child) {
     Stack->push_back(&child);
 
@@ -556,7 +540,7 @@ void TExploringNodeVisitor::Walk(TNode* root, const TTypeEnvironment& env, const
                 NodeList.push_back(node);
                 node->SetCookie(IS_NODE_EXITED);
             } else {
-                Y_ABORT_UNLESS(node->GetCookie() <= IS_NODE_EXITED, "TNode graph should not be reused");
+                Y_VERIFY(node->GetCookie() <= IS_NODE_EXITED, "TNode graph should not be reused");
             }
 
             Stack->pop_back();
@@ -576,9 +560,9 @@ const std::vector<TNode*>& TExploringNodeVisitor::GetNodes() {
 }
 
 const TExploringNodeVisitor::TNodesVec& TExploringNodeVisitor::GetConsumerNodes(TNode& node) {
-    Y_ABORT_UNLESS(BuildConsumersMap);
+    Y_VERIFY(BuildConsumersMap);
     const auto consumers = ConsumersMap.find(&node);
-    Y_ABORT_UNLESS(consumers != ConsumersMap.cend());
+    Y_VERIFY(consumers != ConsumersMap.cend());
     return consumers->second;
 }
 

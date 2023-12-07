@@ -1,6 +1,5 @@
 #include "localrecovery_public.h"
 #include "localrecovery_logreplay.h"
-#include <ydb/core/base/feature_flags.h>
 #include <ydb/core/blobstorage/vdisk/common/vdisk_lsnmngr.h>
 #include <ydb/core/blobstorage/vdisk/hulldb/recovery/hulldb_recovery.h>
 #include <ydb/core/blobstorage/vdisk/hulldb/generic/hulldb_bulksstloaded.h>
@@ -126,7 +125,7 @@ namespace NKikimr {
         void SignalSuccessAndDie(const TActorContext &ctx) {
             // recover Lsn and ConfirmedLsn:
             // Db->Lsn now contains last seen lsn
-            Y_DEBUG_ABORT_UNLESS(LocRecCtx->HullDbRecovery->GetHullDs());
+            Y_VERIFY_DEBUG(LocRecCtx->HullDbRecovery->GetHullDs());
 
             LocRecCtx->RecovInfo->SuccessfulRecovery = true;
             LocRecCtx->RecovInfo->CheckConsistency();
@@ -164,7 +163,7 @@ namespace NKikimr {
             for (iter.SeekToFirst(); iter.Valid(); iter.Next()) {
                 TLogoBlobsSstPtr segment = iter.Get().SstPtr;
                 if (segment->Info.IsCreatedByRepl()) {
-                    Y_ABORT_UNLESS(segment->Info.FirstLsn == 0 && segment->Info.LastLsn == 0);
+                    Y_VERIFY(segment->Info.FirstLsn == 0 && segment->Info.LastLsn == 0);
                     const auto& item = logoBlobs->CurSlice->BulkFormedSegments.FindIntactBulkFormedSst(segment->GetEntryPoint());
                     segment->Info.FirstLsn = item.FirstBlobLsn;
                     segment->Info.LastLsn = item.LastBlobLsn;
@@ -195,7 +194,7 @@ namespace NKikimr {
             // start loading bulk-formed segments that are already not in index, but still required to recover SyncLog
             auto aid = ctx.Register(LocRecCtx->HullDbRecovery->GetHullDs()->LogoBlobs->CurSlice->BulkFormedSegments.CreateLoaderActor(
                     LocRecCtx->VCtx, LocRecCtx->PDiskCtx, SyncLogMaxLsnStored, ctx.SelfID));
-            ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(aid);
         }
 
         void Handle(TEvBulkSstsLoaded::TPtr& ev, const TActorContext& ctx) {
@@ -206,7 +205,7 @@ namespace NKikimr {
 
         void BeginApplyingLog(const TActorContext& ctx) {
             auto replayerId = ctx.RegisterWithSameMailbox(CreateRecoveryLogReplayer(ctx.SelfID, LocRecCtx));
-            ActiveActors.Insert(replayerId, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+            ActiveActors.Insert(replayerId);
             Become(&TThis::StateApplyRecoveryLog);
             VDiskMonGroup.VDiskLocalRecoveryState() = TDbMon::TDbLocalRecovery::ApplyLog;
         }
@@ -268,7 +267,7 @@ namespace NKikimr {
                 initFlag = false;
                 // run reader actor
                 auto aid = ctx.Register(new TLoader(LocRecCtx->VCtx, LocRecCtx->PDiskCtx, metabase.Get(), ctx.SelfID));
-                ActiveActors.Insert(aid, __FILE__, __LINE__, ctx, NKikimrServices::BLOBSTORAGE);
+                ActiveActors.Insert(aid);
             }
             return true;
         }
@@ -374,13 +373,9 @@ namespace NKikimr {
                 // read existing one
                 LocRecCtx->RecovInfo->EmptySyncer = false;
                 const TRcBuf &entryPoint = it->second.Data;
-                TString errorReason;
                 if (!TSyncerData::CheckEntryPoint(LocRecCtx->VCtx->VDiskLogPrefix, SkeletonId,
-                                                  LocRecCtx->VCtx->ShortSelfVDisk, LocRecCtx->VCtx->Top, entryPoint, errorReason,
-                                                  AppData()->FeatureFlags.GetSuppressCompatibilityCheck())) {
-                    errorReason = "Entry point for Syncer check failed, ErrorReason# " + errorReason;
-                    LocRecCtx->VCtx->LocalRecoveryErrorStr = errorReason;
-                    SignalErrorAndDie(ctx, NKikimrProto::ERROR, errorReason);
+                                                  LocRecCtx->VCtx->ShortSelfVDisk, LocRecCtx->VCtx->Top, entryPoint)) {
+                    SignalErrorAndDie(ctx, NKikimrProto::ERROR, "Entry point for Syncer check failed");
                     return false;
                 }
                 LocRecCtx->SyncerData = MakeIntrusive<TSyncerData>(
@@ -397,13 +392,13 @@ namespace NKikimr {
         bool InitHugeBlobKeeper(const TStartingPoints &startingPoints, const TActorContext &ctx) {
             Y_UNUSED(ctx);
             const ui32 blocksInChunk = LocRecCtx->PDiskCtx->Dsk->ChunkSize / LocRecCtx->PDiskCtx->Dsk->AppendBlockSize;
-            Y_ABORT_UNLESS(LocRecCtx->PDiskCtx->Dsk->AppendBlockSize * blocksInChunk == LocRecCtx->PDiskCtx->Dsk->ChunkSize);
+            Y_VERIFY(LocRecCtx->PDiskCtx->Dsk->AppendBlockSize * blocksInChunk == LocRecCtx->PDiskCtx->Dsk->ChunkSize);
 
             ui32 MaxLogoBlobDataSizeInBlocks = Config->MaxLogoBlobDataSize / LocRecCtx->PDiskCtx->Dsk->AppendBlockSize;
             MaxLogoBlobDataSizeInBlocks += !!(Config->MaxLogoBlobDataSize -
                     MaxLogoBlobDataSizeInBlocks * LocRecCtx->PDiskCtx->Dsk->AppendBlockSize);
             const ui32 slotsInChunk = blocksInChunk / MaxLogoBlobDataSizeInBlocks;
-            Y_ABORT_UNLESS(slotsInChunk > 1);
+            Y_VERIFY(slotsInChunk > 1);
 
             auto logFunc = [&] (const TString &msg) {
                 LOG_DEBUG(ctx, BS_HULLHUGE, msg);
@@ -477,17 +472,13 @@ namespace NKikimr {
                 VDiskMonGroup.VDiskLocalRecoveryState() = TDbMon::TDbLocalRecovery::LoadDb;
                 const auto &m = ev->Get();
                 LocRecCtx->PDiskCtx = TPDiskCtx::Create(m->PDiskParams, Config);
-
-                LOG_DEBUG(ctx, NKikimrServices::BS_VDISK_CHUNKS, VDISKP(LocRecCtx->VCtx->VDiskLogPrefix,
-                    "INIT: TEvYardInit OK PDiskId# %s", LocRecCtx->PDiskCtx->PDiskIdString.data()));
-
                 // create context for HullDs
-                Y_ABORT_UNLESS(LocRecCtx->VCtx && LocRecCtx->VCtx->Top);
+                Y_VERIFY(LocRecCtx->VCtx && LocRecCtx->VCtx->Top);
                 auto hullCtx = MakeIntrusive<THullCtx>(
                         LocRecCtx->VCtx,
                         ui32(LocRecCtx->PDiskCtx->Dsk->ChunkSize),
                         ui32(LocRecCtx->PDiskCtx->Dsk->PrefetchSizeBytes),
-                        Config->FreshCompaction && !Config->BaseInfo.ReadOnly,
+                        Config->FreshCompaction,
                         Config->GCOnlySynced,
                         Config->AllowKeepFlags,
                         Config->BarrierValidation,
@@ -500,7 +491,6 @@ namespace NKikimr {
                         Config->HullCompReadBatchEfficiencyThreshold,
                         Config->HullCompStorageRatioCalcPeriod,
                         Config->HullCompStorageRatioMaxCalcDuration);
-
                 // create THullDbRecovery, which creates THullDs
                 LocRecCtx->HullDbRecovery = std::make_shared<THullDbRecovery>(hullCtx);
                 LocRecCtx->HullCtx = hullCtx;
@@ -613,7 +603,7 @@ namespace NKikimr {
                     HullBarriersDBInitialized = true;
                     break;
                 default:
-                    Y_ABORT("Unexpected case");
+                    Y_FAIL("Unexpected case");
             }
 
             if (DatabaseStateLoaded())
@@ -636,7 +626,7 @@ namespace NKikimr {
         }
 
         void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
-            Y_DEBUG_ABORT_UNLESS(ev->Get()->SubRequestId == TDbMon::LocalRecovInfoId);
+            Y_VERIFY_DEBUG(ev->Get()->SubRequestId == TDbMon::LocalRecovInfoId);
             TStringStream str;
             LocRecCtx->RecovInfo->OutputHtml(str);
             ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes(str.Str(), TDbMon::LocalRecovInfoId));

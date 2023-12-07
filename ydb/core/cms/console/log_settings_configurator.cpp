@@ -2,7 +2,7 @@
 #include "console.h"
 #include "log_settings_configurator.h"
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
 #include <util/system/file.h>
 #include <util/system/fs.h>
 #include <util/stream/file.h>
@@ -43,8 +43,8 @@ public:
             IgnoreFunc(TEvConfigsDispatcher::TEvSetConfigSubscriptionResponse);
 
         default:
-            Y_ABORT("unexpected event type: %" PRIx32 " event: %s",
-                   ev->GetTypeRewrite(), ev->ToString().data());
+            Y_FAIL("unexpected event type: %" PRIx32 " event: %s",
+                   ev->GetTypeRewrite(), ev->HasEvent() ? ev->GetBase()->ToString().data() : "serialized?");
             break;
         }
     }
@@ -56,7 +56,7 @@ TLogSettingsConfigurator::TLogSettingsConfigurator()
 {
 }
 
-TLogSettingsConfigurator::TLogSettingsConfigurator(const TString &pathToConfigCacheFile)
+TLogSettingsConfigurator::TLogSettingsConfigurator(const TString &pathToConfigCacheFile) 
 {
     PathToConfigCacheFile = pathToConfigCacheFile;
 }
@@ -110,7 +110,7 @@ void TLogSettingsConfigurator::SaveLogSettingsConfigToCache(const NKikimrConfig:
 
         if (!google::protobuf::TextFormat::ParseFromString(cacheFile.ReadAll(), &appConfig))
             ythrow yexception() << "Failed to parse config from cache file " << LastSystemError() << " " << LastSystemErrorText();
-
+        
         appConfig.MutableLogConfig()->CopyFrom(logConfig);
 
         TString proto;

@@ -1,12 +1,9 @@
 #include <ydb/core/base/events.h>
 
-#include <ydb/core/protos/kqp.pb.h>
 #include <ydb/core/protos/load_test.pb.h>
 
 #include <library/cpp/monlib/dynamic_counters/percentile/percentile_lg.h>
 #include <library/cpp/json/writer/json_value.h>
-
-#include <google/protobuf/text_format.h>
 
 namespace NKikimr {
 struct TEvLoad {
@@ -14,8 +11,6 @@ struct TEvLoad {
         EvLoadTestRequest = EventSpaceBegin(TKikimrEvents::ES_TEST_LOAD),
         EvLoadTestFinished,
         EvLoadTestResponse,
-        EvNodeFinishResponse,
-        EvYqlSingleQueryResponse,
     };
 
     struct TEvLoadTestRequest : public TEventPB<TEvLoadTestRequest,
@@ -79,8 +74,8 @@ struct TEvLoad {
 
     struct TEvLoadTestFinished : public TEventLocal<TEvLoadTestFinished, TEvLoad::EvLoadTestFinished> {
         ui64 Tag;
-        TIntrusivePtr<TLoadReport> Report; // nullptr indicates an error or an early stop
-        TString ErrorReason; // human readable status, might be nonempty even in the case of success
+        TIntrusivePtr<TLoadReport> Report; // nullptr indicates error
+        TString ErrorReason;
         TString LastHtmlPage;
         NJson::TJsonValue JsonResult;
 
@@ -90,29 +85,6 @@ struct TEvLoad {
             , ErrorReason(errorReason)
         {}
     };
-
-    struct TEvNodeFinishResponse : public TEventPB<TEvNodeFinishResponse,
-        NKikimr::TEvNodeFinishResponse, EvNodeFinishResponse>
-    {
-        TString ToString() const {
-            TString str;
-            google::protobuf::TextFormat::PrintToString(Record, &str);
-            return str;
-        }
-    };
-
-    struct TEvYqlSingleQueryResponse : public TEventLocal<TEvYqlSingleQueryResponse, TEvLoad::EvYqlSingleQueryResponse> {
-        TString Result;  // empty in case if there is an error
-        TMaybe<TString> ErrorMessage;
-        TMaybe<NKikimrKqp::TQueryResponse> Response;
-
-        TEvYqlSingleQueryResponse(TString result, TMaybe<TString> errorMessage, TMaybe<NKikimrKqp::TQueryResponse> response)
-            : Result(std::move(result))
-            , ErrorMessage(std::move(errorMessage))
-            , Response(std::move(response))
-        {}
-    };
-
 };
 
 }

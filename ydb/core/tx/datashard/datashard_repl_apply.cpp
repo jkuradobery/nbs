@@ -67,7 +67,7 @@ public:
 
         for (const auto& change : msg.GetChanges()) {
             if (!ApplyChange(txc, fullTableId, userTable, source, change)) {
-                Y_ABORT_UNLESS(Result);
+                Y_VERIFY(Result);
                 break;
             }
         }
@@ -87,7 +87,7 @@ public:
     TReplicationSourceState& EnsureSource(TTransactionContext& txc, const TPathId& pathId, const TString& sourceName) {
         TReplicationSourceOffsetsDb rdb(txc);
         auto* table = Self->EnsureReplicatedTable(pathId);
-        Y_ABORT_UNLESS(table);
+        Y_VERIFY(table);
         return table->EnsureSource(rdb, sourceName);
     }
 
@@ -95,7 +95,7 @@ public:
             TTransactionContext& txc, const TTableId& tableId, const TUserTable& userTable,
             TReplicationSourceState& source, const NKikimrTxDataShard::TEvApplyReplicationChanges::TChange& change)
     {
-        Y_ABORT_UNLESS(userTable.IsReplicated());
+        Y_VERIFY(userTable.IsReplicated());
 
         // TODO: check source and offset, persist new values
         i64 sourceOffset = change.GetSourceOffset();
@@ -175,17 +175,15 @@ public:
 
         if (writeTxId) {
             txc.DB.UpdateTx(userTable.LocalTid, rop, key, update, writeTxId);
-            Self->GetConflictsCache().GetTableCache(userTable.LocalTid).AddUncommittedWrite(keyCellVec.GetCells(), writeTxId, txc.DB);
         } else {
             if (!MvccReadWriteVersion) {
                 auto [readVersion, writeVersion] = Self->GetReadWriteVersions();
-                Y_DEBUG_ABORT_UNLESS(readVersion == writeVersion);
+                Y_VERIFY_DEBUG(readVersion == writeVersion);
                 MvccReadWriteVersion = writeVersion;
             }
 
             Self->SysLocksTable().BreakLocks(tableId, keyCellVec.GetCells());
             txc.DB.Update(userTable.LocalTid, rop, key, update, *MvccReadWriteVersion);
-            Self->GetConflictsCache().GetTableCache(userTable.LocalTid).RemoveUncommittedWrites(keyCellVec.GetCells(), txc.DB);
         }
 
         return true;
@@ -233,8 +231,8 @@ public:
     }
 
     void Complete(const TActorContext& ctx) override {
-        Y_ABORT_UNLESS(Ev);
-        Y_ABORT_UNLESS(Result);
+        Y_VERIFY(Ev);
+        Y_VERIFY(Result);
 
         if (MvccReadWriteVersion) {
             Pipeline.RemoveCommittingOp(*MvccReadWriteVersion);

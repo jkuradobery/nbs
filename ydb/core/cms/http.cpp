@@ -1,23 +1,23 @@
-#include "base_handler.h"
 #include "http.h"
 #include "json_proxy.h"
 #include "json_proxy_config_items.h"
 #include "json_proxy_config_updates.h"
 #include "json_proxy_config_validators.h"
-#include "json_proxy_console_log.h"
 #include "json_proxy_log.h"
+#include "json_proxy_console_log.h"
 #include "json_proxy_operations.h"
 #include "json_proxy_proto.h"
-#include "json_proxy_sentinel.h"
 #include "json_proxy_toggle_config_validator.h"
+#include "json_proxy_sentinel.h"
+#include "base_handler.h"
 #include "walle.h"
 
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/mon/mon.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/core/mon.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/core/mon.h>
 #include <library/cpp/mime/types/mime.h>
 #include <library/cpp/resource/resource.h>
 
@@ -26,18 +26,21 @@ namespace NKikimr::NCms {
 template <typename HandlerActorType>
 class TApiMethodHandler : public TApiMethodHandlerBase {
 public:
-    IActor *CreateHandlerActor(NMon::TEvHttpInfo::TPtr &event) override {
+    IActor *CreateHandlerActor(NMon::TEvHttpInfo::TPtr &event) override
+    {
         return new HandlerActorType(event);
     }
 };
 
 class TCmsHttp : public TActorBootstrapped<TCmsHttp> {
 public:
-    static constexpr NKikimrServices::TActivity::EType ActorActivityType() {
+    static constexpr NKikimrServices::TActivity::EType ActorActivityType()
+    {
         return NKikimrServices::TActivity::CMS_SERVICE_PROXY;
     }
 
-    void Bootstrap(const TActorContext &ctx) {
+    void Bootstrap(const TActorContext &ctx)
+    {
         Become(&TThis::StateWork);
         NActors::TMon *mon = AppData(ctx)->Mon;
         if (mon) {
@@ -63,16 +66,10 @@ public:
                                                                                                 TEvCms::TEvManageNotificationResponse>>;
 
             ApiHandlers["/api/console/yamlconfig"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvGetAllConfigsRequest,
-                                                                                             NConsole::TEvConsole::TEvGetAllConfigsResponse, true, true>>;
-
-            ApiHandlers["/api/console/readonly"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvIsYamlReadOnlyRequest,
-                                                                                             NConsole::TEvConsole::TEvIsYamlReadOnlyResponse, true, true>>;
+                                                                                            NConsole::TEvConsole::TEvGetAllConfigsResponse, true, true>>;
 
             ApiHandlers["/api/console/removevolatileyamlconfig"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvRemoveVolatileConfigRequest,
-                                                                                         NConsole::TEvConsole::TEvRemoveVolatileConfigResponse, true, true>>;
-
-            ApiHandlers["/api/console/configureyamlconfig"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvReplaceYamlConfigRequest,
-                                                                                            NConsole::TEvConsole::TEvReplaceYamlConfigResponse, true, true>>;
+                                                                                            NConsole::TEvConsole::TEvRemoveVolatileConfigResponse, true, true>>;
 
             ApiHandlers["/api/console/configurevolatileyamlconfig"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvAddVolatileConfigRequest,
                                                                                             NConsole::TEvConsole::TEvAddVolatileConfigResponse, true, true>>;
@@ -81,10 +78,11 @@ public:
                                                                                             NConsole::TEvConsole::TEvResolveConfigResponse, true, true>>;
 
             ApiHandlers["/api/console/resolveallyamlconfig"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvResolveAllConfigRequest,
-                                                                                     NConsole::TEvConsole::TEvResolveAllConfigResponse, true, true>>;
+                                                                                            NConsole::TEvConsole::TEvResolveAllConfigResponse, true, true>>;
 
             ApiHandlers["/api/console/configure"] = new TApiMethodHandler<TJsonProxyConsole<NConsole::TEvConsole::TEvConfigureRequest,
-                                                                                            NConsole::TEvConsole::TEvConfigureResponse, true>>;
+                                                                                            NConsole::TEvConsole::TEvConfigureResponse,
+                                                                                            true>>;
             ApiHandlers["/api/json/log"] = new TApiMethodHandler<TJsonProxyLog>;
             ApiHandlers["/api/json/console/log"] = new TApiMethodHandler<TJsonProxyConsoleLog>;
             ApiHandlers["/api/json/configitems"] = new TApiMethodHandler<TJsonProxyConfigItems>;
@@ -100,25 +98,37 @@ public:
             ApiHandlers["/api/datashard/json/listoperations"]
                 = new TApiMethodHandler<TJsonProxyDataShard<TEvDataShard::TEvListOperationsRequest,
                                                             TEvDataShard::TEvListOperationsResponse>>;
-            ApiHandlers["/api/datashard/json/getoperation"] = new TApiMethodHandler<TJsonProxyDataShardGetOperation>;
-            ApiHandlers["/api/datashard/json/getreadtablesinkstate"] = new TApiMethodHandler<TJsonProxyDataShardGetReadTableSinkState>;
-            ApiHandlers["/api/datashard/json/getreadtablescanstate"] = new TApiMethodHandler<TJsonProxyDataShardGetReadTableScanState>;
-            ApiHandlers["/api/datashard/json/getreadtablestreamstate"] = new TApiMethodHandler<TJsonProxyDataShardGetReadTableStreamState>;
-            ApiHandlers["/api/datashard/json/getslowopprofiles"] = new TApiMethodHandler<TJsonProxyDataShardGetSlowOpProfiles>;
-            ApiHandlers["/api/datashard/json/getrsinfo"] = new TApiMethodHandler<TJsonProxyDataShardGetRSInfo>;
-            ApiHandlers["/api/datashard/json/getdatahist"] = new TApiMethodHandler<TJsonProxyDataShardGetDataHistogram>;
+            ApiHandlers["/api/datashard/json/getoperation"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetOperation>;
+            ApiHandlers["/api/datashard/json/getreadtablesinkstate"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetReadTableSinkState>;
+            ApiHandlers["/api/datashard/json/getreadtablescanstate"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetReadTableScanState>;
+            ApiHandlers["/api/datashard/json/getreadtablestreamstate"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetReadTableStreamState>;
+            ApiHandlers["/api/datashard/json/getslowopprofiles"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetSlowOpProfiles>;
+            ApiHandlers["/api/datashard/json/getrsinfo"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetRSInfo>;
+            ApiHandlers["/api/datashard/json/getdatahist"]
+                = new TApiMethodHandler<TJsonProxyDataShardGetDataHistogram>;
+
             ApiHandlers[WALLE_API_URL_PREFIX] = new TWalleApiHandler;
         }
     }
 
 private:
-    STFUNC(StateWork) {
+    STFUNC(StateWork)
+    {
         switch (ev->GetTypeRewrite()) {
             HFunc(NMon::TEvHttpInfo, Handle);
         }
     }
 
-    void ReplyWithFile(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx, const TString& name) {
+    void ReplyWithFile(NMon::TEvHttpInfo::TPtr &ev,
+                       const TActorContext &ctx,
+                       const TString& name)
+    {
         TString filename = TString("cms/ui") + name;
         if (filename.EndsWith('/'))
             filename += "index.html";
@@ -140,31 +150,13 @@ private:
             type = "text/html";
         }
 
-        bool cached = false;
-        if (filename.StartsWith("cms/ui/ext/monaco-editor/")) {
-            cached = true;
-            if (filename.EndsWith(".css")) {
-                type = "text/css; charset=utf-8";
-            } else if (filename.EndsWith(".js")) {
-                type = "application/javascript; charset=utf-8";
-            }
-        }
-
         TStringStream response;
         response << "HTTP/1.1 200 Ok\r\n";
         response << "Content-Type: " << type << "\r\n";
         response << "Content-Length: " << blob.size() << "\r\n";
-        if (cached) {
-            response << "Cache-Control: public, max-age=31536000, immutable\r\n";
-        }
         response << "\r\n";
         response.Write(blob.data(), blob.size());
         ctx.Send(ev->Sender, new NMon::TEvHttpInfoRes(response.Str(), 0, NMon::IEvHttpInfoRes::EContentType::Custom));
-    }
-
-    static bool IsHiddenHeader(const TString& headerName) {
-        return stricmp(headerName.data(), "Authorization") == 0
-            || stricmp(headerName.data(), "X-Ya-Service-Ticket") == 0;
     }
 
     static TString DumpRequest(const NMonitoring::IMonHttpRequest& request) {
@@ -176,7 +168,7 @@ private:
 
         result << " Headers {";
         for (const auto& header : request.GetHeaders()) {
-            if (IsHiddenHeader(header.Name())) {
+            if (stricmp(header.Name().data(), "Authorization") == 0) {
                 continue;
             }
 
@@ -190,7 +182,8 @@ private:
         return result;
     }
 
-    void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx) {
+    void Handle(NMon::TEvHttpInfo::TPtr &ev, const TActorContext &ctx)
+    {
         Y_UNUSED(ctx);
 
         NMon::TEvHttpInfo *msg = ev->Get();
@@ -226,6 +219,7 @@ private:
                                                           NMon::IEvHttpInfoRes::EContentType::Custom));
             return;
         }
+
         ReplyWithFile(ev, ctx, TString{msg->Request.GetPathInfo()});
     }
 

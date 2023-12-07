@@ -10,7 +10,6 @@ struct TMood {
         Wipe = 1,
         Delete = 2,
         Donor = 3,
-        ReadOnly = 4,
     };
 
     static TString Name(const EValue value) {
@@ -23,8 +22,6 @@ struct TMood {
                 return "Delete";
             case Donor:
                 return "Donor";
-            case ReadOnly:
-                return "ReadOnly";
         }
         return Sprintf("Unknown%" PRIu64, (ui64)value);
     }

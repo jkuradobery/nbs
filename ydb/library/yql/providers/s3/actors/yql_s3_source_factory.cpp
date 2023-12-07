@@ -14,7 +14,7 @@ void RegisterS3ReadActorFactory(
         TDqAsyncIoFactory& factory,
         ISecuredServiceAccountCredentialsFactory::TPtr credentialsFactory,
         IHTTPGateway::TPtr gateway,
-        const IHTTPGateway::TRetryPolicy::TPtr& retryPolicy,
+        const IRetryPolicy<long>::TPtr& retryPolicy,
         const TS3ReadActorFactoryConfig& cfg,
         ::NMonitoring::TDynamicCounterPtr counters) {
 #if defined(_linux_) || defined(_darwin_)
@@ -22,9 +22,9 @@ void RegisterS3ReadActorFactory(
     factory.RegisterSource<NS3::TSource>("S3Source",
         [credentialsFactory, gateway, retryPolicy, cfg, counters](NS3::TSource&& settings, IDqAsyncIoFactory::TSourceArguments&& args) {
             return CreateS3ReadActor(args.TypeEnv, args.HolderFactory, gateway,
-                std::move(settings), args.InputIndex, args.StatsLevel, args.TxId, args.SecureParams,
-                args.TaskParams, args.ReadRanges, args.ComputeActorId, credentialsFactory, retryPolicy, cfg,
-                counters, args.TaskCounters, args.MemoryQuotaManager);
+                std::move(settings), args.InputIndex, args.TxId, args.SecureParams,
+                args.TaskParams, args.ComputeActorId, credentialsFactory, retryPolicy, cfg,
+                counters, args.TaskCounters);
         });
 #else
     Y_UNUSED(factory);

@@ -6,12 +6,12 @@ namespace NYdb::NPersQueue {
 
 ERetryErrorClass GetRetryErrorClass(EStatus status) {
     switch (status) {
-    case EStatus::SUCCESS:          // NoRetry?
-    case EStatus::INTERNAL_ERROR:   // NoRetry?
+    case EStatus::SUCCESS:
+    case EStatus::INTERNAL_ERROR:
     case EStatus::ABORTED:
     case EStatus::UNAVAILABLE:
-    case EStatus::GENERIC_ERROR:    // NoRetry?
-    case EStatus::BAD_SESSION:      // NoRetry?
+    case EStatus::GENERIC_ERROR:
+    case EStatus::BAD_SESSION:
     case EStatus::SESSION_EXPIRED:
     case EStatus::CANCELLED:
     case EStatus::UNDETERMINED:
@@ -38,7 +38,6 @@ ERetryErrorClass GetRetryErrorClass(EStatus status) {
     case EStatus::UNSUPPORTED:
     case EStatus::ALREADY_EXISTS:
     case EStatus::NOT_FOUND:
-    case EStatus::EXTERNAL_ERROR:
     case EStatus::CLIENT_UNAUTHENTICATED:
     case EStatus::CLIENT_CALL_UNIMPLEMENTED:
         return ERetryErrorClass::NoRetry;
@@ -59,7 +58,7 @@ TString IssuesSingleLineString(const NYql::TIssues& issues) {
     return SubstGlobalCopy(issues.ToString(), '\n', ' ');
 }
 
-void Cancel(NYdbGrpc::IQueueClientContextPtr& context) {
+void Cancel(NGrpc::IQueueClientContextPtr& context) {
     if (context) {
         context->Cancel();
     }
@@ -127,7 +126,7 @@ void TThreadPoolExecutor::PostImpl(TFunction&& f) {
 TSerialExecutor::TSerialExecutor(IAsyncExecutor::TPtr executor)
     : Executor(executor)
 {
-    Y_ABORT_UNLESS(executor);
+    Y_VERIFY(executor);
 }
 
 void TSerialExecutor::PostImpl(TVector<TFunction>&& fs) {
@@ -147,7 +146,7 @@ void TSerialExecutor::PostImpl(TFunction&& f) {
 }
 
 void TSerialExecutor::PostNext() {
-    Y_ABORT_UNLESS(!Busy);
+    Y_VERIFY(!Busy);
 
     if (ExecutionQueue.empty()) {
         return;
@@ -188,7 +187,7 @@ TThreadPoolExecutor::TThreadPoolExecutor(std::shared_ptr<IThreadPool> threadPool
 TThreadPoolExecutor::TThreadPoolExecutor(size_t threadsCount)
     : TThreadPoolExecutor(CreateThreadPool(threadsCount))
 {
-    Y_ABORT_UNLESS(threadsCount > 0);
+    Y_VERIFY(threadsCount > 0);
     ThreadsCount = threadsCount;
 }
 

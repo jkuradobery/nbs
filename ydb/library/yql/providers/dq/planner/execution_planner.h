@@ -39,8 +39,7 @@ namespace NYql::NDqs {
 
     class TDqsExecutionPlanner: public IDqsExecutionPlanner {
     public:
-        explicit TDqsExecutionPlanner(const TDqSettings::TPtr& settings,
-                                      TIntrusivePtr<TTypeAnnotationContext> typeContext,
+        explicit TDqsExecutionPlanner(TIntrusivePtr<TTypeAnnotationContext> typeContext,
                                       NYql::TExprContext& exprContext,
                                       const NKikimr::NMiniKQL::IFunctionRegistry* functionRegistry,
                                       NYql::TExprNode::TPtr dqExprRoot,
@@ -53,7 +52,7 @@ namespace NYql::NDqs {
             return _MaxDataSizePerJob;
         }
         ui64 StagesCount();
-        bool PlanExecution(bool canFallback = false);
+        ui32 PlanExecution(const TDqSettings::TPtr& settings, bool canFallback = false);
         TVector<NDqProto::TDqTask> GetTasks(const TVector<NActors::TActorId>& workers) override;
         TVector<NDqProto::TDqTask>& GetTasks() override;
 
@@ -65,9 +64,9 @@ namespace NYql::NDqs {
         }
 
     private:
-        bool BuildReadStage(const NNodes::TDqPhyStage& stage, bool dqSource, bool canFallback);
+        bool BuildReadStage(const TDqSettings::TPtr& settings, const NNodes::TDqPhyStage& stage, bool dqSource, bool canFallback);
         void BuildConnections(const NNodes::TDqPhyStage& stage);
-        void BuildAllPrograms();
+        THashMap<NDq::TStageId, std::tuple<TString,ui64,ui64>> BuildAllPrograms();
         void FillChannelDesc(NDqProto::TChannel& channelDesc, const NDq::TChannel& channel);
         void FillInputDesc(NDqProto::TTaskInput& inputDesc, const TTaskInput& input);
         void FillOutputDesc(NDqProto::TTaskOutput& outputDesc, const TTaskOutput& output);
@@ -77,7 +76,6 @@ namespace NYql::NDqs {
         bool IsEgressTask(const TDqsTasksGraph::TTaskType& task) const;
 
     private:
-        const TDqSettings::TPtr Settings;
         TIntrusivePtr<TTypeAnnotationContext> TypeContext;
         NYql::TExprContext& ExprContext;
         const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry;
@@ -93,7 +91,6 @@ namespace NYql::NDqs {
         TVector<NDqProto::TDqTask> Tasks;
 
         THashMap<ui64, ui32> PublicIds;
-        THashMap<NDq::TStageId, std::tuple<TString,ui64,ui64>> StagePrograms;
     };
 
     // Execution planner for TRuntimeNode

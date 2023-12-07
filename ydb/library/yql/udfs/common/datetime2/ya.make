@@ -1,8 +1,8 @@
-YQL_UDF_CONTRIB(datetime2_udf)
+YQL_UDF(datetime2_udf)
 
 YQL_ABI_VERSION(
     2
-    35
+    28
     0
 )
 
@@ -12,14 +12,9 @@ SRCS(
 
 PEERDIR(
     util/draft
-    ydb/library/yql/public/udf/arrow
     ydb/library/yql/minikql
     ydb/library/yql/minikql/datetime
     ydb/library/yql/public/udf/tz
 )
 
 END()
-
-RECURSE_FOR_TESTS(
-    test
-)

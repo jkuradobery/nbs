@@ -75,8 +75,7 @@ namespace NSQLTranslationV1 {
 
     enum class ETableType {
         Table,
-        TableStore,
-        ExternalTable
+        TableStore
     };
 
     class TContext;
@@ -171,11 +170,9 @@ namespace NSQLTranslationV1 {
         virtual void CollectPreaggregateExprs(TContext& ctx, ISource& src, TVector<INode::TPtr>& exprs);
         virtual TPtr WindowSpecFunc(const TPtr& type) const;
         virtual bool SetViewName(TContext& ctx, TPosition pos, const TString& view);
-        virtual bool SetPrimaryView(TContext& ctx, TPosition pos);
         void UseAsInner();
         virtual bool UsedSubquery() const;
         virtual bool IsSelect() const;
-        virtual bool HasSelectResult() const;
         virtual const TString* FuncName() const;
         virtual const TString* ModuleName() const;
         virtual bool HasSkip() const;
@@ -218,7 +215,7 @@ namespace NSQLTranslationV1 {
 
         template <typename... TVals>
         TPtr L(TPtr list, TVals... vals) const {
-            Y_DEBUG_ABORT_UNLESS(list);
+            Y_VERIFY_DEBUG(list);
             auto copy = list->ShallowCopy();
             copy->Add(vals...);
             return copy;
@@ -466,14 +463,6 @@ namespace NSQLTranslationV1 {
         TWinRank(TPosition pos, const TString& opName, i32 minArgs, i32 maxArgs, const TVector<TNodePtr>& args);
     };
 
-    struct TViewDescription {
-        TString ViewName = "";
-        bool PrimaryFlag = false;
-
-        bool empty() const { return *this == TViewDescription(); }
-        bool operator == (const TViewDescription&) const = default;
-    };
-
     class ITableKeys: public INode {
     public:
         enum class EBuildKeysMode {
@@ -486,9 +475,6 @@ namespace NSQLTranslationV1 {
         ITableKeys(TPosition pos);
         virtual const TString* GetTableName() const;
         virtual TNodePtr BuildKeys(TContext& ctx, EBuildKeysMode mode) = 0;
-
-    protected:
-        TNodePtr AddView(TNodePtr key, const TViewDescription& view);
 
     private:
         /// all TableKeys no clonnable
@@ -516,7 +502,6 @@ namespace NSQLTranslationV1 {
         TNodePtr Build() const;
         TString GetRepr() const;
         bool Empty() const;
-        bool HasNode() const;
 
     private:
         TMaybe<TString> Explicit;
@@ -524,17 +509,22 @@ namespace NSQLTranslationV1 {
         TString Repr;
     };
 
-    struct TTopicRef {
-        TString RefName;
-        TDeferredAtom Cluster;
-        TNodePtr Consumers;
-        TNodePtr Settings;
-        TNodePtr Keys;
+    typedef TIntrusivePtr<ISource> TSourcePtr;
 
-        TTopicRef() = default;
-        TTopicRef(const TString& refName, const TDeferredAtom& cluster, TNodePtr keys);
-        TTopicRef(const TTopicRef&) = default;
-        TTopicRef& operator=(const TTopicRef&) = default;
+    struct TTableRef {
+        TString RefName;
+        TString Service;
+        TDeferredAtom Cluster;
+        TNodePtr Keys;
+        TNodePtr Options;
+        TSourcePtr Source;
+
+        TTableRef() = default;
+        TTableRef(const TString& refName, const TString& service, const TDeferredAtom& cluster, TNodePtr keys);
+        TTableRef(const TTableRef&) = default;
+        TTableRef& operator=(const TTableRef&) = default;
+
+        TString ShortName() const;
     };
 
     struct TIdentifier {
@@ -546,24 +536,15 @@ namespace NSQLTranslationV1 {
             , Name(name) {}
     };
 
-    struct TColumnConstraints {
-        TNodePtr DefaultExpr;
-        bool Nullable = true;
-
-        TColumnConstraints(TNodePtr defaultExpr, bool nullable);
-    };
-
     struct TColumnSchema {
         TPosition Pos;
         TString Name;
         TNodePtr Type;
         bool Nullable;
         TVector<TIdentifier> Families;
-        bool Serial;
-        TNodePtr DefaultExpr;
 
         TColumnSchema(TPosition pos, const TString& name, const TNodePtr& type, bool nullable,
-            TVector<TIdentifier> families, bool serial, TNodePtr defaultExpr);
+            TVector<TIdentifier> families);
     };
 
     struct TColumns: public TSimpleRefCount<TColumns> {
@@ -574,10 +555,8 @@ namespace NSQLTranslationV1 {
         bool All = false;
         bool QualifiedAll = false;
         bool HasUnreliable = false;
-        bool HasUnnamed = false;
 
-        bool Add(const TString* column, bool countHint, bool isArtificial = false, bool isReliable = true);
-        TString AddUnnamed();
+        bool Add(const TString* column, bool countHint, bool isArtificial = false, bool isReliable = true, bool hasName = true);
         void Merge(const TColumns& columns);
         void SetPrefix(const TString& prefix);
         void SetAll();
@@ -658,6 +637,8 @@ namespace NSQLTranslationV1 {
     };
     typedef TIntrusivePtr<TWindowSpecification> TWindowSpecificationPtr;
     typedef TMap<TString, TWindowSpecificationPtr> TWinSpecs;
+
+    typedef TVector<TTableRef> TTableList;
 
     void WarnIfAliasFromSelectIsUsedInGroupBy(TContext& ctx, const TVector<TNodePtr>& selectTerms, const TVector<TNodePtr>& groupByTerms,
         const TVector<TNodePtr>& groupByExprTerms);
@@ -796,9 +777,11 @@ namespace NSQLTranslationV1 {
 
         void DoUpdateState() const override;
 
+        virtual const TString* GetGenericKey() const;
+
         virtual bool InitAggr(TContext& ctx, bool isFactory, ISource* src, TAstListNode& node, const TVector<TNodePtr>& exprs) = 0;
 
-        virtual std::pair<TNodePtr, bool> AggregationTraits(const TNodePtr& type, bool overState, bool many, bool allowAggApply, TContext& ctx) const;
+        virtual std::pair<TNodePtr, bool> AggregationTraits(const TNodePtr& type, bool overState, bool many, TContext& ctx) const;
 
         virtual TNodePtr AggregationTraitsFactory() const = 0;
 
@@ -812,8 +795,11 @@ namespace NSQLTranslationV1 {
 
         EAggregateMode GetAggregationMode() const;
         void MarkKeyColumnAsGenerated();
+
+        virtual void Join(IAggregation* aggr);
+
     private:
-        virtual TNodePtr GetApply(const TNodePtr& type, bool many, bool allowAggApply, TContext& ctx) const = 0;
+        virtual TNodePtr GetApply(const TNodePtr& type, bool many, TContext& ctx) const = 0;
 
     protected:
         IAggregation(TPosition pos, const TString& name, const TString& func, EAggregateMode mode);
@@ -848,6 +834,153 @@ namespace NSQLTranslationV1 {
         Sort,
         Assume,
         Passthrough
+    };
+
+    class IJoin;
+    class ISource: public INode {
+    public:
+        virtual ~ISource();
+
+        virtual bool IsFake() const;
+        virtual void AllColumns();
+        virtual const TColumns* GetColumns() const;
+        virtual void GetInputTables(TTableList& tableList) const;
+        /// in case of error unfilled, flag show if ensure column name
+        virtual TMaybe<bool> AddColumn(TContext& ctx, TColumnNode& column);
+        virtual void FinishColumns();
+        virtual bool AddExpressions(TContext& ctx, const TVector<TNodePtr>& columns, EExprSeat exprSeat);
+        virtual void SetFlattenByMode(const TString& mode);
+        virtual void MarkFlattenColumns();
+        virtual bool IsFlattenColumns() const;
+        virtual bool AddFilter(TContext& ctx, TNodePtr filter);
+        virtual bool AddGroupKey(TContext& ctx, const TString& column);
+        virtual void SetCompactGroupBy(bool compactGroupBy);
+        virtual void SetGroupBySuffix(const TString& suffix);
+        virtual TString MakeLocalName(const TString& name);
+        virtual bool AddAggregation(TContext& ctx, TAggregationPtr aggr);
+        virtual bool AddFuncOverWindow(TContext& ctx, TNodePtr expr);
+        virtual void AddTmpWindowColumn(const TString& column);
+        virtual const TVector<TString>& GetTmpWindowColumns() const;
+        virtual bool HasAggregations() const;
+        virtual void AddWindowSpecs(TWinSpecs winSpecs);
+        virtual bool AddAggregationOverWindow(TContext& ctx, const TString& windowName, TAggregationPtr func);
+        virtual bool AddFuncOverWindow(TContext& ctx, const TString& windowName, TNodePtr func);
+        virtual void SetLegacyHoppingWindowSpec(TLegacyHoppingWindowSpecPtr spec);
+        virtual TLegacyHoppingWindowSpecPtr GetLegacyHoppingWindowSpec() const;
+        virtual TNodePtr GetSessionWindowSpec() const;
+        virtual TNodePtr GetHoppingWindowSpec() const;
+        virtual bool IsCompositeSource() const;
+        virtual bool IsGroupByColumn(const TString& column) const;
+        virtual bool IsFlattenByColumns() const;
+        virtual bool IsFlattenByExprs() const;
+        virtual bool IsCalcOverWindow() const;
+        virtual bool IsOverWindowSource() const;
+        virtual bool IsStream() const;
+        virtual EOrderKind GetOrderKind() const;
+        virtual TWriteSettings GetWriteSettings() const;
+        virtual bool SetSamplingOptions(TContext& ctx, TPosition pos, ESampleMode mode, TNodePtr samplingRate, TNodePtr samplingSeed);
+        virtual bool SetTableHints(TContext& ctx, TPosition pos, const TTableHints& hints, const TTableHints& contextHints);
+        virtual bool CalculateGroupingHint(TContext& ctx, const TVector<TString>& columns, ui64& hint) const;
+        virtual TNodePtr BuildFilter(TContext& ctx, const TString& label);
+        virtual TNodePtr BuildFilterLambda();
+        virtual TNodePtr BuildFlattenByColumns(const TString& label);
+        virtual TNodePtr BuildFlattenColumns(const TString& label);
+        virtual TNodePtr BuildPreaggregatedMap(TContext& ctx);
+        virtual TNodePtr BuildPreFlattenMap(TContext& ctx);
+        virtual TNodePtr BuildPrewindowMap(TContext& ctx);
+        virtual std::pair<TNodePtr, bool> BuildAggregation(const TString& label, TContext& ctx);
+        virtual TNodePtr BuildCalcOverWindow(TContext& ctx, const TString& label);
+        virtual TNodePtr BuildSort(TContext& ctx, const TString& label);
+        virtual TNodePtr BuildCleanupColumns(TContext& ctx, const TString& label);
+        virtual bool BuildSamplingLambda(TNodePtr& node);
+        virtual bool SetSamplingRate(TContext& ctx, TNodePtr samplingRate);
+        virtual IJoin* GetJoin();
+        virtual ISource* GetCompositeSource();
+        virtual bool IsSelect() const;
+        virtual bool IsTableSource() const;
+        virtual bool ShouldUseSourceAsColumn(const TString& source) const;
+        virtual bool IsJoinKeysInitializing() const;
+        virtual const TString* GetWindowName() const;
+
+        virtual bool DoInit(TContext& ctx, ISource* src);
+        virtual TNodePtr Build(TContext& ctx) = 0;
+
+        virtual TMaybe<TString> FindColumnMistype(const TString& name) const;
+
+        virtual bool InitFilters(TContext& ctx);
+        void AddDependentSource(ISource* usedSource);
+        bool IsAlias(EExprSeat exprSeat, const TString& label) const;
+        bool IsExprAlias(const TString& label) const;
+        bool IsExprSeat(EExprSeat exprSeat, EExprType type = EExprType::WithExpression) const;
+        TString GetGroupByColumnAlias(const TString& column) const;
+        const TVector<TNodePtr>& Expressions(EExprSeat exprSeat) const;
+
+        virtual TWindowSpecificationPtr FindWindowSpecification(TContext& ctx, const TString& windowName) const;
+
+        TIntrusivePtr<ISource> CloneSource() const;
+
+    protected:
+        ISource(TPosition pos);
+        virtual TAstNode* Translate(TContext& ctx) const;
+
+        void FillSortParts(const TVector<TSortSpecificationPtr>& orderBy, TNodePtr& sortKeySelector, TNodePtr& sortDirection);
+        TNodePtr BuildSortSpec(const TVector<TSortSpecificationPtr>& orderBy, const TString& label, bool traits, bool assume);
+
+        TVector<TNodePtr>& Expressions(EExprSeat exprSeat);
+        TNodePtr AliasOrColumn(const TNodePtr& node, bool withSource);
+
+        TNodePtr BuildWindowFrame(const TFrameSpecification& spec, bool isCompact);
+
+        THashSet<TString> ExprAliases;
+        THashSet<TString> FlattenByAliases;
+        THashMap<TString, TString> GroupByColumnAliases;
+        TVector<TNodePtr> Filters;
+        bool CompactGroupBy = false;
+        TString GroupBySuffix;
+        TSet<TString> GroupKeys;
+        TVector<TString> OrderedGroupKeys;
+        std::array<TVector<TNodePtr>, static_cast<unsigned>(EExprSeat::Max)> NamedExprs;
+        TVector<TAggregationPtr> Aggregations;
+        TMap<TString, TVector<TAggregationPtr>> AggregationOverWindow;
+        TMap<TString, TVector<TNodePtr>> FuncOverWindow;
+        TWinSpecs WinSpecs;
+        TLegacyHoppingWindowSpecPtr LegacyHoppingWindowSpec;
+        TNodePtr SessionWindow;
+        TNodePtr HoppingWindow;
+        TVector<ISource*> UsedSources;
+        TString FlattenMode;
+        bool FlattenColumns = false;
+        THashMap<TString, ui32> GenIndexes;
+        TVector<TString> TmpWindowColumns;
+        TNodePtr SamplingRate;
+    };
+
+    template<>
+    inline TVector<TSourcePtr> CloneContainer<TSourcePtr>(const TVector<TSourcePtr>& args) {
+        TVector<TSourcePtr> cloneArgs;
+        cloneArgs.reserve(args.size());
+        for (const auto& arg: args) {
+            cloneArgs.emplace_back(arg ? arg->CloneSource() : nullptr);
+        }
+        return cloneArgs;
+    }
+
+    struct TJoinLinkSettings {
+        bool ForceSortedMerge = false;
+    };
+
+    class IJoin: public ISource {
+    public:
+        virtual ~IJoin();
+
+        virtual IJoin* GetJoin();
+        virtual TNodePtr BuildJoinKeys(TContext& ctx, const TVector<TDeferredAtom>& names) = 0;
+        virtual void SetupJoin(const TString& joinOp, TNodePtr joinExpr, const TJoinLinkSettings& linkSettings) = 0;
+        virtual const THashMap<TString, THashSet<TString>>& GetSameKeysMap() const = 0;
+        virtual TVector<TString> GetJoinLabels() const = 0;
+
+    protected:
+        IJoin(TPosition pos);
     };
 
     class TListOfNamedNodes final: public INode {
@@ -907,7 +1040,7 @@ namespace NSQLTranslationV1 {
         bool HasAt = false;
         TNodePtr Expr;
         TDeferredAtom Id;
-        TViewDescription View;
+        TString View;
     };
 
     class TTableRows final : public INode {
@@ -925,6 +1058,46 @@ namespace NSQLTranslationV1 {
     private:
         ui32 ArgsCount;
         TNodePtr Node;
+    };
+
+    class TSessionWindow final : public INode {
+    public:
+        TSessionWindow(TPosition pos, const TVector<TNodePtr>& args);
+        void MarkValid();
+        TNodePtr BuildTraits(const TString& label) const;
+    private:
+        bool DoInit(TContext& ctx, ISource* src) override;
+        TAstNode* Translate(TContext&) const override;
+        void DoUpdateState() const override;
+        TNodePtr DoClone() const override;
+        TString GetOpName() const override;
+
+        TVector<TNodePtr> Args;
+        TSourcePtr FakeSource;
+        TNodePtr Node;
+        bool Valid;
+    };
+
+    class THoppingWindow final : public INode {
+    public:
+        THoppingWindow(TPosition pos, const TVector<TNodePtr>& args);
+        void MarkValid();
+        TNodePtr BuildTraits(const TString& label) const;
+    public:
+        TNodePtr Hop;
+        TNodePtr Interval;
+    private:
+        bool DoInit(TContext& ctx, ISource* src) override;
+        TAstNode* Translate(TContext&) const override;
+        void DoUpdateState() const override;
+        TNodePtr DoClone() const override;
+        TString GetOpName() const override;
+        TNodePtr ProcessIntervalParam(const TNodePtr& val) const;
+
+        TVector<TNodePtr> Args;
+        TSourcePtr FakeSource;
+        TNodePtr Node;
+        bool Valid;
     };
 
     struct TStringContent {
@@ -967,17 +1140,11 @@ namespace NSQLTranslationV1 {
         NYql::TResetableSetting<TNodePtr, void> Tiering;
         TMaybe<TIdentifier> StoreType;
         TNodePtr PartitionByHashFunction;
-        TMaybe<TIdentifier> StoreExternalBlobs;
-
-        TNodePtr DataSourcePath;
-        TNodePtr Location;
-        TVector<std::pair<TIdentifier, TNodePtr>> ExternalSourceParameters;
 
         bool IsSet() const {
             return CompactionPolicy || AutoPartitioningBySize || PartitionSizeMb || AutoPartitioningByLoad
                 || MinPartitions || MaxPartitions || UniformPartitions || PartitionAtKeys || KeyBloomFilter
-                || ReadReplicasSettings || TtlSettings || Tiering || StoreType || PartitionByHashFunction
-                || StoreExternalBlobs || DataSourcePath || Location || ExternalSourceParameters;
+                || ReadReplicasSettings || TtlSettings || Tiering || StoreType || PartitionByHashFunction;
         }
     };
 
@@ -995,7 +1162,6 @@ namespace NSQLTranslationV1 {
         enum class EType {
             GlobalSync,
             GlobalAsync,
-            GlobalSyncUnique,
         };
 
         TIndexDescription(const TIdentifier& name, EType type = EType::GlobalSync)
@@ -1018,9 +1184,7 @@ namespace NSQLTranslationV1 {
         TNodePtr Format;
         TNodePtr InitialScan;
         TNodePtr VirtualTimestamps;
-        TNodePtr ResolvedTimestamps;
         TNodePtr RetentionPeriod;
-        TNodePtr TopicPartitions;
         TNodePtr AwsRegion;
         std::optional<std::variant<TLocalSinkSettings>> SinkSettings;
     };
@@ -1080,53 +1244,6 @@ namespace NSQLTranslationV1 {
         bool IsPasswordEncrypted = false;
     };
 
-    struct TTopicConsumerSettings {
-        struct TLocalSinkSettings {
-            // no special settings
-        };
-
-        TNodePtr Important;
-        NYql::TResetableSetting<TNodePtr, void> ReadFromTs;
-        NYql::TResetableSetting<TNodePtr, void> SupportedCodecs;
-    };
-
-    struct TTopicConsumerDescription {
-        TTopicConsumerDescription(const TIdentifier& name)
-            : Name(name)
-        {}
-
-        TIdentifier Name;
-        TTopicConsumerSettings Settings;
-    };
-    struct TTopicSettings {
-        NYql::TResetableSetting<TNodePtr, void> MinPartitions;
-        NYql::TResetableSetting<TNodePtr, void> PartitionsLimit;
-        NYql::TResetableSetting<TNodePtr, void> RetentionPeriod;
-        NYql::TResetableSetting<TNodePtr, void> RetentionStorage;
-        NYql::TResetableSetting<TNodePtr, void> SupportedCodecs;
-        NYql::TResetableSetting<TNodePtr, void> PartitionWriteSpeed;
-        NYql::TResetableSetting<TNodePtr, void> PartitionWriteBurstSpeed;
-        NYql::TResetableSetting<TNodePtr, void> MeteringMode;
-
-        bool IsSet() const {
-            return MinPartitions || PartitionsLimit || RetentionPeriod || RetentionStorage
-                   || SupportedCodecs || PartitionWriteSpeed|| PartitionWriteBurstSpeed || MeteringMode
-            ;
-        }
-    };
-
-    struct TCreateTopicParameters {
-        TVector<TTopicConsumerDescription> Consumers;
-        TTopicSettings TopicSettings;
-    };
-
-    struct TAlterTopicParameters {
-        TVector<TTopicConsumerDescription> AddConsumers;
-        THashMap<TString, TTopicConsumerDescription> AlterConsumers;
-        TVector<TIdentifier> DropConsumers;
-        TTopicSettings TopicSettings;
-    };
-
     TString IdContent(TContext& ctx, const TString& str);
     TString IdContentFromString(TContext& ctx, const TString& str);
     TTableHints GetContextHints(TContext& ctx);
@@ -1167,7 +1284,6 @@ namespace NSQLTranslationV1 {
     TNodePtr BuildColumn(TPosition pos, const TDeferredAtom& column, const TString& source = TString());
     TNodePtr BuildColumnOrType(TPosition pos, const TString& column = TString());
     TNodePtr BuildAccess(TPosition pos, const TVector<INode::TIdPart>& ids, bool isLookup);
-    TNodePtr BuildMatchRecognizeVarAccess(TPosition pos, const TString& var, const TString& column, bool theSameVar);
     TNodePtr BuildBind(TPosition pos, const TString& module, const TString& alias);
     TNodePtr BuildLambda(TPosition pos, TNodePtr params, TNodePtr body, const TString& resName = TString());
     TNodePtr BuildLambda(TPosition pos, TNodePtr params, const TVector<TNodePtr>& bodies);
@@ -1176,7 +1292,6 @@ namespace NSQLTranslationV1 {
     TNodePtr BuildSimpleType(TContext& ctx, TPosition pos, const TString& typeName, bool dataOnly);
     TNodePtr BuildIsNullOp(TPosition pos, TNodePtr a);
     TNodePtr BuildBinaryOp(TContext& ctx, TPosition pos, const TString& opName, TNodePtr a, TNodePtr b);
-    TNodePtr BuildBinaryOpRaw(TPosition pos, const TString& opName, TNodePtr a, TNodePtr b);
 
     TNodePtr BuildCalcOverWindow(TPosition pos, const TString& windowName, TNodePtr call);
     TNodePtr BuildYsonOptionsNode(TPosition pos, bool autoConvert, bool strict, bool fastYson);
@@ -1216,7 +1331,82 @@ namespace NSQLTranslationV1 {
         bool warnOnYqlNameSpace = true
     );
 
+    // Implemented in join.cpp
+    TString NormalizeJoinOp(const TString& joinOp);
+    TSourcePtr BuildEquiJoin(TPosition pos, TVector<TSourcePtr>&& sources, TVector<bool>&& anyFlags, bool strictJoinKeyTypes);
+
+    // Implemented in select.cpp
+    TNodePtr BuildSubquery(TSourcePtr source, const TString& alias, bool inSubquery, int ensureTupleSize, TScopedStatePtr scoped);
+    TNodePtr BuildSubqueryRef(TNodePtr subquery, const TString& alias, int tupleIndex = -1);
+    TNodePtr BuildInvalidSubqueryRef(TPosition subqueryPos);
+    TNodePtr BuildSourceNode(TPosition pos, TSourcePtr source, bool checkExist = false);
+    TSourcePtr BuildMuxSource(TPosition pos, TVector<TSourcePtr>&& sources);
+    TSourcePtr BuildFakeSource(TPosition pos, bool missingFrom = false, bool inSubquery = false);
+    TSourcePtr BuildNodeSource(TPosition pos, const TNodePtr& node, bool wrapToList = false);
+    TSourcePtr BuildTableSource(TPosition pos, const TTableRef& table, const TString& label = TString());
+    TSourcePtr BuildInnerSource(TPosition pos, TNodePtr node, const TString& service, const TDeferredAtom& cluster, const TString& label = TString());
+    TSourcePtr BuildRefColumnSource(TPosition pos, const TString& partExpression);
+    TSourcePtr BuildUnionAll(TPosition pos, TVector<TSourcePtr>&& sources, const TWriteSettings& settings);
+    TSourcePtr BuildOverWindowSource(TPosition pos, const TString& windowName, ISource* origSource);
+
+    TNodePtr BuildOrderBy(TPosition pos, const TVector<TNodePtr>& keys, const TVector<bool>& order);
+    TNodePtr BuildSkipTake(TPosition pos, const TNodePtr& skip, const TNodePtr& take);
+
+
+    TSourcePtr BuildSelectCore(
+        TContext& ctx,
+        TPosition pos,
+        TSourcePtr source,
+        const TVector<TNodePtr>& groupByExpr,
+        const TVector<TNodePtr>& groupBy,
+        bool compactGroupBy,
+        const TString& groupBySuffix,
+        bool assumeSorted,
+        const TVector<TSortSpecificationPtr>& orderBy,
+        TNodePtr having,
+        TWinSpecs&& windowSpec,
+        TLegacyHoppingWindowSpecPtr legacyHoppingWindowSpec,
+        TVector<TNodePtr>&& terms,
+        bool distinct,
+        TVector<TNodePtr>&& without,
+        bool selectStream,
+        const TWriteSettings& settings
+    );
+    TSourcePtr BuildSelect(TPosition pos, TSourcePtr source, TNodePtr skipTake);
+
+
+    enum class ReduceMode {
+        ByPartition,
+        ByAll,
+    };
+    TSourcePtr BuildReduce(TPosition pos, ReduceMode mode, TSourcePtr source, TVector<TSortSpecificationPtr>&& orderBy,
+        TVector<TNodePtr>&& keys, TVector<TNodePtr>&& args, TNodePtr udf, TNodePtr having, const TWriteSettings& settings,
+        const TVector<TSortSpecificationPtr>& assumeOrderBy, bool listCall);
+    TSourcePtr BuildProcess(TPosition pos, TSourcePtr source, TNodePtr with, bool withExtFunction, TVector<TNodePtr>&& terms, bool listCall,
+        bool prcessStream, const TWriteSettings& settings, const TVector<TSortSpecificationPtr>& assumeOrderBy);
+
+    TNodePtr BuildSelectResult(TPosition pos, TSourcePtr source, bool writeResult, bool inSubquery, TScopedStatePtr scoped);
+
+    // Implemented in insert.cpp
+    TSourcePtr BuildWriteValues(TPosition pos, const TString& opertationHumanName, const TVector<TString>& columnsHint, const TVector<TVector<TNodePtr>>& values);
+    TSourcePtr BuildWriteValues(TPosition pos, const TString& opertationHumanName, const TVector<TString>& columnsHint, TSourcePtr source);
+    TSourcePtr BuildUpdateValues(TPosition pos, const TVector<TString>& columnsHint, const TVector<TNodePtr>& values);
+
+    EWriteColumnMode ToWriteColumnsMode(ESQLWriteColumnMode sqlWriteColumnMode);
+    TNodePtr BuildEraseColumns(TPosition pos, const TVector<TString>& columns);
+    TNodePtr BuildIntoTableOptions(TPosition pos, const TVector<TString>& eraseColumns, const TTableHints& hints);
+    TNodePtr BuildWriteColumns(TPosition pos, TScopedStatePtr scoped, const TTableRef& table, EWriteColumnMode mode, TSourcePtr values, TNodePtr options = nullptr);
+    TNodePtr BuildUpdateColumns(TPosition pos, TScopedStatePtr scoped, const TTableRef& table, TSourcePtr values, TSourcePtr source);
+    TNodePtr BuildDelete(TPosition pos, TScopedStatePtr scoped, const TTableRef& table, TSourcePtr source);
+
     // Implemented in query.cpp
+    TNodePtr BuildTableKey(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, const TString& view);
+    TNodePtr BuildTableKeys(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TString& func, const TVector<TTableArg>& args);
+    TNodePtr BuildInputOptions(TPosition pos, const TTableHints& hints);
+    TNodePtr BuildInputTables(TPosition pos, const TTableList& tables, bool inSubquery, TScopedStatePtr scoped);
+    TNodePtr BuildCreateTable(TPosition pos, const TTableRef& tr, const TCreateTableParameters& params, TScopedStatePtr scoped);
+    TNodePtr BuildAlterTable(TPosition pos, const TTableRef& tr, const TAlterTableParameters& params, TScopedStatePtr scoped);
+    TNodePtr BuildDropTable(TPosition pos, const TTableRef& table, bool isTabletore, TScopedStatePtr scoped);
     TNodePtr BuildCreateUser(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, const TMaybe<TRoleParameters>& params, TScopedStatePtr scoped);
     TNodePtr BuildCreateGroup(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, TScopedStatePtr scoped);
     TNodePtr BuildAlterUser(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, const TRoleParameters& params, TScopedStatePtr scoped);
@@ -1225,21 +1415,14 @@ namespace NSQLTranslationV1 {
         TScopedStatePtr scoped);
     TNodePtr BuildRenameGroup(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& name, const TDeferredAtom& newName, TScopedStatePtr scoped);
     TNodePtr BuildDropRoles(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& toDrop, bool isUser, bool force, TScopedStatePtr scoped);
-    TNodePtr BuildGrantPermissions(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& permissions, const TVector<TDeferredAtom>& schemaPathes, const TVector<TDeferredAtom>& roleName, TScopedStatePtr scoped);
-    TNodePtr BuildRevokePermissions(TPosition pos, const TString& service, const TDeferredAtom& cluster, const TVector<TDeferredAtom>& permissions, const TVector<TDeferredAtom>& schemaPathes, const TVector<TDeferredAtom>& roleName, TScopedStatePtr scoped);
-    TNodePtr BuildUpsertObjectOperation(TPosition pos, const TString& objectId, const TString& typeId,
-        std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context);
     TNodePtr BuildCreateObjectOperation(TPosition pos, const TString& objectId, const TString& typeId,
         std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context);
     TNodePtr BuildAlterObjectOperation(TPosition pos, const TString& secretId, const TString& typeId,
         std::map<TString, TDeferredAtom>&& features, const TObjectOperatorContext& context);
     TNodePtr BuildDropObjectOperation(TPosition pos, const TString& secretId, const TString& typeId,
         std::map<TString, TDeferredAtom>&& options, const TObjectOperatorContext& context);
-    TNodePtr BuildCreateAsyncReplication(TPosition pos, const TString& id,
-        std::vector<std::pair<TString, TString>>&& targets,
-        std::map<TString, TNodePtr>&& settings,
-        const TObjectOperatorContext& context);
-    TNodePtr BuildDropAsyncReplication(TPosition pos, const TString& id, bool cascade, const TObjectOperatorContext& context);
+    TNodePtr BuildWriteTable(TPosition pos, const TString& label, const TTableRef& table, EWriteColumnMode mode, TNodePtr options,
+        TScopedStatePtr scoped);
     TNodePtr BuildWriteResult(TPosition pos, const TString& label, TNodePtr settings);
     TNodePtr BuildCommitClusters(TPosition pos);
     TNodePtr BuildRollbackClusters(TPosition pos);
@@ -1248,12 +1431,6 @@ namespace NSQLTranslationV1 {
     TNodePtr BuildSqlLambda(TPosition pos, TVector<TString>&& args, TVector<TNodePtr>&& exprSeq);
     TNodePtr BuildWorldIfNode(TPosition pos, TNodePtr predicate, TNodePtr thenNode, TNodePtr elseNode, bool isEvaluate);
     TNodePtr BuildWorldForNode(TPosition pos, TNodePtr list, TNodePtr bodyNode, TNodePtr elseNode, bool isEvaluate);
-
-    TNodePtr BuildCreateTopic(TPosition pos, const TTopicRef& tr, const TCreateTopicParameters& params,
-                              TScopedStatePtr scoped);
-    TNodePtr BuildAlterTopic(TPosition pos, const TTopicRef& tr, const TAlterTopicParameters& params,
-                              TScopedStatePtr scoped);
-    TNodePtr BuildDropTopic(TPosition pos, const TTopicRef& topic, TScopedStatePtr scoped);
 
     template<class TContainer>
     TMaybe<TString> FindMistypeIn(const TContainer& container, const TString& name) {
@@ -1267,5 +1444,9 @@ namespace NSQLTranslationV1 {
 
     bool Parseui32(TNodePtr from, ui32& to);
     TNodePtr GroundWithExpr(const TNodePtr& ground, const TNodePtr& expr);
-    const TString* DeriveCommonSourceName(const TVector<TNodePtr> &nodes);
+    TSourcePtr TryMakeSourceFromExpression(TContext& ctx, const TString& currService, const TDeferredAtom& currCluster,
+        TNodePtr node, const TString& view = {});
+    void MakeTableFromExpression(TContext& ctx, TNodePtr node, TDeferredAtom& table);
+    TDeferredAtom MakeAtomFromExpression(TContext& ctx, TNodePtr node);
+    TString NormalizeTypeString(const TString& str);
 }  // namespace NSQLTranslationV1

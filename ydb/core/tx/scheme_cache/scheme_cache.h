@@ -1,7 +1,8 @@
 #pragma once
 
+#include <ydb/core/base/appdata.h>
 #include <ydb/core/base/events.h>
-#include <ydb/core/scheme/scheme_pathid.h>
+#include <ydb/core/base/pathid.h>
 #include <ydb/core/base/tx_processing.h>
 #include <ydb/core/protos/flat_scheme_op.pb.h>
 #include <ydb/core/protos/flat_tx_scheme.pb.h>
@@ -17,9 +18,6 @@
 #include <util/generic/ptr.h>
 
 namespace NKikimr {
-
-struct TAppData;
-
 namespace NSchemeCache {
 
 struct TSchemeCacheConfig : public TThrRefBase {
@@ -55,7 +53,6 @@ struct TDomainInfo : public TAtomicRefCount<TDomainInfo> {
         : DomainKey(GetDomainKey(descr.GetDomainKey()))
         , Params(descr.GetProcessingParams())
         , Coordinators(descr.GetProcessingParams())
-        , ServerlessComputeResourcesMode(descr.GetServerlessComputeResourcesMode())
     {
         if (descr.HasResourcesDomainKey()) {
             ResourcesDomainKey = GetDomainKey(descr.GetResourcesDomainKey());
@@ -84,8 +81,6 @@ struct TDomainInfo : public TAtomicRefCount<TDomainInfo> {
     TPathId ResourcesDomainKey;
     NKikimrSubDomains::TProcessingParams Params;
     TCoordinators Coordinators;
-    NKikimrSubDomains::EServerlessComputeResourcesMode ServerlessComputeResourcesMode =
-        NKikimrSubDomains::SERVERLESS_COMPUTE_RESOURCES_MODE_UNSPECIFIED;
 
     TString ToString() const;
 
@@ -106,7 +101,6 @@ struct TSchemeCacheNavigate {
         TableCreationNotComplete = 5,
         LookupError = 6,
         RedirectLookupError = 7,
-        AccessDenied = 8,
         Ok = 128,
     };
 
@@ -135,11 +129,6 @@ struct TSchemeCacheNavigate {
         KindSequence = 14,
         KindReplication = 15,
         KindBlobDepot = 16,
-        KindExternalTable = 17,
-        KindExternalDataSource = 18,
-        KindBlockStoreVolume = 19,
-        KindFileStore = 20,
-        KindView = 21,
     };
 
     struct TListNodeEntry : public TAtomicRefCount<TListNodeEntry> {
@@ -222,31 +211,6 @@ struct TSchemeCacheNavigate {
         NKikimrSchemeOp::TBlobDepotDescription Description;
     };
 
-    struct TExternalTableInfo : public TAtomicRefCount<TExternalTableInfo> {
-        EKind Kind = KindUnknown;
-        NKikimrSchemeOp::TExternalTableDescription Description;
-    };
-
-    struct TExternalDataSourceInfo : public TAtomicRefCount<TExternalDataSourceInfo> {
-        EKind Kind = KindUnknown;
-        NKikimrSchemeOp::TExternalDataSourceDescription Description;
-    };
-
-    struct TBlockStoreVolumeInfo : public TAtomicRefCount<TBlockStoreVolumeInfo> {
-        EKind Kind = KindUnknown;
-        NKikimrSchemeOp::TBlockStoreVolumeDescription Description;
-    };
-
-    struct TFileStoreInfo : public TAtomicRefCount<TFileStoreInfo> {
-        EKind Kind = KindUnknown;
-        NKikimrSchemeOp::TFileStoreDescription Description;
-    };
-
-    struct TViewInfo : public TAtomicRefCount<TViewInfo> {
-        EKind Kind = KindUnknown;
-        NKikimrSchemeOp::TViewDescription Description;
-    };
-
     struct TEntry {
         enum class ERequestType : ui8 {
             ByPath,
@@ -292,11 +256,6 @@ struct TSchemeCacheNavigate {
         TIntrusiveConstPtr<TSequenceInfo> SequenceInfo;
         TIntrusiveConstPtr<TReplicationInfo> ReplicationInfo;
         TIntrusiveConstPtr<TBlobDepotInfo> BlobDepotInfo;
-        TIntrusiveConstPtr<TExternalTableInfo> ExternalTableInfo;
-        TIntrusiveConstPtr<TExternalDataSourceInfo> ExternalDataSourceInfo;
-        TIntrusiveConstPtr<TBlockStoreVolumeInfo> BlockStoreVolumeInfo;
-        TIntrusiveConstPtr<TFileStoreInfo> FileStoreInfo;
-        TIntrusiveConstPtr<TViewInfo> ViewInfo;
 
         TString ToString() const;
         TString ToString(const NScheme::TTypeRegistry& typeRegistry) const;
@@ -309,7 +268,6 @@ struct TSchemeCacheNavigate {
     TString DatabaseName;
     ui64 DomainOwnerId = 0;
     ui64 ErrorCount = 0;
-    ui64 Cookie = 0;
     const ui64 Instant; // deprecated, used by pq
 
     TSchemeCacheNavigate()
@@ -332,7 +290,6 @@ struct TSchemeCacheRequest {
         PathErrorUnknown = 3,
         PathErrorNotExist = 4,
         LookupError = 5,
-        AccessDenied = 6,
         OkScheme = 128,
         OkData = 129,
     };
@@ -367,7 +324,7 @@ struct TSchemeCacheRequest {
         explicit TEntry(THolder<TKeyDesc> keyDesc)
             : KeyDescription(std::move(keyDesc))
         {
-            Y_DEBUG_ABORT_UNLESS(KeyDescription);
+            Y_VERIFY_DEBUG(KeyDescription);
         }
 
         TEntry(TKeyDesc* keyDesc) = delete;
@@ -390,15 +347,13 @@ struct TSchemeCacheRequest {
 
 struct TSchemeCacheRequestContext : TAtomicRefCount<TSchemeCacheRequestContext>, TNonCopyable {
     TActorId Sender;
-    ui64 Cookie;
     ui64 WaitCounter;
     TAutoPtr<TSchemeCacheRequest> Request;
     const TInstant CreatedAt;
     TIntrusivePtr<TDomainInfo> ResolvedDomainInfo; // resolved from DatabaseName
 
-    TSchemeCacheRequestContext(const TActorId& sender, ui64 cookie, TAutoPtr<TSchemeCacheRequest> request, const TInstant& now = TInstant::Now())
+    TSchemeCacheRequestContext(const TActorId& sender, TAutoPtr<TSchemeCacheRequest> request, const TInstant& now = TInstant::Now())
         : Sender(sender)
-        , Cookie(cookie)
         , WaitCounter(0)
         , Request(request)
         , CreatedAt(now)
@@ -407,15 +362,13 @@ struct TSchemeCacheRequestContext : TAtomicRefCount<TSchemeCacheRequestContext>,
 
 struct TSchemeCacheNavigateContext : TAtomicRefCount<TSchemeCacheNavigateContext>, TNonCopyable {
     TActorId Sender;
-    ui64 Cookie;
     ui64 WaitCounter;
     TAutoPtr<TSchemeCacheNavigate> Request;
     const TInstant CreatedAt;
     TIntrusivePtr<TDomainInfo> ResolvedDomainInfo; // resolved from DatabaseName
 
-    TSchemeCacheNavigateContext(const TActorId& sender, ui64 cookie, TAutoPtr<TSchemeCacheNavigate> request, const TInstant& now = TInstant::Now())
+    TSchemeCacheNavigateContext(const TActorId& sender, TAutoPtr<TSchemeCacheNavigate> request, const TInstant& now = TInstant::Now())
         : Sender(sender)
-        , Cookie(cookie)
         , WaitCounter(0)
         , Request(request)
         , CreatedAt(now)

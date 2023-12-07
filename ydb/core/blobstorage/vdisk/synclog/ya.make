@@ -1,8 +1,8 @@
 LIBRARY()
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect
+    library/cpp/actors/core
+    library/cpp/actors/interconnect
     library/cpp/blockcodecs
     library/cpp/codecs
     library/cpp/containers/intrusive_avl_tree

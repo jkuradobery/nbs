@@ -37,7 +37,7 @@ public:
 
             TPathId tableId(Self->GetPathOwnerId(), createTable.GetId_Deprecated());
             if (createTable.HasPathId()) {
-                Y_ABORT_UNLESS(Self->GetPathOwnerId() == createTable.GetPathId().GetOwnerId() || Self->GetPathOwnerId() == INVALID_TABLET_ID);
+                Y_VERIFY(Self->GetPathOwnerId() == createTable.GetPathId().GetOwnerId() || Self->GetPathOwnerId() == INVALID_TABLET_ID);
                 tableId = PathIdFromPathId(createTable.GetPathId());
             } else if (tableId.OwnerId == INVALID_TABLET_ID) {
                 // Legacy schemeshard before migrations, shouldn't be possible
@@ -55,12 +55,6 @@ public:
                 const ui64 txId = Ev->Get()->Record.GetOperationCookie();
                 Self->AddSchemaSnapshot(tableId, info->GetTableSchemaVersion(), 0, txId, txc, ctx);
             }
-
-            for (const auto& [streamId, stream] : info->CdcStreams) {
-                if (const auto heartbeatInterval = stream.ResolvedTimestampsInterval) {
-                    Self->GetCdcStreamHeartbeatManager().AddCdcStream(txc.DB, tableId, streamId, heartbeatInterval);
-                }
-            }
         }
 
         Self->DstSplitDescription = std::make_shared<NKikimrTxDataShard::TSplitMergeDescription>(Ev->Get()->Record.GetSplitDescription());
@@ -73,7 +67,7 @@ public:
         // Persist split description
         TString splitDescr;
         bool serilaizeOk = Self->DstSplitDescription->SerializeToString(&splitDescr);
-        Y_ABORT_UNLESS(serilaizeOk, "Failed to serialize split/merge description");
+        Y_VERIFY(serilaizeOk, "Failed to serialize split/merge description");
         Self->PersistSys(db, Schema::Sys_DstSplitDescription, splitDescr);
 
         if (initializeSchema) {
@@ -287,10 +281,6 @@ public:
                 kv.second.OptimizeSplitKeys(rdb);
             }
 
-            if (mvcc) {
-                Self->PromoteFollowerReadEdge(txc);
-            }
-
             Self->State = TShardState::Ready;
             Self->PersistSys(db, Schema::Sys_State, Self->State);
         }
@@ -367,14 +357,14 @@ public:
         }
 
         const auto& userTables = Self->GetUserTables();
-        Y_ABORT_UNLESS(msg->PathId.OwnerId == Self->GetPathOwnerId());
+        Y_VERIFY(msg->PathId.OwnerId == Self->GetPathOwnerId());
         auto itUserTables = userTables.find(msg->PathId.LocalPathId);
-        Y_ABORT_UNLESS(itUserTables != userTables.end());
+        Y_VERIFY(itUserTables != userTables.end());
         TUserTable::TCPtr tableInfo = itUserTables->second;
         TConstArrayRef<NScheme::TTypeInfo> keyColumnTypes = tableInfo->KeyColumnTypes;
 
         auto* replTable = Self->EnsureReplicatedTable(msg->PathId);
-        Y_ABORT_UNLESS(replTable);
+        Y_VERIFY(replTable);
 
         if (Self->SrcTabletToRange.empty()) {
             for (const auto& srcRange : Self->DstSplitDescription->GetSourceRanges()) {
@@ -484,7 +474,7 @@ public:
             // Find split keys that are in the (From, To) range
             auto itBegin = std::upper_bound(kvSource.second.begin(), kvSource.second.end(), range.From, leftLess);
             auto itEnd = std::lower_bound(kvSource.second.begin(), kvSource.second.end(), range.To, rightLess);
-            Y_ABORT_UNLESS(itBegin != kvSource.second.begin());
+            Y_VERIFY(itBegin != kvSource.second.begin());
 
             // Add the shard right border first
             if (!range.To.GetCells().empty() && !rightFull) {
@@ -510,7 +500,7 @@ public:
             source.EnsureSplitKey(rdb, leftKey, itBegin->MaxOffset);
 
             // Dump final split keys and offsets for debugging
-            if (IS_LOG_PRIORITY_ENABLED(NLog::PRI_TRACE, NKikimrServices::TX_DATASHARD)) {
+            if (IS_LOG_PRIORITY_ENABLED(ctx, NLog::PRI_TRACE, NKikimrServices::TX_DATASHARD)) {
                 for (const auto* state : source.Offsets) {
                     LOG_TRACE_S(ctx, NKikimrServices::TX_DATASHARD, Self->TabletID()
                         << " Source " << EscapeC(sourceName)

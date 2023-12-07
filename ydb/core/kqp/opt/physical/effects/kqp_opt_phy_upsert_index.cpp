@@ -1,6 +1,5 @@
 #include "kqp_opt_phy_effects_rules.h"
 #include "kqp_opt_phy_effects_impl.h"
-#include "kqp_opt_phy_uniq_helper.h"
 
 #include <ydb/library/yql/providers/common/provider/yql_provider.h>
 
@@ -24,7 +23,7 @@ TRowsAndKeysResult PrecomputeRowsAndKeys(const TCondenseInputResult& condenseRes
 
     auto extractKeys = Build<TCoMap>(ctx, pos)
         .Input(rowsListArg)
-        .Lambda(MakeTableKeySelector(table.Metadata, pos, ctx))
+        .Lambda(MakeTableKeySelector(table, pos, ctx))
         .Done();
 
     auto variantType = Build<TCoVariantType>(ctx, pos)
@@ -102,20 +101,6 @@ THashSet<TString> CreateDataColumnSetToRead(
             if (!inputColumns.contains(col)) {
                 res.emplace(col);
             }
-        }
-    }
-
-    return res;
-}
-
-THashSet<TString> CreateKeyColumnSetToRead(
-    const TVector<std::pair<TExprNode::TPtr, const TIndexDescription*>>& indexes)
-{
-    THashSet<TString> res;
-
-    for (const auto& index : indexes) {
-        for (const auto& col : index.second->KeyColumns) {
-            res.emplace(col);
         }
     }
 
@@ -219,16 +204,7 @@ TExprBase MakeUpsertIndexRows(TKqpPhyUpsertIndexMode mode, const TDqPhyPrecomput
             .Build()
         .Done();
 
-    // rows to be added into the index table in case if the given key hasn't been found in the main table
-    TVector<TExprBase> absentKeyRow;
-    absentKeyRow.reserve(indexColumns.size());
-
-    // rows to be updated in the index table in case if the given key has been found in the main table
-    TVector<TExprBase> presentKeyRow;
-    presentKeyRow.reserve(indexColumns.size());
-
-    auto payload = TCoArgument(ctx.NewArgument(pos, "payload"));
-
+    TVector<TExprBase> rowTuples;
     for (const auto& column : indexColumns) {
         auto columnAtom = ctx.NewAtom(pos, column);
 
@@ -241,44 +217,34 @@ TExprBase MakeUpsertIndexRows(TKqpPhyUpsertIndexMode mode, const TDqPhyPrecomput
                     .Build()
                 .Done();
 
-            absentKeyRow.emplace_back(tuple);
-            presentKeyRow.emplace_back(tuple);
+            rowTuples.emplace_back(tuple);
         } else {
             auto columnType = table.GetColumnType(TString(column));
-            absentKeyRow.emplace_back(
-                Build<TCoNameValueTuple>(ctx, pos)
-                    .Name(columnAtom)
-                    .Value<TCoNothing>()
+
+            auto tuple = Build<TCoNameValueTuple>(ctx, pos)
+                .Name(columnAtom)
+                .Value<TCoIfPresent>()
+                    .Optional(lookup)
+                    .PresentHandler<TCoLambda>()
+                        .Args({"payload"})
+                        .Body<TCoMember>()
+                            .Struct("payload")
+                            .Name(columnAtom)
+                            .Build()
+                        .Build()
+                    .MissingValue<TCoNothing>()
                         .OptionalType(NCommon::BuildTypeExpr(pos, *columnType, ctx))
                         .Build()
-                    .Done()
-            );
-            presentKeyRow.emplace_back(
-                Build<TCoNameValueTuple>(ctx, pos)
-                    .Name(columnAtom)
-                    .Value<TCoMember>()
-                        .Struct(payload)
-                        .Name(columnAtom)
-                        .Build()
-                    .Done()
-            );
+                    .Build()
+                .Done();
+
+            rowTuples.emplace_back(tuple);
         }
     }
 
-    TExprBase flatmapBody = Build<TCoIfPresent>(ctx, pos)
-        .Optional(lookup)
-        .PresentHandler<TCoLambda>()
-            .Args(payload)
-            .Body<TCoJust>()
-                .Input<TCoAsStruct>()
-                    .Add(presentKeyRow)
-                    .Build()
-                .Build()
-            .Build()
-        .MissingValue<TCoJust>()
-            .Input<TCoAsStruct>()
-                .Add(absentKeyRow)
-                .Build()
+    TExprBase flatmapBody = Build<TCoJust>(ctx, pos)
+        .Input<TCoAsStruct>()
+            .Add(rowTuples)
             .Build()
         .Done();
 
@@ -320,121 +286,10 @@ TExprBase MakeUpsertIndexRows(TKqpPhyUpsertIndexMode mode, const TDqPhyPrecomput
         .Done();
 }
 
-TMaybe<TCondenseInputResult> CheckUniqueConstraint(const TExprBase& inputRows, const THashSet<TStringBuf> inputColumns, bool checkOnlyGivenColumns,
-    const TKikimrTableDescription& table, const TSecondaryIndexes& indexes, TPositionHandle pos, TExprContext& ctx)
-{
-    auto condenseResult = CondenseInput(inputRows, ctx);
-    if (!condenseResult) {
-        return {};
-    }
-
-    // Check uniq constraint for indexes which will be updated by input data.
-    // but skip main table pk columns - handle case where we have a complex index is a tuple contains pk
-    const auto& mainPk = table.Metadata->KeyColumnNames;
-    THashSet<TString> usedIndexes;
-    for (const auto& [_, indexDesc] : indexes) {
-        for (const auto& indexKeyCol : indexDesc->KeyColumns) {
-            if (inputColumns.contains(indexKeyCol) &&
-                (std::find(mainPk.begin(), mainPk.end(), indexKeyCol) == mainPk.end()))
-            {
-                usedIndexes.insert(indexDesc->Name);
-                break;
-            }
-        }
-    }
-
-    auto helper = CreateUpsertUniqBuildHelper(table, checkOnlyGivenColumns ? &inputColumns : nullptr, usedIndexes, pos, ctx);
-    if (helper->GetChecksNum() == 0) {
-        return condenseResult;
-    }
-
-    auto computeKeysStage = helper->CreateComputeKeysStage(condenseResult.GetRef(), pos, ctx);
-    auto inputPrecompute = helper->CreateInputPrecompute(computeKeysStage, pos, ctx);
-    auto uniquePrecomputes = helper->CreateUniquePrecompute(computeKeysStage, pos, ctx);
-
-    auto _true = MakeBool(pos, true, ctx);
-
-    auto aggrStage = helper->CreateLookupExistStage(computeKeysStage, table, _true, pos, ctx);
-
-    // Returns <bool>: <true> - no existing keys, <false> - at least one key exists
-    auto noExistingKeysPrecompute = Build<TDqPhyPrecompute>(ctx, pos)
-        .Connection<TDqCnValue>()
-            .Output()
-                .Stage(aggrStage)
-                .Index().Build("0")
-                .Build()
-            .Build()
-        .Done();
-
-    TCoArgument inputRowList(ctx.NewArgument(pos, "rows_list"));
-    TCoArgument noExistingKeysArg(ctx.NewArgument(pos, "no_existing_keys"));
-
-    struct TUniqueCheckNodes {
-        TUniqueCheckNodes(size_t sz) {
-            Bodies.reserve(sz);
-            Args.reserve(sz);
-        }
-        TVector<TExprNode::TPtr> Bodies;
-        TVector<TCoArgument> Args;
-    } uniqueCheckNodes(helper->GetChecksNum());
-
-    for (size_t i = 0; i < helper->GetChecksNum(); i++) {
-        uniqueCheckNodes.Args.emplace_back(ctx.NewArgument(pos, "are_keys_unique"));
-        uniqueCheckNodes.Bodies.emplace_back(Build<TKqpEnsure>(ctx, pos)
-            .Value(_true)
-            .Predicate(uniqueCheckNodes.Args.back())
-            .IssueCode().Build(ToString((ui32) TIssuesIds::KIKIMR_CONSTRAINT_VIOLATION))
-            .Message(MakeMessage("Duplicated keys found.", pos, ctx))
-            .Done().Ptr()
-        );
-    }
-
-    auto noExistingKeysCheck = Build<TKqpEnsure>(ctx, pos)
-        .Value(_true)
-        .Predicate(noExistingKeysArg)
-        .IssueCode().Build(ToString((ui32) TIssuesIds::KIKIMR_CONSTRAINT_VIOLATION))
-        .Message(MakeMessage("Conflict with existing key.", pos, ctx))
-        .Done();
-
-    auto body  = Build<TCoToStream>(ctx, pos)
-        .Input<TCoJust>()
-            .Input<TCoIfStrict>()
-                .Predicate<TCoAnd>()
-                    .Add(uniqueCheckNodes.Bodies)
-                    .Add(noExistingKeysCheck)
-                    .Build()
-                .ThenValue(inputRowList)
-                .ElseValue<TCoList>()
-                    .ListType(ExpandType(pos, *inputRows.Ref().GetTypeAnn(), ctx))
-                    .Build()
-                .Build()
-            .Build()
-        .Done();
-
-    TVector<NYql::NNodes::TCoArgument> stageArgs;
-    stageArgs.reserve(uniqueCheckNodes.Args.size() + 2);
-    stageArgs.emplace_back(inputRowList);
-    stageArgs.insert(stageArgs.end(), uniqueCheckNodes.Args.begin(), uniqueCheckNodes.Args.end());
-    stageArgs.emplace_back(noExistingKeysArg);
-
-    TVector<TExprBase> stageInputs;
-    stageInputs.reserve(uniquePrecomputes.size() + 2);
-    stageInputs.emplace_back(inputPrecompute);
-    stageInputs.insert(stageInputs.end(), uniquePrecomputes.begin(), uniquePrecomputes.end());
-    stageInputs.emplace_back(noExistingKeysPrecompute);
-
-    return TCondenseInputResult {
-        .Stream = body,
-        .StageInputs = std::move(stageInputs),
-        .StageArgs = std::move(stageArgs)
-    };
-}
-
 } // namespace
 
 TMaybeNode<TExprList> KqpPhyUpsertIndexEffectsImpl(TKqpPhyUpsertIndexMode mode, const TExprBase& inputRows,
-    const TCoAtomList& inputColumns, const TKikimrTableDescription& table, 
-    const TMaybeNode<NYql::NNodes::TCoNameValueTupleList>& settings, TPositionHandle pos, TExprContext& ctx)
+    const TCoAtomList& inputColumns, const TKikimrTableDescription& table, TPositionHandle pos, TExprContext& ctx)
 {
     switch (mode) {
         case TKqpPhyUpsertIndexMode::Upsert:
@@ -447,41 +302,23 @@ TMaybeNode<TExprList> KqpPhyUpsertIndexEffectsImpl(TKqpPhyUpsertIndexMode mode, 
 
     const auto& pk = table.Metadata->KeyColumnNames;
 
+    auto condenseInputResult = CondenseAndDeduplicateInput(inputRows, table, ctx);
+    if (!condenseInputResult) {
+        return {};
+    }
+
+    auto inputRowsAndKeys = PrecomputeRowsAndKeys(*condenseInputResult, table, pos, ctx);
+
+    const auto indexes = BuildSecondaryIndexVector(table, pos, ctx);
+    YQL_ENSURE(indexes);
+
     THashSet<TStringBuf> inputColumnsSet;
     for (const auto& column : inputColumns) {
         inputColumnsSet.emplace(column.Value());
     }
 
-    bool checkOnlyGivenColumns = false;
-    if (settings) {
-        for (const auto& setting : settings.Cast()) {
-            if (setting.Name().Value() == "IsUpdate") {
-                checkOnlyGivenColumns = true;
-                break;
-            }
-        }
-    }
-
-    auto filter =  (mode == TKqpPhyUpsertIndexMode::UpdateOn) ? &inputColumnsSet : nullptr;
-    const auto indexes = BuildSecondaryIndexVector(table, pos, ctx, filter);
-
-    auto checkedInput = CheckUniqueConstraint(inputRows, inputColumnsSet, checkOnlyGivenColumns, table, indexes, pos, ctx);
-
-    if (!checkedInput) {
-        return {};
-    }
-
-    auto condenseInputResult = DeduplicateInput(checkedInput.GetRef(), table, ctx);
-
-    auto inputRowsAndKeys = PrecomputeRowsAndKeys(condenseInputResult, table, pos, ctx);
-
-    // For UPSERT check that indexes is not empty
-    YQL_ENSURE(mode == TKqpPhyUpsertIndexMode::UpdateOn || indexes);
-
-    THashSet<TString> indexDataColumns = CreateDataColumnSetToRead(indexes, inputColumnsSet);
-    THashSet<TString> indexKeyColumns = CreateKeyColumnSetToRead(indexes);
-
-    auto lookupDict = PrecomputeTableLookupDict(inputRowsAndKeys.KeysPrecompute, table, indexDataColumns, indexKeyColumns, pos, ctx);
+    auto dataColumns = CreateDataColumnSetToRead(indexes, inputColumnsSet);
+    auto lookupDict = PrecomputeTableLookupDict(inputRowsAndKeys.KeysPrecompute, table, dataColumns, indexes, pos, ctx);
     if (!lookupDict) {
         return {};
     }
@@ -494,7 +331,6 @@ TMaybeNode<TExprList> KqpPhyUpsertIndexEffectsImpl(TKqpPhyUpsertIndexMode mode, 
         .Table(BuildTableMeta(table, pos, ctx))
         .Input(tableUpsertRows)
         .Columns(inputColumns)
-        .Settings(settings)
         .Done();
 
     TVector<TExprBase> effects;
@@ -575,7 +411,7 @@ TExprBase KqpBuildUpsertIndexStages(TExprBase node, TExprContext& ctx, const TKq
     const auto& table = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, upsert.Table().Path());
 
     auto effects = KqpPhyUpsertIndexEffectsImpl(TKqpPhyUpsertIndexMode::Upsert, upsert.Input(), upsert.Columns(),
-        table, upsert.Settings(), upsert.Pos(), ctx);
+        table, upsert.Pos(), ctx);
 
     if (!effects) {
         return node;

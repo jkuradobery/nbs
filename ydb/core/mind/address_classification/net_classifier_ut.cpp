@@ -6,7 +6,7 @@
 
 #include <ydb/core/testlib/test_client.h>
 
-#include <ydb/library/actors/http/http_proxy.cpp>
+#include <library/cpp/actors/http/http_proxy.cpp>
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -19,7 +19,7 @@ using namespace NNetClassifier;
 using namespace Tests;
 
 static THolder<TTempFileHandle> CreateNetDataFile(const TString& content) {
-    auto netDataFile = MakeHolder<TTempFileHandle>();
+    auto netDataFile = MakeHolder<TTempFileHandle>("data.tsv");
 
     netDataFile->Write(content.Data(), content.Size());
     netDataFile->FlushData();

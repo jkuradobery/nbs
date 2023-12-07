@@ -19,7 +19,6 @@ SRCS(
     type_ann_types.h
     type_ann_wide.cpp
     type_ann_wide.h
-    type_ann_match_recognize.cpp
 )
 
 PEERDIR(
@@ -31,7 +30,6 @@ PEERDIR(
     ydb/library/yql/core/expr_nodes
     ydb/library/yql/core/issue
     ydb/library/yql/core/issue/protos
-    ydb/library/yql/core/sql_types
     ydb/library/yql/providers/common/schema/expr
     ydb/library/yql/parser/pg_catalog
     ydb/library/yql/parser/pg_wrapper/interface

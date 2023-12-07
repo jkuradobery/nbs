@@ -4,7 +4,7 @@ FORK_SUBTESTS()
 
 SPLIT_FACTOR(10)
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(3600)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -29,7 +29,6 @@ YQL_LAST_ABI_VERSION()
 
 SRCS(
     ut_olap.cpp
-    ydb/core/tx/columnshard/columnshard_ut_common.cpp
 )
 
 END()

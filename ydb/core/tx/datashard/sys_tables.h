@@ -1,67 +1,25 @@
 #pragma once
 #include <ydb/core/scheme/scheme_types_auto.h>
 #include <ydb/core/scheme/scheme_tabledefs.h>
-#include <ydb/public/api/protos/ydb_value.pb.h>
-
-#include <ydb/library/mkql_proto/protos/minikql.pb.h>
 
 #include <util/system/unaligned_mem.h>
-
-namespace NKikimrMiniKQL {
-class TResult;
-};
 
 namespace NKikimr {
 
 struct TSysTables {
     struct TTableColumnInfo {
-
-        enum EDefaultKind {
-            DEFAULT_UNDEFINED = 0,
-            DEFAULT_SEQUENCE = 1,
-            DEFAULT_LITERAL = 2
-        };
-
         TString Name;
         ui32 Id = 0;
         NScheme::TTypeInfo PType;
-        TString PTypeMod;
         i32 KeyOrder = -1;
-        TString DefaultFromSequence;
-        EDefaultKind DefaultKind;
-        Ydb::TypedValue DefaultFromLiteral;
 
         TTableColumnInfo() = default;
 
-        void SetDefaultFromSequence() {
-            DefaultKind = DEFAULT_SEQUENCE;
-        }
-
-        void SetDefaultFromLiteral() {
-            DefaultKind = DEFAULT_LITERAL;
-        }
-
-        bool IsDefaultFromSequence() const {
-            return DefaultKind == DEFAULT_SEQUENCE;
-        }
-
-        bool IsDefaultFromLiteral() const {
-            return DefaultKind == DEFAULT_LITERAL;
-        }
-
-        TTableColumnInfo(TString name, ui32 colId, NScheme::TTypeInfo type,
-            const TString& typeMod = {}, i32 keyOrder = -1,
-            const TString& defaultFromSequence = {},
-            EDefaultKind defaultKind = EDefaultKind::DEFAULT_UNDEFINED,
-            const Ydb::TypedValue& defaultFromLiteral = {})
+        TTableColumnInfo(TString name, ui32 colId, NScheme::TTypeInfo type, i32 keyOrder = -1)
             : Name(name)
             , Id(colId)
             , PType(type)
-            , PTypeMod(typeMod)
             , KeyOrder(keyOrder)
-            , DefaultFromSequence(defaultFromSequence)
-            , DefaultKind(defaultKind)
-            , DefaultFromLiteral(defaultFromLiteral)
         {}
     };
 
@@ -178,8 +136,8 @@ struct TSysTables {
             auto type = NScheme::TTypeInfo(NScheme::TUint64::TypeId);
             auto typeUi32 = NScheme::TTypeInfo(NScheme::TUint32::TypeId);
 
-            columns[0] = TTableColumnInfo(GetColName(EColumns::LockId), (ui32)EColumns::LockId, type, "", 0);
-            columns[1] = TTableColumnInfo(GetColName(EColumns::DataShard), (ui32)EColumns::DataShard, type, "", 1);
+            columns[0] = TTableColumnInfo(GetColName(EColumns::LockId), (ui32)EColumns::LockId, type, 0);
+            columns[1] = TTableColumnInfo(GetColName(EColumns::DataShard), (ui32)EColumns::DataShard, type, 1);
             columns[2] = TTableColumnInfo(GetColName(EColumns::Generation), (ui32)EColumns::Generation, typeUi32);
             columns[3] = TTableColumnInfo(GetColName(EColumns::Counter), (ui32)EColumns::Counter, type);
 
@@ -187,15 +145,15 @@ struct TSysTables {
             keyTypes.push_back(type);
 
             if (v2) {
-                columns[4] = TTableColumnInfo(GetColName(EColumns::SchemeShard), (ui32)EColumns::SchemeShard, type, "", 2);
-                columns[5] = TTableColumnInfo(GetColName(EColumns::PathId), (ui32)EColumns::PathId, type, "", 3);
+                columns[4] = TTableColumnInfo(GetColName(EColumns::SchemeShard), (ui32)EColumns::SchemeShard, type, 2);
+                columns[5] = TTableColumnInfo(GetColName(EColumns::PathId), (ui32)EColumns::PathId, type, 3);
                 keyTypes.push_back(type);
                 keyTypes.push_back(type);
             }
         }
 
         static bool ExtractKey(const TArrayRef<const TCell>& key, EColumns columnId, ui64& value) {
-            Y_ABORT_UNLESS(columnId == EColumns::LockId ||
+            Y_VERIFY(columnId == EColumns::LockId ||
                      columnId == EColumns::DataShard ||
                      columnId == EColumns::SchemeShard ||
                      columnId == EColumns::PathId);
@@ -208,7 +166,7 @@ struct TSysTables {
             if (cell.IsNull())
                 return false;
 
-            Y_ABORT_UNLESS(cell.Size() == sizeof(ui64));
+            Y_VERIFY(cell.Size() == sizeof(ui64));
             value = ReadUnaligned<ui64>(reinterpret_cast<const ui64*>(cell.Data()));
             return true;
         }

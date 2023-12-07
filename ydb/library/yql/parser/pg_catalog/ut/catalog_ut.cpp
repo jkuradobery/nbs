@@ -26,8 +26,6 @@ Y_UNIT_TEST_SUITE(TTypesTests) {
         UNIT_ASSERT_VALUES_EQUAL(ret.ArrayTypeId, 1009);
         UNIT_ASSERT_VALUES_EQUAL(ret.Name, "text");
         UNIT_ASSERT_VALUES_EQUAL(ret.ElementTypeId, 0);
-        UNIT_ASSERT_VALUES_EQUAL(ret.TypeCollation, DefaultCollationOid);
-        UNIT_ASSERT_VALUES_EQUAL(ret.TypType, ETypType::Base);
         UNIT_ASSERT(ret.LessProcId);
         UNIT_ASSERT(ret.EqualProcId);
         UNIT_ASSERT(ret.CompareProcId);
@@ -38,8 +36,6 @@ Y_UNIT_TEST_SUITE(TTypesTests) {
         UNIT_ASSERT_VALUES_EQUAL(ret.ArrayTypeId, 1017);
         UNIT_ASSERT_VALUES_EQUAL(ret.Name, "point");
         UNIT_ASSERT_VALUES_EQUAL(ret.ElementTypeId, LookupType("float8").TypeId);
-        UNIT_ASSERT_VALUES_EQUAL(ret.TypType, ETypType::Base);
-        UNIT_ASSERT(ret.TypeSubscriptFuncId);
         UNIT_ASSERT(!ret.LessProcId);
         UNIT_ASSERT(!ret.EqualProcId);
         UNIT_ASSERT(!ret.CompareProcId);
@@ -50,8 +46,6 @@ Y_UNIT_TEST_SUITE(TTypesTests) {
         UNIT_ASSERT_VALUES_EQUAL(ret.ArrayTypeId, 1009);
         UNIT_ASSERT_VALUES_EQUAL(ret.Name, "_text");
         UNIT_ASSERT_VALUES_EQUAL(ret.ElementTypeId, 25);
-        UNIT_ASSERT_VALUES_EQUAL(ret.TypeCollation, DefaultCollationOid);
-        UNIT_ASSERT_VALUES_EQUAL(ret.TypType, ETypType::Base);
     }
 }
 
@@ -105,7 +99,6 @@ Y_UNIT_TEST_SUITE(TCastsTests) {
         auto ret = LookupCast(LookupType("int8").TypeId, LookupType("int4").TypeId);
         UNIT_ASSERT_VALUES_EQUAL(ret.SourceId, LookupType("int8").TypeId);
         UNIT_ASSERT_VALUES_EQUAL(ret.TargetId, LookupType("int4").TypeId);
-        UNIT_ASSERT_VALUES_EQUAL(ret.CoercionCode, ECoercionCode::Assignment);
         UNIT_ASSERT(ret.Method == ECastMethod::Function);
         UNIT_ASSERT_VALUES_UNEQUAL(ret.FunctionId, 0);
 
@@ -178,33 +171,20 @@ Y_UNIT_TEST_SUITE(TAggregationsTests) {
 
 Y_UNIT_TEST_SUITE(TOpClassesTests) {
     Y_UNIT_TEST(TestMissing) {
-        UNIT_ASSERT_EXCEPTION(LookupDefaultOpClass(EOpClassMethod::Btree, LookupType("json").TypeId), yexception);
+        UNIT_ASSERT_EXCEPTION(LookupOpClass(EOpClassMethod::Btree, LookupType("json").TypeId), yexception);
     }
 
    Y_UNIT_TEST(TestOk) {
-        auto ret = *LookupDefaultOpClass(EOpClassMethod::Btree, LookupType("int4").TypeId);
+        auto ret = LookupOpClass(EOpClassMethod::Btree, LookupType("int4").TypeId);
         UNIT_ASSERT(ret.Method == EOpClassMethod::Btree);
         UNIT_ASSERT_VALUES_EQUAL(ret.TypeId, LookupType("int4").TypeId);
         UNIT_ASSERT_VALUES_EQUAL(ret.Name, "int4_ops");
         UNIT_ASSERT_VALUES_EQUAL(ret.Family, "btree/integer_ops");
-        UNIT_ASSERT_VALUES_EQUAL(ret.FamilyId, 1976);
 
-        ret = *LookupDefaultOpClass(EOpClassMethod::Hash, LookupType("int4").TypeId);
+        ret = LookupOpClass(EOpClassMethod::Hash, LookupType("int4").TypeId);
         UNIT_ASSERT(ret.Method == EOpClassMethod::Hash);
         UNIT_ASSERT_VALUES_EQUAL(ret.TypeId, LookupType("int4").TypeId);
         UNIT_ASSERT_VALUES_EQUAL(ret.Name, "int4_ops");
         UNIT_ASSERT_VALUES_EQUAL(ret.Family, "hash/integer_ops");
-        UNIT_ASSERT_VALUES_EQUAL(ret.FamilyId, 1977);
-   }
-}
-
-Y_UNIT_TEST_SUITE(TConversionTests) {
-    Y_UNIT_TEST(TestMissing) {
-        UNIT_ASSERT_EXCEPTION(LookupConversion("foo", "bar"), yexception);
-    }
-
-   Y_UNIT_TEST(TestOk) {
-        auto procId = LookupConversion("LATIN1", "UTF8").ProcId;
-        UNIT_ASSERT_VALUES_EQUAL(LookupProc(procId).Name, "iso8859_1_to_utf8");
    }
 }

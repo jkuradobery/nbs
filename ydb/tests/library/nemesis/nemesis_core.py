@@ -8,7 +8,7 @@ import time
 import threading
 import six.moves
 from six.moves import collections_abc
-from contrib.ydb.tests.library.nemesis import remote_execution
+from ydb.tests.library.nemesis import remote_execution
 
 
 def wrap_in_list(item):

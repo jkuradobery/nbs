@@ -551,21 +551,19 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         UNIT_ASSERT_VALUES_EQUAL(rec3.GetRequests(0).GetOwner(), "user");
         UNIT_ASSERT_VALUES_EQUAL(rec3.GetRequests(0).ActionsSize(), 2);
         UNIT_ASSERT_VALUES_EQUAL(rec3.GetRequests(0).GetPartialPermissionAllowed(), true);
-        UNIT_ASSERT_VALUES_EQUAL(rec3.GetRequests(0).GetAvailabilityMode(), MODE_MAX_AVAILABILITY);
 
         // Done with permission-1.
         env.CheckDonePermission("user", pid1);
-        // Retry request-2.
-        auto rec4 = env.CheckRequest("user", rid2, false, TStatus::ALLOW, 2);
-        auto pid2 = rec4.GetPermissions(0).GetId();
-        auto pid3 = rec4.GetPermissions(1).GetId();
+        // Retry request-2 and get reject (conflict with request-1).
+        env.CheckRequest("user", rid2, false, TStatus::DISALLOW_TEMP);
         // Get permission-2 for request-1.
-        env.CheckRequest("user", rid1, false, TStatus::DISALLOW_TEMP);
+        auto rec4 = env.CheckRequest("user", rid1, false, TStatus::ALLOW_PARTIAL, 1);
+        auto pid2 = rec4.GetPermissions(0).GetId();
 
-        // Get request-1 expecting 3 remaining actions.
+        // Get request-1 expecting 2 remaining actions.
         auto rec5 = env.CheckGetRequest("user", rid1);
         UNIT_ASSERT_VALUES_EQUAL(rec5.RequestsSize(), 1);
-        UNIT_ASSERT_VALUES_EQUAL(rec5.GetRequests(0).ActionsSize(), 3);
+        UNIT_ASSERT_VALUES_EQUAL(rec5.GetRequests(0).ActionsSize(), 2);
 
         // Schedule request-3.
         auto rec6 = env.CheckPermissionRequest
@@ -576,21 +574,30 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         // Schedule request-4.
         auto rec7 = env.CheckPermissionRequest
             ("user1", true, false, true, true, TStatus::DISALLOW_TEMP,
-             MakeAction(TAction::SHUTDOWN_HOST, env.GetNodeId(1), 60000000));
+             MakeAction(TAction::REPLACE_DEVICES, env.GetNodeId(0), 60000000,
+                        env.PDiskName(1, 3)));
         auto rid4 = rec7.GetRequestId();
 
         // List 2 requests of user1.
         env.CheckListRequests("user1", 2);
         // Reject request-1.
         env.CheckRejectRequest("user", rid1);
-        // Done with permissions 2 and 3.
+        // Retry request-2 and get reject (conflict with permission-2).
+        env.CheckRequest("user", rid2, false, TStatus::DISALLOW_TEMP);
+        // Done with permission-2.
         env.CheckDonePermission("user", pid2);
-        env.CheckDonePermission("user", pid3);
-        // Retry request-3.
-        auto rec8 = env.CheckRequest("user1", rid3, false, TStatus::ALLOW, 1);
-        auto pid4 = rec8.GetPermissions(0).GetId();
+        // Retry request-3 and get reject (conflict with request-2).
+        env.CheckRequest("user1", rid3, false, TStatus::DISALLOW_TEMP);
         // Retry request-4 and get reject (conflict with request-3).
         env.CheckRequest("user1", rid4, false, TStatus::DISALLOW_TEMP);
+        // List 1 request of user.
+        auto rec9 = env.CheckListRequests("user", 1);
+        UNIT_ASSERT_VALUES_EQUAL(rec9.GetRequests(0).GetRequestId(), rid2);
+        // Reject request-3.
+        env.CheckRejectRequest("user1", rid3);
+        // Retry request-4.
+        auto rec8 = env.CheckRequest("user1", rid4, false, TStatus::ALLOW, 1);
+        auto pid3 = rec8.GetPermissions(0).GetId();
 
         // Restart CMS tablet.
         env.RestartCms();
@@ -598,17 +605,17 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         // Check there are no permissions for user.
         env.CheckListPermissions("user", 0);
         // Check permission of user1 is restored.
-        auto rec9 = env.CheckListPermissions("user1", 1);
-        UNIT_ASSERT_VALUES_EQUAL(rec9.GetPermissions(0).GetId(), pid4);
-        // Done with permissions-4.
-        env.CheckDonePermission("user1", pid4);
-        // Check request for user1 is restored.
-        env.CheckListRequests("user1", 1);
-        // Retry request-4.
-        auto rec10 = env.CheckRequest("user1", rid4, false, TStatus::ALLOW, 1);
-        auto pid5 = rec10.GetPermissions(0).GetId();
-        // Check there are no requests for user.
+        auto rec10 = env.CheckListPermissions("user1", 1);
+        UNIT_ASSERT_VALUES_EQUAL(rec10.GetPermissions(0).GetId(), pid3);
+        // Check request for user is restored.
+        auto rec11 = env.CheckListRequests( "user", 1);
+        UNIT_ASSERT_VALUES_EQUAL(rec11.GetRequests(0).GetRequestId(), rid2);
+        // Check there are no requests for user1.
         env.CheckListRequests("user1", 0);
+        // Retry request-2.
+        env.CheckRequest( "user", rid2, false, TStatus::ALLOW, 2);
+        // Check there are no requests for user.
+        env.CheckListRequests( "user", 0);
     }
 
     Y_UNIT_TEST(WalleTasks)
@@ -656,27 +663,27 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         env.CheckWalleRemoveTask("task-5", TStatus::WRONG_REQUEST);
         // Check modified tasks list.
         env.CheckWalleListTasks("task-6", "in-process", env.GetNodeId(1));
-        // Lock node-0 for reboot, Task-6 scheduled, but permission was not issued.
-        env.CheckWalleCreateTask("task-8", "change-disk", false, TStatus::ALLOW,
+        // New task should be queued because of task-6.
+        env.CheckWalleCreateTask("task-8", "change-disk", false, TStatus::DISALLOW_TEMP,
                                  env.GetNodeId(0));
         // Check tasks list.
         env.CheckWalleListTasks(2);
-        // Task-6 still cannot be executed.
-        env.CheckWalleCheckTask("task-6", TStatus::DISALLOW_TEMP, env.GetNodeId(1));
+        // Task-8 still cannot be executed.
+        env.CheckWalleCheckTask("task-8", TStatus::DISALLOW_TEMP, env.GetNodeId(0));
+        // Task-6 is allowed now.
+        env.CheckWalleCheckTask("task-6", TStatus::ALLOW, env.GetNodeId(1));
 
         // Kill CMS tablet to check Wall-E tasks are preserved correctly.
         env.RestartCms();
 
         // Check tasks list.
         env.CheckWalleListTasks(2);
-        // Task-8 is allowed.
-        env.CheckWalleCheckTask("task-8", TStatus::ALLOW, env.GetNodeId(0));
-        // Task-6 is waiting.
-        env.CheckWalleCheckTask("task-6", TStatus::DISALLOW_TEMP, env.GetNodeId(1));
+        // Task-6 is allowed.
+        env.CheckWalleCheckTask("task-6", TStatus::ALLOW, env.GetNodeId(1));
+        // Task-8 is waiting.
+        env.CheckWalleCheckTask("task-8", TStatus::DISALLOW_TEMP, env.GetNodeId(0));
         // Remove task-8.
         env.CheckWalleRemoveTask("task-8");
-        // Task-6 now can be executed.
-        env.CheckWalleCheckTask("task-6", TStatus::ALLOW, env.GetNodeId(1));
         // Check modified tasks list.
         env.CheckWalleListTasks("task-6", "ok", env.GetNodeId(1));
         // Remove task-6.
@@ -718,19 +725,6 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
         // check task is not removed
         env.AdvanceCurrentTime(TDuration::Minutes(20));
-        env.CheckWalleCheckTask("task-2", TStatus::ALLOW, env.GetNodeId(1));
-    }
-
-    Y_UNIT_TEST(WalleRebootDownNode)
-    {
-        TCmsTestEnv env(8);
-
-        // alllow
-        env.CheckWalleCreateTask("task-1", "reboot", false, TStatus::ALLOW, env.GetNodeId(0));
-        // disallow (up)
-        env.CheckWalleCreateTask("task-2", "reboot", false, TStatus::DISALLOW_TEMP, env.GetNodeId(1));
-        // allow (down)
-        TFakeNodeWhiteboardService::Info[env.GetNodeId(1)].Connected = false;
         env.CheckWalleCheckTask("task-2", TStatus::ALLOW, env.GetNodeId(1));
     }
 
@@ -868,7 +862,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
     void TestAvailabilityMode(EAvailabilityMode mode, bool disconnectNodes)
     {
-        Y_ABORT_UNLESS(mode == MODE_KEEP_AVAILABLE
+        Y_VERIFY(mode == MODE_KEEP_AVAILABLE
                  || mode == MODE_FORCE_RESTART);
 
         TCmsTestEnv env(8);
@@ -934,7 +928,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
     void TestAvailabilityModeScheduled(EAvailabilityMode mode,  bool disconnectNodes)
     {
-        Y_ABORT_UNLESS(mode == MODE_KEEP_AVAILABLE
+        Y_VERIFY(mode == MODE_KEEP_AVAILABLE
                  || mode == MODE_FORCE_RESTART);
 
         TCmsTestEnv env(8);
@@ -1265,7 +1259,11 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
     Y_UNIT_TEST(SysTabletsNode)
     {
-        TCmsTestEnv env(TTestEnvOpts(6 /* nodes */, 0 /* vdisks */));
+        TTestEnvOpts opt(6);
+        opt.VDisks = 0;
+
+        TCmsTestEnv env(opt);
+
         env.EnableSysNodeChecking();
 
         env.CheckPermissionRequest("user", false, true, false, true, MODE_MAX_AVAILABILITY, TStatus::ALLOW,
@@ -1280,9 +1278,6 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
         TFakeNodeWhiteboardService::Info[env.GetNodeId(2)].Connected = false;
         env.RestartCms();
-
-        env.CheckPermissionRequest("user", false, true, false, true, MODE_MAX_AVAILABILITY, TStatus::ALLOW,
-                                   MakeAction(TAction::RESTART_SERVICES, env.GetNodeId(2), 60000000, "storage"));
 
         env.CheckPermissionRequest("user", false, true, false, true, MODE_MAX_AVAILABILITY, TStatus::DISALLOW_TEMP,
                                    MakeAction(TAction::RESTART_SERVICES, env.GetNodeId(3), 60000000, "storage"));
@@ -1453,70 +1448,32 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
     Y_UNIT_TEST(TestProcessingQueue)
     {
-        const ui32 nodes = 8;
-        TCmsTestEnv env(nodes);
-        env.CreateDefaultCmsPipe();
-
-        auto makeRequest = [&env](ui32 nodeId) {
-            auto ev = MakePermissionRequest("user", false, true, false,
-                MakeAction(TAction::RESTART_SERVICES, env.GetNodeId(nodeId), 60000000, "storage")
-            );
-            ev->Record.SetDuration(60000000);
-            ev->Record.SetAvailabilityMode(MODE_FORCE_RESTART);
-            env.SendToCms(ev.Release());
-        };
-
-        TActorId cmsActorId;
-        {
-            makeRequest(0);
-            auto ev = env.GrabEdgeEvent<TEvCms::TEvPermissionResponse>(env.GetSender());
-            cmsActorId = ev->Sender;
-        }
-
-        THolder<IEventHandle> delayedClusterInfo;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
-            if (ev->Recipient == cmsActorId && ev->GetTypeRewrite() == TCms::TEvPrivate::EvClusterInfo) {
-                delayedClusterInfo.Reset(ev.Release());
-                return TTestActorRuntime::EEventAction::DROP;
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        });
+        const ui32 RequestsCount = 8;
+        TCmsTestEnv env(RequestsCount);
 
         // We need to send messages in fixed order
-        for (ui32 i = 0; i < nodes; ++i) {
-            makeRequest(i);
+        env.CreateDefaultCmsPipe();
+        env.ProcessQueueCount = 0;
+        for (ui32 i = 0; i < RequestsCount; ++i) {
+            auto req = MakePermissionRequest("user", true, true, false,
+                    MakeAction(NKikimrCms::TAction::RESTART_SERVICES, env.GetNodeId(i), 60000000, "storage"));
+            req->Record.SetDuration(600000);
+            req->Record.SetAvailabilityMode(NKikimrCms::MODE_MAX_AVAILABILITY);
+
+            env.SendToCms(req.Release());
         }
-
-        if (!delayedClusterInfo) {
-            TDispatchOptions opts;
-            opts.FinalEvents.emplace_back([&delayedClusterInfo](IEventHandle&) {
-                return bool(delayedClusterInfo);
-            });
-            env.DispatchEvents(opts);
-        }
-
-        ui32 processQueueCount = 0;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
-            if (ev->Recipient == cmsActorId && ev->GetTypeRewrite() == TCms::TEvPrivate::EvProcessQueue) {
-                ++processQueueCount;
-            }
-            return TTestActorRuntime::EEventAction::PROCESS;
-        });
-
-        env.Send(delayedClusterInfo.Release(), 0, true);
+        env.DestroyDefaultCmsPipe();
 
         // Check responses order
-        for (ui32 i = 0; i < nodes; ++i) {
-            auto ev = env.GrabEdgeEvent<TEvCms::TEvPermissionResponse>(env.GetSender());
-            const auto &rec = ev->Get()->Record;
+        for (ui32 i = 0; i < RequestsCount; ++i) {
+            TAutoPtr<IEventHandle> handle;
+            auto reply = env.GrabEdgeEventRethrow<TEvCms::TEvPermissionResponse>(handle);
+            const auto &rec = reply->Record;
 
             UNIT_ASSERT_VALUES_EQUAL(rec.permissions_size(), 1);
             UNIT_ASSERT_VALUES_EQUAL(rec.permissions()[0].GetAction().GetHost(), ToString(env.GetNodeId(i)));
         }
-
-        // first request processed without EvProcessQueue
-        UNIT_ASSERT_VALUES_EQUAL(processQueueCount, nodes - 1);
-        env.DestroyDefaultCmsPipe();
+        UNIT_ASSERT_VALUES_EQUAL(env.ProcessQueueCount, RequestsCount);
     }
 
     Y_UNIT_TEST(TestLogOperationsRollback)
@@ -1572,7 +1529,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         }
 
         THolder<IEventHandle> delayedClusterInfo;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TCms::TEvPrivate::EvClusterInfo) {
                 if (ev->Recipient == cmsActorId) {
                     delayedClusterInfo.Reset(ev.Release());
@@ -1592,7 +1549,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         }
 
         bool requestCaptured = false;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvCms::EvPermissionRequest) {
                 requestCaptured = true;
             }
@@ -1611,7 +1568,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         env.Send(delayedClusterInfo.Release(), 0, true);
         bool processQueueCaptured = false;
         bool clusterInfoCaptured = false;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TCms::TEvPrivate::EvProcessQueue) {
                 if (ev->Sender == cmsActorId || ev->Recipient == cmsActorId) {
                     processQueueCaptured = true;
@@ -1638,7 +1595,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
 
         requestCaptured = false;
         THolder<IEventHandle> delayedStartCollecting;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TEvCms::EvPermissionRequest) {
                 requestCaptured = true;
             } else if (ev->GetTypeRewrite() == TCms::TEvPrivate::EvStartCollecting) {
@@ -1660,7 +1617,7 @@ Y_UNIT_TEST_SUITE(TCmsTest) {
         }
 
         bool startCollecting = false;
-        env.SetObserverFunc([&](TAutoPtr<IEventHandle>& ev) {
+        env.SetObserverFunc([&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) {
             if (ev->GetTypeRewrite() == TCms::TEvPrivate::EvStartCollecting) {
                 if (ev->Sender == cmsActorId || ev->Recipient == cmsActorId) {
                     startCollecting = true;

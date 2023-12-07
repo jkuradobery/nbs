@@ -1,10 +1,6 @@
 #include "blob.h"
 #include <library/cpp/testing/unittest/registar.h>
-#include <ydb/core/persqueue/partition_key_range/partition_key_range.h>
-#include <ydb/library/yql/public/decimal/yql_decimal.h>
 #include <util/generic/size_literals.h>
-#include <util/stream/format.h>
-
 
 namespace NKikimr::NPQ {
 namespace {
@@ -52,8 +48,7 @@ void Test(bool headCompacted, ui32 parts, ui32 partSize, ui32 leftInHead)
     UNIT_ASSERT(head.Batches.back().Header.GetFormat() == NKikimrPQ::TBatchHeader::ECompressed);
     head.Batches.back().Unpack();
     head.Batches.back().Pack();
-    TString str;
-    head.Batches.back().SerializeTo(str);
+    TString str = head.Batches.back().Serialize();
     auto header = ExtractHeader(str.c_str(), str.size());
     TBatch batch(header, str.c_str() + header.ByteSize() + sizeof(ui16));
     batch.Unpack();
@@ -88,8 +83,8 @@ void Test(bool headCompacted, ui32 parts, ui32 partSize, ui32 leftInHead)
         );
         all.push_back(clientBlob);
         auto res = blob.Add(std::move(clientBlob));
-        if (res && !res->second.empty())
-            formed.push_back(*res);
+        if (!res.second.empty())
+            formed.push_back(res);
     }
     UNIT_ASSERT(blob.IsComplete());
     UNIT_ASSERT(formed.size() == blob.GetFormedBlobs().size());
@@ -182,17 +177,16 @@ Y_UNIT_TEST(TestBatchPacking) {
         ));
     }
     batch.Pack();
-    TBuffer b = batch.PackedData;
+    TString s = batch.PackedData;
     UNIT_ASSERT(batch.Header.GetFormat() == NKikimrPQ::TBatchHeader::ECompressed);
     batch.Unpack();
     batch.Pack();
-    UNIT_ASSERT(batch.PackedData == b);
-    TString str;
-    batch.SerializeTo(str);
+    UNIT_ASSERT(batch.PackedData == s);
+    TString str = batch.Serialize();
     auto header = ExtractHeader(str.c_str(), str.size());
     TBatch batch2(header, str.c_str() + header.ByteSize() + sizeof(ui16));
     batch2.Unpack();
-    Y_ABORT_UNLESS(batch2.Blobs.size() == 100);
+    Y_VERIFY(batch2.Blobs.size() == 100);
 
     TBatch batch3;
     batch3.AddBlob(TClientBlob(
@@ -202,31 +196,8 @@ Y_UNIT_TEST(TestBatchPacking) {
     batch3.Pack();
     UNIT_ASSERT(batch3.Header.GetFormat() == NKikimrPQ::TBatchHeader::EUncompressed);
     batch3.Unpack();
-    Y_ABORT_UNLESS(batch3.Blobs.size() == 1);
+    Y_VERIFY(batch3.Blobs.size() == 1);
 }
-
-const TString ToHex(const TString& value) {
-    return TStringBuilder() << HexText(TBasicStringBuf(value));
-}
-
-Y_UNIT_TEST(TestKeyRange) {
-    char expected_[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 
-                        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18};
-    TString expected(expected_, sizeof(expected_));
-
-    NYql::TWide<ui64> v (0x0102030405060708ull, 0x1112131415161718ull);
-
-    TString result = AsKeyBound(v);
-
-    UNIT_ASSERT_STRINGS_EQUAL(ToHex(result), ToHex(expected));
-
-    NYql::NDecimal::TUint128 v2 = 0x0102030405060708ull;
-    v2 <<= sizeof(ui64) << 3;
-    v2 |= 0x1112131415161718ull;
-    result = AsKeyBound(v2);
-
-    UNIT_ASSERT_STRINGS_EQUAL(ToHex(result), ToHex(expected));
-} // Y_UNIT_TEST(TestKeyRange)
 
 
 } //Y_UNIT_TEST_SUITE

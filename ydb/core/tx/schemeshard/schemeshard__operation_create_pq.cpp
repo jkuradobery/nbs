@@ -2,14 +2,10 @@
 #include "schemeshard__operation_common.h"
 #include "schemeshard_impl.h"
 
-#include <library/cpp/int128/int128.h>
-
 #include <ydb/core/base/subdomain.h>
 #include <ydb/core/engine/mkql_proto.h>
 #include <ydb/core/persqueue/config/config.h>
-#include <ydb/core/persqueue/partition_key_range/partition_key_range.h>
 #include <ydb/core/mind/hive/hive.h>
-#include <ydb/services/lib/sharding/sharding.h>
 
 namespace {
 
@@ -47,14 +43,6 @@ TTopicInfo::TPtr CreatePersQueueGroup(TOperationContext& context,
         status = NKikimrScheme::StatusInvalidParameter;
         errStr = Sprintf("Invalid total partition count specified: %u", partitionCount);
         return nullptr;
-    }
-
-    if (op.HasPQTabletConfig() && op.GetPQTabletConfig().HasPartitionStrategy()) {
-        const auto strategy = op.GetPQTabletConfig().GetPartitionStrategy();
-        if (strategy.GetMaxPartitionCount() < strategy.GetMinPartitionCount()) {
-            errStr = Sprintf("Invalid min and max partition count specified: %u > %u", strategy.GetMinPartitionCount(), strategy.GetMaxPartitionCount());
-            return nullptr;
-        }
     }
 
     if (!op.HasPQTabletConfig()) {
@@ -103,14 +91,12 @@ TTopicInfo::TPtr CreatePersQueueGroup(TOperationContext& context,
         }
     }
 
-    bool splitMergeEnabled = AppData()->FeatureFlags.GetEnableTopicSplitMerge();
-
     TString prevBound;
     for (ui32 i = 0; i < partitionCount; ++i) {
         using TKeyRange = TTopicTabletInfo::TKeyRange;
         TMaybe<TKeyRange> keyRange;
 
-        if (op.PartitionBoundariesSize() || (splitMergeEnabled && 1 < partitionCount)) {
+        if (op.PartitionBoundariesSize()) {
             keyRange.ConstructInPlace();
 
             if (i) {
@@ -118,24 +104,16 @@ TTopicInfo::TPtr CreatePersQueueGroup(TOperationContext& context,
             }
 
             if (i != (partitionCount - 1)) {
-                if (op.PartitionBoundariesSize()) {
-                    TVector<TCell> cells;
-                    TString error;
-                    TVector<TString> memoryOwner;
-                    if (!NMiniKQL::CellsFromTuple(nullptr, op.GetPartitionBoundaries(i), pqGroupInfo->KeySchema, false,
-                                                  cells, error, memoryOwner)) {
-                        status = NKikimrScheme::StatusSchemeError;
-                        errStr = Sprintf("Invalid partition boundary at position: %u, error: %s", i, error.data());
-                        return nullptr;
-                    }
-
-                    cells.resize(pqGroupInfo->KeySchema.size()); // Extend with NULLs
-                    keyRange->ToBound = TSerializedCellVec::Serialize(cells);
-                } else { // splitMergeEnabled
-                    auto range = NDataStreams::V1::RangeFromShardNumber(i, partitionCount);
-                    keyRange->ToBound = NPQ::AsKeyBound(range.End);
+                TVector<TCell> cells;
+                TString error;
+                if (!NMiniKQL::CellsFromTuple(nullptr, op.GetPartitionBoundaries(i), pqGroupInfo->KeySchema, false, cells, error)) {
+                    status = NKikimrScheme::StatusSchemeError;
+                    errStr = Sprintf("Invalid partition boundary at position: %u, error: %s", i, error.data());
+                    return nullptr;
                 }
 
+                cells.resize(pqGroupInfo->KeySchema.size()); // Extend with NULLs
+                keyRange->ToBound = TSerializedCellVec::Serialize(cells);
                 prevBound = *keyRange->ToBound;
             }
         }
@@ -206,7 +184,7 @@ void ApplySharding(TTxId txId,
     pqGroup->AlterVersion = 0;
     TShardInfo shardInfo = TShardInfo::PersQShardInfo(txId, pathId);
     shardInfo.BindedChannels = pqBindedChannels;
-    Y_ABORT_UNLESS(pqGroup->TotalGroupCount == pqGroup->PartitionsToAdd.size());
+    Y_VERIFY(pqGroup->TotalGroupCount == pqGroup->PartitionsToAdd.size());
     const ui64 count = pqGroup->ExpectedShardCount();
     txState.Shards.reserve(count + 1);
     const auto startShardIdx = ss->ReserveShardIdxs(count + 1);
@@ -230,17 +208,15 @@ void ApplySharding(TTxId txId,
     auto it = pqGroup->PartitionsToAdd.begin();
     for (ui32 pqId = 0; pqId < pqGroup->TotalGroupCount; ++pqId, ++it) {
         auto idx = ss->NextShardIdx(startShardIdx, pqId / pqGroup->MaxPartsPerTablet);
-        auto partition = MakeHolder<TTopicTabletInfo::TTopicPartitionInfo>();
-        partition->PqId = it->PartitionId;
-        partition->GroupId = it->GroupId;
-        partition->KeyRange = it->KeyRange;
-        partition->AlterVersion = 1;
-        partition->CreateVersion = 1;
-        partition->Status = NKikimrPQ::ETopicPartitionStatus::Active;
+        TTopicTabletInfo::TPtr pqShard = pqGroup->Shards[idx];
 
-        pqGroup->AddPartition(idx, partition.Release());
+        TTopicTabletInfo::TTopicPartitionInfo pqInfo;
+        pqInfo.PqId = it->PartitionId;
+        pqInfo.GroupId = it->GroupId;
+        pqInfo.KeyRange = it->KeyRange;
+        pqInfo.AlterVersion = 1;
+        pqShard->Partitions.push_back(pqInfo);
     }
-    pqGroup->InitSplitMergeGraph();
 }
 
 
@@ -384,10 +360,10 @@ public:
 
         auto tabletConfig = pqGroup->TabletConfig;
         NKikimrPQ::TPQTabletConfig config;
-        Y_ABORT_UNLESS(!tabletConfig.empty());
+        Y_VERIFY(!tabletConfig.empty());
 
         bool parseOk = ParseFromStringNoSizeLimit(config, tabletConfig);
-        Y_ABORT_UNLESS(parseOk);
+        Y_VERIFY(parseOk);
 
         const PQGroupReserve reserve(config, partitionsToCreate);
 
@@ -472,7 +448,7 @@ public:
         for (auto& shard : pqGroup->Shards) {
             auto shardIdx = shard.first;
             for (const auto& pqInfo : shard.second->Partitions) {
-                context.SS->PersistPersQueue(db, pathId, shardIdx, *pqInfo);
+                context.SS->PersistPersQueue(db, pathId, shardIdx, pqInfo);
             }
         }
 
@@ -487,11 +463,11 @@ public:
         context.SS->PersistAddPersQueueGroupAlter(db, pathId, pqGroup);
 
         for (auto shard : txState.Shards) {
-            Y_ABORT_UNLESS(shard.Operation == TTxState::CreateParts);
+            Y_VERIFY(shard.Operation == TTxState::CreateParts);
             context.SS->PersistShardMapping(db, shard.Idx, InvalidTabletId, pathId, OperationId.GetTxId(), shard.TabletType);
             context.SS->PersistChannelsBinding(db, shard.Idx, tabletChannelsBinding);
         }
-        Y_ABORT_UNLESS(txState.Shards.size() == shardsToCreate);
+        Y_VERIFY(txState.Shards.size() == shardsToCreate);
         context.SS->TabletCounters->Simple()[COUNTER_PQ_SHARD_COUNT].Add(shardsToCreate-1);
         context.SS->TabletCounters->Simple()[COUNTER_PQ_RB_SHARD_COUNT].Add(1);
 
@@ -503,18 +479,6 @@ public:
         if (parentPath.Base()->HasActiveChanges()) {
             TTxId parentTxId = parentPath.Base()->PlannedToCreate() ? parentPath.Base()->CreateTxId : parentPath.Base()->LastTxId;
             context.OnComplete.Dependence(parentTxId, OperationId.GetTxId());
-        }
-
-        if (parentPath.Base()->IsCdcStream()) {
-            auto tablePath = parentPath.Parent();
-            Y_ABORT_UNLESS(tablePath.IsResolved());
-
-            Y_ABORT_UNLESS(context.SS->Tables.contains(tablePath.Base()->PathId));
-            auto table = context.SS->Tables.at(tablePath.Base()->PathId);
-
-            for (const auto& splitOpId : table->GetSplitOpsInFlight()) {
-                context.OnComplete.Dependence(splitOpId.GetTxId(), OperationId.GetTxId());
-            }
         }
 
         context.SS->ChangeTxState(db, OperationId, TTxState::CreateParts);
@@ -558,7 +522,7 @@ public:
     }
 
     void AbortPropose(TOperationContext&) override {
-        Y_ABORT("no AbortPropose for TCreatePQ");
+        Y_FAIL("no AbortPropose for TCreatePQ");
     }
 
     void AbortUnsafe(TTxId forceDropTxId, TOperationContext& context) override {
@@ -576,12 +540,12 @@ public:
 
 namespace NKikimr::NSchemeShard {
 
-ISubOperation::TPtr CreateNewPQ(TOperationId id, const TTxTransaction& tx) {
+ISubOperationBase::TPtr CreateNewPQ(TOperationId id, const TTxTransaction& tx) {
     return MakeSubOperation<TCreatePQ>(id, tx);
 }
 
-ISubOperation::TPtr CreateNewPQ(TOperationId id, TTxState::ETxState state) {
-    Y_ABORT_UNLESS(state != TTxState::Invalid);
+ISubOperationBase::TPtr CreateNewPQ(TOperationId id, TTxState::ETxState state) {
+    Y_VERIFY(state != TTxState::Invalid);
     return MakeSubOperation<TCreatePQ>(id, state);
 }
 

@@ -6,11 +6,11 @@ SRCS(
 )
 
 PEERDIR(
-    ydb/library/grpc/server
+    library/cpp/grpc/server
     library/cpp/retry
-    ydb/core/fq/libs/grpc
     ydb/core/grpc_services
     ydb/core/grpc_services/base
+    ydb/core/yq/libs/grpc
     ydb/library/protobuf_printer
 )
 

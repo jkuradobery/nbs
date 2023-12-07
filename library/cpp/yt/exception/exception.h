@@ -16,7 +16,7 @@ class TSimpleException
 public:
     explicit TSimpleException(TString message);
 
-    const TString& GetMessage() const;
+    const TString& GetMesage() const;
     const char* what() const noexcept override;
 
 protected:

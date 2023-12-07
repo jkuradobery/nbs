@@ -5,7 +5,6 @@ PROVIDES(test_framework)
 SRCS(
     gtest.cpp
     main.cpp
-    matchers.cpp
 )
 
 PEERDIR(

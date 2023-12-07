@@ -1,7 +1,9 @@
 #include "schema.h"
 #include "sys_params.h"
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 TSysParams::TSysParams() {
     Reset();
@@ -36,4 +38,6 @@ ui64 TSysParams::AllocateReplicationId(NIceDb::TNiceDb& db) {
     return result;
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

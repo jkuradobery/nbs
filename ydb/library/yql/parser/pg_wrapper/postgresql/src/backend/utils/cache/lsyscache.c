@@ -161,8 +161,8 @@ get_op_opfamily_properties(Oid opno, Oid opfamily, bool ordering_op,
  * Returns InvalidOid if there is no pg_amop entry for the given keys.
  */
 Oid
-get_opfamily_member_original(Oid opfamily, Oid lefttype, Oid righttype,
-                             int16 strategy)
+get_opfamily_member(Oid opfamily, Oid lefttype, Oid righttype,
+					int16 strategy)
 {
 	HeapTuple	tp;
 	Form_pg_amop amop_tup;
@@ -791,7 +791,7 @@ comparison_ops_are_compatible(Oid opno1, Oid opno2)
  * Returns InvalidOid if there is no pg_amproc entry for the given keys.
  */
 Oid
-get_opfamily_proc_original(Oid opfamily, Oid lefttype, Oid righttype, int16 procnum)
+get_opfamily_proc(Oid opfamily, Oid lefttype, Oid righttype, int16 procnum)
 {
 	HeapTuple	tp;
 	Form_pg_amproc amproc_tup;
@@ -1253,7 +1253,7 @@ get_opclass_opfamily_and_input_type(Oid opclass, Oid *opfamily, Oid *opcintype)
  *		operator given the operator oid.
  */
 RegProcedure
-get_opcode_original(Oid opno)
+get_opcode(Oid opno)
 {
 	HeapTuple	tp;
 
@@ -1354,7 +1354,7 @@ op_input_types(Oid opno, Oid *lefttype, Oid *righttype)
  * is needed to check this --- by convention, pass the left input's data type.
  */
 bool
-op_mergejoinable_original(Oid opno, Oid inputtype)
+op_mergejoinable(Oid opno, Oid inputtype)
 {
 	bool		result = false;
 	HeapTuple	tp;
@@ -1405,7 +1405,7 @@ op_mergejoinable_original(Oid opno, Oid inputtype)
  * to check this --- by convention, pass the left input's data type.
  */
 bool
-op_hashjoinable_original(Oid opno, Oid inputtype)
+op_hashjoinable(Oid opno, Oid inputtype)
 {
 	bool		result = false;
 	HeapTuple	tp;
@@ -1549,7 +1549,7 @@ get_oprrest(Oid opno)
  *		Returns procedure id for computing selectivity of a join.
  */
 RegProcedure
-get_oprjoin_original(Oid opno)
+get_oprjoin(Oid opno)
 {
 	HeapTuple	tp;
 
@@ -1748,7 +1748,7 @@ func_strict(Oid funcid)
  *		Given procedure id, return the function's provolatile flag.
  */
 char
-func_volatile_original(Oid funcid)
+func_volatile(Oid funcid)
 {
 	HeapTuple	tp;
 	char		result;
@@ -2757,16 +2757,14 @@ get_array_type(Oid typid)
 Oid
 get_promoted_array_type(Oid typid)
 {
-    Oid			array_type = get_array_type(typid);
+	Oid			array_type = get_array_type(typid);
 
-    if (OidIsValid(array_type))
-        return array_type;
-    if (OidIsValid(get_element_type(typid)))
-        return typid;
-    return InvalidOid;
+	if (OidIsValid(array_type))
+		return array_type;
+	if (OidIsValid(get_element_type(typid)))
+		return typid;
+	return InvalidOid;
 }
-
-extern Oid get_base_element_type(Oid typid);
 
 /*
  * get_base_element_type
@@ -2778,7 +2776,7 @@ extern Oid get_base_element_type(Oid typid);
  * about the typmod of the array.
  */
 Oid
-get_base_element_type_original(Oid typid)
+get_base_element_type(Oid typid)
 {
 	/*
 	 * We loop to find the bottom base type in a stack of domains.

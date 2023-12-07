@@ -235,23 +235,6 @@ namespace {
                 IsProcessed0 = false;
             }
 
-            void Visit(TMultiType& node) override {
-                if (node.GetCookie() != 0) {
-                    Owner.WriteReference(node);
-                    IsProcessed0 = true;
-                    return;
-                }
-
-                Owner.Write(TypeMarker | (char)TType::EKind::Multi);
-                Owner.WriteVar32(node.GetElementsCount());
-                for (ui32 i = node.GetElementsCount(); i-- > 0;) {
-                    auto elementType = node.GetElementType(i);
-                    Owner.AddChildNode(*elementType);
-                }
-
-                IsProcessed0 = false;
-            }
-
             void Visit(TTaggedType& node) override {
                 if (node.GetCookie() != 0) {
                     Owner.WriteReference(node);
@@ -412,7 +395,7 @@ namespace {
 
                 Owner.Write((char)TType::EKind::Struct);
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetMembersCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetMembersCount());
                 for (ui32 i = node.GetValuesCount(); i-- > 0; ) {
                     auto value = node.GetValue(i);
                     Owner.AddChildNode(*value.GetNode());
@@ -498,7 +481,7 @@ namespace {
                     auto result = node.GetResult();
                     Owner.AddChildNode(*result.GetNode());
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(node.GetInputsCount() == type->GetArgumentsCount());
+                    Y_VERIFY_DEBUG(node.GetInputsCount() == type->GetArgumentsCount());
                     for (ui32 i = node.GetInputsCount(); i-- > 0;) {
                         auto input = node.GetInput(i);
                         Owner.AddChildNode(*input.GetNode());
@@ -537,7 +520,7 @@ namespace {
 
                 Owner.Write((char)TType::EKind::Tuple);
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetElementsCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetElementsCount());
                 for (ui32 i = node.GetValuesCount(); i-- > 0;) {
                     auto value = node.GetValue(i);
                     Owner.AddChildNode(*value.GetNode());
@@ -631,10 +614,6 @@ namespace {
 
             void Visit(TBlockType& node) override {
                 Owner.Write(static_cast<ui8>(node.GetShape()));
-                Owner.RegisterReference(node);
-            }
-
-            void Visit(TMultiType& node) override {
                 Owner.RegisterReference(node);
             }
 
@@ -781,7 +760,7 @@ namespace {
 
             void Visit(TStructLiteral& node) override {
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetMembersCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetMembersCount());
                 TStackVec<char> immediateFlags(GetBitmapBytes(node.GetValuesCount()));
                 for (ui32 i = 0, e = node.GetValuesCount(); i < e; ++i) {
                     auto value = node.GetValue(i);
@@ -833,7 +812,7 @@ namespace {
                     Owner.Write(node.GetResult().IsImmediate() ? 1 : 0);
                 } else {
                     auto type = node.GetType();
-                    Y_DEBUG_ABORT_UNLESS(node.GetInputsCount() == type->GetArgumentsCount());
+                    Y_VERIFY_DEBUG(node.GetInputsCount() == type->GetArgumentsCount());
                     TStackVec<char> immediateFlags(GetBitmapBytes(node.GetInputsCount()));
                     for (ui32 i = 0, e = node.GetInputsCount(); i < e; ++i) {
                         auto input = node.GetInput(i);
@@ -857,7 +836,7 @@ namespace {
 
             void Visit(TTupleLiteral& node) override {
                 auto type = node.GetType();
-                Y_DEBUG_ABORT_UNLESS(node.GetValuesCount() == type->GetElementsCount());
+                Y_VERIFY_DEBUG(node.GetValuesCount() == type->GetElementsCount());
                 TStackVec<char> immediateFlags(GetBitmapBytes(node.GetValuesCount()));
                 for (ui32 i = 0, e = node.GetValuesCount(); i < e; ++i) {
                     auto value = node.GetValue(i);
@@ -897,16 +876,16 @@ namespace {
                     auto prevSize = Stack.size();
                     nodeAndFlag.first->Accept(preVisitor);
                     if (preVisitor.IsProcessed()) { // ref or small node, some nodes have been added
-                        Y_DEBUG_ABORT_UNLESS(prevSize == Stack.size());
+                        Y_VERIFY_DEBUG(prevSize == Stack.size());
                         Stack.pop_back();
                         continue;
                     }
 
-                    Y_DEBUG_ABORT_UNLESS(prevSize <= Stack.size());
+                    Y_VERIFY_DEBUG(prevSize <= Stack.size());
                 } else {
                     auto prevSize = Stack.size();
                     nodeAndFlag.first->Accept(postVisitor);
-                    Y_DEBUG_ABORT_UNLESS(prevSize == Stack.size());
+                    Y_VERIFY_DEBUG(prevSize == Stack.size());
                     Stack.pop_back();
                 }
             }
@@ -942,7 +921,7 @@ namespace {
                 it->second = nameIndex++;
             }
 
-            Y_DEBUG_ABORT_UNLESS(nameIndex == Names.size());
+            Y_VERIFY_DEBUG(nameIndex == Names.size());
         }
 
         void End() {
@@ -954,14 +933,14 @@ namespace {
         }
 
         void RegisterReference(TNode& node) {
-            Y_DEBUG_ABORT_UNLESS(node.GetCookie() == 0);
+            Y_VERIFY_DEBUG(node.GetCookie() == 0);
             node.SetCookie(++ReferenceCount);
         }
 
         void WriteReference(TNode& node) {
             Write(SystemMask | (char)ESystemCommand::Ref);
-            Y_DEBUG_ABORT_UNLESS(node.GetCookie() != 0);
-            Y_DEBUG_ABORT_UNLESS(node.GetCookie() <= ReferenceCount);
+            Y_VERIFY_DEBUG(node.GetCookie() != 0);
+            Y_VERIFY_DEBUG(node.GetCookie() <= ReferenceCount);
             WriteVar32(node.GetCookie() - 1);
         }
 
@@ -1036,7 +1015,7 @@ namespace {
                 }
 
                 if (last.NextPass == AllPassesDone) {
-                    Y_DEBUG_ABORT_UNLESS(last.ChildCount <= NodeStack.size());
+                    Y_VERIFY_DEBUG(last.ChildCount <= NodeStack.size());
                     Reverse(NodeStack.end() - last.ChildCount, NodeStack.end());
                     auto newNode = ReadNode();
                     if (Current > lastPos) {
@@ -1060,7 +1039,7 @@ namespace {
                 if (childCount != 0) {
                     CtxStack.insert(CtxStack.end(), childCount, TNodeContext());
                 } else {
-                    Y_DEBUG_ABORT_UNLESS(res == 0);
+                    Y_VERIFY_DEBUG(res == 0);
                 }
             }
 
@@ -1189,8 +1168,8 @@ namespace {
                 return TryReadCallableType(code);
             case TType::EKind::Any:
                 return 0;
-            case TType::EKind::Tuple: // and Multi
-                return TryReadTupleOrMultiType();
+            case TType::EKind::Tuple:
+                return TryReadTupleType();
             case TType::EKind::Resource:
                 return 0;
             case TType::EKind::Variant:
@@ -1227,7 +1206,7 @@ namespace {
             case TType::EKind::Any:
                 return ReadAnyType();
             case TType::EKind::Tuple:
-                return ReadTupleOrMultiType(code);
+                return ReadTupleType();
             case TType::EKind::Resource:
                 return ReadResourceType();
             case TType::EKind::Variant:
@@ -1294,7 +1273,7 @@ namespace {
             return membersCount;
         }
 
-        ui32 TryReadTupleOrMultiType() {
+        ui32 TryReadTupleType() {
             const ui32 elementsCount = ReadVar32();
             return elementsCount;
         }
@@ -1318,7 +1297,7 @@ namespace {
             return node;
         }
 
-        TNode* ReadTupleOrMultiType(char code) {
+        TNode* ReadTupleType() {
             const ui32 elementsCount = ReadVar32();
             TStackVec<TType*> elements(elementsCount);
             for (ui32 i = 0; i < elementsCount; ++i) {
@@ -1329,18 +1308,7 @@ namespace {
                 elements[i] = elementType;
             }
 
-            TNode* node = nullptr;
-            switch ((TType::EKind)(code & TypeMask)) {
-                case TType::EKind::Tuple:
-                    node = TTupleType::Create(elementsCount, elements.data(), Env);
-                    break;
-                case TType::EKind::Multi:
-                    node = TMultiType::Create(elementsCount, elements.data(), Env);
-                    break;
-                default:
-                    ThrowCorrupted();
-            }
-
+            auto node = TTupleType::Create(elementsCount, elements.data(), Env);
             Nodes.push_back(node);
             return node;
         }

@@ -5,10 +5,10 @@
 #include <ydb/public/api/grpc/draft/ydb_persqueue_v1.grpc.pb.h>
 #include <ydb/public/api/protos/persqueue_error_codes_v1.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/actor.h>
-#include <ydb/library/actors/core/event_local.h>
-#include <ydb/library/actors/core/hfunc.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/actor.h>
+#include <library/cpp/actors/core/event_local.h>
+#include <library/cpp/actors/core/hfunc.h>
 
 
 struct TMsgPqCodes {
@@ -106,167 +106,10 @@ namespace NKikimr::NGRpcProxy::V1 {
         }
     };
 
-
-    template<class TDerived>
-    class TPQSchemaBase {
-    public:
-
-        TPQSchemaBase(const TString& topicPath, const TString& database)
-            : TopicPath(topicPath)
-            , Database(database)
-        {
-        }
-
-    protected:
-        virtual TString GetTopicPath() const = 0;
-        virtual void RespondWithCode(Ydb::StatusIds::StatusCode status) = 0;
-        virtual void AddIssue(const NYql::TIssue& issue) = 0;
-        virtual bool SetRequestToken(NSchemeCache::TSchemeCacheNavigate* request) const = 0;
-
-        virtual bool ProcessCdc(const NSchemeCache::TSchemeCacheNavigate::TEntry& entry) {
-            Y_UNUSED(entry);
-            return false;
-        };
-
-
-        void SendDescribeProposeRequest(const NActors::TActorContext& ctx, bool showPrivate) {
-            auto navigateRequest = std::make_unique<NSchemeCache::TSchemeCacheNavigate>();
-            navigateRequest->DatabaseName = CanonizePath(Database);
-
-            NSchemeCache::TSchemeCacheNavigate::TEntry entry;
-            entry.Path = NKikimr::SplitPath(GetTopicPath());
-            entry.SyncVersion = true;
-            entry.ShowPrivatePath = showPrivate;
-            entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpList;
-            navigateRequest->ResultSet.emplace_back(entry);
-
-            if (!SetRequestToken(navigateRequest.get())) {
-                AddIssue(FillIssue("Unauthenticated access is forbidden, please provide credentials",
-                                   Ydb::PersQueue::ErrorCode::ACCESS_DENIED));
-                return RespondWithCode(Ydb::StatusIds::UNAUTHORIZED);
-            }
-            if (!IsDead) {
-                ctx.Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(navigateRequest.release()));
-            }
-        }
-
-        bool ReplyIfNotTopic(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
-            const NSchemeCache::TSchemeCacheNavigate* result = ev->Get()->Request.Get();
-            Y_ABORT_UNLESS(result->ResultSet.size() == 1);
-            const auto& response = result->ResultSet.front();
-            const TString path  = JoinPath(response.Path);
-
-            if (ev->Get()->Request.Get()->ResultSet.size() != 1 ||
-                ev->Get()->Request.Get()->ResultSet.begin()->Kind !=
-                NSchemeCache::TSchemeCacheNavigate::KindTopic) {
-                AddIssue(FillIssue(TStringBuilder() << "path '" << path << "' is not a topic",
-                                   Ydb::PersQueue::ErrorCode::VALIDATION_ERROR));
-                RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-                return true;
-            }
-            return false;
-        }
-
-        void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
-            const NSchemeCache::TSchemeCacheNavigate* result = ev->Get()->Request.Get();
-            Y_ABORT_UNLESS(result->ResultSet.size() == 1);
-            const auto& response = result->ResultSet.front();
-            const TString path  = JoinPath(response.Path);
-
-            switch (response.Status) {
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::Ok: {
-                if (response.Kind == NSchemeCache::TSchemeCacheNavigate::KindCdcStream) {
-                    if (ProcessCdc(response)) {
-                        return;
-                    }
-
-                    AddIssue(
-                        FillIssue(
-                            TStringBuilder() << "path '" << path << "' is not compatible scheme object",
-                            Ydb::PersQueue::ErrorCode::INVALID_ARGUMENT
-                        )
-                    );
-                    return RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-                } else if (!response.PQGroupInfo) {
-                    AddIssue(
-                        FillIssue(
-                            TStringBuilder() << "path '" << path << "' creation is not completed",
-                            Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
-                        )
-                    );
-                    return RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-                }
-                return static_cast<TDerived*>(this)->HandleCacheNavigateResponse(ev);
-            }
-            break;
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown: {
-                AddIssue(
-                    FillIssue(
-                        TStringBuilder() << "path '" << path << "' does not exist or you " <<
-                        "do not have access rights",
-                        Ydb::PersQueue::ErrorCode::ACCESS_DENIED
-                    )
-                );
-                return RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-            }
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::TableCreationNotComplete: {
-                AddIssue(
-                    FillIssue(
-                        TStringBuilder() << "table creation is not completed",
-                        Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
-                    )
-                );
-                return RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-            }
-            break;
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::PathNotTable: {
-                AddIssue(
-                    FillIssue(
-                        TStringBuilder() << "path '" << path << "' is not a table",
-                        Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
-                    )
-                );
-                return RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-            }
-            break;
-            case NSchemeCache::TSchemeCacheNavigate::EStatus::RootUnknown: {
-                AddIssue(
-                    FillIssue(
-                        TStringBuilder() << "unknown database root",
-                        Ydb::PersQueue::ErrorCode::INVALID_ARGUMENT
-                    )
-                );
-                return RespondWithCode(Ydb::StatusIds::SCHEME_ERROR);
-            }
-            break;
-
-            default:
-                return RespondWithCode(Ydb::StatusIds::GENERIC_ERROR);
-            }
-        }
-
-       
-        void StateWork(TAutoPtr<IEventHandle>& ev) {
-            switch (ev->GetTypeRewrite()) {
-                hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
-            default:
-                Y_ABORT();
-            }
-        }
-
-    protected:
-        bool IsDead = false;
-        const TString TopicPath;
-        const TString Database;
-    };
-
-
     template<class TDerived, class TRequest>
-    class TPQGrpcSchemaBase : public NKikimr::NGRpcService::TRpcSchemeRequestActor<TDerived, TRequest>,
-                              public TPQSchemaBase<TPQGrpcSchemaBase<TDerived, TRequest>> {
+    class TPQGrpcSchemaBase : public NKikimr::NGRpcService::TRpcSchemeRequestActor<TDerived, TRequest> {
     protected:
         using TBase = NKikimr::NGRpcService::TRpcSchemeRequestActor<TDerived, TRequest>;
-        using TActorBase = TPQSchemaBase<TPQGrpcSchemaBase<TDerived, TRequest>>;
 
         using TProtoRequest = typename TRequest::TRequest;
 
@@ -274,17 +117,12 @@ namespace NKikimr::NGRpcProxy::V1 {
 
         TPQGrpcSchemaBase(NGRpcService::IRequestOpCtx *request, const TString& topicPath)
             : TBase(request)
-            , TActorBase(topicPath, this->Request_->GetDatabaseName().GetOrElse(""))
-        {
-        }
-        TPQGrpcSchemaBase(NGRpcService::IRequestOpCtx* request)
-            : TBase(request)
-            , TActorBase(TBase::GetProtoRequest()->path(), this->Request_->GetDatabaseName().GetOrElse(""))
+            , TopicPath(topicPath)
         {
         }
 
-        TString GetTopicPath() const override {
-            auto path = NPersQueue::GetFullTopicPath(this->ActorContext(), this->Request_->GetDatabaseName(), TActorBase::TopicPath);
+        TString GetTopicPath(const NActors::TActorContext& ctx) {
+            auto path = NPersQueue::GetFullTopicPath(ctx, this->Request_->GetDatabaseName(), TopicPath);
             if (PrivateTopicName) {
                 path = JoinPath(ChildPath(NKikimr::SplitPath(path), *PrivateTopicName));
             }
@@ -294,24 +132,20 @@ namespace NKikimr::NGRpcProxy::V1 {
         const TMaybe<TString>& GetCdcStreamName() const {
             return CdcStreamName;
         }
-        void HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
-            return static_cast<TDerived*>(this)->HandleCacheNavigateResponse(ev);
-        }
-
 
     protected:
         // TDerived must implement FillProposeRequest(TEvProposeTransaction&, const TActorContext& ctx, TString workingDir, TString name);
         void SendProposeRequest(const NActors::TActorContext &ctx) {
             std::pair <TString, TString> pathPair;
             try {
-                pathPair = NKikimr::NGRpcService::SplitPath(GetTopicPath());
+                pathPair = NKikimr::NGRpcService::SplitPath(GetTopicPath(ctx));
             } catch (const std::exception &ex) {
                 this->Request_->RaiseIssue(NYql::ExceptionToIssue(ex));
-                return this->RespondWithCode(Ydb::StatusIds::BAD_REQUEST);
+                return this->ReplyWithResult(Ydb::StatusIds::BAD_REQUEST, ctx);
             }
 
-            const auto& workingDir = pathPair.first;
-            const auto& name = pathPair.second;
+            const auto &workingDir = pathPair.first;
+            const auto &name = pathPair.second;
 
             std::unique_ptr <TEvTxUserProxy::TEvProposeTransaction> proposal(
                     new TEvTxUserProxy::TEvProposeTransaction());
@@ -329,79 +163,184 @@ namespace NKikimr::NGRpcProxy::V1 {
 
             static_cast<TDerived*>(this)->FillProposeRequest(*proposal, ctx, workingDir, name);
 
-            if (!TActorBase::IsDead) {
+            if (!IsDead) {
                 ctx.Send(MakeTxProxyID(), proposal.release());
             }
         }
 
         void SendDescribeProposeRequest(const NActors::TActorContext& ctx, bool showPrivate = false) {
-            return TActorBase::SendDescribeProposeRequest(ctx, showPrivate || PrivateTopicName.Defined());
+            auto navigateRequest = std::make_unique<NSchemeCache::TSchemeCacheNavigate>();
+            navigateRequest->DatabaseName = CanonizePath(this->Request_->GetDatabaseName().GetOrElse(""));
+
+            NSchemeCache::TSchemeCacheNavigate::TEntry entry;
+            entry.Path = NKikimr::SplitPath(GetTopicPath(ctx));
+            entry.SyncVersion = true;
+            entry.ShowPrivatePath = showPrivate || PrivateTopicName.Defined();
+            entry.Operation = NSchemeCache::TSchemeCacheNavigate::OpList;
+            navigateRequest->ResultSet.emplace_back(entry);
+
+            if (this->Request_->GetSerializedToken().empty()) {
+                if (AppData(ctx)->PQConfig.GetRequireCredentialsInNewProtocol()) {
+                    return ReplyWithError(Ydb::StatusIds::UNAUTHORIZED, Ydb::PersQueue::ErrorCode::ACCESS_DENIED,
+                                          "Unauthenticated access is forbidden, please provide credentials", ctx);
+                }
+            } else {
+                navigateRequest->UserToken = new NACLib::TUserToken(this->Request_->GetSerializedToken());
+            }
+            if (!IsDead) {
+                ctx.Send(MakeSchemeCacheID(), new TEvTxProxySchemeCache::TEvNavigateKeySet(navigateRequest.release()));
+            }
         }
 
-        bool SetRequestToken(NSchemeCache::TSchemeCacheNavigate* request) const override {
-            if (this->Request_->GetSerializedToken().empty()) {
-                return !(AppData()->PQConfig.GetRequireCredentialsInNewProtocol());
-            } else {
-                request->UserToken = new NACLib::TUserToken(this->Request_->GetSerializedToken());
+        bool ReplyIfNotTopic(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const TActorContext& ctx) {
+            const NSchemeCache::TSchemeCacheNavigate* result = ev->Get()->Request.Get();
+            Y_VERIFY(result->ResultSet.size() == 1);
+            const auto& response = result->ResultSet.front();
+            const TString path  = JoinPath(response.Path);
+
+            if (ev->Get()->Request.Get()->ResultSet.size() != 1 ||
+                ev->Get()->Request.Get()->ResultSet.begin()->Kind !=
+                NSchemeCache::TSchemeCacheNavigate::KindTopic) {
+                this->Request_->RaiseIssue(
+                    FillIssue(
+                              TStringBuilder() << "path '" << path << "' is not a stream",
+                              Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
+                              )
+                    );
+                TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
                 return true;
             }
-        }
-        bool ProcessCdc(const NSchemeCache::TSchemeCacheNavigate::TEntry& response) override {
-            if constexpr (THasCdcStreamCompatibility<TDerived>::Value) {
-                if (static_cast<TDerived*>(this)->IsCdcStreamCompatible()) {
-                    Y_ABORT_UNLESS(response.ListNodeEntry->Children.size() == 1);
-                    PrivateTopicName = response.ListNodeEntry->Children.at(0).Name;
 
-                    if (response.Self) {
-                        CdcStreamName = response.Self->Info.GetName();
-                    }
-
-                    SendDescribeProposeRequest(TBase::ActorContext());
-                    return true;
-                }
-            }
             return false;
         }
 
-        void AddIssue(const NYql::TIssue& issue) override {
-            this->Request_->RaiseIssue(issue);
+        void Handle(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const TActorContext& ctx) {
+            const NSchemeCache::TSchemeCacheNavigate* result = ev->Get()->Request.Get();
+            Y_VERIFY(result->ResultSet.size() == 1);
+            const auto& response = result->ResultSet.front();
+            const TString path  = JoinPath(response.Path);
+
+            switch (response.Status) {
+            case NSchemeCache::TSchemeCacheNavigate::EStatus::Ok: {
+                if (response.Kind == NSchemeCache::TSchemeCacheNavigate::KindCdcStream) {
+                    if constexpr (THasCdcStreamCompatibility<TDerived>::Value) {
+                        if (static_cast<TDerived*>(this)->IsCdcStreamCompatible()) {
+                            Y_VERIFY(response.ListNodeEntry->Children.size() == 1);
+                            PrivateTopicName = response.ListNodeEntry->Children.at(0).Name;
+
+                            if (response.Self) {
+                                CdcStreamName = response.Self->Info.GetName();
+                            }
+
+                            return SendDescribeProposeRequest(ctx);
+                        }
+                    }
+
+                    this->Request_->RaiseIssue(
+                        FillIssue(
+                            TStringBuilder() << "path '" << path << "' is not compatible scheme object",
+                            Ydb::PersQueue::ErrorCode::INVALID_ARGUMENT
+                        )
+                    );
+                    return TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+                } else if (!response.PQGroupInfo) {
+                    this->Request_->RaiseIssue(
+                        FillIssue(
+                            TStringBuilder() << "path '" << path << "' creation is not completed",
+                            Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
+                        )
+                    );
+                    return TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+                }
+                return static_cast<TDerived*>(this)->HandleCacheNavigateResponse(ev, ctx);
+            }
+            break;
+            case NSchemeCache::TSchemeCacheNavigate::EStatus::PathErrorUnknown: {
+                this->Request_->RaiseIssue(
+                    FillIssue(
+                        TStringBuilder() << "path '" << path << "' does not exist or you " <<
+                        "do not have access rights",
+                        Ydb::PersQueue::ErrorCode::ACCESS_DENIED
+                    )
+                );
+                return TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+            }
+            case NSchemeCache::TSchemeCacheNavigate::EStatus::TableCreationNotComplete: {
+                this->Request_->RaiseIssue(
+                    FillIssue(
+                        TStringBuilder() << "table creation is not completed",
+                        Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
+                    )
+                );
+                return TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+            }
+            break;
+            case NSchemeCache::TSchemeCacheNavigate::EStatus::PathNotTable: {
+                this->Request_->RaiseIssue(
+                    FillIssue(
+                        TStringBuilder() << "path '" << path << "' is not a table",
+                        Ydb::PersQueue::ErrorCode::VALIDATION_ERROR
+                    )
+                );
+                return TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+            }
+            break;
+            case NSchemeCache::TSchemeCacheNavigate::EStatus::RootUnknown: {
+                this->Request_->RaiseIssue(
+                    FillIssue(
+                        TStringBuilder() << "unknown database root",
+                        Ydb::PersQueue::ErrorCode::INVALID_ARGUMENT
+                    )
+                );
+                return TBase::Reply(Ydb::StatusIds::SCHEME_ERROR, ctx);
+            }
+            break;
+
+            default:
+                return TBase::Reply(Ydb::StatusIds::GENERIC_ERROR, ctx);
+            }
+        }
+
+        void ReplyWithError(Ydb::StatusIds::StatusCode status,
+                            Ydb::PersQueue::ErrorCode::ErrorCode pqStatus,
+                            const TString& messageText, const NActors::TActorContext& ctx) {
+            this->Request_->RaiseIssue(FillIssue(messageText, pqStatus));
+            this->Request_->ReplyWithYdbStatus(status);
+            this->Die(ctx);
+            IsDead = true;
         }
 
         void ReplyWithError(Ydb::StatusIds::StatusCode status, size_t additionalStatus,
                             const TString& messageText, const NActors::TActorContext& ctx) {
-            if (TActorBase::IsDead)
-                return;
             this->Request_->RaiseIssue(FillIssue(messageText, additionalStatus));
             this->Request_->ReplyWithYdbStatus(status);
             this->Die(ctx);
-            TActorBase::IsDead = true;
+            IsDead = true;
         }
 
-        void RespondWithCode(Ydb::StatusIds::StatusCode status) override {
-            if (TActorBase::IsDead)
-                return;
+        void ReplyWithResult(Ydb::StatusIds::StatusCode status, const NActors::TActorContext& ctx) {
             this->Request_->ReplyWithYdbStatus(status);
-            this->Die(this->ActorContext());
-            TActorBase::IsDead = true;
+            this->Die(ctx);
+            IsDead = true;
         }
 
         template<class TProtoResult>
         void ReplyWithResult(Ydb::StatusIds::StatusCode status, const TProtoResult& result, const NActors::TActorContext& ctx) {
-            if (TActorBase::IsDead)
-                return;
             this->Request_->SendResult(result, status);
             this->Die(ctx);
-            TActorBase::IsDead = true;
+            IsDead = true;
         }
 
-        void StateWork(TAutoPtr<IEventHandle>& ev) {
+        void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
             switch (ev->GetTypeRewrite()) {
-                hFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, TActorBase::Handle);
-            default: TBase::StateWork(ev);
+                HFunc(TEvTxProxySchemeCache::TEvNavigateKeySetResult, Handle);
+            default: TBase::StateWork(ev, ctx);
             }
         }
 
     private:
+        bool IsDead = false;
+        const TString TopicPath;
         TMaybe<TString> PrivateTopicName;
         TMaybe<TString> CdcStreamName;
     };
@@ -415,9 +354,6 @@ namespace NKikimr::NGRpcProxy::V1 {
     public:
         TUpdateSchemeActor(NGRpcService::IRequestOpCtx* request, const TString& topicPath)
             : TBase(request, topicPath)
-        {}
-        TUpdateSchemeActor(NGRpcService::IRequestOpCtx* request)
-            : TBase(request)
         {}
         ~TUpdateSchemeActor() = default;
 
@@ -435,8 +371,8 @@ namespace NKikimr::NGRpcProxy::V1 {
             }
 
             auto* config = modifyScheme.MutableAlterPersQueueGroup();
-            Y_ABORT_UNLESS(response.Self);
-            Y_ABORT_UNLESS(response.PQGroupInfo);
+            Y_VERIFY(response.Self);
+            Y_VERIFY(response.PQGroupInfo);
             config->CopyFrom(response.PQGroupInfo->Description);
 
             // keep previous values or set in ModifyPersqueueConfig
@@ -459,11 +395,11 @@ namespace NKikimr::NGRpcProxy::V1 {
             this->DescribeSchemeResult.Reset();
         }
 
-        void HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
+        void HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev, const TActorContext& ctx) {
             const NSchemeCache::TSchemeCacheNavigate* result = ev->Get()->Request.Get();
-            Y_ABORT_UNLESS(result->ResultSet.size() == 1);
+            Y_VERIFY(result->ResultSet.size() == 1);
             DescribeSchemeResult = std::move(ev);
-            return this->SendProposeRequest(this->ActorContext());
+            return this->SendProposeRequest(ctx);
         }
 
         void Handle(TEvTxUserProxy::TEvProposeTransactionStatus::TPtr& ev, const TActorContext& ctx) {
@@ -473,97 +409,23 @@ namespace NKikimr::NGRpcProxy::V1 {
             if (status ==  TEvTxUserProxy::TResultStatus::ExecError && msg->Record.GetSchemeShardStatus() == NKikimrScheme::EStatus::StatusPreconditionFailed)
             {
                 return TBase::ReplyWithError(Ydb::StatusIds::OVERLOADED,
-                                                         Ydb::PersQueue::ErrorCode::OVERLOAD,
-                                                         TStringBuilder() << "Topic with name " << TBase::GetTopicPath() << " has another alter in progress",
+                                                         Ydb::PersQueue::ErrorCode::ERROR,
+                                                         TStringBuilder() << "Topic with name " << TBase::GetTopicPath(ctx) << " has another alter in progress",
                                                          ctx);
             }
 
             return TBase::TBase::Handle(ev, ctx);
         }
 
-        void StateWork(TAutoPtr<IEventHandle>& ev) {
+        void StateWork(TAutoPtr<IEventHandle>& ev, const TActorContext& ctx) {
             switch (ev->GetTypeRewrite()) {
                 HFunc(TEvTxUserProxy::TEvProposeTransactionStatus, Handle);
-                default: TBase::StateWork(ev);
+                default: TBase::StateWork(ev, ctx);
             }
         }
-
-    protected:
-        THolder<NActors::TEventHandle<TEvTxProxySchemeCache::TEvNavigateKeySetResult>> DescribeSchemeResult;
-    };
-
-
-    template<class TDerived, class TRequest, class TEvResponse>
-    class TPQInternalSchemaActor : public TPQSchemaBase<TPQInternalSchemaActor<TDerived, TRequest, TEvResponse>>
-                                 , public TActorBootstrapped<TPQInternalSchemaActor<TDerived, TRequest, TEvResponse>>
-    {
-    protected:
-        using TBase = TPQSchemaBase<TPQInternalSchemaActor<TDerived, TRequest, TEvResponse>>;
-
-    public:
-
-        TPQInternalSchemaActor(const TRequest& request, const TActorId& requester)
-            : TBase(request.Topic, request.Database)
-            , Request(request)
-            , Requester(requester)
-            , Response(MakeHolder<TEvResponse>())
-        {
-        }
-
-        virtual void Bootstrap(const TActorContext&) = 0;
-        virtual void HandleCacheNavigateResponse(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) = 0;
-
-        TString GetTopicPath() const override {
-            return TBase::TopicPath;
-        }
-
-        void SendDescribeProposeRequest() {
-            return TBase::SendDescribeProposeRequest(this->ActorContext(), false);
-        }
-
-        bool HandleCacheNavigateResponseBase(TEvTxProxySchemeCache::TEvNavigateKeySetResult::TPtr& ev) {
-            Y_ABORT_UNLESS(ev->Get()->Request.Get()->ResultSet.size() == 1); // describe for only one topic
-            if (this->ReplyIfNotTopic(ev)) {
-                return false;
-            }
-
-            auto& item = ev->Get()->Request->ResultSet[0];
-            PQGroupInfo = item.PQGroupInfo;
-            Self = item.Self;
-
-            return true;
-        }
-
-        bool SetRequestToken(NSchemeCache::TSchemeCacheNavigate* request) const override {
-            if (Request.Token.empty()) {
-                return !(AppData()->PQConfig.GetRequireCredentialsInNewProtocol());
-            } else {
-                request->UserToken = new NACLib::TUserToken(Request.Token);
-                return true;
-            }
-        }
-
-        void AddIssue(const NYql::TIssue& issue) override {
-            Response->Issues.AddIssue(issue);
-        }
-
-
-        void RespondWithCode(Ydb::StatusIds::StatusCode status) override {
-            Response->Status = status;
-            this->ActorContext().Send(Requester, Response.Release());
-            this->Die(this->ActorContext());
-            TBase::IsDead = true;
-        }
-
 
     private:
-        TRequest Request;
-        TActorId Requester;
-        TMaybe<TString> PrivateTopicName;
-    protected:
-        THolder<TEvResponse> Response;
-        TIntrusiveConstPtr<NSchemeCache::TSchemeCacheNavigate::TPQGroupInfo> PQGroupInfo;
-        TIntrusiveConstPtr<NSchemeCache::TSchemeCacheNavigate::TDirEntryInfo> Self;
+        THolder<NActors::TEventHandle<TEvTxProxySchemeCache::TEvNavigateKeySetResult>> DescribeSchemeResult;
     };
 
 }

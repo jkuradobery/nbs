@@ -74,7 +74,7 @@ void TDependencyTracker::ClearTmpWrite() noexcept {
 void TDependencyTracker::AddPlannedReads(const TOperation::TPtr& op, const TKeys& reads) noexcept {
     for (const auto& read : reads) {
         auto it = Tables.find(read.TableId);
-        Y_ABORT_UNLESS(it != Tables.end());
+        Y_VERIFY(it != Tables.end());
         auto ownedRange = MakeOwnedRange(read.Key);
         it->second.PlannedReads.AddRange(std::move(ownedRange), op);
     }
@@ -83,7 +83,7 @@ void TDependencyTracker::AddPlannedReads(const TOperation::TPtr& op, const TKeys
 void TDependencyTracker::AddPlannedWrites(const TOperation::TPtr& op, const TKeys& writes) noexcept {
     for (const auto& write : writes) {
         auto it = Tables.find(write.TableId);
-        Y_ABORT_UNLESS(it != Tables.end());
+        Y_VERIFY(it != Tables.end());
         auto ownedRange = MakeOwnedRange(write.Key);
         it->second.PlannedWrites.AddRange(std::move(ownedRange), op);
     }
@@ -92,7 +92,7 @@ void TDependencyTracker::AddPlannedWrites(const TOperation::TPtr& op, const TKey
 void TDependencyTracker::AddImmediateReads(const TOperation::TPtr& op, const TKeys& reads) noexcept {
     for (const auto& read : reads) {
         auto it = Tables.find(read.TableId);
-        Y_ABORT_UNLESS(it != Tables.end());
+        Y_VERIFY(it != Tables.end());
         auto ownedRange = MakeOwnedRange(read.Key);
         it->second.ImmediateReads.AddRange(std::move(ownedRange), op);
     }
@@ -101,7 +101,7 @@ void TDependencyTracker::AddImmediateReads(const TOperation::TPtr& op, const TKe
 void TDependencyTracker::AddImmediateWrites(const TOperation::TPtr& op, const TKeys& writes) noexcept {
     for (const auto& write : writes) {
         auto it = Tables.find(write.TableId);
-        Y_ABORT_UNLESS(it != Tables.end());
+        Y_VERIFY(it != Tables.end());
         auto ownedRange = MakeOwnedRange(write.Key);
         it->second.ImmediateWrites.AddRange(std::move(ownedRange), op);
     }
@@ -140,9 +140,6 @@ void TDependencyTracker::FlushImmediateWrites() noexcept {
 }
 
 const TDependencyTracker::TDependencyTrackingLogic& TDependencyTracker::GetTrackingLogic() const noexcept {
-    if (Self->IsFollower())
-        return FollowerLogic;
-
     if (Self->IsMvccEnabled())
         return MvccLogic;
 
@@ -209,7 +206,7 @@ void TDependencyTracker::TDefaultDependencyTrackingLogic::AddOperation(const TOp
                     }
                 }
             } else if (TSysTables::IsLocksTable(k.TableId)) {
-                Y_ABORT_UNLESS(k.Range.Point, "Unexpected non-point read from the locks table");
+                Y_VERIFY(k.Range.Point, "Unexpected non-point read from the locks table");
                 const ui64 lockTxId = Parent.Self->SysLocksTable().ExtractLockTxId(k.Range.From);
 
                 // Add hard dependency on all operations that worked with the same lock
@@ -654,7 +651,7 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
                     }
                 }
             } else if (TSysTables::IsLocksTable(k.TableId)) {
-                Y_ABORT_UNLESS(k.Range.Point, "Unexpected non-point read from the locks table");
+                Y_VERIFY(k.Range.Point, "Unexpected non-point read from the locks table");
                 const ui64 lockTxId = Parent.Self->SysLocksTable().ExtractLockTxId(k.Range.From);
 
                 // Add hard dependency on all operations that worked with the same lock
@@ -748,12 +745,10 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
         // Distributed commits of some unknown keys are complicated, and mean
         // there are almost certainly readsets involved and it's difficult to
         // make it atomic, so we currently make them global writers to handle
-        // out-of-order execution issues.
-        // We also can't allow immediate commits to happen between readset
-        // generation and applying effects, so we have to make them global
-        // writers as well.
-        // TODO: figure out how to handle lock conflicts directly
-        if (commitWriteLock) {
+        // out-of-order execution issues. Immediate operations are atomic by
+        // their construction and will find conflicts dynamically. We may
+        // want to do something similar with distributed commits as well.
+        if (commitWriteLock && !op->IsImmediate()) {
             isGlobalWriter = true;
         }
 
@@ -794,7 +789,7 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::AddOperation(const TOpera
     }
 
     auto onImmediateConflict = [&](TOperation& conflict) {
-        Y_ABORT_UNLESS(!conflict.IsImmediate());
+        Y_VERIFY(!conflict.IsImmediate());
         if (snapshot.IsMax()) {
             conflict.AddImmediateConflict(op);
         } else if (snapshotRepeatable ? IsLessEqual(conflict, snapshot) : IsLess(conflict, snapshot)) {
@@ -1075,14 +1070,6 @@ void TDependencyTracker::TMvccDependencyTrackingLogic::RemoveOperation(const TOp
             }
         }
     }
-}
-
-void TDependencyTracker::TFollowerDependencyTrackingLogic::AddOperation(const TOperation::TPtr&) const noexcept {
-    // all follower operations are readonly and don't conflict
-}
-
-void TDependencyTracker::TFollowerDependencyTrackingLogic::RemoveOperation(const TOperation::TPtr&) const noexcept {
-    // all follower operations are readonly and don't conflict
 }
 
 } // namespace NDataShard

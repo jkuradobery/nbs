@@ -10,10 +10,12 @@ class TBlobStorageController::TTxUpdateNodeDrives
 {
     NKikimrBlobStorage::TEvControllerUpdateNodeDrives Record;
     std::optional<TConfigState> State;
+
     std::unique_ptr<IEventHandle> Response;
 
-    void UpdateDevicesInfo(TConfigState& state, TEvBlobStorage::TEvControllerNodeServiceSetUpdate* result) {
-        auto nodeId = Record.GetNodeId();
+    void UpdateDevicesInfo(TTransactionContext& txc, TEvBlobStorage::TEvControllerNodeServiceSetUpdate* result) {
+
+        const TNodeId nodeId = Record.GetNodeId();
 
         auto createLog = [&] () {
             TStringStream out;
@@ -39,9 +41,16 @@ class TBlobStorageController::TTxUpdateNodeDrives
             diskSerialNumberByPath[disk.GetPath()] = disk.GetSerialNumber();
         }
 
-        auto from = TPDiskId::MinForNode(nodeId);
-        auto to = TPDiskId::MaxForNode(nodeId);
-        state.PDisks.ScanRange(from, to, [&](const auto& pdiskId, const auto& pdiskInfo, auto& getMutableItem) {
+        NIceDb::TNiceDb db(txc.DB);
+        using T = Schema::PDisk;
+
+        auto minPDiskId = TPDiskId::MinForNode(nodeId);
+        for (auto pdiskIt = Self->PDisks.lower_bound(minPDiskId); pdiskIt != Self->PDisks.end() && pdiskIt->first.NodeId == nodeId; ++pdiskIt) {
+            Y_VERIFY(pdiskIt->second);
+            auto& pdiskInfo = *pdiskIt->second;
+            auto pdiskId = pdiskIt->first;
+
+            auto key(pdiskId.GetKey());
             TString serial;
 
             // update pdisk's ExpectedSerial if necessary
@@ -53,9 +62,10 @@ class TBlobStorageController::TTxUpdateNodeDrives
 
                     switch (Self->SerialManagementStage) {
                     case NKikimrBlobStorage::TSerialManagementStage::CHECK_SERIAL:
-                        if (!pdiskInfo.ExpectedSerial && !serial.empty()) {
+                        if (!pdiskInfo.ExpectedSerial && serial) {
                             // update ExpectedSerial
-                            getMutableItem()->ExpectedSerial = serial;
+                            pdiskInfo.ExpectedSerial = serial;
+                            db.Table<T>().Key(key).Update<T::ExpectedSerial>(serial);
                             log << "Set ExpectedSerial for pdisk";
                         } else {
                             log << "disk's serial reported by the node doesn't match pdisk's serial, don't update anything";
@@ -66,9 +76,10 @@ class TBlobStorageController::TTxUpdateNodeDrives
                         log << "disk's serial reported by the node doesn't match pdisk's serial, don't update anything";
                         break;
                     default:
-                        if (!serial.empty()) {
+                        if (serial) {
                             // update ExpectedSerial
-                            getMutableItem()->ExpectedSerial = serial;
+                            pdiskInfo.ExpectedSerial = serial;
+                            db.Table<T>().Key(key).Update<T::ExpectedSerial>(serial);
                             log << "disk's serial reported by the node doesn't match pdisk's serial, update ExpectedSerial for pdisk";
                         }
                         break;
@@ -81,74 +92,30 @@ class TBlobStorageController::TTxUpdateNodeDrives
 
             // update pdisk's LastSeenSerial if necessary
             if (pdiskInfo.LastSeenSerial != serial) {
-                getMutableItem()->LastSeenSerial = serial;
+                pdiskInfo.LastSeenSerial = serial;
+                db.Table<T>().Key(key).Update<T::LastSeenSerial>(serial);
                 if (serial) {
                     Self->ReadPDisk(pdiskId, pdiskInfo, result, NKikimrBlobStorage::RESTART);
                 }
             }
+        }
 
-            return true;
-        });
-
-        auto& nodeInfo = Self->GetNode(nodeId);
+        TNodeInfo& nodeInfo = Self->GetNode(nodeId);
         Self->EraseKnownDrivesOnDisconnected(&nodeInfo);
 
-        // Update DrivesSerials and KnownDrives
+        // Update NodeIdByDiskSerialNumber and KnownDrives
         for (const auto& data : Record.GetDrivesData()) {
             const auto& serial = data.GetSerialNumber();
-
-            if (serial.empty()) {
-                continue;
-            }
-
-            if (auto info = state.DrivesSerials.FindForUpdate(serial)) {
-                if (info->LifeStage == NKikimrBlobStorage::TDriveLifeStage::ADDED_BY_DSTOOL) {
-                    if (info->NodeId.GetRef() != nodeId) {
-                        STLOG(PRI_ERROR, BS_CONTROLLER, BSCTXRN03,
-                            "Received drive from NewNodeId, but drive is reported as placed in OldNodeId",
-                            (NewNodeId, nodeId), (OldNodeId, info->NodeId.GetRef()), (Serial, serial));
-                    }
-                    if (info->Path.GetRef() != data.GetPath()) {
-                        STLOG(PRI_ERROR, BS_CONTROLLER, BSCTXRN04,
-                            "Received drive by NewPath, but drive is reported as placed by OldPath",
-                            (NewPath, data.GetPath()), (OldPath, info->Path.GetRef()), (Serial, serial));
-                    }
-                } else {
-                    info->NodeId = nodeId;
-                    info->Path = data.GetPath();
-                    info->PDiskType = data.GetDeviceType();
-                }
+            if (auto it = Self->NodeIdByDiskSerialNumber.find(serial); it != Self->NodeIdByDiskSerialNumber.end() && it->second != nodeId) {
+                STLOG(PRI_ERROR, BS_CONTROLLER, BSCTXRN03,
+                        "Received drive from NewNodeId, but drive is reported as placed in OldNodeId",
+                        (NewNodeId, nodeId), (OldNodeId, it->second), (Serial, serial));
             } else {
-                auto newInfo = state.DrivesSerials.ConstructInplaceNewEntry(serial, /* BoxId*/ 0);
-                newInfo->LifeStage = NKikimrBlobStorage::TDriveLifeStage::FREE;
-                newInfo->NodeId = nodeId;
-                newInfo->Path = data.GetPath();
-                newInfo->PDiskType = data.GetDeviceType();
+                Self->NodeIdByDiskSerialNumber[serial] = nodeId;
             }
-
             NPDisk::TDriveData driveData;
             DriveDataToDriveData(data, driveData);
             nodeInfo.KnownDrives.emplace(serial, driveData);
-        }
-
-        // Remove ejected disks from DrivesSerials
-        std::unordered_set<TString> disksToRemove;
-        state.DrivesSerials.ForEach([&](const auto& serial, const auto& info) {
-            if (!info.NodeId ||
-                info.NodeId.GetRef() != nodeId ||
-                info.LifeStage == NKikimrBlobStorage::TDriveLifeStage::ADDED_BY_DSTOOL ||
-                !info.Path ||
-                diskSerialNumberByPath.contains(info.Path.GetRef()))
-            {
-                return true;
-            }
-
-            disksToRemove.insert(serial);
-            return true;
-        });
-
-        for (const auto& serial : disksToRemove) {
-            state.DrivesSerials.DeleteExistingEntry(serial);
         }
     }
 
@@ -168,16 +135,22 @@ public:
         State.emplace(*Self, Self->HostRecords, TActivationContext::Now());
         State->CheckConsistency();
 
-        auto updateIsSuccessful = true;
+        UpdateDevicesInfo(txc, result.get());
+
+        TNodeInfo& nodeInfo = Self->GetNode(nodeId);
+
+        std::vector<TSerial> serials;
+        for (const auto& data : Record.GetDrivesData()) {
+            serials.emplace_back(data.GetSerialNumber());
+        }
+
         try {
-            UpdateDevicesInfo(*State, result.get());
+            Self->FitPDisksForNode(*State, nodeId, serials);
             State->CheckConsistency();
         } catch (const TExError& e) {
-            updateIsSuccessful = false;
-            auto& nodeInfo = Self->GetNode(nodeId);
             Self->EraseKnownDrivesOnDisconnected(&nodeInfo);
-            STLOG(PRI_ERROR, BS_CONTROLLER, BSCTXRN00,
-                    "Error during UpdateDevicesInfo after receiving TEvControllerRegisterNode", (TExError, e.what()));
+            STLOG(PRI_ERROR, BS_CONTROLLER, BSCTXRN04,
+                    "Error during FitPDisks after receiving TEvControllerRegisterNode", (TExError, e.what()));
         }
 
         result->Record.SetInstanceId(Self->InstanceId);
@@ -186,10 +159,11 @@ public:
         Response = std::make_unique<IEventHandle>(MakeBlobStorageNodeWardenID(nodeId), Self->SelfId(), result.release(), 0, 0);
 
         TString error;
-        if (!updateIsSuccessful || (State->Changed() && !Self->CommitConfigUpdates(*State, false, false, false, txc, &error))) {
+        if (State->Changed() && !Self->CommitConfigUpdates(*State, false, false, false, txc, &error)) {
             State->Rollback();
             State.reset();
         }
+
         return true;
     }
 
@@ -236,9 +210,7 @@ public:
             UpdateNodeDrivesRecord.AddDrivesData()->CopyFrom(data);
         }
 
-        if (!Self->OnRegisterNode(request->Recipient, nodeId)) {
-            return true;
-        }
+        Self->OnRegisterNode(request->Recipient, nodeId);
         Self->ProcessVDiskStatus(record.GetVDiskStatus());
 
         // create map of group ids to their generations as reported by the node warden
@@ -299,7 +271,7 @@ public:
         }
 
         Self->ReadGroups(groupIDsToRead, false, res.get(), nodeId);
-        Y_ABORT_UNLESS(groupIDsToRead.empty());
+        Y_VERIFY(groupIDsToRead.empty());
 
         Self->ReadGroups(groupsToDiscard, true, res.get(), nodeId);
 
@@ -371,7 +343,7 @@ void TBlobStorageController::ReadGroups(TSet<ui32>& groupIDsToRead, bool discard
                 if (info.SchemeshardId && info.PathItemId) {
                     scopeId.ConstructInPlace(*info.SchemeshardId, *info.PathItemId);
                 } else {
-                    Y_ABORT_UNLESS(!info.SchemeshardId && !info.PathItemId);
+                    Y_VERIFY(!info.SchemeshardId && !info.PathItemId);
                 }
 
                 SerializeGroupInfo(groupProto, *group, info.Name, scopeId);
@@ -410,7 +382,7 @@ void TBlobStorageController::ReadPDisk(const TPDiskId& pdiskId, const TPDiskInfo
                 (PDiskId, pdiskId.PDiskId));
         }
     }
-    pDisk->SetExpectedSerial(pdisk.ExpectedSerial);
+    //pDisk->SetExpectedSerial(pdisk.ExpectedSerial);
     pDisk->SetManagementStage(SerialManagementStage);
     pDisk->SetSpaceColorBorder(PDiskSpaceColorBorder);
     pDisk->SetEntityStatus(entityStatus);
@@ -427,10 +399,8 @@ void TBlobStorageController::ReadVSlot(const TVSlotInfo& vslot, TEvBlobStorage::
     if (vslot.IsBeingDeleted()) {
         vDisk->SetDoDestroy(true);
         vDisk->SetEntityStatus(NKikimrBlobStorage::DESTROY);
-    } else if (vslot.Mood == TMood::Wipe) {
-        vDisk->SetDoWipe(true);
-    } else if (vslot.Mood == TMood::ReadOnly) {
-        vDisk->SetReadOnly(true);
+    } else {
+        vDisk->SetDoWipe(vslot.Mood == TMood::Wipe);
     }
 
     if (TGroupInfo *group = FindGroup(vslot.GroupId)) {
@@ -445,7 +415,7 @@ void TBlobStorageController::ReadVSlot(const TVSlotInfo& vslot, TEvBlobStorage::
 
         SerializeDonors(vDisk, vslot, *group, vslotFinder);
     } else {
-        Y_ABORT_UNLESS(vslot.Mood != TMood::Donor);
+        Y_VERIFY(vslot.Mood != TMood::Donor);
     }
 }
 
@@ -459,7 +429,7 @@ void TBlobStorageController::Handle(TEvBlobStorage::TEvControllerUpdateNodeDrive
 
 void TBlobStorageController::Handle(TEvTabletPipe::TEvServerConnected::TPtr& ev) {
     auto&& [it, inserted] = PipeServerToNode.emplace(ev->Get()->ServerId, std::nullopt);
-    Y_DEBUG_ABORT_UNLESS(inserted);
+    Y_VERIFY_DEBUG(inserted);
 }
 
 void TBlobStorageController::Handle(TEvTabletPipe::TEvServerDisconnected::TPtr& ev) {
@@ -469,21 +439,20 @@ void TBlobStorageController::Handle(TEvTabletPipe::TEvServerDisconnected::TPtr& 
         }
         PipeServerToNode.erase(it);
     } else {
-        Y_DEBUG_ABORT_UNLESS(false);
+        Y_VERIFY_DEBUG(false);
     }
 }
 
-bool TBlobStorageController::OnRegisterNode(const TActorId& serverId, TNodeId nodeId) {
+void TBlobStorageController::OnRegisterNode(const TActorId& serverId, TNodeId nodeId) {
     if (auto it = PipeServerToNode.find(serverId); it != PipeServerToNode.end()) {
         if (!it->second) {
             it->second = nodeId;
             OnWardenConnected(nodeId);
         } else {
-            Y_DEBUG_ABORT_UNLESS(*it->second == nodeId);
+            Y_VERIFY_DEBUG(*it->second == nodeId);
         }
-        return true;
     } else {
-        return false;
+        Y_VERIFY_DEBUG(false);
     }
 }
 
@@ -524,11 +493,10 @@ void TBlobStorageController::OnWardenDisconnected(TNodeId nodeId) {
         if (const TGroupInfo *group = it->second->Group) {
             if (it->second->IsReady) {
                 NotReadyVSlotIds.insert(it->second->VSlotId);
-                sh->VDiskIsReadyUpdate.emplace_back(it->second->GetVDiskId(), false);
             }
-            it->second->SetStatus(NKikimrBlobStorage::EVDiskStatus::ERROR, mono, now, false);
+            it->second->SetStatus(NKikimrBlobStorage::EVDiskStatus::ERROR, mono, now);
             timingQ.emplace_back(*it->second);
-            sh->VDiskStatusUpdate.emplace_back(it->second->GetVDiskId(), it->second->Status, false);
+            sh->VDiskStatusUpdate.emplace_back(it->second->GetVDiskId(), it->second->Status);
             ScrubState.UpdateVDiskState(&*it->second);
         }
     }
@@ -551,6 +519,9 @@ void TBlobStorageController::OnWardenDisconnected(TNodeId nodeId) {
 }
 
 void TBlobStorageController::EraseKnownDrivesOnDisconnected(TNodeInfo *nodeInfo) {
+    for (const auto& [serial, driveData] : nodeInfo->KnownDrives) {
+        NodeIdByDiskSerialNumber.erase(serial);
+    }
     nodeInfo->KnownDrives.clear();
 }
 

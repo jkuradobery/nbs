@@ -1,5 +1,4 @@
 #pragma once
-
 #include "defs.h"
 
 namespace NKikimr::NCms {
@@ -20,29 +19,35 @@ struct TPDiskID {
     {
     }
 
-    explicit operator bool() const {
+    explicit operator bool() const
+    {
         return NodeId;
     }
 
-    bool operator==(const TPDiskID &other) const {
+    bool operator==(const TPDiskID &other) const
+    {
         return NodeId == other.NodeId && DiskId == other.DiskId;
     }
 
-    bool operator!=(const TPDiskID &other) const {
+    bool operator!=(const TPDiskID &other) const
+    {
         return !(*this == other);
     }
 
-    bool operator<(const TPDiskID &other) const {
+    bool operator<(const TPDiskID &other) const
+    {
         if (NodeId != other.NodeId)
             return NodeId < other.NodeId;
         return DiskId < other.DiskId;
     }
 
-    TString ToString() const {
+    TString ToString() const
+    {
         return Sprintf("%" PRIu32 ":%" PRIu32, NodeId, DiskId);
     }
 
-    void Serialize(NKikimrCms::TPDiskID *rec) const {
+    void Serialize(NKikimrCms::TPDiskID *rec) const
+    {
         rec->SetNodeId(NodeId);
         rec->SetDiskId(DiskId);
     }
@@ -56,6 +61,7 @@ struct TPDiskIDHash {
 
 } // namespace NKikimr::NCms
 
-Y_DECLARE_OUT_SPEC(inline, NKikimr::NCms::TPDiskID, o, x) {
+template<>
+inline void Out<NKikimr::NCms::TPDiskID>(IOutputStream& o, const NKikimr::NCms::TPDiskID& x) {
     o << x.ToString();
 }

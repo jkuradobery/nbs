@@ -96,26 +96,6 @@ TExprNode::TPtr TAggregateExpander::ExpandAggregate()
 TExprNode::TPtr TAggregateExpander::ExpandAggApply(const TExprNode::TPtr& node)
 {
     auto name = node->Head().Content();
-    if (name.StartsWith("pg_")) {
-        auto func = name.SubStr(3);
-        auto itemType = node->Child(1)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-        TVector<ui32> argTypes;
-        bool needRetype = false;
-        auto status = ExtractPgTypesFromMultiLambda(node->ChildRef(2), argTypes, needRetype, Ctx);
-        YQL_ENSURE(status == IGraphTransformer::TStatus::Ok);
-
-        const NPg::TAggregateDesc* aggDescPtr;
-        if (node->Content().EndsWith("State")) {
-            auto stateType = node->Child(2)->GetTypeAnn()->Cast<TPgExprType>()->GetId();
-            auto resultType = node->GetTypeAnn()->Cast<TPgExprType>()->GetId();
-            aggDescPtr = &NPg::LookupAggregation(TString(func), stateType, resultType);
-        } else {
-            aggDescPtr = &NPg::LookupAggregation(TString(func), argTypes);
-        }
-
-        return ExpandPgAggregationTraits(node->Pos(), *aggDescPtr, false, node->ChildPtr(2), argTypes, itemType, Ctx);
-    }
-
     auto exportsPtr = TypesCtx.Modules->GetModule("/lib/yql/aggregate.yql");
     YQL_ENSURE(exportsPtr);
     const auto& exports = exportsPtr->Symbols();
@@ -519,10 +499,10 @@ TExprNode::TPtr TAggregateExpander::GetFinalAggStateExtractor(ui32 i) {
         .Build();
 }
 
-TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& stream, TExprNode::TListType& keyIdxs,
+TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& streamArg, TExprNode::TListType& keyIdxs,
     TVector<TString>& outputColumns, TExprNode::TListType& aggs, bool overState, bool many, ui32* streamIdxColumn) {
+    auto flow = Ctx.NewCallable(Node->Pos(), "ToFlow", { streamArg });
     TVector<TString> inputColumns;
-    auto flow = Ctx.NewCallable(Node->Pos(), "ToFlow", { stream });
     for (ui32 i = 0; i < RowType->GetSize(); ++i) {
         inputColumns.push_back(TString(RowType->GetItems()[i]->GetName()));
     }
@@ -550,17 +530,13 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
 
     if (many) {
         auto rowIndex = RowType->FindItem("_yql_group_stream_index");
-        if (!rowIndex) {
-            return nullptr;
-        }
+        YQL_ENSURE(rowIndex, "Unknown column: _yql_group_stream_index");
         if (streamIdxColumn) {
             *streamIdxColumn = extractorRoots.size();
         }
 
         extractorRoots.push_back(extractorArgs[*rowIndex]);
     }
-
-    auto outputStructType = GetSeqItemType(*Node->GetTypeAnn()).Cast<TStructExprType>();
 
     auto resolveStatus = TypesCtx.ArrowResolver->AreTypesSupported(Ctx.GetPosition(Node->Pos()), allKeyTypes, Ctx);
     YQL_ENSURE(resolveStatus != IArrowResolver::ERROR);
@@ -570,25 +546,29 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
 
     for (ui32 index = 0; index < AggregatedColumns->ChildrenSize(); ++index) {
         auto trait = AggregatedColumns->Child(index)->ChildPtr(1);
-        TVector<const TTypeAnnotationNode*> allTypes;
-
-        const TTypeAnnotationNode* originalType = nullptr;
-        if (overState && !trait->Child(3)->IsCallable("Void")) {
-            auto originalExtractorType = trait->Child(3)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-            originalType = GetOriginalResultType(trait->Pos(), many, originalExtractorType, Ctx);
-            YQL_ENSURE(originalType);
-        }
-
-        ui32 argsCount = trait->Child(2)->ChildrenSize() - 1;
         if (!overState && trait->Child(0)->Content() == "count_all") {
-            argsCount = 0;
+            // 0 columns
+            aggs.push_back(Ctx.Builder(Node->Pos())
+                .List()
+                    .Callable(0, "AggBlockApply")
+                        .Atom(0, trait->Child(0)->Content())
+                    .Seal()
+                .Seal()
+                .Build());
         }
+        else {
+            // 1 column
+            auto root = trait->Child(2)->TailPtr();
+            auto rowArg = &trait->Child(2)->Head().Head();
 
-        auto rowArg = &trait->Child(2)->Head().Head();
-        TVector<TExprNode::TPtr> roots;
-        for (ui32 i = 1; i < argsCount + 1; ++i) {
-            auto root = trait->Child(2)->ChildPtr(i);
-            allTypes.push_back(root->GetTypeAnn());            
+            TVector<const TTypeAnnotationNode*> allTypes;
+            allTypes.push_back(root->GetTypeAnn());
+
+            auto resolveStatus = TypesCtx.ArrowResolver->AreTypesSupported(Ctx.GetPosition(Node->Pos()), allKeyTypes, Ctx);
+            YQL_ENSURE(resolveStatus != IArrowResolver::ERROR);
+            if (resolveStatus != IArrowResolver::OK) {
+                return nullptr;
+            }
 
             auto status = OptimizeExpr(root, root, [&](const TExprNode::TPtr& node, TExprContext& ctx) -> TExprNode::TPtr {
                 Y_UNUSED(ctx);
@@ -602,45 +582,17 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
             }, Ctx, TOptimizeExprSettings(&TypesCtx));
 
             YQL_ENSURE(status.Level != IGraphTransformer::TStatus::Error);
-            roots.push_back(root);
-        }
 
-        aggs.push_back(Ctx.Builder(Node->Pos())
-            .List()
-                .Callable(0, TString("AggBlockApply") + (overState ? "State" : ""))
-                    .Atom(0, trait->Child(0)->Content())
-                    .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                        if (overState) {
-                            if (originalType) {
-                                parent.Add(1, ExpandType(Node->Pos(), *originalType, Ctx));
-                            } else {
-                                parent
-                                    .Callable(1, "NullType")
-                                    .Seal();
-                            }
-                        }
-
-                        return parent;
-                    })
-                    .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                        for (ui32 i = 1; i < argsCount + 1; ++i) {
-                            parent.Add(i + (overState ? 1 : 0), ExpandType(Node->Pos(), *trait->Child(2)->Child(i)->GetTypeAnn(), Ctx));
-                        }
-
-                        return parent;
-                    })
+            aggs.push_back(Ctx.Builder(Node->Pos())
+                .List()
+                    .Callable(0, TString("AggBlockApply") + (overState ? "State" : ""))
+                        .Atom(0, trait->Child(0)->Content())
+                        .Add(1, ExpandType(Node->Pos(), *trait->Child(2)->GetTypeAnn(), Ctx))
+                    .Seal()
+                    .Atom(1, ToString(extractorRoots.size()))
                 .Seal()
-                .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                    for (ui32 i = 1; i < argsCount + 1; ++i) {
-                        parent.Atom(i, ToString(extractorRoots.size() + i - 1));
-                    }
+                .Build());
 
-                    return parent;
-                })
-            .Seal()
-            .Build());
-
-        for (auto root : roots) {
             if (many) {
                 if (root->IsCallable("Unwrap")) {
                     root = root->HeadPtr();
@@ -654,15 +606,6 @@ TExprNode::TPtr TAggregateExpander::MakeInputBlocks(const TExprNode::TPtr& strea
             }
 
             extractorRoots.push_back(root);
-        }
-
-        auto outPos = outputStructType->FindItem(FinalColumnNames[index]->Content());
-        YQL_ENSURE(outPos);
-        allTypes.push_back(outputStructType->GetItems()[*outPos]->GetItemType());
-        auto resolveStatus = TypesCtx.ArrowResolver->AreTypesSupported(Ctx.GetPosition(Node->Pos()), allTypes, Ctx);
-        YQL_ENSURE(resolveStatus != IArrowResolver::ERROR);
-        if (resolveStatus != IArrowResolver::OK) {
-            return nullptr;
         }
 
         outputColumns.push_back(TString(FinalColumnNames[index]->Content()));
@@ -680,18 +623,12 @@ TExprNode::TPtr TAggregateExpander::TryGenerateBlockCombineAllOrHashed() {
     }
 
     const bool hashed = (KeyColumns->ChildrenSize() > 0);
-    const bool isInputList = (AggList->GetTypeAnn()->GetKind() == ETypeAnnotationKind::List);
 
+    auto streamArg = Ctx.NewArgument(Node->Pos(), "stream");
     TExprNode::TListType keyIdxs;
     TVector<TString> outputColumns;
     TExprNode::TListType aggs;
-    TExprNode::TPtr stream = nullptr;
-    if (isInputList) {
-        stream = Ctx.NewArgument(Node->Pos(), "stream");
-    } else {
-        stream = AggList;
-    }
-    auto blocks = MakeInputBlocks(stream, keyIdxs, outputColumns, aggs, false, false);
+    auto blocks = MakeInputBlocks(streamArg, keyIdxs, outputColumns, aggs, false, false);
     if (!blocks) {
         return nullptr;
     }
@@ -721,28 +658,15 @@ TExprNode::TPtr TAggregateExpander::TryGenerateBlockCombineAllOrHashed() {
     }
 
     auto finalFlow = MakeNarrowMap(Node->Pos(), outputColumns, aggWideFlow, Ctx);
-    if (isInputList) {
-        auto root = Ctx.NewCallable(Node->Pos(), "FromFlow", { finalFlow });
-        auto lambdaStream = Ctx.NewLambda(Node->Pos(), Ctx.NewArguments(Node->Pos(), { stream }), std::move(root));
+    auto root = Ctx.NewCallable(Node->Pos(), "FromFlow", { finalFlow });
+    auto lambdaStream = Ctx.NewLambda(Node->Pos(), Ctx.NewArguments(Node->Pos(), { streamArg }), std::move(root));
 
-        return Ctx.Builder(Node->Pos())
-            .Callable("LMap")
-                .Add(0, AggList)
-                .Lambda(1)
-                    .Param("stream")
-                    .Apply(GetContextLambda())
-                        .With(0)
-                            .Apply(lambdaStream)
-                                .With(0, "stream")
-                            .Seal()
-                        .Done()
-                    .Seal()
-                .Seal()
-            .Seal()
-            .Build();
-    } else {
-        return finalFlow;
-    }
+    return Ctx.Builder(Node->Pos())
+        .Callable("LMap")
+            .Add(0, AggList)
+            .Add(1, lambdaStream)
+        .Seal()
+        .Build();
 }
 
 TExprNode::TPtr TAggregateExpander::GeneratePartialAggregateForNonDistinct(const TExprNode::TPtr& keyExtractor, const TExprNode::TPtr& pickleTypeNode)
@@ -1419,330 +1343,37 @@ TExprNode::TPtr TAggregateExpander::BuildFinalizeByKeyLambda(const TExprNode::TP
     .Seal().Build();
 }
 
-
-TExprNode::TPtr TAggregateExpander::CountAggregateRewrite(const NNodes::TCoAggregate& node, TExprContext& ctx, bool useBlocks) {
-    auto keyColumns = node.Keys();
-    auto aggregatedColumns = node.Handlers();
-    if (keyColumns.Size() > 0 || aggregatedColumns.Size() != 1) {
-        return node.Ptr();
-    }
-
-    auto settings = node.Settings();
-    auto hoppingSetting = GetSetting(settings.Ref(), "hopping");
-    if (hoppingSetting) {
-        return node.Ptr();
-    }
-
-    if (GetSetting(settings.Ref(), "session")) {
-        // TODO: support
-        return node.Ptr();
-    }
-
-    auto aggregatedColumn = aggregatedColumns.Item(0);
-    const bool isDistinct = (aggregatedColumn.Ref().ChildrenSize() == 3);
-
-    auto traits = aggregatedColumn.Ref().Child(1);
-    auto outputColumn = aggregatedColumn.Ref().HeadPtr();
-
-    // validation of traits
-    const TTypeAnnotationNode* inputItemType;
-    bool onlyColumn = true;
-    bool onlyZero = true;
-    TExprNode::TPtr initVal;
-    if (traits->IsCallable("AggregationTraits")) {
-        inputItemType = traits->Head().GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-
-        auto init = NNodes::TCoLambda(traits->Child(1));
-        TExprNode::TPtr updateVal;
-        if (init.Body().Ref().IsCallable("Uint64") &&
-            init.Body().Ref().Head().Content() == "1") {
-            onlyZero = false;
-        } else if (init.Body().Ref().IsCallable("Uint64") &&
-            init.Body().Ref().Head().Content() == "0") {
-            onlyColumn = false;
-        } else if (init.Body().Ref().IsCallable("AggrCountInit")) {
-            initVal = init.Body().Ref().HeadPtr();
-            onlyColumn = onlyColumn && init.Body().Ref().Child(0) == init.Args().Arg(0).Raw();
-            onlyZero = false;
-        } else {
-            return node.Ptr();
-        }
-
-        auto update = NNodes::TCoLambda(traits->Child(2));
-        auto inc = update.Body().Ptr();
-        if (inc->IsCallable("Inc") && inc->Child(0) == update.Args().Arg(1).Raw()) {
-            onlyZero = false;
-        } else if (inc->IsCallable("AggrCountUpdate") && inc->Child(1) == update.Args().Arg(1).Raw()) {
-            updateVal = inc->HeadPtr();
-            onlyColumn = onlyColumn && inc->Child(0) == update.Args().Arg(0).Raw();
-            onlyZero = false;
-        } else if (inc == update.Args().Arg(1).Raw()) {
-            onlyColumn = false;
-        } else {
-            return node.Ptr();
-        }
-
-        auto save = NNodes::TCoLambda(traits->Child(3));
-        if (save.Body().Raw() != save.Args().Arg(0).Raw()) {
-            return node.Ptr();
-        }
-
-        auto load = NNodes::TCoLambda(traits->Child(4));
-        if (load.Body().Raw() != load.Args().Arg(0).Raw()) {
-            return node.Ptr();
-        }
-
-        auto merge = NNodes::TCoLambda(traits->Child(5));
-        {
-            auto& plus = merge.Body().Ref();
-            if (!plus.IsCallable({ "+", "AggrAdd" }) ) {
-                return node.Ptr();
-            }
-
-            if (!(plus.Child(0) == merge.Args().Arg(0).Raw() &&
-                plus.Child(1) == merge.Args().Arg(1).Raw())) {
-                return node.Ptr();
-            }
-        }
-
-        auto finish = NNodes::TCoLambda(traits->Child(6));
-        if (finish.Body().Raw() != finish.Args().Arg(0).Raw()) {
-            return node.Ptr();
-        }
-
-        auto defVal = traits->Child(7);
-        if (!defVal->IsCallable("Uint64") || defVal->Head().Content() != "0") {
-            return node.Ptr();
-        }
-
-        if (!isDistinct) {
-            if (!onlyZero && !onlyColumn) {
-                if (!initVal || !updateVal || initVal != updateVal) {
-                    return node.Ptr();
-                }
-            }
-        }
-    } else if (traits->IsCallable("AggApply")) {
-        if (traits->Head().Content() != "count_all" && traits->Head().Content() != "count") {
-            return node.Ptr();
-        }
-
-        inputItemType = traits->Child(1)->GetTypeAnn()->Cast<TTypeExprType>()->GetType();
-        onlyZero = false;
-        onlyColumn = false;
-        if (&traits->Child(2)->Head().Head() == &traits->Child(2)->Tail()) {
-            onlyColumn = true;
-        }
-
-        if (!isDistinct) {
-            if (traits->Head().Content() == "count") {
-                initVal = traits->Child(2)->TailPtr();
-                if (initVal->GetTypeAnn()->IsOptionalOrNull()) {
-                    if (IsDepended(traits->Child(2)->Tail(), traits->Child(2)->Head().Head())) {
-                        return node.Ptr();
-                    }
-                } else {
-                    initVal = nullptr;
-                }
-            }
-        }
-    } else {
-        return node.Ptr();
-    }
-
-    const bool isOptionalColumn = inputItemType->GetKind() == ETypeAnnotationKind::Optional;
-
-    if (!isDistinct) {
-        auto length = ctx.Builder(node.Pos())
-            .Callable("Length")
-                .Add(0, node.Input().Ptr())
-            .Seal()
-            .Build();
-
-        if (onlyZero) {
-            length = ctx.Builder(node.Pos())
-                .Callable("Uint64")
-                    .Atom(0, "0", TNodeFlags::Default)
-                .Seal()
-                .Build();
-        } else if (!onlyColumn && initVal) {
-            length = ctx.Builder(node.Pos())
-                .Callable("If")
-                    .Callable(0, "Exists")
-                        .Add(0, initVal)
-                    .Seal()
-                    .Add(1, std::move(length))
-                    .Callable(2, "Uint64")
-                        .Atom(0, "0", TNodeFlags::Default)
-                    .Seal()
-                .Seal()
-                .Build();
-        }
-
-        auto ret = ctx.Builder(node.Pos())
-            .Callable("AsList")
-                .Callable(0, "AsStruct")
-                    .List(0)
-                        .Add(0, std::move(outputColumn))
-                        .Add(1, std::move(length))
-                    .Seal()
-                .Seal()
-            .Seal()
-            .Build();
-
-        return ret;
-    }
-
-    if (useBlocks || !onlyColumn) {
-        return node.Ptr();
-    }
-    auto removedOptionalType = inputItemType;
-    if (isOptionalColumn) {
-        removedOptionalType = removedOptionalType->Cast<TOptionalExprType>()->GetItemType();
-    }
-
-    const bool needPickle = removedOptionalType->GetKind() != ETypeAnnotationKind::Data;
-    auto pickleTypeNode = ExpandType(node.Pos(), *inputItemType, ctx);
-
-    auto distictColumn = aggregatedColumn.Ref().ChildPtr(2);
-    auto combine = ctx.Builder(node.Pos())
-        .Callable("CombineByKey")
-            .Callable(0, "ExtractMembers")
-                .Add(0, node.Input().Ptr())
-                .List(1)
-                    .Add(0, distictColumn)
-                .Seal()
-            .Seal()
-            .Lambda(1)
-                .Param("row")
-                .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                    if (isOptionalColumn) {
-                        parent.Callable("Map")
-                            .Callable(0, "Member")
-                                .Arg(0, "row")
-                                .Add(1, distictColumn)
-                            .Seal()
-                            .Lambda(1)
-                                .Param("unpacked")
-                                .Arg("unpacked")
-                            .Seal()
-                        .Seal();
-                    } else {
-                        parent.Callable("Just")
-                            .Callable(0, "Member")
-                                .Arg(0, "row")
-                                .Add(1, distictColumn)
-                            .Seal()
-                        .Seal();
-                    }
-
-                    return parent;
-                })
-            .Seal()
-            .Lambda(2)
-                .Param("item")
-                .Do([&](TExprNodeBuilder& parent) -> TExprNodeBuilder& {
-                    if (needPickle) {
-                        parent.Callable("StablePickle")
-                            .Arg(0, "item")
-                            .Seal();
-                    } else {
-                        parent.Arg("item");
-                    }
-                    return parent;
-                })
-            .Seal()
-            .Lambda(3)
-                .Param("key")
-                .Param("item")
-                .Callable("Void")
-                .Seal()
-            .Seal()
-            .Lambda(4)
-                .Param("key")
-                .Param("item")
-                .Param("state")
-                .Arg("state")
-            .Seal()
-            .Lambda(5)
-                .Param("key")
-                .Param("state")
-                .Callable("Just")
-                    .Callable(0, "AsStruct")
-                        .List(0)
-                            .Atom(0, "value")
-                            .Arg(1, "key")
-                        .Seal()
-                    .Seal()
-                .Seal()
-            .Seal()
-        .Seal()
-        .Build();
-
-    auto groupByKey = ctx.Builder(node.Pos())
-        .Callable("PartitionByKey")
-            .Add(0, combine)
-            .Lambda(1)
-                .Param("combineRow")
-                .Callable("Member")
-                    .Arg(0, "combineRow")
-                    .Atom(1, "value")
-                .Seal()
-            .Seal()
-            .Callable(2, "Void")
-            .Seal()
-            .Callable(3, "Void")
-            .Seal()
-            .Lambda(4)
-                .Param("groups")
-                .Callable("Map")
-                    .Arg(0, "groups")
-                    .Lambda(1)
-                        .Param("group")
-                        .Callable("AsStruct")
-                        .Seal()
-                    .Seal()
-                .Seal()
-            .Seal()
-        .Seal()
-        .Build();
-
-    auto ret = ctx.Builder(node.Pos())
-        .Callable("AsList")
-            .Callable(0, "AsStruct")
-                .List(0)
-                    .Add(0, outputColumn)
-                    .Callable(1, "Length")
-                        .Add(0, std::move(groupByKey))
-                    .Seal()
-                .Seal()
-            .Seal()
-        .Seal()
-        .Build();
-
-    return ret;
-}
-
 TExprNode::TPtr TAggregateExpander::GeneratePostAggregate(const TExprNode::TPtr& preAgg, const TExprNode::TPtr& keyExtractor)
 {
     auto preprocessLambda = GeneratePreprocessLambda(keyExtractor);
     TExprNode::TPtr postAgg;
-    if (!UsePartitionsByKeys && UseFinalizeByKeys && !HaveSessionSetting) {
-        postAgg = Ctx.Builder(Node->Pos())
-            .Callable("ShuffleByKeys")
-                .Add(0, std::move(preAgg))
-                .Add(1, keyExtractor)
-                .Lambda(2)
-                    .Param("stream")
-                    .Apply(GetContextLambda())
-                        .With(0)
-                            .Apply(BuildFinalizeByKeyLambda(preprocessLambda, keyExtractor))
-                                .With(0, "stream")
-                            .Seal()
-                        .Done()
+    if (!UsePartitionsByKeys && UseFinalizeByKeys) {
+        if (KeyColumns->ChildrenSize() == 0) {
+            postAgg = Ctx.Builder(Node->Pos())
+                .Apply(GetContextLambda())
+                    .With(0)
+                        .Apply(BuildFinalizeByKeyLambda(preprocessLambda, keyExtractor))
+                            .With(0, preAgg)
+                        .Seal()
+                    .Done()
+                .Seal().Build();
+        } else {
+            postAgg = Ctx.Builder(Node->Pos())
+                .Callable("ShuffleByKeys")
+                    .Add(0, std::move(preAgg))
+                    .Add(1, keyExtractor)
+                    .Lambda(2)
+                        .Param("stream")
+                        .Apply(GetContextLambda())
+                            .With(0)
+                                .Apply(BuildFinalizeByKeyLambda(preprocessLambda, keyExtractor))
+                                    .With(0, "stream")
+                                .Seal()
+                            .Done()
+                        .Seal()
                     .Seal()
-                .Seal()
-            .Seal().Build();
+                .Seal().Build();
+        }
     } else {
         auto condenseSwitch = GenerateCondenseSwitch(keyExtractor);
         postAgg = Ctx.Builder(Node->Pos())
@@ -2902,30 +2533,9 @@ TExprNode::TPtr TAggregateExpander::TryGenerateBlockMergeFinalizeHashed() {
         .Callable("ShuffleByKeys")
             .Add(0, AggList)
             .Add(1, keySelector)
-            .Lambda(2)
-                .Param("stream")
-                .Apply(GetContextLambda())
-                    .With(0)
-                        .Apply(lambdaStream)
-                            .With(0, "stream")
-                        .Seal()
-                    .Done()
-                .Seal()
-            .Seal()
+            .Add(2, lambdaStream)
         .Seal()
         .Build();
-}
-
-TExprNode::TPtr ExpandAggregatePeephole(const TExprNode::TPtr& node, TExprContext& ctx, TTypeAnnotationContext& typesCtx) {
-    if (NNodes::TCoAggregate::Match(node.Get())) {
-        NNodes::TCoAggregate self(node);
-        auto ret = TAggregateExpander::CountAggregateRewrite(self, ctx, typesCtx.UseBlocks);
-        if (ret != node) {
-            YQL_CLOG(DEBUG, Core) << "CountAggregateRewrite on peephole";
-            return ret;
-        }
-    }
-    return ExpandAggregatePeepholeImpl(node, ctx, typesCtx, false, typesCtx.UseBlocks);
 }
 
 } // namespace NYql

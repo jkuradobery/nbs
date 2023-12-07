@@ -48,7 +48,7 @@ struct TIntricateObject
     }
 };
 
-using TIntricateObjectPtr = TIntrusivePtr<TIntricateObject>;
+typedef TIntrusivePtr<TIntricateObject> TIntricateObjectPtr;
 
 void Ref(TIntricateObject* obj, int /*n*/ = 1)
 {
@@ -159,18 +159,6 @@ public:
 private:
     IOutputStream* const Output_;
 
-};
-
-class TObjectWithExceptionInConstructor
-    : public TRefCounted
-{
-public:
-    TObjectWithExceptionInConstructor()
-    {
-        throw int(1);
-    }
-
-    volatile int Number = 0;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -449,7 +437,7 @@ TEST(TIntrusivePtrTest, CompareWithNullptr)
 template <class T>
 void TestIntrusivePtrBehavior()
 {
-    using TMyPtr = TIntrusivePtr<T>;
+    typedef TIntrusivePtr<T> TMyPtr;
 
     TStringStream output;
     {
@@ -628,11 +616,6 @@ TEST(TIntrusivePtrTest, Serialize)
     ::Save(&stream, TIntrusivePtr<TObject>(nullptr));
     ::Load(&stream, ptr);
     EXPECT_FALSE(ptr);
-}
-
-TEST(TIntrusivePtrTest, TestObjectConstructionFail)
-{
-    ASSERT_THROW(New<TObjectWithExceptionInConstructor>(), int);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

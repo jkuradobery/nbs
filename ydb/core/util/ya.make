@@ -1,9 +1,7 @@
 LIBRARY()
 
 SRCS(
-    activeactors.h
     address_classifier.cpp
-    backoff.cpp
     cache.cpp
     cache.h
     cache_cache.h
@@ -12,11 +10,8 @@ SRCS(
     concurrent_rw_hash.h
     console.cpp
     console.h
-    count_min_sketch.cpp
-    count_min_sketch.h
     counted_leaky_bucket.h
     defs.h
-    event_priority_queue.h
     failure_injection.cpp
     failure_injection.h
     fast_tls.cpp
@@ -51,21 +46,21 @@ SRCS(
     testactorsys.h
     text.cpp
     text.h
+    time_series_vec.h
     token_bucket.h
     throughput_meter.h
     tuples.h
     type_alias.h
     ulid.cpp
     ulid.h
-    ui64id.cpp
-    ui64id.h
     wildcard.h
+    yverify_stream.h
 )
 
 PEERDIR(
-    ydb/library/actors/core
-    ydb/library/actors/interconnect/mock
-    ydb/library/actors/util
+    library/cpp/actors/core
+    library/cpp/actors/interconnect/mock
+    library/cpp/actors/util
     library/cpp/containers/stack_vector
     library/cpp/html/escape
     library/cpp/ipmath
@@ -76,7 +71,6 @@ PEERDIR(
     ydb/core/base
     ydb/core/protos
     library/cpp/deprecated/atomic
-    ydb/library/yverify_stream
 )
 
 END()

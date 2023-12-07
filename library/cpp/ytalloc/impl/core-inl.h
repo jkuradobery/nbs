@@ -7,12 +7,8 @@
 
 #include <library/cpp/yt/containers/intrusive_linked_list.h>
 
-#include <library/cpp/yt/memory/memory_tag.h>
-
 #include <library/cpp/yt/threading/at_fork.h>
 #include <library/cpp/yt/threading/fork_aware_spin_lock.h>
-
-#include <library/cpp/yt/memory/free_list.h>
 
 #include <util/system/tls.h>
 #include <util/system/align.h>
@@ -506,6 +502,89 @@ Y_FORCE_INLINE void PoisonUninitializedRange(void* ptr, size_t size)
 #define CHECK_HEADER_ALIGNMENT(T) static_assert(sizeof(T) % 16 == 0, "sizeof(" #T ") % 16 != 0");
 
 ////////////////////////////////////////////////////////////////////////////////
+
+template <class T>
+struct TFreeListItem
+{
+    T* Next = nullptr;
+};
+
+constexpr size_t CacheLineSize = 64;
+
+// A lock-free stack of items (derived from TFreeListItem).
+// Supports multiple producers and multiple consumers.
+// Internally uses DCAS with tagged pointers to defeat ABA.
+template <class T>
+class TFreeList
+{
+public:
+    void Put(T* item)
+    {
+        TTaggedPointer currentTaggedHead{};
+        TTaggedPointer newTaggedHead;
+        do {
+            item->Next = currentTaggedHead.first;
+            newTaggedHead = std::make_pair(item, currentTaggedHead.second + 1);
+        } while (!CompareAndSet(&TaggedHead_, currentTaggedHead, newTaggedHead));
+    }
+
+    T* Extract()
+    {
+        T* item;
+        TTaggedPointer currentTaggedHead{};
+        TTaggedPointer newTaggedHead{};
+        CompareAndSet(&TaggedHead_, currentTaggedHead, newTaggedHead);
+        do {
+            item = currentTaggedHead.first;
+            if (!item) {
+                break;
+            }
+            newTaggedHead = std::make_pair(item->Next, currentTaggedHead.second + 1);
+        } while (!CompareAndSet(&TaggedHead_, currentTaggedHead, newTaggedHead));
+        return item;
+    }
+
+    T* ExtractAll()
+    {
+        T* item;
+        TTaggedPointer currentTaggedHead{};
+        TTaggedPointer newTaggedHead;
+        do {
+            item = currentTaggedHead.first;
+            newTaggedHead = std::make_pair(nullptr, currentTaggedHead.second + 1);
+        } while (!CompareAndSet(&TaggedHead_, currentTaggedHead, newTaggedHead));
+        return item;
+    }
+
+private:
+    using TAtomicUint128 = volatile unsigned __int128  __attribute__((aligned(16)));
+    using TTag = ui64;
+    using TTaggedPointer = std::pair<T*, TTag>;
+
+    TAtomicUint128 TaggedHead_ = 0;
+
+    // Avoid false sharing.
+    char Padding[CacheLineSize - sizeof(TAtomicUint128)];
+
+private:
+    static Y_FORCE_INLINE bool CompareAndSet(TAtomicUint128* atomic, TTaggedPointer& expectedValue, TTaggedPointer newValue)
+    {
+        bool success;
+        __asm__ __volatile__
+        (
+            "lock cmpxchg16b %1\n"
+            "setz %0"
+            : "=q"(success)
+            , "+m"(*atomic)
+            , "+a"(expectedValue.first)
+            , "+d"(expectedValue.second)
+            : "b"(newValue.first)
+            , "c"(newValue.second)
+            : "cc"
+        );
+        return success;
+    }
+};
 
 static_assert(sizeof(TFreeList<void>) == CacheLineSize, "sizeof(TFreeList) != CacheLineSize");
 
@@ -1237,7 +1316,7 @@ private:
         if (result != 0) {
             auto error = errno;
             // Failure is possible for locked pages.
-            Y_ABORT_UNLESS(error == EINVAL);
+            Y_VERIFY(error == EINVAL);
         }
     }
 
@@ -1666,7 +1745,7 @@ TExplicitlyConstructableSingleton<TMmapObservationManager> MmapObservationManage
 
 // A per-thread structure containing counters, chunk caches etc.
 struct TThreadState
-    : public TFreeListItemBase<TThreadState>
+    : public TFreeListItem<TThreadState>
     , public TLocalShardedState
 {
     // TThreadState instances of all alive threads are put into a double-linked intrusive list.
@@ -1895,7 +1974,7 @@ public:
 
     static void SetCurrentMemoryTag(TMemoryTag tag)
     {
-        Y_ABORT_UNLESS(tag <= MaxMemoryTag);
+        Y_VERIFY(tag <= MaxMemoryTag);
         (&ThreadControlWord_)->Parts.MemoryTag = tag;
     }
 
@@ -1929,13 +2008,13 @@ private:
     void RefThreadState(TThreadState* state)
     {
         auto result = ++state->RefCounter;
-        Y_ABORT_UNLESS(result > 1);
+        Y_VERIFY(result > 1);
     }
 
     void UnrefThreadState(TThreadState* state)
     {
         auto result = --state->RefCounter;
-        Y_ABORT_UNLESS(result >= 0);
+        Y_VERIFY(result >= 0);
         if (result == 0) {
             DestroyThreadState(state);
         }
@@ -2518,7 +2597,7 @@ void* TSystemAllocator::Allocate(size_t size)
     void* mmappedPtr;
     while (true) {
         auto currentPtr = CurrentPtr_.fetch_add(rawSize);
-        Y_ABORT_UNLESS(currentPtr + rawSize <= SystemZoneEnd);
+        Y_VERIFY(currentPtr + rawSize <= SystemZoneEnd);
         mmappedPtr = MappedMemoryManager->Map(
             currentPtr,
             rawSize,
@@ -2836,7 +2915,7 @@ constexpr size_t GroupsBatchSize = 1024;
 static_assert(ChunksPerGroup <= MaxCachedChunksPerRank, "ChunksPerGroup > MaxCachedChunksPerRank");
 
 class TChunkGroup
-    : public TFreeListItemBase<TChunkGroup>
+    : public TFreeListItem<TChunkGroup>
 {
 public:
     bool IsEmpty() const
@@ -3368,7 +3447,7 @@ enum ELargeBlobState : ui64
 
 // Every large blob (either tagged or not) is prepended with this header.
 struct TLargeBlobHeader
-    : public TFreeListItemBase<TLargeBlobHeader>
+    : public TFreeListItem<TLargeBlobHeader>
 {
     TLargeBlobHeader(
         TLargeBlobExtent* extent,
@@ -3413,7 +3492,7 @@ struct TLargeBlobExtent
 // A helper node that enables storing a number of extent's segments
 // in a free list. Recall that segments themselves do not posses any headers.
 struct TDisposedSegment
-    : public TFreeListItemBase<TDisposedSegment>
+    : public TFreeListItem<TDisposedSegment>
 {
     size_t Index;
     TLargeBlobExtent* Extent;
@@ -3575,7 +3654,7 @@ private:
 
         size_t count = 0;
         while (blob) {
-            auto* nextBlob = blob->Next.load();
+            auto* nextBlob = blob->Next;
             YTALLOC_VERIFY(!blob->Locked.load());
             AssertBlobState(blob, ELargeBlobState::LockedSpare);
             blob->State = ELargeBlobState::Spare;
@@ -3598,7 +3677,7 @@ private:
 
         size_t count = 0;
         while (blob) {
-            auto* nextBlob = blob->Next.load();
+            auto* nextBlob = blob->Next;
             AssertBlobState(blob, ELargeBlobState::LockedFreed);
             MoveBlobToSpare(state, arena, blob, false);
             ++count;
@@ -4404,7 +4483,7 @@ Y_FORCE_INLINE TThreadState* TThreadManager::FindThreadState()
     InitializeGlobals();
 
     // InitializeGlobals must not allocate.
-    Y_ABORT_UNLESS(!ThreadState_);
+    Y_VERIFY(!ThreadState_);
     ThreadState_ = ThreadManager->AllocateThreadState();
     (&ThreadControlWord_)->Parts.ThreadStateValid = true;
 
@@ -4847,3 +4926,4 @@ TEnumIndexedVector<ETimingEventType, TTimingEventCounters> GetTimingEventCounter
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT::NYTAlloc
+

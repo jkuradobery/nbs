@@ -39,7 +39,7 @@ INode::TPtr TCreateObject::FillFeatures(INode::TPtr options) const {
     if (Features.size()) {
         auto features = Y();
         for (auto&& i : Features) {
-            if (i.second.HasNode()) {
+            if (!i.second.Empty()) {
                 features = L(features, Q(Y(BuildQuotedAtom(Pos, i.first), i.second.Build())));
             } else {
                 features = L(features, Q(Y(BuildQuotedAtom(Pos, i.first))));

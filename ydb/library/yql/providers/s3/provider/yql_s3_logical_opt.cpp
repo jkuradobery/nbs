@@ -12,7 +12,6 @@
 #include <ydb/library/yql/core/yql_opt_utils.h>
 #include <ydb/library/yql/utils/log/log.h>
 
-#include <util/generic/size_literals.h>
 
 namespace NYql {
 
@@ -166,11 +165,11 @@ public:
         , State_(state)
     {
 #define HNDL(name) "LogicalOptimizer-"#name, Hndl(&TS3LogicalOptProposalTransformer::name)
+        AddHandler(0, &TCoLeft::Match, HNDL(TrimReadWorld));
         AddHandler(0, &TCoFlatMapBase::Match, HNDL(TryPrunePaths));
         AddHandler(0, &TDqSourceWrap::Match, HNDL(ApplyPrunedPath));
         AddHandler(0, &TCoExtractMembers::Match, HNDL(ExtractMembersOverDqSource));
         AddHandler(0, &TDqSourceWrap::Match, HNDL(MergeS3Paths));
-        AddHandler(0, &TDqSourceWrap::Match, HNDL(CleanupExtraColumns));
 #undef HNDL
     }
 
@@ -187,7 +186,7 @@ public:
                 return n;
             }
             TExprBase node(n);
-            if (auto maybeParse = node.Maybe<TS3ParseSettings>()) {
+            if (auto maybeParse = node.Maybe<TS3ParseSettingsBase>()) {
                 auto maybeSettings = maybeParse.Cast().Settings();
                 if (maybeSettings && HasSetting(maybeSettings.Cast().Ref(), "directories")) {
                     needList = true;
@@ -232,9 +231,6 @@ public:
                                 fileSizeLimit = it->second;
                             }
                         }
-                        if (formatName == "parquet") {
-                            fileSizeLimit = State_->Configuration->BlockFileSizeLimit;
-                        }
 
                         for (const TS3Path& batch : maybeS3SourceSettings.Cast().Paths()) {
                             TStringBuf packed = batch.Data().Literal().Value();
@@ -244,13 +240,15 @@ public:
                             UnpackPathsList(packed, isTextEncoded, paths);
 
                             for (auto& entry : paths) {
-                                if (entry.Size > fileSizeLimit) {
+                                const TString path = std::get<0>(entry);
+                                const size_t size = std::get<1>(entry);
+                                if (size > fileSizeLimit) {
                                     ctx.AddError(TIssue(ctx.GetPosition(batch.Pos()),
-                                        TStringBuilder() << "Size of object " << entry.Path << " = " << entry.Size << " and exceeds limit = " << fileSizeLimit << " specified for format " << formatName));
+                                        TStringBuilder() << "Size of object " << path << " = " << size << " and exceeds limit = " << fileSizeLimit << " specified for format " << formatName));
                                     hasErr = true;
                                     return false;
                                 }
-                                totalSize += entry.Size;
+                                totalSize += size;
                                 ++count;
                             }
                         }
@@ -265,9 +263,7 @@ public:
             return TStatus::Error;
         }
 
-        const auto maxFiles = std::max(
-            State_->Configuration->MaxFilesPerQuery,
-            State_->Configuration->MaxDirectoriesAndFilesPerQuery);
+        const auto maxFiles = State_->Configuration->MaxFilesPerQuery;
         if (count > maxFiles) {
             ctx.AddError(TIssue(ctx.GetPosition(input->Pos()), TStringBuilder() << "Too many objects to read: " << count << ", but limit is " << maxFiles));
             return TStatus::Error;
@@ -283,6 +279,15 @@ public:
             YQL_CLOG(INFO, ProviderS3) << "Will read from S3 " << count << " files with total size " << totalSize << " bytes";
         }
         return TStatus::Ok;
+    }
+
+    TMaybeNode<TExprBase> TrimReadWorld(TExprBase node, TExprContext& ctx) const {
+        const auto& maybeRead = node.Cast<TCoLeft>().Input().Maybe<TS3ReadObject>();
+        if (!maybeRead) {
+            return node;
+        }
+
+        return TExprBase(ctx.NewWorld(node.Pos()));
     }
 
     TMaybeNode<TExprBase> ApplyPrunedPath(TExprBase node, TExprContext& ctx) const {
@@ -488,14 +493,14 @@ public:
                 .Done();
         }
 
-        const auto parseSettings = dqSource.Input().Maybe<TS3ParseSettings>().Cast();
+        const auto parseSettingsBase = dqSource.Input().Maybe<TS3ParseSettingsBase>().Cast();
 
-        const TStructExprType* readRowType = parseSettings.RowType().Ref().GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TStructExprType>();
+        const TStructExprType* readRowType = parseSettingsBase.RowType().Ref().GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TStructExprType>();
 
         TVector<const TItemExprType*> readRowDataItems = readRowType->GetItems();
         TVector<const TItemExprType*> outputRowDataItems = outputRowType->GetItems();
 
-        if (auto settings = parseSettings.Settings()) {
+        if (auto settings = parseSettingsBase.Settings()) {
             if (auto ps = GetSetting(settings.Cast().Ref(), "partitionedby")) {
                 THashSet<TStringBuf> cols;
                 for (size_t i = 1; i < ps->ChildrenSize(); ++i) {
@@ -508,8 +513,7 @@ public:
             }
         }
 
-        auto formatName = parseSettings.Format().StringValue();
-        if (outputRowDataItems.size() == 0 && readRowDataItems.size() != 0 && formatName != "parquet") {
+        if (outputRowDataItems.size() == 0 && readRowDataItems.size() != 0 && !parseSettingsBase.Maybe<TS3ArrowSettings>()) {
             const TStructExprType* readRowDataType = ctx.MakeType<TStructExprType>(readRowDataItems);
             auto item = GetLightColumn(*readRowDataType);
             YQL_ENSURE(item);
@@ -520,8 +524,9 @@ public:
 
         return Build<TDqSourceWrap>(ctx, dqSource.Pos())
             .InitFrom(dqSource)
-            .Input<TS3ParseSettings>()
-                .InitFrom(parseSettings)
+            .Input<TS3ParseSettingsBase>()
+                .CallableName(parseSettingsBase.CallableName())
+                .InitFrom(parseSettingsBase)
                 .Paths(newPaths)
                 .RowType(ExpandType(dqSource.Input().Pos(), *readRowType, ctx))
             .Build()
@@ -632,33 +637,6 @@ public:
             .Input(sourceSettings)
             .Settings(newSettings)
             .Done();
-    }
-
-    TMaybeNode<TExprBase> CleanupExtraColumns(TExprBase node, TExprContext& ctx) const {
-        const TDqSourceWrap dqSource = node.Cast<TDqSourceWrap>();
-        if (dqSource.DataSource().Category() != S3ProviderName) {
-            return node;
-        }
-
-        TMaybeNode<TExprBase> settings = dqSource.Settings();
-        if (!settings) {
-            return node;
-        }
-
-        if (auto extraColumnsSetting = GetSetting(settings.Cast().Ref(), "extraColumns")) {
-            const TStructExprType* extraType = extraColumnsSetting->Tail().GetTypeAnn()->Cast<TListExprType>()->GetItemType()->Cast<TStructExprType>();
-            auto extraTypeItems = extraType->GetItems();
-            if (!extraTypeItems) {
-                auto newSettings =  TExprBase(RemoveSetting(settings.Cast().Ref(), "extraColumns", ctx));
-                return Build<TDqSourceWrap>(ctx, dqSource.Pos())
-                    .InitFrom(dqSource)
-                    .Settings(newSettings)
-                    .Done();
-            }
-        }
-
-        return node;
-
     }
 
 private:

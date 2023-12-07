@@ -6,26 +6,23 @@ using namespace NYql::NDqProto;
 using namespace NKikimrConfig;
 
 TTaskResourceEstimation EstimateTaskResources(const TDqTask& task,
-    const TTableServiceConfig::TResourceManager& config, const ui32 tasksCount)
+    const TTableServiceConfig::TResourceManager& config)
 {
-    TTaskResourceEstimation ret = BuildInitialTaskResources(task);
-    EstimateTaskResources(config, ret, tasksCount);
-    return ret;
-}
-
-TTaskResourceEstimation BuildInitialTaskResources(const TDqTask& task) {
     TTaskResourceEstimation ret;
-    const auto& opts = task.GetProgram().GetSettings();
-    ret.TaskId = task.GetId();
-    ret.ChannelBuffersCount += task.GetInputs().size() ? 1 : 0;
-    ret.ChannelBuffersCount += task.GetOutputs().size() ? 1 : 0;
-    ret.HeavyProgram = opts.GetHasMapJoin();
+    EstimateTaskResources(task, config, ret);
     return ret;
 }
 
-void EstimateTaskResources(const TTableServiceConfig::TResourceManager& config,
-    TTaskResourceEstimation& ret, const ui32 tasksCount)
+void EstimateTaskResources(const TDqTask& task, const TTableServiceConfig::TResourceManager& config,
+    TTaskResourceEstimation& ret)
 {
+    ret.TaskId = task.GetId();
+    for (const auto& input : task.GetInputs()) {
+        ret.ChannelBuffersCount += input.ChannelsSize();
+    }
+    for (const auto& output : task.GetOutputs()) {
+        ret.ChannelBuffersCount += output.ChannelsSize();
+    }
 
     ui64 channelBuffersSize = ret.ChannelBuffersCount * config.GetChannelBufferSize();
     if (channelBuffersSize > config.GetMaxTotalChannelBuffersSize()) {
@@ -35,14 +32,26 @@ void EstimateTaskResources(const TTableServiceConfig::TResourceManager& config,
         ret.ChannelBufferMemoryLimit = config.GetChannelBufferSize();
     }
 
-    if (ret.HeavyProgram) {
-        ret.MkqlProgramMemoryLimit = config.GetMkqlHeavyProgramMemoryLimit() / tasksCount;
+    const auto& opts = task.GetProgram().GetSettings();
+    if (/* opts.GetHasSort() || */opts.GetHasMapJoin()) {
+        ret.MkqlProgramMemoryLimit = config.GetMkqlHeavyProgramMemoryLimit();
     } else {
-        ret.MkqlProgramMemoryLimit = config.GetMkqlLightProgramMemoryLimit() / tasksCount;
+        ret.MkqlProgramMemoryLimit = config.GetMkqlLightProgramMemoryLimit();
     }
 
     ret.TotalMemoryLimit = ret.ChannelBuffersCount * ret.ChannelBufferMemoryLimit
         + ret.MkqlProgramMemoryLimit;
+}
+
+TVector<TTaskResourceEstimation> EstimateTasksResources(const TVector<NYql::NDqProto::TDqTask>& tasks,
+    const TTableServiceConfig::TResourceManager& config)
+{
+    TVector<TTaskResourceEstimation> ret;
+    ret.resize(tasks.size());
+    for (ui64 i = 0; i < tasks.size(); ++i) {
+        EstimateTaskResources(tasks[i], config, ret[i]);
+    }
+    return ret;
 }
 
 } // namespace NKikimr::NKqp

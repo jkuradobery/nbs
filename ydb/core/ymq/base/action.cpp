@@ -141,7 +141,6 @@ bool IsProxyAction(EAction action) {
 #undef ACTION_CASE
 }
 
-
 // Actions modifying a schema 
 #define ENUMERATE_MODIFY_SCHEME_ACTIONS(macro)      \
         macro(CreateQueue)      \
@@ -163,7 +162,6 @@ bool IsModifySchemaRequest(const NKikimrClient::TSqsRequest& req) {
 
 #undef SQS_REQUEST_CASE
 }
-
 
 } // namespace NKikimr::NSQS
 

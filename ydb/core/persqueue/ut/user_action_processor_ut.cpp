@@ -9,8 +9,8 @@
 #include <ydb/public/api/protos/draft/persqueue_error_codes.pb.h>
 #include <ydb/public/lib/base/msgbus_status.h>
 
-#include <ydb/library/actors/core/actorid.h>
-#include <ydb/library/actors/core/event.h>
+#include <library/cpp/actors/core/actorid.h>
+#include <library/cpp/actors/core/event.h>
 #include <library/cpp/testing/unittest/registar.h>
 
 #include <util/generic/hash.h>
@@ -42,21 +42,6 @@ struct TCreateConsumerParams {
     TString Session;
     ui64 OffsetRewindSum = 0;
     ui64 ReadRuleGeneration = 0;
-};
-
-struct TTxOperation {
-    ui32 Partition;
-    TString Consumer;
-    ui64 Begin = 0;
-    ui64 End = 0;
-    TString Path;
-};
-
-struct TProposeTransactionParams {
-    ui64 TxId = 0;
-    TVector<ui64> Senders;
-    TVector<ui64> Receivers;
-    TVector<TTxOperation> TxOps;
 };
 
 }
@@ -119,24 +104,8 @@ protected:
         TMaybe<ui32> Partition;
     };
 
-    struct TTxOperationMatcher {
-        TMaybe<ui32> Partition;
-        TMaybe<TString> Consumer;
-        TMaybe<ui64> Begin;
-        TMaybe<ui64> End;
-    };
-
-    struct TCmdWriteTxMatcher {
-        TMaybe<ui64> TxId;
-        TMaybe<NKikimrPQ::TTransaction::EState> State;
-        TVector<ui64> Senders;
-        TVector<ui64> Receivers;
-        TVector<TTxOperationMatcher> TxOps;
-    };
-
     using TCreatePartitionParams = NHelpers::TCreatePartitionParams;
     using TCreateConsumerParams = NHelpers::TCreateConsumerParams;
-    using TProposeTransactionParams = NHelpers::TProposeTransactionParams;
 
     void SetUp(NUnitTest::TTestContext&) override;
     void TearDown(NUnitTest::TTestContext&) override;
@@ -170,7 +139,6 @@ protected:
     void SendGetOffset(ui64 cookie,
                        const TString& clientId);
     void WaitCmdWrite(const TCmdWriteMatcher& matcher = {});
-    void WaitCmdWriteTx(const TCmdWriteTxMatcher& matcher = {});
     void SendCmdWriteResponse(NMsgBusProxy::EResponseStatus status);
     void WaitProxyResponse(const TProxyResponseMatcher &matcher = {});
     void WaitErrorResponse(const TErrorMatcher& matcher = {});
@@ -193,7 +161,6 @@ protected:
                                        const TString& topic,
                                        bool immediate,
                                        ui64 txId);
-    void SendProposeTransactionRequest(const TProposeTransactionParams& params);
     void WaitProposeTransactionResponse(const TProposeTransactionResponseMatcher& matcher = {});
 
     void SendCalcPredicate(ui64 step,
@@ -215,6 +182,7 @@ protected:
                                  ui64 begin, ui64 end,
                                  TMaybe<bool> predicate = Nothing());
 
+private:
     TMaybe<TTestContext> Ctx;
     TMaybe<TFinalizer> Finalizer;
 
@@ -222,7 +190,6 @@ protected:
 
     NPersQueue::TTopicConverterPtr TopicConverter;
     NKikimrPQ::TPQTabletConfig Config;
-    TActorId Pipe;
 };
 
 void TUserActionProcessorFixture::SetUp(NUnitTest::TTestContext&)
@@ -286,6 +253,7 @@ void TUserActionProcessorFixture::CreatePartitionActor(ui32 id,
                                      false,
                                      Config,
                                      *tabletCounters,
+                                     false,
                                      newPartition,
                                      std::move(txs));
     ActorId = Ctx->Runtime->Register(actor);
@@ -441,16 +409,6 @@ void TUserActionProcessorFixture::WaitCmdWrite(const TCmdWriteMatcher& matcher)
 
         Y_UNUSED(deleteRange);
     }
-}
-
-void TUserActionProcessorFixture::WaitCmdWriteTx(const TCmdWriteTxMatcher& matcher)
-{
-    auto event = Ctx->Runtime->GrabEdgeEvent<TEvKeyValue::TEvRequest>();
-    UNIT_ASSERT(event != nullptr);
-
-    UNIT_ASSERT_VALUES_EQUAL(event->Record.GetCookie(), 5);  // WRITE_TX_PREPARED_COOKIE
-
-    UNIT_ASSERT_VALUES_EQUAL(event->Record.CmdGetStatusSize(), 1 + matcher.TxOps.size());
 }
 
 void TUserActionProcessorFixture::SendCmdWriteResponse(NMsgBusProxy::EResponseStatus status)
@@ -626,7 +584,7 @@ void TUserActionProcessorFixture::WaitDataRangeRequest()
 
 void TUserActionProcessorFixture::SendDataRangeResponse(ui64 begin, ui64 end)
 {
-    Y_ABORT_UNLESS(begin <= end);
+    Y_VERIFY(begin <= end);
 
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
@@ -664,49 +622,6 @@ void TUserActionProcessorFixture::SendProposeTransactionRequest(ui32 partition,
     event->Record.SetTxId(txId);
 
     Ctx->Runtime->SingleSys()->Send(new IEventHandle(ActorId, Ctx->Edge, event.Release()));
-}
-
-void TUserActionProcessorFixture::SendProposeTransactionRequest(const TProposeTransactionParams& params)
-{
-    auto event = MakeHolder<TEvPersQueue::TEvProposeTransaction>();
-
-    //
-    // Source
-    //
-    ActorIdToProto(Ctx->Edge, event->Record.MutableSource());
-
-    //
-    // TxBody
-    //
-    auto* body = event->Record.MutableTxBody();
-    for (auto& txOp : params.TxOps) {
-        auto* operation = body->MutableOperations()->Add();
-        operation->SetPartitionId(txOp.Partition);
-        operation->SetBegin(txOp.Begin);
-        operation->SetEnd(txOp.End);
-        operation->SetConsumer(txOp.Consumer);
-        operation->SetPath(txOp.Path);
-    }
-    for (ui64 tabletId : params.Senders) {
-        body->AddSendingShards(tabletId);
-    }
-    for (ui64 tabletId : params.Receivers) {
-        body->AddReceivingShards(tabletId);
-    }
-    body->SetImmediate(params.Senders.empty() && params.Receivers.empty());
-
-    //
-    // TxId
-    //
-    event->Record.SetTxId(params.TxId);
-
-    if (Pipe == TActorId()) {
-        Pipe = Ctx->Runtime->ConnectToPipe(Ctx->TabletId, Ctx->Edge, 0, GetPipeConfigWithRetries());
-    }
-
-    Ctx->Runtime->SendToPipe(Pipe,
-                             Ctx->Edge,
-                             event.Release());
 }
 
 void TUserActionProcessorFixture::WaitProposeTransactionResponse(const TProposeTransactionResponseMatcher& matcher)
@@ -1254,156 +1169,6 @@ Y_UNIT_TEST_F(ChangeConfig, TUserActionProcessorFixture)
 
     WaitPartitionConfigChanged({.Partition=partition});
 }
-
-Y_UNIT_TEST_F(EvProposeTransaction, TUserActionProcessorFixture)
-{
-    PQTabletPrepare({.partitions=1}, {}, *Ctx);
-
-    const ui64 txId_1 = 67890;
-    const ui64 txId_2 = 67891;
-    const ui64 txId_3 = 67892;
-    const ui64 tablet2 = 22222;
-
-    SendProposeTransactionRequest({.TxId=txId_1,
-                                  .Senders={tablet2}, .Receivers={tablet2},
-                                  .TxOps={
-                                  {.Partition=0, .Consumer="user", .Begin=0, .End=0, .Path="/topic"},
-                                  {.Partition=0, .Consumer="consumer", .Begin=0, .End=0, .Path="/topic"},
-                                  }});
-    SendProposeTransactionRequest({.TxId=txId_2,
-                                  .Senders={tablet2}, .Receivers={tablet2},
-                                  .TxOps={
-                                  {.Partition=0, .Consumer="user", .Begin=0, .End=0, .Path="/topic"},
-                                  {.Partition=0, .Consumer="consumer", .Begin=0, .End=0, .Path="/topic"},
-                                  }});
-    SendProposeTransactionRequest({.TxId=txId_3,
-                                  .Senders={tablet2}, .Receivers={tablet2},
-                                  .TxOps={
-                                  {.Partition=0, .Consumer="user", .Begin=0, .End=0, .Path="/topic"},
-                                  {.Partition=0, .Consumer="consumer", .Begin=0, .End=0, .Path="/topic"},
-                                  }});
-
-    //
-    // TODO(abcdef): проверить, что в команде CmdWrite есть информация только о txId_1
-    //
-
-    WaitProposeTransactionResponse({.TxId=txId_1,
-                                   .Status=NKikimrPQ::TEvProposeTransactionResult::PREPARED});
-
-    //
-    // TODO(abcdef): проверить, что в команде CmdWrite есть информация о txId_2 и txId_3
-    //
-
-    WaitProposeTransactionResponse({.TxId=txId_2,
-                                   .Status=NKikimrPQ::TEvProposeTransactionResult::PREPARED});
-    WaitProposeTransactionResponse({.TxId=txId_3,
-                                   .Status=NKikimrPQ::TEvProposeTransactionResult::PREPARED});
-}
-
-#if 0
-Y_UNIT_TEST_F(Distributed_Tx_Commit, TUserActionProcessorFixture)
-{
-    TTestContext tc;
-    auto setupEventFilter = [&tc]() {
-        return tc.InitialEventsFilter.Prepare();
-    };
-    auto testFunction = [&](const TString& dispatchName, std::function<void (TTestActorRuntime&)> setup, bool& activeZone) {
-        TFinalizer finalizer(tc);
-        tc.Prepare(dispatchName, setup, activeZone, true);
-        tc.Runtime->SetScheduledLimit(1000);
-
-        PQTabletPrepare({.partitions=1}, {}, tc);
-
-        const ui64 step = 12345;
-        const ui64 txId = 67890;
-        const ui32 partition = 0;
-        const TString consumer = "user";
-        const ui64 tablet_1 = tc.TabletId;
-        const ui64 tablet_2 = tc.TabletId + 1;
-
-        //
-        // TEvProposeTransaction от KqpDataExecuter
-        //
-
-        //
-        // список получателей
-        //
-        SendProposeTransactionRequest({.TxId=txId,
-                                      .Senders={tablet_1, tablet_2}, .Receivers={tablet_1, tablet_2},
-                                      .Partition=0, .Consumer=consumer, .Begin=0, .End=2});
-        WaitCmdWrite({.TxId=txId,
-                     .State=PREPARED,
-                     .Senders={tablet_1, tablet_2}, .Receivers={tablet_1, tablet_2},
-                     .Partition=0, .Consumer="user", .Begin=0, .End=2});
-        SendCmdWriteResponse(NMsgBusProxy::MSTATUS_OK);
-        WaitProposeTransactionResponse({.TxId=txId, .Status=NKikimrPQ::TEvProposeTransactionResult::PREPARED});
-
-        //
-        // TEvMediatorPlanStep от медиатора
-        //
-        SendMediatorPlanStep({.Step=step, .TxIds={txId}});
-        WaitCmdWrite({.Step=step, .TxId=txId, .State=PLANNED});
-        SendCmdWriteResponse(NMsgBusProxy::MSTATUS_OK);
-        WaitPlanStepAck({.Step=step, .TxIds={txIds}}); // TEvPlanStepAck для координатора
-        WaitPlanStepAccepted({.Step=step});
-
-        //
-        // TEvTxCalcPredicate для партиции
-        //
-
-        //
-        // работу с партицией не перехватывать
-        //
-        //WaitCalcPredicateRequest({.Step=step, .TxId=txId, .Consumer=consumer, .Begin=0, .End=2});
-        //SendCalcPredicateResult({.Step=step, .TxId=txId, .Partition=partition, .Predicate=true});
-        WaitCmdWrite({.TxId=txId, .State=EXECUTING, .Partition=partition, .Predicate=true});
-        SendCmdWriteResponse(NMsgBusProxy::MSTATUS_OK);
-
-        //
-        // TEvReadSet другой таблетке
-        //
-        ui64 seqNo;
-        WaitReadSet({.Src=tablet_1, .Dst=tablet_2, .Step=step, .TxId=txId, .ReadSet={.Predicate=true}}, seqNo);
-
-        //
-        // TEvReadSet от другой таблетки
-        //
-        SendReadSet({.Src=tablet_2, .Dst=tablet_1, .Step=step, .TxId=txId, .ReadSet={.Predicate=true}, .SeqNo=11111});
-        //WaitCmdWrite();
-        //SendCmdWriteResponse(NMsgBusProxy::MSTATUS_OK);
-        //
-        // перенести после commit
-        //
-        WaitReadSetAck({.Src=tablet_1, .Dst=tablet_2, .Step=step, .TxId=txId, .SeqNo=11111});
-
-        //
-        // TEvReadSetAck от другой таблетки
-        //
-        //WaitCmdWrite();
-        //SendCmdWriteResponse(NMsgBusProxy::MSTATUS_OK);
-
-        //
-        // TEvTxCommit для партиции
-        //
-        WaitCommitTx({.Step=step, .TxId=txId, .Consumer=consumer, .Begin=0, .End=2});
-        SendCommitTxDone({.Step=step, .TxId=txId, .Partition=0});
-
-        WaitCmdWrite({.TxId=txId, .State=EXECUTED});
-        // удалить транзакцию из шага
-        SendCmdWriteResponse(NMsgBusProxy::MSTATUS_OK);
-
-        //
-        // TEvProposeTransactionResult для KqpDataExecuter
-        //
-        WaitProposeTransactionResponse({.TxId=txId, .Status=NKikimrPQ::TEvProposeTransactionResult::COMPLETE});
-
-        SendReadSetAck({.Src=tablet_2, .Dst=tablet_1, .Step=step, .TxId=txId, .SeqNo=seqNo});
-        //
-        // после сщ
-        WaitCmdDeleteRanges(...);
-    };
-}
-#endif
 
 } // Y_UNIT_TEST_SUITE(TUserActionProcessorTests)
 

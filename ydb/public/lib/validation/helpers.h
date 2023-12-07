@@ -4,7 +4,8 @@
 
 #include <util/generic/string.h>
 
-namespace NKikimr::NValidation {
+namespace NKikimr {
+namespace NValidation {
 
 TString HeaderFileName(const google::protobuf::Descriptor* message);
 TString SourceFileName(const google::protobuf::Descriptor* message);
@@ -14,4 +15,5 @@ TString ClassName(const google::protobuf::Descriptor* message);
 
 bool IsCustomMessage(const google::protobuf::Descriptor* message);
 
-}
+} // NValidation
+} // NKikimr

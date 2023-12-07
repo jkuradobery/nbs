@@ -1,8 +1,6 @@
 LIBRARY()
 
 SRCS(
-    yql_opt_json_peephole_physical.h
-    yql_opt_json_peephole_physical.cpp
     yql_opt_peephole_physical.h
     yql_opt_peephole_physical.cpp
 )

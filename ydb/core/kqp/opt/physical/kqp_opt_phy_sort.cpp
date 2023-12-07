@@ -18,15 +18,15 @@ using TTableData = std::pair<const NYql::TKikimrTableDescription*, NYql::TKqpRea
 
 TExprBase KqpRemoveRedundantSortByPk(TExprBase node, TExprContext& ctx, const TKqpOptimizeContext& kqpCtx) {
     auto maybeSort = node.Maybe<TCoSort>();
-    auto maybeTopBase = node.Maybe<TCoTopBase>();
+    auto maybeTopSort = node.Maybe<TCoTopSort>();
 
-    if (!maybeSort && !maybeTopBase) {
+    if (!maybeSort && !maybeTopSort) {
         return node;
     }
 
-    auto input = maybeSort ? maybeSort.Cast().Input() : maybeTopBase.Cast().Input();
-    auto sortDirections = maybeSort ? maybeSort.Cast().SortDirections() : maybeTopBase.Cast().SortDirections();
-    auto keySelector = maybeSort ? maybeSort.Cast().KeySelectorLambda() : maybeTopBase.Cast().KeySelectorLambda();
+    auto input = maybeSort ? maybeSort.Cast().Input() : maybeTopSort.Cast().Input();
+    auto sortDirections = maybeSort ? maybeSort.Cast().SortDirections() : maybeTopSort.Cast().SortDirections();
+    auto keySelector = maybeSort ? maybeSort.Cast().KeySelectorLambda() : maybeTopSort.Cast().KeySelectorLambda();
 
     auto maybeFlatmap = input.Maybe<TCoFlatMap>();
 
@@ -41,9 +41,39 @@ TExprBase KqpRemoveRedundantSortByPk(TExprBase node, TExprContext& ctx, const TK
         input = flatmap.Input();
     }
 
-    auto direction = GetSortDirection(sortDirections);
-    if (direction != ESortDirection::Forward && direction != ESortDirection::Reverse) {
-        return node;
+    enum : ui32 {
+        SortDirectionNone = 0,
+        SortDirectionForward = 1,
+        SortDirectionReverse = 2,
+        SortDirectionUnknown = 4,
+    };
+
+    auto getDirection = [] (TExprBase expr) -> ui32 {
+        if (!expr.Maybe<TCoBool>()) {
+            return SortDirectionUnknown;
+        }
+
+        if (!FromString<bool>(expr.Cast<TCoBool>().Literal().Value())) {
+            return SortDirectionReverse;
+        }
+
+        return SortDirectionForward;
+    };
+
+    ui32 direction = SortDirectionNone;
+
+    if (auto maybeList = sortDirections.Maybe<TExprList>()) {
+        for (const auto& expr : maybeList.Cast()) {
+            direction |= getDirection(expr);
+            if (direction != SortDirectionForward && direction != SortDirectionReverse) {
+                return node;
+            }
+        }
+    } else {
+        direction |= getDirection(sortDirections);
+        if (direction != SortDirectionForward && direction != SortDirectionReverse) {
+            return node;
+        }
     }
 
     bool isReadTable = input.Maybe<TKqpReadTable>().IsValid();
@@ -51,22 +81,49 @@ TExprBase KqpRemoveRedundantSortByPk(TExprBase node, TExprContext& ctx, const TK
     if (!isReadTable && !isReadTableRanges) {
         return node;
     }
-
     auto& tableDesc = kqpCtx.Tables->ExistingTable(kqpCtx.Cluster, GetReadTablePath(input, isReadTableRanges));
-
-    if (tableDesc.Metadata->Kind == EKikimrTableKind::Olap) {
-        // OLAP tables are read in parallel, so we need to keep the out sort.
-        return node;
-    }
-
     auto settings = GetReadTableSettings(input, isReadTableRanges);
 
-    if (!IsSortKeyPrimary(keySelector, tableDesc, passthroughFields)) {
-        return node;
+    auto checkKey = [keySelector, &tableDesc, &passthroughFields] (TExprBase key, ui32 index) {
+        if (!key.Maybe<TCoMember>()) {
+            return false;
+        }
+
+        auto member = key.Cast<TCoMember>();
+        if (member.Struct().Raw() != keySelector.Args().Arg(0).Raw()) {
+            return false;
+        }
+
+        auto column = TString(member.Name().Value());
+        auto columnIndex = tableDesc.GetKeyColumnIndex(column);
+        if (!columnIndex || *columnIndex != index) {
+            return false;
+        }
+
+        if (passthroughFields && !passthroughFields->contains(column)) {
+            return false;
+        }
+
+        return true;
+    };
+
+    auto lambdaBody = keySelector.Body();
+    if (auto maybeTuple = lambdaBody.Maybe<TExprList>()) {
+        auto tuple = maybeTuple.Cast();
+        for (size_t i = 0; i < tuple.Size(); ++i) {
+            if (!checkKey(tuple.Item(i), i)) {
+                return node;
+            }
+        }
+    } else {
+        if (!checkKey(lambdaBody, 0)) {
+            return node;
+        }
     }
 
-    if (direction == ESortDirection::Reverse) {
-        if (!UseSource(kqpCtx, tableDesc) && kqpCtx.IsScanQuery()) {
+    bool olapTable = tableDesc.Metadata->Kind == EKikimrTableKind::Olap;
+    if (direction == SortDirectionReverse) {
+        if (!UseSource(kqpCtx, tableDesc) && !olapTable && kqpCtx.IsScanQuery()) {
             return node;
         }
 
@@ -78,8 +135,8 @@ TExprBase KqpRemoveRedundantSortByPk(TExprBase node, TExprContext& ctx, const TK
         settings.SetSorted();
 
         input = BuildReadNode(input.Pos(), ctx, input, settings);
-    } else if (direction == ESortDirection::Forward) {
-        if (UseSource(kqpCtx, tableDesc)) {
+    } else if (direction == SortDirectionForward) {
+        if (olapTable || UseSource(kqpCtx, tableDesc)) {
             settings.SetSorted();
             input = BuildReadNode(input.Pos(), ctx, input, settings);
         }
@@ -92,10 +149,10 @@ TExprBase KqpRemoveRedundantSortByPk(TExprBase node, TExprContext& ctx, const TK
             .Done();
     }
 
-    if (maybeTopBase) {
+    if (maybeTopSort) {
         return Build<TCoTake>(ctx, node.Pos())
             .Input(input)
-            .Count(maybeTopBase.Cast().Count())
+            .Count(maybeTopSort.Cast().Count())
             .Done();
     } else {
         return input;

@@ -4,24 +4,20 @@
 #include <ydb/core/base/counters.h>
 #include <ydb/core/base/appdata.h>
 #include <ydb/core/mon/mon.h>
-#include <ydb/library/services/services.pb.h>
 
-#include <ydb/library/actors/core/actor_bootstrapped.h>
-#include <ydb/library/actors/core/hfunc.h>
-#include <ydb/library/actors/prof/tag.h>
+#include <library/cpp/actors/core/actor_bootstrapped.h>
+#include <library/cpp/actors/core/hfunc.h>
+#include <library/cpp/actors/prof/tag.h>
 #include <library/cpp/html/pcdata/pcdata.h>
 #include <library/cpp/lfalloc/dbg_info/dbg_info.h>
 #include <library/cpp/malloc/api/malloc.h>
 #include <library/cpp/monlib/dynamic_counters/counters.h>
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <library/cpp/ytalloc/api/ytalloc.h>
-#include <library/cpp/yt/memory/memory_tag.h>
 
 #include <util/datetime/base.h>
 #include <util/generic/hash.h>
 #include <util/stream/str.h>
-#include <util/stream/file.h>
-
 
 namespace NKikimr {
     using TDynamicCountersPtr = TIntrusivePtr<::NMonitoring::TDynamicCounters>;
@@ -274,7 +270,7 @@ namespace NKikimr {
             void Update(TDuration interval) override {
                 Y_UNUSED(interval);
 #ifdef PROFILE_MEMORY_ALLOCATIONS
-                using namespace NYT;
+                using namespace NYT::NYTAlloc;
 
                 size_t maxTag = NProfiling::GetTagsCount();
 
@@ -307,7 +303,7 @@ namespace NKikimr {
             void Dump(IOutputStream& out, const TString& relPath) override {
                 Y_UNUSED(relPath);
 #ifdef PROFILE_MEMORY_ALLOCATIONS
-                using namespace NYT;
+                using namespace NYT::NYTAlloc;
 
                 size_t maxTag = NProfiling::GetTagsCount();
 
@@ -403,11 +399,8 @@ namespace NKikimr {
             struct TDumpLogConfig {
                 static constexpr double RssUsageHard = 0.9;
                 static constexpr double RssUsageSoft = 0.85;
-                static constexpr double RssUsageSoftLimit = 0.8;
-                static constexpr double RssUsageNotifySlowLimit = 0.7;
                 static constexpr TDuration RepeatInterval = TDuration::Seconds(10);
                 static constexpr TDuration DumpInterval = TDuration::Minutes(10);
-                static constexpr TDuration NotifySlowInterval = TDuration::Seconds(10);
             };
 
             enum {
@@ -417,26 +410,21 @@ namespace NKikimr {
 
             struct TEvDumpLogStats : public TEventLocal<TEvDumpLogStats, EvDumpLogStats> {};
 
-            const TIntrusivePtr<TMemObserver> MemObserver;
             const TDuration Interval;
             const std::unique_ptr<IAllocMonitor> AllocMonitor;
-            const TString FilePathPrefix;
 
             TInstant LogMemoryStatsTime = TInstant::Now() - TDumpLogConfig::DumpInterval;
-            TInstant NotifyMemoryStatsTime = TInstant::Now() - TDumpLogConfig::NotifySlowInterval;
 
             bool IsDangerous = false;
 
         public:
             static constexpr EActivityType ActorActivityType() {
-                return EActivityType::ACTORLIB_STATS;
+                return ACTORLIB_STATS;
             }
 
-            TMemProfMonitor(TIntrusivePtr<TMemObserver> memObserver, TDuration interval, std::unique_ptr<IAllocMonitor> allocMonitor, const TString& filePathPrefix)
-                : MemObserver(std::move(memObserver))
-                , Interval(interval)
+            TMemProfMonitor(TDuration interval, std::unique_ptr<IAllocMonitor> allocMonitor)
+                : Interval(interval)
                 , AllocMonitor(std::move(allocMonitor))
-                , FilePathPrefix(filePathPrefix)
             {}
 
             void Bootstrap(const TActorContext& ctx) {
@@ -447,8 +435,6 @@ namespace NKikimr {
                     Die(ctx);
                     return;
                 }
-
-                LOG_NOTICE_S(ctx, NKikimrServices::MEMORY_PROFILER, "Bootstrapped");
 
                 auto* indexPage = mon->RegisterIndexPage("memory", "Memory");
                 mon->RegisterActorPage(
@@ -473,37 +459,26 @@ namespace NKikimr {
 
             void LogMemoryStats(const TActorContext& ctx, size_t limit) noexcept {
                 LogMemoryStatsTime = TInstant::Now();
+                TStringStream out;
+                AllocMonitor->DumpForLog(out, limit);
 
-                if (FilePathPrefix) {
-                    try {
-                        TString name = LogMemoryStatsTime.ToStringUpToSeconds();
-                        SubstGlobal(name, ':', '-');
-                        TString fileName = FilePathPrefix + name + ".mem";
-                        TFileOutput out(fileName);
-                        AllocMonitor->DumpForLog(out, limit);
-                        LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER, "Memory stats saved to " + fileName);
-                    } catch (const std::exception& err) {
-                        LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER, err.what());
-                    }
-                } else {
-                    TStringStream out;
-                    AllocMonitor->DumpForLog(out, limit);
-                    TVector<TString> split;
-                    Split(out.Str(), "\n", split);
-                    for (const auto& line : split) {
-                        LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER, line);
-                    }
+                TVector<TString> split;
+                Split(out.Str(), "\n", split);
+                for (const auto& line : split) {
+                    LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER, line);
                 }
             }
 
-            void LogMemoryStatsIfNeeded(const TActorContext& ctx, TMemoryUsage memoryUsage) noexcept {
-                auto usage = memoryUsage.Usage();
-                LOG_DEBUG_S(ctx, NKikimrServices::MEMORY_PROFILER, memoryUsage.ToString());
-                if (IsDangerous && usage < TDumpLogConfig::RssUsageSoft) {
+            void LogMemoryStatsIfNeeded(const TActorContext& ctx) noexcept {
+                auto memoryUsage = TAllocState::GetMemoryUsage();
+
+                if (IsDangerous && memoryUsage < TDumpLogConfig::RssUsageSoft) {
                     IsDangerous = false;
-                } else if (!IsDangerous && usage > TDumpLogConfig::RssUsageHard) {
+                } else if (!IsDangerous && memoryUsage > TDumpLogConfig::RssUsageHard) {
                     if (TInstant::Now() - LogMemoryStatsTime > TDumpLogConfig::DumpInterval) {
                         IsDangerous = true;
+                        LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER,
+                            "RSS usage " << memoryUsage * 100. << "%");
                         LogMemoryStats(ctx, 256);
                         ctx.Schedule(TDumpLogConfig::RepeatInterval, new TEvDumpLogStats);
                     }
@@ -512,37 +487,16 @@ namespace NKikimr {
 
             void HandleWakeup(const TActorContext& ctx) noexcept {
                 AllocMonitor->Update(Interval);
-
-                std::optional<TMemoryUsage> memoryUsage = TAllocState::TryGetMemoryUsage();
-                if (memoryUsage) {
-                    LogMemoryStatsIfNeeded(ctx, memoryUsage.value());
-
-                    TMemObserver::TMemStat stat{
-                        // Note: we use allocated memory because AnonRss has lag
-                        TAllocState::GetAllocatedMemoryEstimate(), 
-                        memoryUsage->CGroupLimit, 
-                        static_cast<ui64>(memoryUsage->CGroupLimit * TDumpLogConfig::RssUsageSoftLimit)};
-
-                    if (memoryUsage->AnonRss > TDumpLogConfig::RssUsageNotifySlowLimit ||
-                            TInstant::Now() - NotifyMemoryStatsTime > TDumpLogConfig::NotifySlowInterval) {
-                        NotifyMemoryStatsTime = TInstant::Now();
-                        MemObserver->NotifyStat(stat);
-                    } else {
-                        // fast path: don't call callback, but update current stat
-                        MemObserver->SetStat(stat);
-                    }
-                }
-                
+                LogMemoryStatsIfNeeded(ctx);
                 ctx.Schedule(Interval, new TEvents::TEvWakeup());
             }
 
             void HandleDump(TEvDumpLogStats::TPtr&, const TActorContext& ctx) noexcept {
                 if (IsDangerous) {
-                    std::optional<TMemoryUsage> memoryUsage = TAllocState::TryGetMemoryUsage();
-                    if (memoryUsage) {
-                        LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER, memoryUsage->ToString());
-                        LogMemoryStats(ctx, 256);
-                    }
+                    auto memoryUsage = TAllocState::GetMemoryUsage();
+                    LOG_WARN_S(ctx, NKikimrServices::MEMORY_PROFILER,
+                        "RSS usage " << memoryUsage * 100. << "%");
+                    LogMemoryStats(ctx, 256);
                 }
             }
 
@@ -562,11 +516,9 @@ namespace NKikimr {
         };
     }
 
-    IActor* CreateMemProfMonitor(TIntrusivePtr<TMemObserver> memObserver, ui32 intervalSec, TDynamicCountersPtr counters, const TString& filePathPrefix) {
+    IActor* CreateMemProfMonitor(ui32 intervalSec, TDynamicCountersPtr counters) {
         return new TMemProfMonitor(
-            memObserver,
             TDuration::Seconds(intervalSec),
-            CreateAllocMonitor(GetServiceCounters(counters, "utils")),
-            filePathPrefix);
+            CreateAllocMonitor(GetServiceCounters(counters, "utils")));
     }
 }

@@ -23,7 +23,4 @@ END()
 RECURSE(
     pg
     pg_dummy
-    settings
-    v0
-    v1
 )

@@ -46,7 +46,7 @@ def canonical_file(
             try:  # check if iterable
                 if not isinstance(diff_tool[0], six.string_types):
                     raise Exception("Invalid custom diff-tool: not cmd")
-            except Exception:
+            except:
                 raise Exception("Invalid custom diff-tool: not binary path")
     return runtime._get_ya_plugin_instance().file(
         safe_path, diff_tool=diff_tool, local=local, diff_file_name=diff_file_name, diff_tool_timeout=diff_tool_timeout
@@ -54,7 +54,7 @@ def canonical_file(
 
 
 @runtime.default_arg0
-def canonical_dir(path, diff_tool=None, local=False, diff_file_name=None, diff_tool_timeout=None):
+def canonical_dir(path, diff_tool=None, diff_file_name=None, diff_tool_timeout=None):
     abs_path = os.path.abspath(path)
     assert os.path.exists(abs_path), "Canonical path {} does not exist".format(path)
     assert os.path.isdir(abs_path), "Path {} is not a directory".format(path)
@@ -64,7 +64,7 @@ def canonical_dir(path, diff_tool=None, local=False, diff_file_name=None, diff_t
     safe_path = os.path.join(tempdir, os.path.basename(abs_path))
     shutil.copytree(abs_path, safe_path)
     return runtime._get_ya_plugin_instance().file(
-        safe_path, diff_tool=diff_tool, local=local, diff_file_name=diff_file_name, diff_tool_timeout=diff_tool_timeout
+        safe_path, diff_tool=diff_tool, diff_file_name=diff_file_name, diff_tool_timeout=diff_tool_timeout
     )
 
 
@@ -202,7 +202,7 @@ def _prepare_args(args):
     if args is None:
         args = []
     if isinstance(args, six.string_types):
-        args = list(map(lambda a: a.strip(), args.split()))
+        args = map(lambda a: a.strip(), args.split())
     return args
 
 
@@ -217,9 +217,7 @@ def _canonical_execute(
     out_file_path = path.get_unique_file_path(runtime.output_path(), "{}.out.txt".format(file_name))
     err_file_path = path.get_unique_file_path(runtime.output_path(), "{}.err.txt".format(file_name))
     if not data_transformer:
-
-        def data_transformer(x):
-            return x
+        data_transformer = lambda x: x
 
     try:
         os.makedirs(os.path.dirname(out_file_path))

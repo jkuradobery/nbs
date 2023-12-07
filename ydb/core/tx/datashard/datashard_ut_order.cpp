@@ -1,4 +1,4 @@
-#include <ydb/core/tx/datashard/ut_common/datashard_ut_common.h>
+#include "datashard_ut_common.h"
 #include "datashard_ut_common_kqp.h"
 #include "datashard_active_transaction.h"
 
@@ -1247,7 +1247,8 @@ Y_UNIT_TEST(TestDelayedTxWaitsForWriteActiveTxOnly) {
     TVector<TAutoPtr<IEventHandle>> rss;
 
     // We want to intercept all RS to table-2.
-    auto captureRS = [shard2,&rss](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [shard2,&rss](TTestActorRuntimeBase &,
+                                   TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             auto &rec = event->Get<TEvTxProcessing::TEvReadSet>()->Record;
             if (rec.GetTabletDest() == shard2) {
@@ -1359,7 +1360,8 @@ Y_UNIT_TEST(TestOnlyDataTxLagCausesRejects) {
 
     // Send SQL request which should hang due to lost RS.
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                        TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -1429,8 +1431,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderLockLost, StreamLookup) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -1439,7 +1440,8 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderLockLost, StreamLookup) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -1556,8 +1558,7 @@ Y_UNIT_TEST(TestMvccReadDoesntBlockWrites) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -1566,7 +1567,8 @@ Y_UNIT_TEST(TestMvccReadDoesntBlockWrites) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -1687,8 +1689,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderReadOnlyAllowed, StreamLookup) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -1697,7 +1698,8 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderReadOnlyAllowed, StreamLookup) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -1786,8 +1788,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderNonConflictingWrites, StreamLookup) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1` WHERE key = 1
             UNION ALL
-            SELECT * FROM `/Root/table-2` WHERE key = 2
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -1796,7 +1797,8 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderNonConflictingWrites, StreamLookup) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -1895,8 +1897,7 @@ Y_UNIT_TEST(MvccTestOutOfOrderRestartLocksSingleWithoutBarrier) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
              SELECT * FROM `/Root/table-1` WHERE key = 1
              UNION ALL
-             SELECT * FROM `/Root/table-2` WHERE key = 2
-             ORDER BY key)"));
+             SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -1905,7 +1906,8 @@ Y_UNIT_TEST(MvccTestOutOfOrderRestartLocksSingleWithoutBarrier) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -2014,8 +2016,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderRestartLocksReorderedWithoutBarrier, StreamLookup
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1` WHERE key = 1
             UNION ALL
-            SELECT * FROM `/Root/table-2` WHERE key = 2
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -2024,7 +2025,8 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderRestartLocksReorderedWithoutBarrier, StreamLookup
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         if (event->GetTypeRewrite() == TEvTxProcessing::EvReadSet) {
             readSets.push_back(std::move(event));
             return TTestActorRuntime::EEventAction::DROP;
@@ -2060,6 +2062,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderRestartLocksReorderedWithoutBarrier, StreamLookup
         TString tmpSessionId = CreateSessionRPC(runtime);
         auto req = MakeSimpleRequestRPC(Q_("SELECT key, value FROM `/Root/table-1` WHERE key = 3;"), tmpSessionId, "", true);
         req.mutable_operation_params()->mutable_operation_timeout()->set_seconds(1);
+        req.mutable_operation_params()->mutable_cancel_after()->set_seconds(1);
         auto response = AwaitResponse(runtime, SendRequest(runtime, std::move(req)));
         UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::TIMEOUT);
     }
@@ -2085,6 +2088,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderRestartLocksReorderedWithoutBarrier, StreamLookup
         TString tmpSessionId = CreateSessionRPC(runtime);
         auto req = MakeSimpleRequestRPC(Q_("SELECT key, value FROM `/Root/table-1` WHERE key = 3;"), tmpSessionId, "", true);
         req.mutable_operation_params()->mutable_operation_timeout()->set_seconds(1);
+        req.mutable_operation_params()->mutable_cancel_after()->set_seconds(1);
         auto response = AwaitResponse(runtime, SendRequest(runtime, std::move(req)));
         UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::TIMEOUT);
     }
@@ -2146,8 +2150,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderNoBarrierRestartImmediateLongTail, StreamLookup) 
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1` WHERE key = 1
             UNION ALL
-            SELECT * FROM `/Root/table-2` WHERE key = 2
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -2160,7 +2163,8 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderNoBarrierRestartImmediateLongTail, StreamLookup) 
     TVector<THolder<IEventHandle>> progressEvents;
     bool blockProgressEvents = false;
     size_t bypassProgressEvents = 0;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&,
+                         TAutoPtr<IEventHandle> &event) -> auto {
         auto recipient = event->GetRecipientRewrite();
         switch (event->GetTypeRewrite()) {
             case TEvTablet::EvBoot: {
@@ -2228,6 +2232,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderNoBarrierRestartImmediateLongTail, StreamLookup) 
         auto sender4 = CreateSessionRPC(runtime);
         auto req = MakeSimpleRequestRPC(Q_("SELECT key, value FROM `/Root/table-1` WHERE key = 7;"), sender4, "", true);
         req.mutable_operation_params()->mutable_operation_timeout()->set_seconds(1);
+        req.mutable_operation_params()->mutable_cancel_after()->set_seconds(1);
         auto response = AwaitResponse(runtime, SendRequest(runtime, std::move(req)));
         UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::TIMEOUT);
     }
@@ -2268,6 +2273,7 @@ Y_UNIT_TEST_TWIN(TestOutOfOrderNoBarrierRestartImmediateLongTail, StreamLookup) 
         auto sender5 = CreateSessionRPC(runtime);
         auto req = MakeSimpleRequestRPC(Q_("SELECT key, value FROM `/Root/table-1` WHERE key = 7;"), sender5, "", true);
         req.mutable_operation_params()->mutable_operation_timeout()->set_seconds(1);
+        req.mutable_operation_params()->mutable_cancel_after()->set_seconds(1);
         auto response = AwaitResponse(runtime, SendRequest(runtime, std::move(req)));
         UNIT_ASSERT_VALUES_EQUAL(response.operation().status(), Ydb::StatusIds::TIMEOUT);
     }
@@ -2321,8 +2327,7 @@ Y_UNIT_TEST(TestCopyTableNoDeadlock) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -2335,7 +2340,7 @@ Y_UNIT_TEST(TestCopyTableNoDeadlock) {
     size_t seenPlanSteps = 0;
     bool captureReadSets = true;
     bool captureTxProposes = false;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvTxProcessing::EvPlanStep:
                 Cerr << "---- observed EvPlanStep ----" << Endl;
@@ -2516,7 +2521,7 @@ Y_UNIT_TEST(TestPlannedCancelSplit) {
     TVector<THolder<IEventHandle>> txCancels;
     TVector<THolder<IEventHandle>> txProposes;
     TVector<THolder<IEventHandle>> txProposeResults;
-    auto captureMessages = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureMessages = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvDataShard::EvProposeTransaction:
                 Cerr << "---- observed EvProposeTransaction ----" << Endl;
@@ -2607,7 +2612,7 @@ Y_UNIT_TEST(TestPlannedCancelSplit) {
         if (event && event->GetRecipientRewrite() == actors[1]) {
             Cerr << "---- found propose for table-2 ----" << Endl;
             const auto* msg = event->Get<TEvDataShard::TEvProposeTransaction>();
-            TActorId target = event->Sender;
+            TActorId target = msg->GetSource();
             auto* result = new TEvDataShard::TEvProposeTransactionResult(
                 msg->GetTxKind(),
                 tablets[1],
@@ -2692,7 +2697,7 @@ Y_UNIT_TEST(TestPlannedTimeoutSplit) {
 
     // Capture and block some messages
     TVector<THolder<IEventHandle>> txProposes;
-    auto captureMessages = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureMessages = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvTxProxy::EvProposeTransaction: {
                 Cerr << "---- observed EvProposeTransaction ----" << Endl;
@@ -2723,7 +2728,7 @@ Y_UNIT_TEST(TestPlannedTimeoutSplit) {
     runtime.SetObserverFunc(prevObserverFunc);
 
     size_t observedSplits = 0;
-    auto observeSplits = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto observeSplits = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvDataShard::EvSplit: {
                 Cerr << "---- observed EvSplit ----" << Endl;
@@ -2813,7 +2818,7 @@ Y_UNIT_TEST(TestPlannedHalfOverloadedSplit) {
     // Capture and block some messages
     TVector<THolder<IEventHandle>> txProposes;
     TVector<THolder<IEventHandle>> txProposeResults;
-    auto captureMessages = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureMessages = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvDataShard::EvProposeTransaction: {
                 Cerr << "---- observed EvProposeTransactionResult ----" << Endl;
@@ -2857,7 +2862,7 @@ Y_UNIT_TEST(TestPlannedHalfOverloadedSplit) {
     UNIT_ASSERT_VALUES_EQUAL(txProposeResults.size(), 1u);
 
     size_t observedSplits = 0;
-    auto observeSplits = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto observeSplits = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvDataShard::EvSplit: {
                 Cerr << "---- observed EvSplit ----" << Endl;
@@ -2976,8 +2981,7 @@ Y_UNIT_TEST(TestReadTableWriteConflict) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(
             "SELECT * FROM `/Root/table-1` "
             "UNION ALL "
-            "SELECT * FROM `/Root/table-2` "
-            "ORDER BY key"));
+            "SELECT * FROM `/Root/table-2`"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
              "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -2989,7 +2993,7 @@ Y_UNIT_TEST(TestReadTableWriteConflict) {
     TVector<THolder<IEventHandle>> txProposes;
     size_t seenPlanSteps = 0;
     bool captureReadSets = true;
-    auto captureRS = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvTxProcessing::EvPlanStep:
                 Cerr << "---- observed EvPlanStep ----" << Endl;
@@ -3117,7 +3121,7 @@ Y_UNIT_TEST(TestReadTableImmediateWriteBlock) {
 
     // Capture and block all readset messages
     size_t seenPlanSteps = 0;
-    auto captureEvents = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvTxProcessing::EvPlanStep:
                 Cerr << "---- observed EvPlanStep ----" << Endl;
@@ -3184,7 +3188,7 @@ Y_UNIT_TEST(TestReadTableSingleShardImmediate) {
 
     // Capture and block all readset messages
     size_t seenPlanSteps = 0;
-    auto captureEvents = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvTxProcessing::EvPlanStep:
                 Cerr << "---- observed EvPlanStep ----" << Endl;
@@ -3239,7 +3243,7 @@ Y_UNIT_TEST(TestImmediateQueueThenSplit) {
     TVector<THolder<IEventHandle>> eventsSplitChanged;
     TVector<THolder<IEventHandle>> eventsPropose;
     TVector<THolder<IEventHandle>> eventsDelayedPropose;
-    auto captureEvents = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvDataShard::EvSplit:
                 if (captureSplit) {
@@ -3265,7 +3269,7 @@ Y_UNIT_TEST(TestImmediateQueueThenSplit) {
             case EventSpaceBegin(TKikimrEvents::ES_PRIVATE) + 2 /* EvDelayedProposeTransaction */:
                 if (captureDelayedProposeFrom.contains(event->GetRecipientRewrite())) {
                     Cerr << "---- capture EvDelayedProposeTransaction ----" << Endl;
-                    Cerr << event->GetTypeName() << Endl;
+                    Cerr << event->GetBase()->ToString() << Endl;
                     eventsDelayedPropose.emplace_back(event.Release());
                     return TTestActorRuntime::EEventAction::DROP;
                 }
@@ -3414,7 +3418,7 @@ void TestLateKqpQueryAfterColumnDrop(bool dataQuery, const TString& query) {
 
     bool capturePropose = true;
     TVector<THolder<IEventHandle>> eventsPropose;
-    auto captureEvents = [&](TAutoPtr<IEventHandle> &ev) -> auto {
+    auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &ev) -> auto {
         // if (ev->GetRecipientRewrite() == streamSender) {
         //     Cerr << "Stream sender got " << ev->GetTypeRewrite() << " " << ev->GetBase()->ToStringHeader() << Endl;
         // }
@@ -3545,7 +3549,7 @@ Y_UNIT_TEST(MvccTestSnapshotRead) {
     TRowVersion snapshot = TRowVersion::Min();
     ui64 lastStep = 0;
 
-    auto captureEvents = [&](TAutoPtr<IEventHandle> &event) -> auto {
+    auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle> &event) -> auto {
         switch (event->GetTypeRewrite()) {
             case TEvMediatorTimecast::EvUpdate: {
                 if (captureTimecast) {
@@ -3662,7 +3666,7 @@ Y_UNIT_TEST(TestSecondaryClearanceAfterShardRestartRace) {
     TVector<THolder<IEventHandle>> capturedDeliveryProblem;
     size_t seenStreamClearanceRequests = 0;
     size_t seenStreamClearanceResponses = 0;
-    auto captureEvents = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureEvents = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvPipeCache::TEvDeliveryProblem::EventType: {
                 Cerr << "... intercepted TEvDeliveryProblem" << Endl;
@@ -3742,8 +3746,7 @@ Y_UNIT_TEST_TWIN(TestShardRestartNoUndeterminedImmediate, StreamLookup) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -3765,7 +3768,7 @@ Y_UNIT_TEST_TWIN(TestShardRestartNoUndeterminedImmediate, StreamLookup) {
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
     size_t delayedProposeCount = 0;
-    auto captureRS = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvTxProcessing::TEvReadSet::EventType: {
                 readSets.push_back(std::move(ev));
@@ -3848,8 +3851,7 @@ Y_UNIT_TEST_TWIN(TestShardRestartPlannedCommitShouldSucceed, StreamLookup) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -3870,7 +3872,7 @@ Y_UNIT_TEST_TWIN(TestShardRestartPlannedCommitShouldSucceed, StreamLookup) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvTxProcessing::TEvReadSet::EventType: {
                 Cerr << "... captured readset" << Endl;
@@ -3959,7 +3961,7 @@ Y_UNIT_TEST(TestShardSnapshotReadNoEarlyReply) {
 
     TVector<THolder<IEventHandle>> blockedCommits;
     size_t seenProposeResults = 0;
-    auto blockCommits = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto blockCommits = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvTablet::TEvCommit::EventType: {
                 auto* msg = ev->Get<TEvTablet::TEvCommit>();
@@ -4082,8 +4084,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterBrokenLock) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1` WHERE key = 1
             UNION ALL
-            SELECT * FROM `/Root/table-2` WHERE key = 2
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -4147,8 +4148,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterBrokenLockOutOfOrder) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1` WHERE key = 1
             UNION ALL
-            SELECT * FROM `/Root/table-2` WHERE key = 2
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -4162,8 +4162,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterBrokenLockOutOfOrder) {
         auto result = KqpSimpleBegin(runtime, sessionIdBlocker, txIdBlocker, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -4184,7 +4183,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterBrokenLockOutOfOrder) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvTxProcessing::TEvReadSet::EventType: {
                 Cerr << "... captured readset" << Endl;
@@ -4270,8 +4269,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterStuckRW) {
         auto result = KqpSimpleBegin(runtime, sessionIdBlocker, txIdBlocker, Q_(R"(
             SELECT * FROM `/Root/table-1`
             UNION ALL
-            SELECT * FROM `/Root/table-2`
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2`)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -4292,7 +4290,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterStuckRW) {
 
     // Capture and block all readset messages
     TVector<THolder<IEventHandle>> readSets;
-    auto captureRS = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureRS = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvTxProcessing::TEvReadSet::EventType: {
                 Cerr << "... captured readset" << Endl;
@@ -4326,8 +4324,7 @@ Y_UNIT_TEST(TestSnapshotReadAfterStuckRW) {
         auto result = KqpSimpleBegin(runtime, sessionId, txId, Q_(R"(
             SELECT * FROM `/Root/table-1` WHERE key = 1
             UNION ALL
-            SELECT * FROM `/Root/table-2` WHERE key = 2
-            ORDER BY key)"));
+            SELECT * FROM `/Root/table-2` WHERE key = 2)"));
         UNIT_ASSERT_VALUES_EQUAL(
             result,
             "{ items { uint32_value: 1 } items { uint32_value: 1 } }, "
@@ -4351,7 +4348,6 @@ Y_UNIT_TEST_TWIN(TestSnapshotReadPriority, UnprotectedReads) {
 
     runtime.SetLogPriority(NKikimrServices::TX_DATASHARD, NLog::PRI_TRACE);
     runtime.SetLogPriority(NKikimrServices::TX_MEDIATOR_TIMECAST, NLog::PRI_TRACE);
-    runtime.SetLogPriority(NKikimrServices::TX_COORDINATOR, NLog::PRI_TRACE);
 
     InitRoot(server, sender);
 
@@ -4367,7 +4363,7 @@ Y_UNIT_TEST_TWIN(TestSnapshotReadPriority, UnprotectedReads) {
     ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (1, 1)"));
     ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-2` (key, value) VALUES (2, 2)"));
 
-    SimulateSleep(server, TDuration::MilliSeconds(850));
+    SimulateSleep(server, TDuration::Seconds(1));
 
     // Perform an immediate write
     ExecSQL(server, sender, Q_("UPSERT INTO `/Root/table-1` (key, value) VALUES (3, 3)"));
@@ -4638,7 +4634,7 @@ Y_UNIT_TEST(TestUnprotectedReadsThenWriteVisibility) {
 
     bool mustWaitForSteps[2] = { false, false };
 
-    auto captureTimecast = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureTimecast = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         const ui32 nodeId = ev->GetRecipientRewrite().NodeId();
         const ui32 nodeIndex = nodeId - runtime.GetNodeId(0);
         switch (ev->GetTypeRewrite()) {
@@ -4867,7 +4863,7 @@ Y_UNIT_TEST(UncommittedReadSetAck) {
     bool captureCommits = false;
     TVector<THolder<IEventHandle>> capturedCommits;
 
-    auto captureCommitAfterReadSet = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto captureCommitAfterReadSet = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         const ui32 nodeId = ev->GetRecipientRewrite().NodeId();
         const ui32 nodeIndex = nodeId - runtime.GetNodeId(0);
         if (nodeIndex == 1) {
@@ -5071,7 +5067,7 @@ Y_UNIT_TEST(UncommittedReads) {
     // Block commits and start counting propose responses
     TVector<THolder<IEventHandle>> blockedCommits;
     size_t seenProposeResults = 0;
-    auto blockCommits = [&](TAutoPtr<IEventHandle>& ev) -> auto {
+    auto blockCommits = [&](TTestActorRuntimeBase&, TAutoPtr<IEventHandle>& ev) -> auto {
         switch (ev->GetTypeRewrite()) {
             case TEvTablet::TEvCommit::EventType: {
                 auto* msg = ev->Get<TEvTablet::TEvCommit>();

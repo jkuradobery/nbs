@@ -1,13 +1,14 @@
 UNITTEST_FOR(ydb/services/ydb)
 
 FORK_SUBTESTS()
-SPLIT_FACTOR(60)
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
+    SPLIT_FACTOR(60)
     TIMEOUT(3600)
     SIZE(LARGE)
     TAG(ya:fat)
 ELSE()
-    TIMEOUT(600)
+    TIMEOUT(300)
     SIZE(MEDIUM)
 ENDIF()
 
@@ -21,20 +22,21 @@ SRCS(
     ydb_client_certs_ut.cpp
     ydb_scripting_ut.cpp
     ydb_table_ut.cpp
+    ydb_table_split_ut.cpp
     ydb_stats_ut.cpp
     ydb_long_tx_ut.cpp
     ydb_logstore_ut.cpp
     ydb_olapstore_ut.cpp
     ydb_monitoring_ut.cpp
+    json_udf.cpp
+    re2_udf.cpp
     cert_gen.cpp
-    ydb_query_ut.cpp
-    ydb_ldap_login_ut.cpp
 )
 
 PEERDIR(
     contrib/libs/apache/arrow
     library/cpp/getopt
-    ydb/library/grpc/client
+    library/cpp/grpc/client
     library/cpp/regex/pcre
     library/cpp/svnversion
     ydb/core/kqp/ut/common
@@ -43,12 +45,9 @@ PEERDIR(
     ydb/core/testlib
     ydb/library/yql/minikql/dom
     ydb/library/yql/minikql/jsonpath
-    ydb/library/testlib/service_mocks/ldap_mock
     ydb/public/lib/experimental
     ydb/public/lib/json_value
     ydb/public/lib/yson_value
-    ydb/public/lib/ut_helpers
-    ydb/public/lib/ydb_cli/commands
     ydb/public/sdk/cpp/client/draft
     ydb/public/sdk/cpp/client/ydb_coordination
     ydb/public/sdk/cpp/client/ydb_export

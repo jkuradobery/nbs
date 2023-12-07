@@ -2,7 +2,6 @@
 #include "defs.h"
 #include "memusage.h"
 #include "vdisk_config.h"
-#include "vdisk_costmodel.h"
 #include "vdisk_log.h"
 #include "vdisk_pdisk_error.h"
 #include "vdisk_outofspace.h"
@@ -13,7 +12,6 @@
 #include <ydb/core/blobstorage/pdisk/blobstorage_pdisk.h>
 
 namespace NKikimr {
-    class TCostModel;
 
     /////////////////////////////////////////////////////////////////////////////////////////
     // TBSProxyContext
@@ -63,11 +61,6 @@ namespace NKikimr {
         TReplQuoter::TPtr ReplNodeRequestQuoter;
         TReplQuoter::TPtr ReplNodeResponseQuoter;
 
-        // diagnostics
-        TString LocalRecoveryErrorStr;
-
-        std::unique_ptr<TCostModel> CostModel;
-
     private:
         // Managing disk space
         TOutOfSpaceState OutOfSpaceState;
@@ -76,8 +69,6 @@ namespace NKikimr {
         // Tracks PDisk errors
         TPDiskErrorState PDiskErrorState;
         friend class TDskSpaceTrackerActor;
-
-        NMonGroup::TCostGroup CostMonGroup;
 
     public:
         TLogger Logger;
@@ -112,9 +103,6 @@ namespace NKikimr {
                     if constexpr (T::EventType != TEvBlobStorage::EvLogResult) {
                         // we have different semantics for TEvLogResult StatusFlags
                         OutOfSpaceState.UpdateLocal(ev.StatusFlags);
-                    } else {
-                        // update log space flags
-                        OutOfSpaceState.UpdateLocalLog(ev.StatusFlags);
                     }
                     return true;
                 case NKikimrProto::INVALID_OWNER:
@@ -141,7 +129,7 @@ namespace NKikimr {
                 }
                 default:
                     // fail process, unrecoverable error
-                    Y_ABORT("%s", VDISKP(VDiskLogPrefix, "CheckPDiskResponse: FATAL error from PDisk: %s",
+                    Y_FAIL("%s", VDISKP(VDiskLogPrefix, "CheckPDiskResponse: FATAL error from PDisk: %s",
                                 FormatMessage(ev.Status, ev.ErrorReason, ev.StatusFlags, message).data()).data());
                     return false;
             }
@@ -165,27 +153,6 @@ namespace NKikimr {
 
         THugeHeapFragmentation &GetHugeHeapFragmentation() {
             return HugeHeapFragmentation;
-        }
-
-        template<class TEvent>
-        void CountDefragCost(const TEvent& ev) {
-            if (CostModel) {
-                CostMonGroup.DefragCostNs() += CostModel->GetCost(ev);
-            }
-        }
-
-        template<class TEvent>
-        void CountScrubCost(const TEvent& ev) {
-            if (CostModel) {
-                CostMonGroup.ScrubCostNs() += CostModel->GetCost(ev);
-            }
-        }
-
-        template<class TEvent>
-        void CountCompactionCost(const TEvent& ev) {
-            if (CostModel) {
-                CostMonGroup.CompactionCostNs() += CostModel->GetCost(ev);
-            }
         }
 
     private:

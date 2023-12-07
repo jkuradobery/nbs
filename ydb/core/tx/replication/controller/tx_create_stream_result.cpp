@@ -1,6 +1,8 @@
 #include "controller_impl.h"
 
-namespace NKikimr::NReplication::NController {
+namespace NKikimr {
+namespace NReplication {
+namespace NController {
 
 class TController::TTxCreateStreamResult: public TTxBase {
     TEvPrivate::TEvCreateStreamResult::TPtr Ev;
@@ -35,14 +37,6 @@ public:
             CLOG_W(ctx, "Unknown target"
                 << ": rid# " << rid
                 << ", tid# " << tid);
-            return true;
-        }
-
-        if (target->GetStreamState() != TReplication::EStreamState::Creating) {
-            CLOG_W(ctx, "Stream state mismatch"
-                << ": rid# " << rid
-                << ", tid# " << tid
-                << ", state# " << target->GetStreamState());
             return true;
         }
 
@@ -90,4 +84,6 @@ void TController::RunTxCreateStreamResult(TEvPrivate::TEvCreateStreamResult::TPt
     Execute(new TTxCreateStreamResult(this, ev), ctx);
 }
 
-}
+} // NController
+} // NReplication
+} // NKikimr

@@ -64,18 +64,19 @@ namespace NPage {
         TIndex(TSharedData raw)
             : Raw(std::move(raw))
         {
-            const auto data = NPage::TLabelWrapper().Read(Raw, EPage::Index);
-            Y_ABORT_UNLESS(data == ECodec::Plain && (data.Version == 2 || data.Version == 3));
+            const auto got = NPage::TLabelWrapper().Read(Raw, EPage::Index);
 
-            auto *recordsHeader = TDeref<const TRecordsHeader>::At(data.Page.data(), 0);
-            auto count = recordsHeader->Count;
-            Y_ABORT_UNLESS(count >= 1u + (data.Version == 3 ? 1 : 0));
+            Y_VERIFY(got == ECodec::Plain && (got.Version == 2 || got.Version == 3));
+
+            auto *hdr = TDeref<const TRecordsHeader>::At(got.Page.data(), 0);
+            auto skip = got.Page.size() - hdr->Records * sizeof(TPgSize);
+
+            Y_VERIFY(hdr->Records >= 1u + (got.Version < 3 ? 0u : 1u));
 
             Page.Base = Raw.data();
-            auto offsetsOffset = data.Page.size() - count * sizeof(TPgSize);
-            Page.Offsets = TDeref<const TRecordsEntry>::At(recordsHeader, offsetsOffset);
-            Page.Count = count - (data.Version == 3 ? 1 : 0);
-            LastKey = (data.Version == 3) ? Page.Record(Page.Count) : nullptr;
+            Page.Array = TDeref<const TRecordsEntry>::At(hdr, skip);
+            Page.Records = hdr->Records - (got.Version == 3 ? 1 : 0);
+            LastKey = (got.Version == 3) ? Page.Record(Page.Records) : nullptr;
             EndRowId = LastKey ? LastKey->GetRowId() + 1 : Max<TRowId>();
         }
 
@@ -84,9 +85,35 @@ namespace NPage {
             return &Page;
         }
 
-        NPage::TLabel Label() const noexcept
+        const auto* Label() const noexcept
         {
-            return ReadUnaligned<NPage::TLabel>(Raw.data());
+            return TDeref<const NPage::TLabel>::At(Raw.data(), 0);
+        }
+
+        TIter Rewind(TRowId to, TIter on, int dir) const
+        {
+            Y_VERIFY(dir == +1, "Only forward lookups supported");
+
+            if (to >= EndRowId || !on) {
+                return Page.End();
+            } else {
+                /* This branch have to never return End() since the real
+                    upper RowId value isn't known. Only Max<TRowId>() and
+                    invalid on iterator may be safetly mapped to End().
+                 */
+
+                for (size_t it = 0; ++it < 4 && ++on;) {
+                    if (on->GetRowId() > to) return --on;
+                }
+
+                auto less = [](TRowId rowId, const TRecord &rec) {
+                    return rowId < rec.GetRowId();
+                };
+
+                auto it = std::upper_bound(on, Page.End(), to, less);
+
+                return (it && it == on) ? on : --it;
+            }
         }
 
         /**
@@ -126,7 +153,7 @@ namespace NPage {
                 // Try a short linear search first
                 for (int linear = 0; linear < 4; ++linear) {
                     auto prev = on - 1;
-                    Y_DEBUG_ABORT_UNLESS(prev, "Unexpected failure to find an index record");
+                    Y_VERIFY_DEBUG(prev, "Unexpected failure to find an index record");
                     if (prev->GetRowId() <= rowId) {
                         return prev;
                     }
@@ -138,7 +165,7 @@ namespace NPage {
             }
 
             --on;
-            Y_DEBUG_ABORT_UNLESS(on, "Unexpected failure to find an index record");
+            Y_VERIFY_DEBUG(on, "Unexpected failure to find an index record");
             return on;
         }
 
@@ -190,7 +217,7 @@ namespace NPage {
          * Lookup a page that may contain key with specified seek mode
          *
          * Returns end iterator when there is definitely no such page,
-         * otherwise the result is approximate and may be off by one page.
+         * otherwise the result is exact given such a key exists.
          */
         TIter LookupKeyReverse(
                 TCells key, const TPartScheme::TGroupInfo &group,
@@ -255,6 +282,16 @@ namespace NPage {
                 return 0; /* cannot estimate rows for one page part */
         }
 
+        TPageId UpperPage() const noexcept
+        {
+            return Page.Begin() ? (Page.End() - 1)->GetPageId() + 1 : 0;
+        }
+
+        const TRecord* GetFirstKeyRecord() const noexcept
+        {
+            return Page.Record(0);
+        }
+
         const TRecord* GetLastKeyRecord() const noexcept
         {
             return LastKey;
@@ -263,6 +300,11 @@ namespace NPage {
         TRowId GetEndRowId() const noexcept
         {
             return EndRowId;
+        }
+
+        size_t RawSize() const noexcept
+        {
+            return Raw.size();
         }
 
     private:

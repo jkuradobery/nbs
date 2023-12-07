@@ -8,14 +8,10 @@ RECURSE(
     cms
     control
     debug
-    debug_tools
-    discovery
     docapi
     engine
     erasure
-    external_sources
     filestore
-    fq
     formats
     grpc_caching
     grpc_services
@@ -23,12 +19,10 @@ RECURSE(
     health_check
     http_proxy
     io_formats
-    kafka_proxy
     kesus
     keyvalue
     kqp
     load_test
-    local_pgwire
     log_backend
     metering
     mind
@@ -40,11 +34,9 @@ RECURSE(
     protos
     public_http
     quoter
-    raw_socket
     scheme
     scheme_types
     security
-    statistics
     sys_view
     tablet
     tablet_flat
@@ -57,6 +49,7 @@ RECURSE(
     ydb_convert
     ymq
     driver_lib
+    yq
     yql_testlib
 )
 

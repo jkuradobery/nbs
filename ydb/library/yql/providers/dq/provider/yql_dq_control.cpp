@@ -7,7 +7,7 @@
 
 #include <ydb/public/lib/yson_value/ydb_yson_value.h>
 
-#include <ydb/library/grpc/client/grpc_client_low.h>
+#include <library/cpp/grpc/client/grpc_client_low.h>
 
 #include <library/cpp/svnversion/svnversion.h>
 
@@ -24,7 +24,7 @@ const TString DqStrippedSuffied = ".s";
 class TDqControl : public IDqControl {
 
 public:
-    TDqControl(const NYdbGrpc::TGRpcClientConfig &grpcConf, int threads, const TVector<TFileResource> &files)
+    TDqControl(const NGrpc::TGRpcClientConfig &grpcConf, int threads, const TVector<TFileResource> &files)
         : GrpcClient(threads)
         , Service(GrpcClient.CreateGRpcServiceConnection<Yql::DqsProto::DqService>(grpcConf))
         , Files(files)
@@ -47,13 +47,13 @@ public:
         }
 
         auto promise = NThreading::NewPromise<bool>();
-        auto callback = [promise](NYdbGrpc::TGrpcStatus&& status, Yql::DqsProto::IsReadyResponse&& resp) mutable {
+        auto callback = [promise](NGrpc::TGrpcStatus&& status, Yql::DqsProto::IsReadyResponse&& resp) mutable {
             Y_UNUSED(resp);
 
             promise.SetValue(status.Ok() && resp.GetIsReady());
         };
 
-        NYdbGrpc::TCallMeta meta;
+        NGrpc::TCallMeta meta;
         meta.Timeout = TDuration::Seconds(1);
         Service->DoRequest<Yql::DqsProto::IsReadyRequest, Yql::DqsProto::IsReadyResponse>(
             request, callback, &Yql::DqsProto::DqService::Stub::AsyncIsReady, meta);
@@ -67,8 +67,8 @@ public:
     }
 
 private:
-    NYdbGrpc::TGRpcClientLow GrpcClient;
-    std::unique_ptr<NYdbGrpc::TServiceConnection<Yql::DqsProto::DqService>> Service;
+    NGrpc::TGRpcClientLow GrpcClient;
+    std::unique_ptr<NGrpc::TServiceConnection<Yql::DqsProto::DqService>> Service;
     const TVector<TFileResource> &Files;
 };
 
@@ -152,7 +152,7 @@ private:
 
     int Threads;
     TVector<TFileResource> Files;
-    NYdbGrpc::TGRpcClientConfig GrpcConf;
+    NGrpc::TGRpcClientConfig GrpcConf;
     THashSet<TString> IndexedUdfFilter;
     THashMap<TString, TFileLinkPtr> FileLinks;
     bool EnableStrip;
@@ -166,8 +166,8 @@ IDqControlFactoryPtr CreateDqControlFactory(const NProto::TDqConfig& config, con
         config.GetPort(),
         2,
         udfs,
-        config.GetYtBackends()[0].GetVanillaJobLite(),
-        config.GetYtBackends()[0].GetVanillaJobLiteMd5(),
+        config.GetYtBackends()[0].GetVanillaJob(),
+        config.GetYtBackends()[0].GetVanillaJobMd5(),
         indexedUdfFilter,
         config.GetControl().GetEnableStrip(),
         fileStorage

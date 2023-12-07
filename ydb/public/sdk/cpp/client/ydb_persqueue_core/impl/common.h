@@ -14,7 +14,7 @@ namespace NYdb::NPersQueue {
 ERetryErrorClass GetRetryErrorClass(EStatus status);
 ERetryErrorClass GetRetryErrorClassV2(EStatus status);
 
-void Cancel(NYdbGrpc::IQueueClientContextPtr& context);
+void Cancel(NGrpc::IQueueClientContextPtr& context);
 
 NYql::TIssues MakeIssueWithSubIssues(const TString& description, const NYql::TIssues& subissues);
 
@@ -79,7 +79,7 @@ TString ApplyClusterEndpoint(TStringBuf driverEndpoint, const TString& clusterDi
 // without transport stuff.
 template <class TRequest, class TResponse>
 struct ISessionConnectionProcessorFactory {
-    using IProcessor = NYdbGrpc::IStreamRequestReadWriteProcessor<TRequest, TResponse>;
+    using IProcessor = NGrpc::IStreamRequestReadWriteProcessor<TRequest, TResponse>;
     using TConnectedCallback = std::function<void(TPlainStatus&&, typename IProcessor::TPtr&&)>;
     using TConnectTimeoutCallback = std::function<void(bool ok)>;
 
@@ -90,14 +90,14 @@ struct ISessionConnectionProcessorFactory {
         // Params for connect.
         TConnectedCallback callback,
         const TRpcRequestSettings& requestSettings,
-        NYdbGrpc::IQueueClientContextPtr connectContext,
+        NGrpc::IQueueClientContextPtr connectContext,
         // Params for timeout and its cancellation.
         TDuration connectTimeout,
-        NYdbGrpc::IQueueClientContextPtr connectTimeoutContext,
+        NGrpc::IQueueClientContextPtr connectTimeoutContext,
         TConnectTimeoutCallback connectTimeoutCallback,
         // Params for delay before reconnect and its cancellation.
         TDuration connectDelay = TDuration::Zero(),
-        NYdbGrpc::IQueueClientContextPtr connectDelayOperationContext = nullptr) = 0;
+        NGrpc::IQueueClientContextPtr connectDelayOperationContext = nullptr) = 0;
 };
 
 template <class TService, class TRequest, class TResponse>
@@ -108,7 +108,7 @@ public:
     using TConnectedCallback = typename ISessionConnectionProcessorFactory<TRequest, TResponse>::TConnectedCallback;
     using TConnectTimeoutCallback = typename ISessionConnectionProcessorFactory<TRequest, TResponse>::TConnectTimeoutCallback;
     TSessionConnectionProcessorFactory(
-        TGRpcConnectionsImpl::TStreamRpc<TService, TRequest, TResponse, NYdbGrpc::TStreamRequestReadWriteProcessor> rpc,
+        TGRpcConnectionsImpl::TStreamRpc<TService, TRequest, TResponse, NGrpc::TStreamRequestReadWriteProcessor> rpc,
         std::shared_ptr<TGRpcConnectionsImpl> connections,
         TDbDriverStatePtr dbState
     )
@@ -121,12 +121,12 @@ public:
     void CreateProcessor(
         TConnectedCallback callback,
         const TRpcRequestSettings& requestSettings,
-        NYdbGrpc::IQueueClientContextPtr connectContext,
+        NGrpc::IQueueClientContextPtr connectContext,
         TDuration connectTimeout,
-        NYdbGrpc::IQueueClientContextPtr connectTimeoutContext,
+        NGrpc::IQueueClientContextPtr connectTimeoutContext,
         TConnectTimeoutCallback connectTimeoutCallback,
         TDuration connectDelay,
-        NYdbGrpc::IQueueClientContextPtr connectDelayOperationContext) override
+        NGrpc::IQueueClientContextPtr connectDelayOperationContext) override
     {
         Y_ASSERT(connectContext);
         Y_ASSERT(connectTimeoutContext);
@@ -177,9 +177,9 @@ private:
     void Connect(
         TConnectedCallback callback,
         const TRpcRequestSettings& requestSettings,
-        NYdbGrpc::IQueueClientContextPtr connectContext,
+        NGrpc::IQueueClientContextPtr connectContext,
         TDuration connectTimeout,
-        NYdbGrpc::IQueueClientContextPtr connectTimeoutContext,
+        NGrpc::IQueueClientContextPtr connectTimeoutContext,
         TConnectTimeoutCallback connectTimeoutCallback)
     {
         Connections->StartBidirectionalStream<TService, TRequest, TResponse>(
@@ -198,7 +198,7 @@ private:
     }
 
 private:
-    TGRpcConnectionsImpl::TStreamRpc<TService, TRequest, TResponse, NYdbGrpc::TStreamRequestReadWriteProcessor> Rpc;
+    TGRpcConnectionsImpl::TStreamRpc<TService, TRequest, TResponse, NGrpc::TStreamRequestReadWriteProcessor> Rpc;
     std::shared_ptr<TGRpcConnectionsImpl> Connections;
     TDbDriverStatePtr DbDriverState;
 };
@@ -206,7 +206,7 @@ private:
 template <class TService, class TRequest, class TResponse>
 std::shared_ptr<ISessionConnectionProcessorFactory<TRequest, TResponse>>
     CreateConnectionProcessorFactory(
-        TGRpcConnectionsImpl::TStreamRpc<TService, TRequest, TResponse, NYdbGrpc::TStreamRequestReadWriteProcessor> rpc,
+        TGRpcConnectionsImpl::TStreamRpc<TService, TRequest, TResponse, NGrpc::TStreamRequestReadWriteProcessor> rpc,
         std::shared_ptr<TGRpcConnectionsImpl> connections,
         TDbDriverStatePtr dbState
     )
@@ -277,13 +277,13 @@ public:
 
     NThreading::TPromise<void> ExtractPromise() {
         NThreading::TPromise<void> promise;
-        Y_ABORT_UNLESS(!promise.Initialized());
+        Y_VERIFY(!promise.Initialized());
         std::swap(Promise, promise);
         return promise;
     }
 
     NThreading::TFuture<void> GetFuture() {
-        Y_ABORT_UNLESS(Future.Initialized());
+        Y_VERIFY(Future.Initialized());
         return Future;
     }
 
@@ -333,16 +333,16 @@ protected:
 
         template <class TEventType, class TFunc>
         void PushSpecificHandler(TEvent&& event, const TFunc& f) {
-            Post(Settings.EventHandlers_.HandlersExecutor_,
-                 [func = f, event = std::move(event)]() mutable {
-                     func(std::get<TEventType>(event));
-                 });
+            Post(Settings.EventHandlers_.HandlersExecutor_, [func = f, event = std::move(event)]() mutable {
+                func(std::get<TEventType>(event));
+            });
         }
 
         template <class TFunc>
         void PushCommonHandler(TEvent&& event, const TFunc& f) {
-            Post(Settings.EventHandlers_.HandlersExecutor_,
-                 [func = f, event = std::move(event)]() mutable { func(event); });
+            Post(Settings.EventHandlers_.HandlersExecutor_, [func = f, event = std::move(event)]() mutable {
+                func(event);
+            });
         }
 
         virtual void Post(const typename TExecutor::TPtr& executor, typename TExecutor::TFunction&& f) {
@@ -374,7 +374,6 @@ protected:
 
     TWaiter PopWaiterImpl() { // Assumes that we're under lock.
         TWaiter waiter(Waiter.ExtractPromise(), this);
-        WaiterWillBeSignaled = true;
         return std::move(waiter);
     }
 
@@ -385,9 +384,8 @@ protected:
     }
 
     void RenewWaiterImpl() {
-        if (Events.empty() && WaiterWillBeSignaled) {
+        if (Events.empty() && Waiter.GetFuture().HasValue()) {
             Waiter = TWaiter(NThreading::NewPromise<void>(), this);
-            WaiterWillBeSignaled = false;
         }
     }
 
@@ -397,21 +395,16 @@ public:
             if (HasEventsImpl()) {
                 return NThreading::MakeFuture(); // Signalled
             } else {
-                Y_ABORT_UNLESS(Waiter.Valid());
+                Y_VERIFY(Waiter.Valid());
                 auto res = Waiter.GetFuture();
                 return res;
             }
         }
     }
 
-    bool IsClosed() {
-        return Closed;
-    }
-
 protected:
     const TSettings& Settings;
     TWaiter Waiter;
-    bool WaiterWillBeSignaled = false;
     std::queue<TEventInfo> Events;
     TCondVar CondVar;
     TMutex Mutex;

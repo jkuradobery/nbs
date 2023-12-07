@@ -1,5 +1,6 @@
 #include "ydb_common_ut.h"
 
+#include <ydb/services/ydb/ut/udfs.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
 
 #include <ydb/public/sdk/cpp/client/ydb_result/result.h>
@@ -43,11 +44,18 @@ static constexpr const char* testShardingVariants[] = {
 
 Y_UNIT_TEST_SUITE(YdbOlapStore) {
 
+    NMiniKQL::IFunctionRegistry* UdfFrFactory(const NKikimr::NScheme::TTypeRegistry& typeRegistry) {
+        Y_UNUSED(typeRegistry);
+        auto funcRegistry = NMiniKQL::CreateFunctionRegistry(NMiniKQL::CreateBuiltinRegistry())->Clone();
+        funcRegistry->AddModule("fake_re2_path", "Re2", CreateRe2Module());
+        funcRegistry->AddModule("fake_json2_path", "Json2", CreateJson2Module());
+        return funcRegistry.Release();
+    }
+
     void EnableDebugLogs(TKikimrWithGrpcAndRootSchema& server) {
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::FLAT_TX_SCHEMESHARD, NActors::NLog::PRI_DEBUG);
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_COLUMNSHARD, NActors::NLog::PRI_DEBUG);
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::TX_COLUMNSHARD_SCAN, NActors::NLog::PRI_DEBUG);
-        server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::KQP_COMPUTE, NActors::NLog::PRI_DEBUG);
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::KQP_EXECUTER, NActors::NLog::PRI_DEBUG);
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::KQP_SESSION, NActors::NLog::PRI_DEBUG);
         server.Server_->GetRuntime()->SetLogPriority(NKikimrServices::MSGBUS_REQUEST, NActors::NLog::PRI_DEBUG);
@@ -59,6 +67,7 @@ Y_UNIT_TEST_SUITE(YdbOlapStore) {
         ui16 grpc = server.GetPort();
         TString location = TStringBuilder() << "localhost:" << grpc;
         auto connection = NYdb::TDriver(TDriverConfig().SetEndpoint(location).SetDatabase("/Root").SetAuthToken(token));
+        NKqp::WaitForKqpProxyInit(connection);
         return connection;
     }
 
@@ -356,7 +365,7 @@ Y_UNIT_TEST_SUITE(YdbOlapStore) {
             auto res = SendBatch(client, "log1", 100, 1, ts).GetValueSync();
             Cerr << __FILE__ << ":" << __LINE__ << " Issues: " << res.GetIssues().ToString() << "\n";
             UNIT_ASSERT_VALUES_EQUAL(res.GetStatus(), EStatus::SCHEME_ERROR);
-            UNIT_ASSERT_STRING_CONTAINS(res.GetIssues().ToString(), "unknown database");
+            UNIT_ASSERT_STRING_CONTAINS(res.GetIssues().ToString(), "Unknown database for table 'log1'");
 
             TString result = RunQuery(connection, "SELECT count(*) FROM `/Root/OlapStore/log1`;");
             UNIT_ASSERT_VALUES_EQUAL(result, "[[0u]]");
@@ -474,7 +483,7 @@ Y_UNIT_TEST_SUITE(YdbOlapStore) {
     template<bool NotNull>
     void TestQuery(const TString& query, const TString& sharding) {
         NKikimrConfig::TAppConfig appConfig;
-        TKikimrWithGrpcAndRootSchema server(appConfig, {}, {}, false, nullptr);
+        TKikimrWithGrpcAndRootSchema server(appConfig, {}, {}, false, &UdfFrFactory);
 
         auto connection = ConnectToServer(server);
 
@@ -584,10 +593,7 @@ Y_UNIT_TEST_SUITE(YdbOlapStore) {
     }
 
     Y_UNIT_TEST_TWIN(LogNonExistingUserId, NotNull) {
-        // Should be fixed after Arrow kernel implementation for JSON_VALUE
-        // https://st.yandex-team.ru/KIKIMR-17903
         TString query(R"(
-            PRAGMA Kikimr.OptEnableOlapPushdown = "false";
             $user_id = '111';
 
             SELECT `timestamp`, `resource_type`, `resource_id`, `uid`, `level`, `message`, `json_payload`
@@ -603,10 +609,7 @@ Y_UNIT_TEST_SUITE(YdbOlapStore) {
     }
 
     Y_UNIT_TEST_TWIN(LogExistingUserId, NotNull) {
-        // Should be fixed after Arrow kernel implementation for JSON_VALUE
-        // https://st.yandex-team.ru/KIKIMR-17903
         TString query(R"(
-            PRAGMA Kikimr.OptEnableOlapPushdown = "false";
             $user_id = '1000042';
 
             SELECT `timestamp`, `resource_type`, `resource_id`, `uid`, `level`, `message`, `json_payload`

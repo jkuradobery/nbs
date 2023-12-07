@@ -5,7 +5,6 @@
 #include "yql_udf_resolver.h"
 #include "yql_user_data.h"
 
-#include <ydb/library/yql/core/url_preprocessing/interface/url_preprocessing.h>
 #include <ydb/library/yql/protos/yql_mount.pb.h>
 
 #include <util/generic/maybe.h>
@@ -18,9 +17,6 @@ public:
 
 public:
     TUserDataStorage(TFileStoragePtr fileStorage, TUserDataTable data, IUdfResolver::TPtr udfResolver, TUdfIndex::TPtr udfIndex);
-    void SetTokenResolver(TTokenResolver tokenResolver);
-    void SetUrlPreprocessor(IUrlPreprocessing::TPtr urlPreprocessing);
-    void SetUserDataTable(TUserDataTable data);
 
     void AddUserDataBlock(const TStringBuf& name, const TUserDataBlock& block);
     void AddUserDataBlock(const TUserDataKey& key, const TUserDataBlock& block);
@@ -42,7 +38,6 @@ public:
     TMaybe<std::map<TUserDataKey, const TUserDataBlock*>> FindUserDataFolder(const TStringBuf& name, ui32 maxFileCount = ~0u) const;
     static TMaybe<std::map<TUserDataKey, const TUserDataBlock*>> FindUserDataFolder(const TUserDataTable& userData, const TStringBuf& name, ui32 maxFileCount = ~0u);
 
-    void FillUserDataUrls();
     std::map<TString, const TUserDataBlock*> GetDirectoryContent(const TStringBuf& path, ui32 maxFileCount = ~0u) const;
     static TString MakeFullName(const TStringBuf& name);
     static TString MakeFolderName(const TStringBuf& name);
@@ -67,18 +62,15 @@ public:
     NThreading::TFuture<std::function<TUserDataBlock()>> FreezeAsync(const TUserDataKey& key);
 
 private:
-    void TryFillUserDataUrl(TUserDataBlock& block) const;
     TUserDataBlock& RegisterLink(const TUserDataKey& key, TFileLinkPtr link);
 
 private:
     THoldingFileStorage FileStorage_;
     TUserDataTable UserData_;
-    IUdfResolver::TPtr UdfResolver_;
-    TUdfIndex::TPtr UdfIndex_;
-    TTokenResolver TokenResolver_;
-    IUrlPreprocessing::TPtr UrlPreprocessing_;
+    IUdfResolver::TPtr UdfResolver;
+    TUdfIndex::TPtr UdfIndex;
 
-    THashSet<TUserDataKey, TUserDataKey::THash, TUserDataKey::TEqualTo> ScannedUdfs_;
+    THashSet<TUserDataKey, TUserDataKey::THash, TUserDataKey::TEqualTo> ScannedUdfs;
     std::function<void(const TUserDataBlock& block)> ScanUdfStrategy_;
 };
 

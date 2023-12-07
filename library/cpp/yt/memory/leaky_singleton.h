@@ -8,8 +8,7 @@ template <class T>
 class TLeakyStorage
 {
 public:
-    template <class... TArgs>
-    explicit TLeakyStorage(TArgs&&... args);
+    TLeakyStorage();
 
     T* Get();
 
@@ -23,8 +22,8 @@ private:
     template <class T>                   \
     friend class ::NYT::TLeakyStorage;
 
-template <class T, class... TArgs>
-T* LeakySingleton(TArgs&&... args);
+template <class T>
+T* LeakySingleton();
 
 ////////////////////////////////////////////////////////////////////////////////
 

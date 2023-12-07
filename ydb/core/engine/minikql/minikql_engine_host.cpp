@@ -23,12 +23,13 @@ void ConvertTableKeys(const TScheme& scheme, const TScheme::TTableInfo* tableInf
     for (size_t keyIdx = 0; keyIdx < row.size(); keyIdx++) {
         const TCell& cell = row[keyIdx];
         ui32 keyCol = tableInfo->KeyColumns[keyIdx];
-        NScheme::TTypeInfo vtypeInfo = scheme.GetColumnInfo(tableInfo, keyCol)->PType;
+        // TODO: support pg types
+        NScheme::TTypeId vtype = scheme.GetColumnInfo(tableInfo, keyCol)->PType.GetTypeId();
         if (cell.IsNull()) {
             key.emplace_back();
             bytes += 1;
         } else {
-            key.emplace_back(cell.Data(), cell.Size(), vtypeInfo);
+            key.emplace_back(cell.Data(), cell.Size(), vtype);
             bytes += cell.Size();
         }
     }
@@ -136,7 +137,7 @@ void TEngineHost::DoCalculateReadSize(const TKeyDesc& key, NTable::TSizeEnv& env
     if (key.RowOperation != TKeyDesc::ERowOperation::Read)
         return;
     ui64 localTid = LocalTableId(key.TableId);
-    Y_ABORT_UNLESS(localTid, "table not exist");
+    Y_VERIFY(localTid, "table not exist");
     const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(localTid);
     TSmallVec<TRawTypeValue> keyFrom;
     TSmallVec<TRawTypeValue> keyTo;
@@ -164,7 +165,7 @@ ui64 TEngineHost::CalculateResultSize(const TKeyDesc& key) const {
         return 0;
 
     ui64 localTid = LocalTableId(key.TableId);
-    Y_ABORT_UNLESS(localTid, "table not exist");
+    Y_VERIFY(localTid, "table not exist");
     if (key.Range.Point) {
         return Db.EstimateRowSize(localTid);
     } else {
@@ -229,10 +230,10 @@ void TEngineHost::PinPages(const TVector<THolder<TKeyDesc>>& keys, ui64 pageFaul
         }
 
         ui64 localTid = LocalTableId(key.TableId);
-        Y_ABORT_UNLESS(localTid, "table not exist");
+        Y_VERIFY(localTid, "table not exist");
         const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(localTid);
 
-        Y_DEBUG_ABORT_UNLESS(!key.Range.IsAmbiguous(tableInfo->KeyColumns.size()),
+        Y_VERIFY_DEBUG(!key.Range.IsAmbiguous(tableInfo->KeyColumns.size()),
             "%s", key.Range.IsAmbiguousReason(tableInfo->KeyColumns.size()));
 
         TSmallVec<TRawTypeValue> keyFrom;
@@ -277,7 +278,7 @@ NUdf::TUnboxedValue TEngineHost::SelectRow(const TTableId& tableId, const TArray
     Y_UNUSED(readTarget);
 
     ui64 localTid = LocalTableId(tableId);
-    Y_ABORT_UNLESS(localTid, "table not exist");
+    Y_VERIFY(localTid, "table not exist");
     const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(localTid);
     TSmallVec<TRawTypeValue> key;
     ConvertKeys(tableInfo, row, key);
@@ -388,7 +389,7 @@ public:
     }
 
     void Reuse(const TDbTupleRef& dbData) {
-        Y_DEBUG_ABORT_UNLESS(dbData.ColumnCount == Size());
+        Y_VERIFY_DEBUG(dbData.ColumnCount == Size());
         DbData = dbData;
         ClearMask();
     }
@@ -427,7 +428,7 @@ private:
     }
 
     inline void BuildValue(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(MaskSize > 0);
+        Y_VERIFY_DEBUG(MaskSize > 0);
 
         if (!TestMask(index)) {
             if (index < DbData.ColumnCount) {
@@ -443,16 +444,16 @@ private:
             }
             SetMask(index);
         }
-        Y_DEBUG_ABORT_UNLESS(TestMask(index));
+        Y_VERIFY_DEBUG(TestMask(index));
     }
 
     inline bool TestMask(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index / 64 < MaskSize);
+        Y_VERIFY_DEBUG(index / 64 < MaskSize);
         return GetMaskPtr()[index / 64] & ((ui64)1 << index % 64);
     }
 
     inline void SetMask(ui32 index) const {
-        Y_DEBUG_ABORT_UNLESS(index / 64 < MaskSize);
+        Y_VERIFY_DEBUG(index / 64 < MaskSize);
         GetMaskPtr()[index / 64] |= ((ui64)1 << index % 64);
     }
 
@@ -512,7 +513,7 @@ public:
                     += std::exchange(Iter->Stats.InvisibleRowSkips, 0);
 
                 // Skip null keys
-                Y_ABORT_UNLESS(List.SkipNullKeys.size() <= tuple.ColumnCount);
+                Y_VERIFY(List.SkipNullKeys.size() <= tuple.ColumnCount);
                 bool skipRow = false;
                 for (ui32 i = 0; i < List.SkipNullKeys.size(); ++i) {
                     if (List.SkipNullKeys[i] && tuple.Columns[i].IsNull()) {
@@ -549,7 +550,7 @@ public:
                     // TODO: support pg types
 
                     if (List.FirstKey) {
-                        Y_DEBUG_ABORT_UNLESS(*List.FirstKey == firstKey);
+                        Y_VERIFY_DEBUG(*List.FirstKey == firstKey);
                     } else {
                         List.FirstKey = firstKey;
                     }
@@ -588,8 +589,8 @@ public:
             }
 
             if (List.Truncated || List.SizeBytes) {
-                Y_DEBUG_ABORT_UNLESS(List.Truncated && *List.Truncated == truncated);
-                Y_DEBUG_ABORT_UNLESS(List.SizeBytes && *List.SizeBytes == Bytes);
+                Y_VERIFY_DEBUG(List.Truncated && *List.Truncated == truncated);
+                Y_VERIFY_DEBUG(List.SizeBytes && *List.SizeBytes == Bytes);
             } else {
                 List.Truncated = truncated;
                 List.SizeBytes = Bytes;
@@ -662,7 +663,7 @@ public:
         const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(LocalTid);
         auto tableRange = RangeHolder.ToTableRange();
 
-        Y_DEBUG_ABORT_UNLESS(!tableRange.IsAmbiguous(tableInfo->KeyColumns.size()),
+        Y_VERIFY_DEBUG(!tableRange.IsAmbiguous(tableInfo->KeyColumns.size()),
             "%s", tableRange.IsAmbiguousReason(tableInfo->KeyColumns.size()));
 
         TSmallVec<TRawTypeValue> keyFrom;
@@ -696,7 +697,7 @@ public:
                 continue;
         }
 
-        Y_DEBUG_ABORT_UNLESS(Truncated);
+        Y_VERIFY_DEBUG(Truncated);
         return NUdf::TUnboxedValuePod(*Truncated);
     }
 
@@ -715,7 +716,7 @@ public:
                 continue;
         }
 
-        Y_DEBUG_ABORT_UNLESS(SizeBytes);
+        Y_VERIFY_DEBUG(SizeBytes);
         return NUdf::TUnboxedValuePod(*SizeBytes);
     }
 
@@ -766,7 +767,7 @@ private:
             case 3: return list->GetSizeBytes();
         }
 
-        Y_ABORT("TSelectRangeResult: Index out of range.");
+        Y_FAIL("TSelectRangeResult: Index out of range.");
     }
 
     NUdf::TUnboxedValue List;
@@ -822,18 +823,18 @@ NUdf::TUnboxedValue TEngineHost::SelectRange(const TTableId& tableId, const TTab
     Y_UNUSED(readTarget);
 
     // TODO[serxa]: support for Point in SelectRange()
-    Y_ABORT_UNLESS(!range.Point, "point request in TEngineHost::SelectRange");
+    Y_VERIFY(!range.Point, "point request in TEngineHost::SelectRange");
 
     ui64 localTid = LocalTableId(tableId);
-    Y_ABORT_UNLESS(localTid, "table not exist");
+    Y_VERIFY(localTid, "table not exist");
 
     // Analyze resultType
     TStructType* outerStructType = AS_TYPE(TStructType, returnType);
-    Y_DEBUG_ABORT_UNLESS(outerStructType->GetMembersCount() == 2,
+    Y_VERIFY_DEBUG(outerStructType->GetMembersCount() == 2,
         "Unexpected type structure of returnType in TEngineHost::SelectRange()");
-    Y_DEBUG_ABORT_UNLESS(outerStructType->GetMemberName(0) == "List",
+    Y_VERIFY_DEBUG(outerStructType->GetMemberName(0) == "List",
         "Unexpected type structure of returnType in TEngineHost::SelectRange()");
-    Y_DEBUG_ABORT_UNLESS(outerStructType->GetMemberName(1) == "Truncated",
+    Y_VERIFY_DEBUG(outerStructType->GetMemberName(1) == "Truncated",
         "Unexpected type structure of returnType in TEngineHost::SelectRange()");
 
     TSmallVec<NTable::TTag> tags;
@@ -872,7 +873,7 @@ NUdf::TUnboxedValue TEngineHost::SelectRange(const TTableId& tableId, const TTab
 // Updates the single row. Column in commands must be unique.
 void TEngineHost::UpdateRow(const TTableId& tableId, const TArrayRef<const TCell>& row, const TArrayRef<const TUpdateCommand>& commands) {
     ui64 localTid = LocalTableId(tableId);
-    Y_ABORT_UNLESS(localTid, "table not exist");
+    Y_VERIFY(localTid, "table not exist");
     const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(localTid);
     TSmallVec<TRawTypeValue> key;
     ui64 keyBytes = 0;
@@ -882,10 +883,11 @@ void TEngineHost::UpdateRow(const TTableId& tableId, const TArrayRef<const TCell
     TSmallVec<NTable::TUpdateOp> ops;
     for (size_t i = 0; i < commands.size(); i++) {
         const TUpdateCommand& upd = commands[i];
-        Y_ABORT_UNLESS(upd.Operation == TKeyDesc::EColumnOperation::Set); // TODO[serxa]: support inplace update in update row
-        auto vtypeinfo = Scheme.GetColumnInfo(tableInfo, upd.Column)->PType;
+        Y_VERIFY(upd.Operation == TKeyDesc::EColumnOperation::Set); // TODO[serxa]: support inplace update in update row
+        // TODO: support pg types
+        NScheme::TTypeId vtype = Scheme.GetColumnInfo(tableInfo, upd.Column)->PType.GetTypeId();
         ops.emplace_back(upd.Column, NTable::ECellOp::Set,
-            upd.Value.IsNull() ? TRawTypeValue() : TRawTypeValue(upd.Value.Data(), upd.Value.Size(), vtypeinfo));
+            upd.Value.IsNull() ? TRawTypeValue() : TRawTypeValue(upd.Value.Data(), upd.Value.Size(), vtype));
         valueBytes += upd.Value.IsNull() ? 1 : upd.Value.Size();
     }
 
@@ -913,7 +915,7 @@ void TEngineHost::UpdateRow(const TTableId& tableId, const TArrayRef<const TCell
 // Erases the single row.
 void TEngineHost::EraseRow(const TTableId& tableId, const TArrayRef<const TCell>& row) {
     ui64 localTid = LocalTableId(tableId);
-    Y_ABORT_UNLESS(localTid, "table not exist");
+    Y_VERIFY(localTid, "table not exist");
     const TScheme::TTableInfo* tableInfo = Scheme.GetTableInfo(localTid);
     TSmallVec<TRawTypeValue> key;
     ui64 keyBytes = 0;
@@ -942,7 +944,7 @@ void TEngineHost::EraseRow(const TTableId& tableId, const TArrayRef<const TCell>
 
 void TEngineHost::CommitWriteTxId(const TTableId& tableId, ui64 writeTxId) {
     ui64 localTid = LocalTableId(tableId);
-    Y_ABORT_UNLESS(localTid, "table does not exist");
+    Y_VERIFY(localTid, "table does not exist");
 
     Db.CommitTx(localTid, writeTxId);
 }
@@ -1066,7 +1068,7 @@ NUdf::TUnboxedValue GetCellValue(const TCell& cell, NScheme::TTypeInfo type) {
         return NYql::NCommon::PgValueFromNativeBinary(cell.AsBuf(), NPg::PgTypeIdFromTypeDesc(type.GetTypeDesc()));
     }
 
-    Y_DEBUG_ABORT_UNLESS(false, "Unsupported type: %" PRIu16, type.GetTypeId());
+    Y_VERIFY_DEBUG(false, "Unsupported type: %" PRIu16, type.GetTypeId());
     return MakeString(NUdf::TStringRef(cell.Data(), cell.Size()));
 }
 

@@ -7,9 +7,8 @@ SRCS(
 )
 
 FORK_SUBTESTS()
-SPLIT_FACTOR(30)
 
-IF (SANITIZER_TYPE == "thread" OR WITH_VALGRIND)
+IF (SANITIZER_TYPE OR WITH_VALGRIND)
     TIMEOUT(2400)
     SIZE(LARGE)
     TAG(ya:fat)
@@ -19,7 +18,7 @@ ELSE()
 ENDIF()
 
 PEERDIR(
-    ydb/library/actors/util
+    library/cpp/actors/util
     ydb/core/yql_testlib
 )
 

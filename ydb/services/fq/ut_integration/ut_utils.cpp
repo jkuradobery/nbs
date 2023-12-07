@@ -2,13 +2,13 @@
 
 #include <ydb/public/sdk/cpp/client/ydb_driver/driver.h>
 #include <ydb/public/lib/fq/scope.h>
-#include <ydb/core/fq/libs/actors/proxy.h>
-#include <ydb/core/fq/libs/events/events.h>
+#include <ydb/core/yq/libs/actors/proxy.h>
+#include <ydb/core/yq/libs/events/events.h>
 
 #include <library/cpp/time_provider/time_provider.h>
 #include <library/cpp/testing/common/env.h>
 #include <library/cpp/protobuf/util/pb_io.h>
-#include <ydb/library/actors/testlib/test_runtime.h>
+#include <library/cpp/actors/testlib/test_runtime.h>
 
 #include <ydb/library/yql/utils/bind_in_range.h>
 

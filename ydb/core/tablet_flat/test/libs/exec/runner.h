@@ -12,7 +12,7 @@
 #include <ydb/core/base/tablet_resolver.h>
 #include <ydb/core/tablet/resource_broker.h>
 #include <ydb/core/tablet_flat/shared_sausagecache.h>
-#include <ydb/library/services/services.pb.h>
+#include <ydb/core/protos/services.pb.h>
 #include <library/cpp/time_provider/time_provider.h>
 
 #include <ydb/core/tablet_flat/test/libs/rows/tool.h>
@@ -163,7 +163,7 @@ namespace NFake {
             { /*_ Resource broker service, used for generic scans */
                 using namespace NResourceBroker;
 
-                auto *actor = CreateResourceBrokerActor(MakeDefaultConfig(), Env.GetDynamicCounters());
+                auto *actor = CreateResourceBrokerActor(MakeDefaultConfig(),  Env.GetDynamicCounters(0));
 
                 AddService(MakeResourceBrokerID(), actor, EMail::Revolving);
             }
@@ -178,14 +178,13 @@ namespace NFake {
             }
 
             { /*_ Shared page collection cache service, used by executor */
-                auto config = MakeHolder<TSharedPageCacheConfig>();
+                auto egg = MakeIntrusive<TSharedPageCacheConfig>();
 
-                config->CacheConfig = new TCacheCacheConfig(conf.Shared, nullptr, nullptr, nullptr);
-                config->TotalAsyncQueueInFlyLimit = conf.AsyncQueue;
-                config->TotalScanQueueInFlyLimit = conf.ScanQueue;
-                config->Counters = MakeIntrusive<TSharedPageCacheCounters>(Env.GetDynamicCounters());
+                egg->CacheConfig = new TCacheCacheConfig(conf.Shared, nullptr, nullptr, nullptr);
+                egg->TotalAsyncQueueInFlyLimit = conf.AsyncQueue;
+                egg->TotalScanQueueInFlyLimit = conf.ScanQueue;
 
-                auto *actor = CreateSharedPageCache(std::move(config), Env.GetMemObserver());
+                auto *actor =  CreateSharedPageCache(egg.Get());
 
                 RunOn(3, MakeSharedPageCacheId(0), actor, EMail::ReadAsFilled);
             }
@@ -196,7 +195,7 @@ namespace NFake {
             const auto begin = ui32(NKikimrServices::EServiceKikimr_MIN);
             const auto end = ui32(NKikimrServices::EServiceKikimr_MAX) + 1;
 
-            Y_ABORT_UNLESS(end < 8192, "Looks like there is too many services");
+            Y_VERIFY(end < 8192, "Looks like there is too many services");
 
             TVector<TString> names(end);
 
