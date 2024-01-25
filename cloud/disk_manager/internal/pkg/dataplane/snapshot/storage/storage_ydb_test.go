@@ -765,7 +765,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := createFixture(t)
 			defer f.teardown()
-			logging.Info(f.ctx, "Starting test %v, using s3 %v", testCase.name, testCase.useS3)
+			logging.Error(f.ctx, "Starting test %v, using s3 %v", testCase.name, testCase.useS3)
 			chunkCount := uint32(1000)
 
 			rand.Seed(time.Now().UnixNano())
@@ -786,16 +786,16 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 
 				go func() {
 					defer wg.Done()
-					logging.Info(f.ctx, "Starting worker %v", i)
+					logging.Warn(f.ctx, "Starting worker %v", i)
 					for j := i * chunksPerWorker; j < (i+1)*chunksPerWorker; j++ {
 						var chunk common.Chunk
 
 						data := []byte(fmt.Sprintf("chunk-%v", j))
-						logging.Info(f.ctx, "Writing chunk %v", j)
+						logging.Warn(f.ctx, "Writing chunk %v", j)
 						chunk = common.Chunk{Index: j, Data: data}
 
 						chunkID, err := f.storage.WriteChunk(f.ctx, "", "src", chunk, testCase.useS3)
-						logging.Info(f.ctx, "Chunk %v written", j)
+						logging.Warn(f.ctx, "Chunk %v written", j)
 						require.NoError(t, err)
 
 						workerMutex.Lock()
@@ -817,7 +817,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 						})
 
 						workerMutex.Unlock()
-						logging.Info(f.ctx, "Chunk %v done", j)
+						logging.Warn(f.ctx, "Chunk %v done", j)
 					}
 				}()
 			}
@@ -828,7 +828,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 			attemptIndex := 0
 
 			attempt := func() error {
-				logging.Info(
+				logging.Warn(
 					f.ctx,
 					"Attempt #%v, milestoneChunkIndex=%v",
 					attemptIndex,
@@ -853,7 +853,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 						}
 					}
 				}()
-				logging.Info(f.ctx, "Starting shallow copy snapshot...")
+				logging.Warn(f.ctx, "Starting shallow copy snapshot...")
 				err := f.storage.ShallowCopySnapshot(
 					copyCtx,
 					"src",
@@ -862,7 +862,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 					func(ctx context.Context, milestoneIndex uint32) error {
 						milestoneChunkIndex = milestoneIndex
 
-						logging.Info(
+						logging.Warn(
 							ctx,
 							"Updating progress, milestoneChunkIndex=%v",
 							milestoneChunkIndex,
