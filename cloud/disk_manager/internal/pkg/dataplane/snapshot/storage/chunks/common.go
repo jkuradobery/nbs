@@ -113,7 +113,7 @@ func (s *storageCommon) refChunk(
 			referer,
 		)
 	}
-
+	logging.Error(ctx, "Failed to refer chunk %v for referer %v: %v", chunkID, referer, err)
 	return err
 }
 

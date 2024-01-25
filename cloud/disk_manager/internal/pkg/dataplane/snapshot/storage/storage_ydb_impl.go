@@ -492,6 +492,7 @@ func (s *storageYDB) ShallowCopyChunk(
 		persistence.ValueParam("$stored_in_s3", persistence.BoolValue(srcEntry.StoredInS3)),
 	)
 	if err != nil {
+		logging.Error(ctx, "failed to create chunk map entry: %v", err)
 		return err
 	}
 

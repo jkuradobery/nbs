@@ -869,6 +869,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 						)
 
 						if rand.Intn(2) == 0 {
+							logging.Warn(ctx, "Emulating saveProgress error")
 							return errors.NewRetriableErrorf(
 								"emulated saveProgress error",
 							)
