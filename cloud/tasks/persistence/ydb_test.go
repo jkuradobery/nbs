@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -522,12 +523,22 @@ func TestYDBClientUpsertAfterCancel(t *testing.T) {
 		id:   "id1",
 		val1: "value1",
 	}
-
+	wg := sync.WaitGroup{}
 	go func() {
-		err = insertTableV1(ctx, db, fullPath, table, val1)
-		require.Error(t, err)
+		wg.Add(1)
+		for {
+			err = insertTableV1(ctx, db, fullPath, table, val1)
+			if err != nil {
+				break
+			}
+		}
+		wg.Done()
 	}()
 	cancel()
+	wg.Wait()
+	ctx, cancel2 := context.WithCancel(newContext())
+	logging.Debug(ctx, "Logging after cancel")
+	defer cancel2()
 	err = insertTableV1(ctx, db, fullPath, table, val1)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
