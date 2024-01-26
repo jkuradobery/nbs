@@ -468,7 +468,7 @@ func (s *storageYDB) ShallowCopyChunk(
 ) (err error) {
 
 	defer s.metrics.StatOperation("ShallowCopyChunk")(&err)
-
+	logging.Info(ctx, "ShallowCopyChunk: srcEntry: %+v, dstSnapshotID: %v", srcEntry, dstSnapshotID)
 	// First, create new chunk map entry. It is safe to create chunk map entry
 	// before updating chunk blob's ref count because whole snapshot is not
 	// ready yet. We do this to avoid orphaning blobs.
@@ -961,6 +961,7 @@ func (s *storageYDB) processChunkMapEntries(
 				select {
 				case entry, more = <-entries:
 					if !more {
+						logging.Error(ctx, "processChunkMapEntries: entries channel closed")
 						break
 					}
 
