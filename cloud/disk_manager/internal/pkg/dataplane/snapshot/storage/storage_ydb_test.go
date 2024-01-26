@@ -764,10 +764,10 @@ func TestDeleteCopiedSnapshotSource(t *testing.T) {
 }
 
 func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
+	go func() {
+		log.Fatal(http.ListenAndServe(":7777", nil))
+	}()
 	for _, testCase := range testCases() {
-		go func() {
-			log.Fatal(http.ListenAndServe(":7777", nil))
-		}()
 		t.Run(testCase.name, func(t *testing.T) {
 			f := createFixture(t)
 			defer f.teardown()

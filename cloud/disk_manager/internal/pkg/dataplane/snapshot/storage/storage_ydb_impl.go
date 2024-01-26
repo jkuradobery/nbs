@@ -476,11 +476,11 @@ func callerName(skip int) string {
 	return frame.Function
 }
 
-func Timer() func() {
+func Timer(ctx context.Context) func() {
 	name := callerName(1)
 	start := time.Now()
 	return func() {
-		fmt.Printf("Function %s took %v\n", name, time.Since(start))
+		logging.Warn(ctx, "Function %s took %v\n", name, time.Since(start))
 	}
 }
 
@@ -490,7 +490,7 @@ func (s *storageYDB) ShallowCopyChunk(
 	dstSnapshotID string,
 ) (err error) {
 
-	defer Timer()()
+	defer Timer(ctx)()
 	defer s.metrics.StatOperation("ShallowCopyChunk")(&err)
 	logging.Info(ctx, "ShallowCopyChunk: srcEntry: %+v, dstSnapshotID: %v", srcEntry, dstSnapshotID)
 	// First, create new chunk map entry. It is safe to create chunk map entry
