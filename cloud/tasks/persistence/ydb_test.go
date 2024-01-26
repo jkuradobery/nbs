@@ -495,3 +495,39 @@ func TestYDBFailMigrationChangingPrimaryKey(t *testing.T) {
 	)
 	assert.Error(t, err)
 }
+
+func TestYDBClientUpsertAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(newContext())
+	defer cancel()
+
+	db, err := newYDB(ctx)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, db.Close(ctx))
+	}()
+
+	table := "table"
+	fullPath := db.AbsolutePath(fmt.Sprintf("ydb_test/%v", t.Name()))
+
+	err = db.CreateOrAlterTable(
+		ctx,
+		fmt.Sprintf("ydb_test/%v", t.Name()),
+		table,
+		tableV1TableDescription(),
+		false, // dropUnusedColumns
+	)
+	require.NoError(t, err)
+
+	val1 := TableV1{
+		id:   "id1",
+		val1: "value1",
+	}
+
+	go func() {
+		err = insertTableV1(ctx, db, fullPath, table, val1)
+		require.Error(t, err)
+	}()
+	cancel()
+	err = insertTableV1(ctx, db, fullPath, table, val1)
+	assert.Error(t, err)
+}
