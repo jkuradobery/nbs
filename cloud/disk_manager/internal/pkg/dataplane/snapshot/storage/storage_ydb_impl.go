@@ -530,6 +530,7 @@ func (s *storageYDB) shallowCopySnapshot(
 	)
 	defer inflightQueue.Close()
 
+	defer inflightQueue.Close()
 	waitSaver := func() error { return nil }
 	var saverError <-chan error
 
