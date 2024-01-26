@@ -3,7 +3,10 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"sort"
 	"strconv"
@@ -761,7 +764,11 @@ func TestDeleteCopiedSnapshotSource(t *testing.T) {
 
 func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 	for _, testCase := range testCases() {
-
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/profile", pprof.Profile)
+		go func() {
+			log.Fatal(http.ListenAndServe(":7777", mux))
+		}()
 		t.Run(testCase.name, func(t *testing.T) {
 			f := createFixture(t)
 			defer f.teardown()
