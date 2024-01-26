@@ -518,29 +518,32 @@ func TestYDBClientUpsertAfterCancel(t *testing.T) {
 		false, // dropUnusedColumns
 	)
 	require.NoError(t, err)
-
-	val1 := TableV1{
-		id:   "id1",
-		val1: "value1",
-	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
-		go func() {
+		go func(j int) {
 			for {
+				val1 := TableV1{
+					id:   fmt.Sprintf("id%d", j),
+					val1: "value1",
+				}
 				err = insertTableV1(ctx, db, fullPath, table, val1)
 				if err != nil {
 					break
 				}
 			}
 			wg.Done()
-		}()
+		}(i)
 	}
 	cancel()
 	wg.Wait()
 	ctx, cancel2 := context.WithCancel(newContext())
 	logging.Debug(ctx, "Logging after cancel")
 	defer cancel2()
+	val1 := TableV1{
+		id:   fmt.Sprintf("id105"),
+		val1: "value1",
+	}
 	err = insertTableV1(ctx, db, fullPath, table, val1)
 	assert.NoError(t, err)
 }
