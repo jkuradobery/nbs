@@ -524,16 +524,18 @@ func TestYDBClientUpsertAfterCancel(t *testing.T) {
 		val1: "value1",
 	}
 	wg := sync.WaitGroup{}
-	go func() {
+	for i := 0; i < 100; i++ {
 		wg.Add(1)
-		for {
-			err = insertTableV1(ctx, db, fullPath, table, val1)
-			if err != nil {
-				break
+		go func() {
+			for {
+				err = insertTableV1(ctx, db, fullPath, table, val1)
+				if err != nil {
+					break
+				}
 			}
-		}
-		wg.Done()
-	}()
+			wg.Done()
+		}()
+	}
 	cancel()
 	wg.Wait()
 	ctx, cancel2 := context.WithCancel(newContext())
