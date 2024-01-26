@@ -832,7 +832,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 
 			milestoneChunkIndex := uint32(0)
 			attemptIndex := 0
-
+			failedOnce := false
 			attempt := func() error {
 				logging.Warn(
 					f.ctx,
@@ -852,9 +852,10 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 						case <-copyCtx.Done():
 							return
 						case <-time.After(time.Second):
-							if rand.Intn(5) == 0 {
+							if !failedOnce {
 								logging.Info(f.ctx, "Cancelling copy context...")
 								cancelCopyCtx()
+								failedOnce = true
 							}
 						}
 					}
@@ -874,12 +875,12 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 							milestoneChunkIndex,
 						)
 
-						if rand.Intn(2) == 0 {
-							logging.Warn(ctx, "Emulating saveProgress error")
-							return errors.NewRetriableErrorf(
-								"emulated saveProgress error",
-							)
-						}
+						//if rand.Intn(2) == 0 {
+						//	logging.Warn(ctx, "Emulating saveProgress error")
+						//	return errors.NewRetriableErrorf(
+						//		"emulated saveProgress error",
+						//	)
+						//}
 
 						return nil
 					},

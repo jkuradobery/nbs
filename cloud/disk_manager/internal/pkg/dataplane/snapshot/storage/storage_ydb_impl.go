@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"runtime"
 	"sync"
 	"time"
 
@@ -461,12 +462,35 @@ func (s *storageYDB) ClearDeletingSnapshots(
 	return nil
 }
 
+func callerName(skip int) string {
+	const unknown = "unknown"
+	pcs := make([]uintptr, 1)
+	n := runtime.Callers(skip+2, pcs)
+	if n < 1 {
+		return unknown
+	}
+	frame, _ := runtime.CallersFrames(pcs).Next()
+	if frame.Function == "" {
+		return unknown
+	}
+	return frame.Function
+}
+
+func Timer() func() {
+	name := callerName(1)
+	start := time.Now()
+	return func() {
+		fmt.Printf("Function %s took %v\n", name, time.Since(start))
+	}
+}
+
 func (s *storageYDB) ShallowCopyChunk(
 	ctx context.Context,
 	srcEntry ChunkMapEntry,
 	dstSnapshotID string,
 ) (err error) {
 
+	defer Timer()()
 	defer s.metrics.StatOperation("ShallowCopyChunk")(&err)
 	logging.Info(ctx, "ShallowCopyChunk: srcEntry: %+v, dstSnapshotID: %v", srcEntry, dstSnapshotID)
 	// First, create new chunk map entry. It is safe to create chunk map entry
