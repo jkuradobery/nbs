@@ -3,8 +3,8 @@ package persistence
 import (
 	"context"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"os"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -518,25 +518,46 @@ func TestYDBClientUpsertAfterCancel(t *testing.T) {
 		false, // dropUnusedColumns
 	)
 	require.NoError(t, err)
-	wg := sync.WaitGroup{}
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(j int) {
-			for {
-				val1 := TableV1{
-					id:   fmt.Sprintf("id%d", j),
-					val1: "value1",
-				}
-				err = insertTableV1(ctx, db, fullPath, table, val1)
-				if err != nil {
-					break
-				}
-			}
-			wg.Done()
-		}(i)
-	}
+	var g errgroup.Group
+	g.Go(
+		func() error {
+			return db.Execute(
+				ctx,
+				func(ctx context.Context, session *Session) error {
+					var g1 errgroup.Group
+					for i := 0; i < 100; i++ {
+						g1.Go(func() error {
+							val1 := TableV1{
+								id:   fmt.Sprintf("id%d", i),
+								val1: "value1",
+							}
+							_, err := db.ExecuteRW(
+								ctx,
+								fmt.Sprintf(`
+						--!syntax_v1
+						pragma TablePathPrefix = "%v";
+						declare $values as List<%v>;
+		
+						upsert into %v
+						select *
+						from AS_TABLE($values)
+						`, fullPath, tableV1StructTypeString(), table),
+								ValueParam("$values", ListValue(val1.structValue())),
+							)
+							return err
+						})
+					}
+					if err := g1.Wait(); err != nil {
+						return err
+					}
+					return nil
+				},
+			)
+		},
+	)
 	cancel()
-	wg.Wait()
+	err = g.Wait()
+	require.Error(t, err)
 	ctx, cancel2 := context.WithCancel(newContext())
 	logging.Debug(ctx, "Logging after cancel")
 	defer cancel2()
