@@ -27,13 +27,14 @@ func newYDB(ctx context.Context) (*YDBClient, error) {
 	endpoint := os.Getenv("YDB_ENDPOINT")
 	database := os.Getenv("YDB_DATABASE")
 	rootPath := "disk_manager"
-
+	connectionTimeout := "10s"
 	return NewYDBClient(
 		ctx,
 		&persistence_config.PersistenceConfig{
-			Endpoint: &endpoint,
-			Database: &database,
-			RootPath: &rootPath,
+			Endpoint:          &endpoint,
+			Database:          &database,
+			RootPath:          &rootPath,
+			ConnectionTimeout: &connectionTimeout,
 		},
 		metrics.NewEmptyRegistry(),
 	)
