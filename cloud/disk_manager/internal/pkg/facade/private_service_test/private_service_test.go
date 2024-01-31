@@ -2,12 +2,12 @@ package tests
 
 import (
 	"fmt"
+	"github.com/ydb-platform/nbs/cloud/tasks/logging"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	operation_proto "github.com/ydb-platform/nbs/cloud/api/operation"
-	"github.com/ydb-platform/nbs/cloud/disk_manager/api/yandex/cloud/priv/disk_manager/v1"
 	"github.com/ydb-platform/nbs/cloud/disk_manager/internal/api"
 	internal_client "github.com/ydb-platform/nbs/cloud/disk_manager/internal/pkg/client"
 	"github.com/ydb-platform/nbs/cloud/disk_manager/internal/pkg/facade/testcommon"
@@ -166,6 +166,7 @@ func TestPrivateServiceRetireBaseDisksUsingBaseDiskAsSrc(t *testing.T) {
 
 	client, err := testcommon.NewClient(ctx)
 	require.NoError(t, err)
+	logging.Warn("Created test common client")
 	defer client.Close()
 
 	imageID := t.Name()
@@ -180,10 +181,12 @@ func TestPrivateServiceRetireBaseDisksUsingBaseDiskAsSrc(t *testing.T) {
 		true, // pooled
 	)
 
+	logging.Warn(ctx, "Image %v created with size %v", imageID, imageSize)
 	diskID := t.Name()
 	diskSize := 2 * imageSize
 
 	reqCtx := testcommon.GetRequestContext(t, ctx)
+	logging.Warn(ctx, "Request context was obtained")
 	operation, err := client.CreateDisk(reqCtx, &disk_manager.CreateDiskRequest{
 		Src: &disk_manager.CreateDiskRequest_SrcImageId{
 			SrcImageId: imageID,
@@ -195,18 +198,36 @@ func TestPrivateServiceRetireBaseDisksUsingBaseDiskAsSrc(t *testing.T) {
 			DiskId: diskID,
 		},
 	})
+	logging.Warn(
+		ctx,
+		"Disk created with image id %v, size %v, disk id %v",
+		imageID,
+		diskSize,
+		diskID,
+	)
 	require.NoError(t, err)
 	require.NotEmpty(t, operation)
 	err = internal_client.WaitOperation(ctx, client, operation.Id)
+	logging.Warn(
+		ctx,
+		"Waiting for operation  %v finished",
+		operation.Id,
+	)
 	require.NoError(t, err)
 
 	reqCtx = testcommon.GetRequestContext(t, ctx)
 	operation, err = client.DeleteImage(reqCtx, &disk_manager.DeleteImageRequest{
 		ImageId: imageID,
 	})
+	logging.Warn(ctx, "Deleting image %v  finished ", imageID)
 	require.NoError(t, err)
 	require.NotEmpty(t, operation)
 	err = internal_client.WaitOperation(ctx, client, operation.Id)
+	logging.Warn(
+		ctx,
+		"Waiting for image deletion finished %v",
+		operation.Id,
+	)
 	require.NoError(t, err)
 
 	privateClient, err := testcommon.NewPrivateClient(ctx)
@@ -222,6 +243,7 @@ func TestPrivateServiceRetireBaseDisksUsingBaseDiskAsSrc(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, operation)
 	err = internal_client.WaitOperation(ctx, client, operation.Id)
+	logging.Warn(ctx, "Retire base disks finished")
 	require.NoError(t, err)
 
 	nbsClient := testcommon.NewNbsClient(t, ctx, "zone-a")
@@ -237,6 +259,7 @@ func TestPrivateServiceRetireBaseDisksUsingBaseDiskAsSrc(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, operation)
 	err = internal_client.WaitOperation(ctx, client, operation.Id)
+	logging.Warn(ctx, "Disk deletion finished")
 	require.NoError(t, err)
 
 	testcommon.CheckConsistency(t, ctx)
