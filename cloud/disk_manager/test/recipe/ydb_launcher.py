@@ -1,6 +1,7 @@
 from cloud.tasks.test.common.processes import register_process, kill_processes
 from contrib.ydb.tests.library.harness.kikimr_cluster import kikimr_cluster_factory
 from contrib.ydb.tests.library.harness.kikimr_config import KikimrConfigGenerator
+from contrib.ydb.tests.library.harness.util import LogLevels
 
 SERVICE_NAME = "ydb"
 
@@ -20,7 +21,16 @@ class YDBLauncher:
             has_cluster_uuid=False,
             static_pdisk_size=64 * 2**30,
             dynamic_storage_pools=dynamic_storage_pools,
-            enable_public_api_external_blobs=True)
+            enable_public_api_external_blobs=True,
+            enable_audit_log=True,
+            additional_log_configs={
+                'FLAT_TX_SCHEMESHARD': LogLevels.DEBUG,
+                'SCHEME_BOARD_POPULATOR': LogLevels.WARN,
+                'SCHEME_BOARD_SUBSCRIBER': LogLevels.WARN,
+                'TX_DATASHARD': LogLevels.DEBUG,
+                'CHANGE_EXCHANGE': LogLevels.DEBUG,
+            }
+        )
 
         self.__cluster = kikimr_cluster_factory(configurator=configurator)
         self.__dynamic_storage_pools = dynamic_storage_pools
