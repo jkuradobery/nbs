@@ -840,8 +840,8 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 					attemptIndex,
 					milestoneChunkIndex,
 				)
-
-				copyCtx, cancelCopyCtx := context.WithCancel(f.ctx)
+				newContext := context.Background()
+				copyCtx, cancelCopyCtx := context.WithCancel(newContext)
 				defer cancelCopyCtx()
 
 				rand.Seed(time.Now().UnixNano())
