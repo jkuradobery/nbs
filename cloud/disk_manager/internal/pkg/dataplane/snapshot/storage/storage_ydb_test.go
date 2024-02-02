@@ -832,7 +832,7 @@ func TestShallowCopySnapshotWithRandomFailure(t *testing.T) {
 
 			milestoneChunkIndex := uint32(0)
 			attemptIndex := 0
-			failedOnce := false
+			failedOnce := len(os.Getenv("DONOTFAIL")) != 0
 			attempt := func() error {
 				logging.Warn(
 					f.ctx,

@@ -561,7 +561,7 @@ func (c *YDBClient) Execute(
 			metrics:     c.metrics,
 		})
 	}
-
+	logging.Warn(ctx, "Context before ydb do %v", ctx)
 	err := c.db.Table().Do(ctx, adapter, ydb_table.WithIdempotent())
 	if err != nil {
 		// TODO: some errors should not be retriable.
