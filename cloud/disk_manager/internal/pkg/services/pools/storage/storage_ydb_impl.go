@@ -1734,7 +1734,7 @@ func (s *storageYDB) overlayDiskRebasing(
 	session *persistence.Session,
 	info RebaseInfo,
 ) error {
-
+	logging.Info(ctx, "marking overlay disk as rebasing")
 	tx, err := session.BeginRWTransaction(ctx)
 	if err != nil {
 		return err
@@ -1745,13 +1745,14 @@ func (s *storageYDB) overlayDiskRebasing(
 	if err != nil {
 		return err
 	}
-
+	logging.Info(ctx, "Slot acquired")
 	if slot == nil {
 		err = tx.Commit(ctx)
+		logging.Error(ctx, "Error while committing transaction %v", err)
 		if err != nil {
 			return err
 		}
-
+		logging.Warn(ctx, "failed to find slot")
 		return errors.NewSilentNonRetriableErrorf(
 			"failed to find slot with id %v",
 			info.OverlayDisk.DiskId,
@@ -1759,11 +1760,14 @@ func (s *storageYDB) overlayDiskRebasing(
 	}
 
 	err = s.overlayDiskRebasingTx(ctx, tx, info, *slot)
+	logging.Warn(ctx, "Finished overlayDiskRebasingTx")
 	if err != nil {
+		logging.Warn(ctx, "Error while rebasing the overlay disk %v", err)
 		return err
 	}
 
 	err = tx.Commit(ctx)
+	logging.Warn(ctx, "Finished commiting the transaction, err: %v", err)
 	if err != nil {
 		return err
 	}

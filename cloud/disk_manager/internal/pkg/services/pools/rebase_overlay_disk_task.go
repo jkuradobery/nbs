@@ -54,12 +54,19 @@ func (t *rebaseOverlayDiskTask) rebaseOverlayDisk(
 		return err
 	}
 
+	logging.Info(
+		ctx,
+		"Client obtained successfully for %v:%v",
+		t.request.BaseDiskId,
+		t.request.TargetBaseDiskId,
+	)
 	err = t.storage.OverlayDiskRebasing(ctx, storage.RebaseInfo{
 		OverlayDisk:      t.request.OverlayDisk,
 		BaseDiskID:       t.request.BaseDiskId,
 		TargetBaseDiskID: t.request.TargetBaseDiskId,
 		SlotGeneration:   t.request.SlotGeneration,
 	})
+	logging.Info(ctx, "Overlay disk rebasing finished")
 	if err != nil {
 		if nbs.IsDiskNotFoundError(err) {
 			// Disk might not be created yet.
